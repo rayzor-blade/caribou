@@ -11,6 +11,31 @@ are spokes it loads.
 This document describes the systems as built. Design rationale lives in the
 design proposal; work in progress lives in git-bug.
 
+## Hosting a runtime
+
+No runtime depends on caribou. Each runtime keeps its own collector,
+scheduler and build, and exposes a **seam**: a table of the entry points
+its own code reaches its runtime through, filled with its own
+implementations by default. Caribou, when it hosts that runtime, installs
+its implementations into the table before the runtime allocates, so the
+runtime's heap and fibers become the core's. The runtime's tests run
+against its own implementations; caribou's adapter tests run the same
+runtime against the core's.
+
+The seam is a runtime act, not a link-time one. Nothing in a runtime's
+manifest names caribou. A caribou adapter crate depends on the runtime,
+loads it, and fills the table. Ash's seam is `ash_std::rt`; the pattern is
+the one Ash already used for its closure runner and switch hook: an atomic
+slot per entry, a `hlp_set_*`-style installer, the runtime's own function
+as the fallback.
+
+What a seam covers is exactly what the core replaces: allocation and
+collection, thread and fiber-stack registration with the collector,
+safepoints and blocking, the scheduler's spawn, park, wake and step, and
+the poll epoch's address. What it does not cover is anything the runtime
+keeps whatever hosts it: object layouts, type tables, closures, exceptions,
+native-call marshaling.
+
 ## Crates
 
 | Crate | Role |
@@ -21,10 +46,11 @@ design proposal; work in progress lives in git-bug.
 ## Heap
 
 `caribou::heap` is an Immix collector: non-moving, conservative by default,
-precise where an object's descriptor asks for it. It is Ash's collector moved
-here; `heap/immix.rs` keeps the order and names of Ash's `gc.rs` so the two
-stay diffable, and Ash re-exports the entry points as `extern "C"` forwarders
-under their HashLink names. `heap/desc.rs` is the type descriptor.
+precise where an object's descriptor asks for it. It began as a port of
+Ash's collector; `heap/immix.rs` keeps the order and names of Ash's `gc.rs`
+so the two stay diffable. Ash keeps its own copy and does not depend on
+this crate: caribou reaches Ash's runtime through the seam described under
+"Hosting a runtime". `heap/desc.rs` is the type descriptor.
 
 ### Memory
 
