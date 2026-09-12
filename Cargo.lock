@@ -420,8 +420,8 @@ name = "caribou"
 version = "0.1.0"
 dependencies = [
  "caribou_abi",
- "krio-core 0.1.0 (git+https://github.com/darmie/krio)",
- "krio-fiber 0.1.0 (git+https://github.com/darmie/krio)",
+ "krio-core 0.1.0 (git+https://github.com/darmie/krio.git?rev=286f5e0710e20772179fc2ca96f6fda8d13e3a70)",
+ "krio-fiber 0.1.0 (git+https://github.com/darmie/krio.git?rev=286f5e0710e20772179fc2ca96f6fda8d13e3a70)",
  "libc",
  "windows-sys 0.59.0",
 ]

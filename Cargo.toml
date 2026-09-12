@@ -9,12 +9,10 @@ repository = "https://github.com/rayzor-blade/caribou"
 
 [workspace.dependencies]
 caribou_abi = { path = "crates/caribou_abi", version = "0.1.0" }
-# Every resident must agree on this: a world holds one copy of krio. ash_std
-# names it unpinned, and Cargo cannot unify two specs of one repository, so
-# the spec is the same here and Cargo.lock holds the rev (286f5e0); only
-# `cargo update -p krio-fiber` moves it.
-krio-fiber = { git = "https://github.com/darmie/krio" }
-krio-core = { git = "https://github.com/darmie/krio" }
+# One spec string and one rev in every resident's manifest: Cargo treats a
+# differently spelled URL as a second source, and a world holds one krio.
+krio-fiber = { git = "https://github.com/darmie/krio.git", rev = "286f5e0710e20772179fc2ca96f6fda8d13e3a70" }
+krio-core = { git = "https://github.com/darmie/krio.git", rev = "286f5e0710e20772179fc2ca96f6fda8d13e3a70" }
 # Git, not the registry release: the batched compile API is only here.
 beadie = { git = "https://github.com/darmie/beadie", rev = "868d1069eeda1ea162460273869597a9b0866ebf", default-features = false }
 libc = "0.2"
