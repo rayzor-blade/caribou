@@ -268,3 +268,51 @@ is the adapter's to keep, with one `schedule_step` after spawning.
 - Heap fiber-stack ids are `u32` and task ids `u64`; the id is truncated.
 - The main stack's published probe sits above the callee-saved registers
   krio spills at a switch, as in Ash.
+
+## World
+
+A world is what a driver holds: the handle through which it registers the
+runtimes it uses, loads code, calls into it, ticks the scheduler and
+subscribes to events. One world is one OS thread, one scheduler, one view
+of the process-wide heap. `caribou::world` is the registry of adapters and
+their languages; it does not own the heap or the scheduler, which are
+per process and per thread respectively, but it is the only path a driver
+uses to reach them.
+
+### Adapters and languages
+
+An adapter is a runtime that has been taught the core: it implements
+`Adapter`, registering with `World::register`. Registration hands the
+adapter the `LangId`s it owns: one for a single-language runtime, one per
+grammar snapshot for Zyntax. A `LangId` names a namespace in the module
+registry (`lang:path`), the `lang` field of every `TypeDesc` the adapter
+creates, and the language a module section in a bundle belongs to.
+
+`Adapter` supplies: its language names; `load(source: ModuleSource) ->
+ModuleId`, taking bytecode, source text or a blob by the adapter's own
+format; `lookup(module, name) -> Option<Callable>`; `call(callable, args:
+&[Value]) -> Result<Value, Error>` through the bridge; `reload(module)`
+returning a plan for the registry to apply; and the per-task `HostState`
+it wants attached when the world spawns a task on its behalf.
+
+### Startup and the frame loop
+
+`World::new(config)` initialises the heap if needed and the calling thread's
+scheduler, and installs the heap's poll hook. The driver then registers
+adapters, loads modules, and either calls `World::run_main(module)` to let
+the world own the loop, or calls `World::tick(deadline)` from its own frame
+loop. `tick` runs scheduler turns, drains reload checks and delivers events
+until the deadline. Ash's frame pump is the first driver: the world ticks
+inside it, between the Haxe application's frames.
+
+### Events
+
+`World::on(kind, handler)` subscribes a handler to `Reload`, `TaskError`
+and `Log` events. Handlers run on the world's thread, from `tick`, never
+from inside a collection or a switch.
+
+### Boundaries of the current implementation
+
+Not yet built beyond the adapter registry and the language table. Module
+loading, lookup, call and events arrive with the bridge and the module
+registry.

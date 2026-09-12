@@ -8,3 +8,4 @@ pub use caribou_abi as abi;
 
 pub mod heap;
 pub mod sched;
+pub mod world;
