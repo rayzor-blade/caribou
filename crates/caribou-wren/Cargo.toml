@@ -1,0 +1,27 @@
+[package]
+name = "caribou-wren"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Hosts WrenLift on the caribou core by filling wren_lift's runtime seam with the core's heap"
+
+# wren_lift builds on stable, as the core does; this crate needs no nightly.
+
+[features]
+# The `caribou-wren` binary: WrenLift's interpreter and tiered JIT over the
+# core. It needs nothing beyond the library's own dependencies.
+runner = []
+
+[dependencies]
+caribou = { path = "../caribou" }
+caribou_abi = { workspace = true }
+# A path dependency until wren_lift is published; then a git dependency at
+# one rev.
+wren_lift = { path = "../../../wren_lift" }
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "caribou-wren"
+required-features = ["runner"]

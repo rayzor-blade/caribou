@@ -1326,6 +1326,14 @@ static GC_STATS: GcStatCounters = GcStatCounters {
 /// `enable` is reached from anywhere, including under the GC lock.
 static GC_ENABLED: AtomicBool = AtomicBool::new(true);
 
+/// The singleton's trigger, rebased onto the cumulative counters so
+/// [`should_collect`] needs no lock: the `bytes_allocated + external_bytes`
+/// at which its next automatic collection is due, and `bytes_allocated` at
+/// its last collection. Written under the lock by the collection that sets
+/// `trigger_threshold`.
+static NEXT_TRIGGER_AT: AtomicU64 = AtomicU64::new(INITIAL_TRIGGER_BYTES as u64);
+static ALLOCATED_AT_COLLECT: AtomicU64 = AtomicU64::new(0);
+
 // ── Collector flags (`Gc.flags`) ────────────────────────────────────────────
 
 /// Bit values of `hl.Gc.GcFlag`, fixed by the Haxe enum's ordinals.
@@ -2165,7 +2173,7 @@ impl Default for ImmixAllocator {
 
 /// Resolve a candidate to its actual allocation, including interior pointers.
 /// Small starts are at most one line away; only spans can cross a line.
-fn containing_allocation(
+fn allocation_at(
     blocks: &[Block],
     alloc_sizes: &[u32],
     objects: &[std::sync::atomic::AtomicU8],
@@ -2207,6 +2215,28 @@ fn containing_allocation(
     }
 }
 
+/// Claim the allocation containing `offset` for the open cycle: its object
+/// bit and its lines. `Some((start, size))` for the claimer, `None` when it
+/// was already claimed or `offset` is in no allocation.
+fn claim_allocation(
+    blocks: &[Block],
+    alloc_sizes: &[u32],
+    objects: &[std::sync::atomic::AtomicU8],
+    offset: usize,
+) -> Option<(usize, usize)> {
+    let (start, size) = allocation_at(blocks, alloc_sizes, objects, offset)?;
+    let slot = &objects[start / ALLOC_QUANTUM];
+    if slot.load(Ordering::Relaxed) & OBJECT_MARK != 0
+        || slot.fetch_or(OBJECT_MARK, Ordering::Relaxed) & OBJECT_MARK != 0
+    {
+        return None;
+    }
+    for line in start / LINE_SIZE..=(start + size - 1) / LINE_SIZE {
+        claim_line(&blocks[line / LINES_PER_BLOCK], line % LINES_PER_BLOCK);
+    }
+    Some((start, size))
+}
+
 /// Claim OBJECTS, not lines. Two reachable objects on a shared line must
 /// both be traced; an unreachable neighbour on that line must not be traced.
 fn mark_allocation_shared(
@@ -2216,19 +2246,9 @@ fn mark_allocation_shared(
     offset: usize,
     out: &mut Vec<(usize, usize)>,
 ) {
-    let Some((start, size)) = containing_allocation(blocks, alloc_sizes, objects, offset) else {
-        return;
-    };
-    let slot = &objects[start / ALLOC_QUANTUM];
-    if slot.load(Ordering::Relaxed) & OBJECT_MARK != 0
-        || slot.fetch_or(OBJECT_MARK, Ordering::Relaxed) & OBJECT_MARK != 0
-    {
-        return;
+    if let Some(claimed) = claim_allocation(blocks, alloc_sizes, objects, offset) {
+        out.push(claimed);
     }
-    for line in start / LINE_SIZE..=(start + size - 1) / LINE_SIZE {
-        claim_line(&blocks[line / LINES_PER_BLOCK], line % LINES_PER_BLOCK);
-    }
-    out.push((start, size));
 }
 
 /// Trace only the allocation's bytes, never other objects sharing its lines.
@@ -2524,6 +2544,12 @@ fn mark_worker(job: &MarkJob) {
 }
 
 impl ImmixAllocator {
+    /// Whether `self` is the process heap `GC` holds, rather than a heap a
+    /// test built on its own.
+    fn is_singleton(&self) -> bool {
+        unsafe { (*(&raw const GC)).get() }.is_some_and(|gc| ptr::eq(gc, self))
+    }
+
     #[inline(always)]
     fn current_stack_addr() -> usize {
         // Portable stack probe: address of a local variable approximates current SP.
@@ -2703,6 +2729,29 @@ impl ImmixAllocator {
         Some(addr)
     }
 
+    /// A run of recycled lines of at least `size` bytes as `(start, end)`,
+    /// its metadata cleared, for the locked path's bump region. The bytes are
+    /// not zeroed: that path zeroes each object it hands out.
+    fn take_recycled_span(&mut self, size: usize) -> Option<(usize, usize)> {
+        if !recycle_lines() {
+            return None;
+        }
+        let want_lines = size.div_ceil(LINE_SIZE).max(1);
+        while let Some((block, start, len)) = self.heap.recycle_spans.pop() {
+            if len < want_lines {
+                continue;
+            }
+            let lo = block + start * LINE_SIZE;
+            let span_bytes = len * LINE_SIZE;
+            self.clear_allocation_metadata(lo, span_bytes);
+            GC_STATS
+                .lines_recycled
+                .fetch_add(len as u64, Ordering::Relaxed);
+            return Some((lo, lo + span_bytes));
+        }
+        None
+    }
+
     /// Only called for free memory, under the allocation lock. In particular,
     /// a recycled span must forget its old large-object starts before a TLAB
     /// publishes new small objects in it.
@@ -2799,17 +2848,27 @@ impl ImmixAllocator {
         }
 
         if point + aligned_size > self.heap.current_block_end {
-            let new_block = match self.acquire_free_block() {
-                Some(b) => b,
+            // Recycled lines first, as the TLAB refill does, so a kept block's
+            // free lines are reused rather than left until the block empties.
+            // Spans too small for this object are dropped; the list is rebuilt
+            // each sweep. Line-aligned, so either placement rule holds at it.
+            let (start, end) = match self.take_recycled_span(aligned_size) {
+                Some(region) => region,
                 None => {
-                    // Exhaustion backstop trigger.
-                    set_collect_origin(4);
-                    self.collect_garbage();
-                    self.acquire_free_block()? // None = out of memory
+                    let new_block = match self.acquire_free_block() {
+                        Some(b) => b,
+                        None => {
+                            // Exhaustion backstop trigger.
+                            set_collect_origin(4);
+                            self.collect_garbage();
+                            self.acquire_free_block()? // None = out of memory
+                        }
+                    };
+                    (new_block, new_block + BLOCK_SIZE)
                 }
             };
-            point = new_block;
-            self.heap.current_block_end = new_block + BLOCK_SIZE;
+            point = start;
+            self.heap.current_block_end = end;
         }
 
         let result = unsafe {
@@ -2996,6 +3055,84 @@ impl ImmixAllocator {
             offset,
             out,
         );
+    }
+
+    /// Heap offset of `addr`, if it lies inside the reservation.
+    #[inline]
+    fn offset_of(&self, addr: usize) -> Option<usize> {
+        let base = self.heap.memory.as_ptr() as usize;
+        (addr >= base && addr < base + self.heap.memory.len).then(|| addr - base)
+    }
+
+    // ── For a hosted collector that claims and reclaims its own objects ──
+
+    /// The allocation containing `addr` as `(start, size)`, interior
+    /// pointers included: the marker's own lookup. `None` outside the heap,
+    /// in free space, or in a forgotten allocation.
+    pub fn allocation_containing(&self, addr: usize) -> Option<(usize, usize)> {
+        let offset = self.offset_of(addr)?;
+        let (start, size) = allocation_at(
+            &self.blocks,
+            &self.heap.alloc_sizes,
+            &self.heap.objects,
+            offset,
+        )?;
+        Some((self.heap.memory.as_ptr() as usize + start, size))
+    }
+
+    /// Claim the allocation containing `ptr` for the open cycle exactly as the
+    /// marker would, object bit and lines; true for the claimer. The claim
+    /// stands until the next sweep clears it, so a host that claims outside a
+    /// collection must end with one, or withdraw its claims.
+    pub fn claim_for_cycle(&self, ptr: *const u8) -> bool {
+        self.offset_of(ptr as usize)
+            .and_then(|offset| {
+                claim_allocation(
+                    &self.blocks,
+                    &self.heap.alloc_sizes,
+                    &self.heap.objects,
+                    offset,
+                )
+            })
+            .is_some()
+    }
+
+    /// Whether the allocation containing `ptr` is claimed in the open cycle.
+    pub fn is_claimed(&self, ptr: *const u8) -> bool {
+        self.allocation_containing(ptr as usize)
+            .is_some_and(|(start, _)| {
+                self.object_slot(start).load(Ordering::Relaxed) & OBJECT_MARK != 0
+            })
+    }
+
+    /// Withdraw the object claim on the allocation containing `ptr`. Its line
+    /// claims stay until the sweep: a stale line claim only retains.
+    pub fn unclaim(&self, ptr: *const u8) {
+        if let Some((start, _)) = self.allocation_containing(ptr as usize) {
+            self.object_slot(start)
+                .fetch_and(!OBJECT_MARK, Ordering::Relaxed);
+        }
+    }
+
+    /// Forget the allocation that starts at `start`: no lookup resolves into
+    /// it, no cycle traces or drops it, and its lines return with the next
+    /// sweep. The bytes are left as they are; the caller has released what
+    /// the object owned.
+    pub fn forget_allocation(&mut self, start: *const u8) {
+        let Some(offset) = self.offset_of(start as usize) else {
+            return;
+        };
+        let code = *self.heap.objects[offset / ALLOC_QUANTUM].get_mut() & OBJECT_SIZE_MASK;
+        debug_assert!(code != 0, "not an allocation start");
+        if code == SPAN_OBJECT {
+            self.heap.alloc_sizes[offset / LINE_SIZE] = 0;
+        }
+        *self.heap.objects[offset / ALLOC_QUANTUM].get_mut() = 0;
+    }
+
+    #[inline]
+    fn object_slot(&self, start: usize) -> &std::sync::atomic::AtomicU8 {
+        &self.heap.objects[(start - self.heap.memory.as_ptr() as usize) / ALLOC_QUANTUM]
     }
 
     /// Record a block allocated with `MEM_KIND_FINALIZER`; its word zero holds a
@@ -3224,6 +3361,15 @@ impl ImmixAllocator {
         let ceiling = trigger_ceiling_bytes().max(live_bytes).max(floor);
         self.heap.trigger_threshold =
             (live_bytes.saturating_mul(growth_factor())).clamp(floor, ceiling);
+        if self.is_singleton() {
+            let allocated = GC_STATS.bytes_allocated.load(Ordering::Relaxed);
+            let external = GC_STATS.external_bytes.load(Ordering::Relaxed);
+            NEXT_TRIGGER_AT.store(
+                allocated + external + self.heap.trigger_threshold as u64,
+                Ordering::Relaxed,
+            );
+            ALLOCATED_AT_COLLECT.store(allocated, Ordering::Relaxed);
+        }
 
         self.heap.bytes_since_gc = 0;
         self.heap.external_since_gc = 0;
@@ -3735,7 +3881,7 @@ impl ImmixAllocator {
             for &block in &used_block_addrs {
                 for q in block / ALLOC_QUANTUM..(block + BLOCK_SIZE) / ALLOC_QUANTUM {
                     if self.heap.objects[q].load(Ordering::Relaxed) & OBJECT_MARK != 0 {
-                        if let Some(object) = containing_allocation(
+                        if let Some(object) = allocation_at(
                             &self.blocks,
                             &self.heap.alloc_sizes,
                             &self.heap.objects,
@@ -4332,7 +4478,7 @@ pub unsafe fn allocation_size(ptr: *const c_void) -> usize {
     if addr < base || addr >= base + gc.heap.memory.len {
         return 0;
     }
-    containing_allocation(
+    allocation_at(
         &gc.blocks,
         &gc.heap.alloc_sizes,
         &gc.heap.objects,
@@ -4743,6 +4889,56 @@ pub unsafe fn unregister_root_range(start: *const u8, len: usize) {
     gc_locked_init().unregister_root_range(start, len);
 }
 
+// ── For a hosted collector ──────────────────────────────────────────────────
+//
+// A runtime that keeps its own collector over this heap marks its objects
+// with the same claim the marker uses, then reclaims what it did not claim and
+// ends with a collection here, whose sweep clears the claims and returns the
+// lines. Each takes the lock; a host inside a cycle holds it already.
+
+/// The allocation containing `addr` as `(start, size)`, interior pointers
+/// included; `None` for anything that is not inside a live allocation.
+pub fn containing_allocation(addr: usize) -> Option<(usize, usize)> {
+    gc_locked_init().allocation_containing(addr)
+}
+
+/// Claim the allocation containing `ptr` for the open cycle; true for the
+/// claimer, false when it already was or `ptr` is in no allocation.
+pub fn claim_for_cycle(ptr: *const u8) -> bool {
+    gc_locked_init().claim_for_cycle(ptr)
+}
+
+/// Whether the allocation containing `ptr` is claimed in the open cycle.
+pub fn is_claimed(ptr: *const u8) -> bool {
+    gc_locked_init().is_claimed(ptr)
+}
+
+/// Forget the allocation that starts at `start`, whose owner has released
+/// what it held: its lines return with the next sweep.
+///
+/// # Safety
+/// `start` must be the start of an allocation nothing will read again.
+pub unsafe fn free_allocation(start: *const u8) {
+    gc_locked_init().forget_allocation(start);
+}
+
+/// Whether the automatic trigger is due: allocated plus external bytes since
+/// the last collection have reached the threshold, or `ASH_GC_STRESS` is set
+/// and anything was allocated. No lock, and no heartbeat.
+pub fn should_collect() -> bool {
+    let allocated = GC_STATS.bytes_allocated.load(Ordering::Relaxed);
+    if gc_stress_every() > 0 {
+        return allocated > ALLOCATED_AT_COLLECT.load(Ordering::Relaxed);
+    }
+    allocated + GC_STATS.external_bytes.load(Ordering::Relaxed)
+        >= NEXT_TRIGGER_AT.load(Ordering::Relaxed)
+}
+
+/// Collections completed so far, abandoned stops excluded.
+pub fn collections() -> u64 {
+    GC_STATS.collections.load(Ordering::Relaxed)
+}
+
 /// `hl_gc_alloc_gen`: `size` zeroed bytes of the kind in `flags`. Word zero
 /// belongs to the caller except for `Typed`, which receives `t`; `Finalizer`
 /// blocks are recorded so the callback the caller stores there runs. The
@@ -4840,8 +5036,7 @@ mod tests {
             assert_eq!(offset(&gc, a), block);
             assert_eq!(offset(&gc, b), block + LINE_SIZE);
             assert_eq!(offset(&gc, c), block + LINE_SIZE + 64);
-            let find =
-                |at| containing_allocation(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
+            let find = |at| allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
             assert_eq!(find(block + 79), Some((block, 80)));
             assert_eq!(find(block + 80), None, "the skipped tail is not an object");
             assert_eq!(find(block + LINE_SIZE + 63), Some((block + LINE_SIZE, 64)));
@@ -4912,8 +5107,7 @@ mod tests {
         let start = offset(&gc, p);
         let small = gc.allocate(16).unwrap();
         let next = offset(&gc, small);
-        let find =
-            |at| containing_allocation(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
+        let find = |at| allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
         assert_eq!(find(start + 159), Some((start, 256)));
         assert_eq!(find(next + 15), Some((next, 16)));
         assert_eq!(find(next + 16), None, "not an earlier span or a neighbour");
@@ -4945,7 +5139,7 @@ mod tests {
         assert_eq!(again, work);
         gc.clear_allocation_metadata(start, BLOCK_SIZE);
         assert_eq!(
-            containing_allocation(
+            allocation_at(
                 &gc.blocks,
                 &gc.heap.alloc_sizes,
                 &gc.heap.objects,
@@ -5587,7 +5781,7 @@ mod tests {
                 gc.set_allocation_kind(start, kind);
                 assert_eq!(kind_of(&gc, start), kind);
                 let find = |gc: &ImmixAllocator, at| {
-                    containing_allocation(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at)
+                    allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at)
                 };
                 assert_eq!(find(&gc, start), Some((start, reserved)));
                 assert_eq!(find(&gc, start + size - 1), Some((start, reserved)));
@@ -5732,8 +5926,7 @@ mod tests {
         gc.conservative_trace(work);
         gc.sweep(&[]);
         assert_eq!(HOLDER_DROPS.load(Ordering::SeqCst), before + 1);
-        let find =
-            |at| containing_allocation(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
+        let find = |at| allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
         assert_eq!(find(holder + 8), None, "a dropped object is forgotten");
         assert_eq!(find(sibling), Some((sibling, 16)));
         assert!(!gc.blocks[holder / BLOCK_SIZE].has_traced);
@@ -5902,5 +6095,111 @@ mod tests {
         let plain = &*gc_locked() as *const ImmixAllocator;
         assert_eq!(first, again);
         assert_eq!(first, plain);
+    }
+
+    /// A hosted collector's claim is the marker's: object bit and lines, once
+    /// per cycle, and the sweep clears it. A forgotten allocation resolves to
+    /// nothing and its lines come back.
+    #[test]
+    fn a_hosted_collector_claims_and_forgets_through_the_side_table() {
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
+        let small = gc.allocate(48).unwrap();
+        let span = gc.allocate(LINE_SIZE * 3).unwrap();
+        let base = gc.heap.memory.as_ptr() as usize;
+
+        let small_addr = small.as_ptr() as usize;
+        assert_eq!(gc.allocation_containing(small_addr), Some((small_addr, 48)));
+        assert_eq!(
+            gc.allocation_containing(small_addr + 47),
+            Some((small_addr, 48))
+        );
+        let span_addr = span.as_ptr() as usize;
+        assert_eq!(
+            gc.allocation_containing(span_addr + 2 * LINE_SIZE + 5),
+            Some((span_addr, 3 * LINE_SIZE))
+        );
+        assert_eq!(gc.allocation_containing(base + gc.heap.memory.len), None);
+
+        assert!(!gc.is_claimed(small.as_ptr()));
+        assert!(gc.claim_for_cycle(small.as_ptr()));
+        assert!(!gc.claim_for_cycle(small.as_ptr().wrapping_add(8)));
+        assert!(gc.is_claimed(small.as_ptr()));
+        assert!(object_marked(&gc, offset(&gc, small)));
+        let line = offset(&gc, small) / LINE_SIZE;
+        assert!(gc.blocks[line / LINES_PER_BLOCK].is_marked(line % LINES_PER_BLOCK));
+        gc.unclaim(small.as_ptr());
+        assert!(!gc.is_claimed(small.as_ptr()));
+        assert!(gc.claim_for_cycle(small.as_ptr()));
+
+        // The unclaimed span dies with the sweep; the claimed object survives
+        // it with its claim cleared for the next cycle.
+        gc.forget_allocation(span.as_ptr());
+        assert_eq!(gc.allocation_containing(span_addr), None);
+        assert_eq!(gc.allocation_containing(span_addr + LINE_SIZE), None);
+        let freed_before = gc.heap.free_blocks.len();
+        gc.sweep(&[]);
+        assert!(!gc.is_claimed(small.as_ptr()));
+        assert_eq!(gc.allocation_containing(small_addr), Some((small_addr, 48)));
+        assert!(
+            gc.heap.free_blocks.len() >= freed_before,
+            "sweep lost track of the free list"
+        );
+        assert!(!gc.claim_for_cycle(ptr::null()));
+        assert!(!gc.is_claimed(ptr::null()));
+    }
+
+    /// The locked path bumps through a kept block's free lines before it
+    /// takes a fresh block, as the TLAB refill does.
+    #[test]
+    fn the_locked_path_allocates_into_recycled_lines() {
+        if !recycle_lines() {
+            return;
+        }
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
+        let keep = gc.allocate(LINE_SIZE).unwrap();
+        for _ in 0..8 {
+            gc.allocate(LINE_SIZE).unwrap();
+        }
+        let block = offset(&gc, keep) / BLOCK_SIZE * BLOCK_SIZE;
+        assert!(gc.claim_for_cycle(keep.as_ptr()));
+        gc.sweep(&[]);
+        assert!(
+            !gc.heap.recycle_spans.is_empty(),
+            "the kept block has no free run"
+        );
+        // What a collection does with the cursor before the world restarts.
+        gc.heap.allocation_point = 0;
+        gc.heap.current_block_end = 0;
+        let next = gc.allocate(LINE_SIZE * 2).unwrap();
+        assert_eq!(
+            offset(&gc, next) / BLOCK_SIZE * BLOCK_SIZE,
+            block,
+            "a fresh block was taken while the kept block had free lines"
+        );
+        assert_ne!(offset(&gc, next), offset(&gc, keep));
+        assert_eq!(
+            gc.allocation_containing(keep.as_ptr() as usize),
+            Some((keep.as_ptr() as usize, LINE_SIZE))
+        );
+    }
+
+    /// The lock-free trigger mirrors the singleton's: due once the threshold
+    /// of allocation and external pressure is reached, reset by a collection.
+    #[test]
+    fn the_lockless_trigger_follows_the_singletons_collections() {
+        if gc_stress_every() > 0 {
+            return; // Stress mode answers from the allocation count alone.
+        }
+        // Held throughout, so no other hold of the singleton collects.
+        let mut gc = gc_locked_init();
+        let before = collections();
+        gc.collect_garbage();
+        assert_eq!(collections(), before + 1);
+        assert!(!should_collect(), "a fresh collection leaves nothing due");
+        let threshold = gc.heap.trigger_threshold;
+        gc.track_external(threshold);
+        assert!(should_collect(), "pressure at the threshold is due");
+        gc.collect_garbage();
+        assert!(!should_collect());
     }
 }

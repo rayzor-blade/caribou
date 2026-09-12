@@ -30,6 +30,9 @@ pub use immix::{
     unregister_root_range, Handle,
     // Fiber stacks.
     gc_register_fiber_stack, gc_unregister_fiber_stack, gc_update_fiber_sp,
+    // A hosted collector's claims and reclamation.
+    claim_for_cycle, collections, containing_allocation, free_allocation, is_claimed,
+    should_collect,
     // Collection control, statistics and diagnostics.
     dump_memory, enable, get_flags, get_live_objects, init, major, print_stats,
     print_stats_if_enabled, profile, set_flags, stats, track_external, walk_heap,
