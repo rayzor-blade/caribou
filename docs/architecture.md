@@ -148,8 +148,10 @@ an unregistered thread may not hold heap pointers across a safepoint.
 
 ## Scheduler
 
-Not yet built. This section is the design it is built to; it becomes a
-description once the code lands.
+`caribou::sched` is Ash's fiber scheduler redesigned over krio-core's
+`Task`. `sched/world.rs` is the per-thread world and its loop, `task.rs`
+the task kinds and host state, `wait.rs` the wait tokens and parking,
+`preempt.rs` the poll epoch and its timer, `pool.rs` the worker pool.
 
 ### Worlds and tasks
 
@@ -172,7 +174,11 @@ exist:
   driven by the host's suspension.
 
 The scheduler does not distinguish them: it calls `step` and reads the
-`Suspension` that comes back.
+`Suspension` that comes back. `spawn_fiber(stack_size, body)` makes a
+stackful task on the calling world, registering its stack with the heap and
+charging it as external pressure until the task is dropped; `spawn(task)`
+takes any `Task`; `spawn_fiber_on_pool` places a stackful task on the
+least-loaded worker world at spawn time. The default stack is 256 KB.
 
 ### The scheduler loop
 
@@ -183,14 +189,17 @@ switch. The main context, the thread's original stack, drives turns when it
 blocks or when the driver ticks the world; a task never drives a turn, it
 yields.
 
-Before resuming a task the scheduler records the main stack's suspended
-pointer for the collector and swaps the task's host state into the thread's
-live cells: Ash's trap chain and pending exception, Zyntax's effect handler
-stack, whatever an adapter registers per task. After the task yields the
-scheduler publishes the task's suspended stack pointer to the collector
-before anything else can observe the switch, then swaps the host state back.
-The adapter hook that observes switches runs only after the stack pointer is
-published.
+Host state is a `HostState` object an adapter attaches to a task, or to the
+main context under `TaskId::NONE`, with `attach_host_state`: Ash's trap
+chain and pending exception, Zyntax's effect handler stack. Around each
+resume the scheduler swaps the main context's state out, the task's in,
+steps the task, publishes the task's suspended stack pointer to the heap,
+runs the world's switch hook, then swaps the task's state out and the main
+context's back in. The switch hook (`set_switch_hook`, one per world) runs
+only after the stack pointer is published, because a hook that publishes
+interpreter roots may honour a pending collection. A task's record stays in
+the world while it runs; only its body is taken out, so a running task can
+attach state to itself.
 
 ### Parking
 
@@ -202,24 +211,33 @@ a thread the runtime did not create, park polls the token with a short
 sleep, because such a thread has no fiber to yield and may not run tasks.
 Locks, semaphores, conditions, deques and sleeps are all built on park and
 wake. A task that parks with a deadline is also on the timer heap; whichever
-fires first wins and the other is cancelled.
+fires first wins and the other is cancelled. A stackless task cannot yield
+from inside `park`; it calls `request_park` and returns `Pending`, and reads
+`resume_cause` when next stepped. Whether a thread drives or polls is
+decided by `has_world()`: a thread that has spawned or ticked owns a world.
 
 ### The reactor
 
-The reactor is the world's source of external wakeups: timers, socket
-readiness, file watches, and channels from other worlds and from OS threads.
-When no task is ready the main context blocks in the reactor until the next
-timer or event, instead of sleeping on a fixed cadence. Blocking I/O in any
-language registers with the reactor and parks; the reactor wakes the token.
+Not yet built. Today, when no task is ready, the main context blocks in
+`scheduler_idle` on the world's endpoint until a command arrives from
+another world or the next timer is due. The reactor will be the world's
+source of external wakeups beyond that: socket readiness, file watches,
+channels from OS threads. Blocking I/O in any language will register with
+it and park; the reactor wakes the token. The seam is marked in
+`world.rs`.
 
 ### Preemption and safepoints
 
-Compiled loops poll one word, the poll epoch, on every back-edge. A timer
-thread bumps it every two milliseconds while more than one task exists; the
-collector's stop request bumps it through the heap's poll hook. A task that
-observes a changed epoch reaches a safepoint and yields, so no task can
-starve the others and the world can always be stopped. The interpreter and
-every blocking primitive are safepoints as well.
+Compiled loops poll one word, `POLL_EPOCH` (exported as the symbol
+`caribou_poll_epoch`; `poll_epoch_address` hands code generators its
+address), on every back-edge. A timer thread bumps it every two
+milliseconds while any task exists; the collector's stop request bumps it
+through the heap's poll hook, which the first world installs. A task that
+observes a changed epoch calls `poll`: a heap safepoint, then a yield on a
+task or one turn on the main context. So no task can starve the others and
+the world can always be stopped. The interpreter and every blocking
+primitive are safepoints as well. `enter_blocking` and `leave_blocking`
+mark a task as outside the heap's reach for the duration of a native call.
 
 ### Multiple worlds
 
@@ -227,13 +245,26 @@ A process may run several worlds on several OS threads over the one heap.
 Tasks are pinned to the world that created them; a krio fiber is `!Send`
 and never migrates. Ash's worker pool for compiled thread bodies is the
 first use: it chooses a world at spawn time and never moves the task
-afterwards. Collections stop every world at its safepoints.
+afterwards. Worlds exchange `Wake` and `Spawn` commands through per-world
+endpoints. The pool is sized by `CARIBOU_WORKERS`, or `ASH_WORKERS`, or the
+machine; on wasm there is no pool and no timer thread, and `yield_now`
+routes through krio's host suspender. Collections stop every world at its
+safepoints. `CARIBOU_SCHED_TRACE` prints every switch and park; safe.
 
 ### Adapter contract
 
 An adapter provides: a way to build a task from its own callable (a Haxe
-closure, a Wren fiber object, a Zyntax function), the per-task host state
-the scheduler swaps, and a switch hook if it keeps interpreter roots to
-publish. It consumes: `spawn`, `park`, `wake`, `yield_now`, `sleep_until`,
-`current_task`, the reactor's registration calls, and `tick(deadline)` for a
-driver that owns the frame loop.
+closure, a Wren fiber object, a Zyntax function), rooting that callable
+itself; the per-task host state the scheduler swaps; and a switch hook if it
+keeps interpreter roots to publish. It consumes: `spawn`, `spawn_fiber`,
+`park`, `wake`, `yield_now`, `sleep_until`, `poll`, `current_task`, and
+`tick(deadline)` for a driver that owns the frame loop. Ash's rule that a
+new thread runs to its first blocking point before `thread_create` returns
+is the adapter's to keep, with one `schedule_step` after spawning.
+
+### Boundaries of the current implementation
+
+- No reactor: idle blocks on the endpoint and the timer heap only.
+- Heap fiber-stack ids are `u32` and task ids `u64`; the id is truncated.
+- The main stack's published probe sits above the callee-saved registers
+  krio spills at a switch, as in Ash.
