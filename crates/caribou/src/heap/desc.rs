@@ -29,6 +29,8 @@ pub struct TypeDesc {
     pub trace: Option<TraceFn>,
     /// Absent: nothing runs when the object dies.
     pub drop: Option<DropFn>,
+    /// The messages the object answers; null answers `Unsupported` to all.
+    pub protocol: *const crate::protocol::Protocol,
     /// UTF-8, not NUL-terminated.
     pub name: *const u8,
     pub name_len: usize,
@@ -48,6 +50,7 @@ impl TypeDesc {
             hl,
             trace: None,
             drop: None,
+            protocol: std::ptr::null(),
             name: std::ptr::null(),
             name_len: 0,
             lang: 0,
@@ -73,5 +76,6 @@ mod tests {
         assert_eq!(size_of::<hl_type>(), 32);
         assert_eq!(offset_of!(TypeDesc, trace), 32);
         assert_eq!(offset_of!(TypeDesc, drop), 40);
+        assert_eq!(offset_of!(TypeDesc, protocol), 48);
     }
 }

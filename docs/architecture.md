@@ -297,6 +297,59 @@ is the adapter's to keep, with one `schedule_step` after spawning.
 - The main stack's published probe sits above the callee-saved registers
   krio spills at a switch, as in Ash.
 
+## Object protocol and bridge
+
+Not yet built beyond the types. This section is the contract phase 3 is
+written against.
+
+### Values at the boundary
+
+Two ABIs meet at every cross-language call. Typed HashLink code passes raw
+scalars and pointers by signature; every dynamically typed runtime passes
+`caribou_abi::Value`, one NaN-boxed word. The core converts between them
+once, at the edge, and never inside a language.
+
+### The protocol
+
+Every heap object answers a closed set of messages through the `Protocol`
+vtable its `TypeDesc` points at. An adapter implements the vtable once for
+its own types; the core dispatches through it when a value crosses into a
+language that did not make it.
+
+| Message | Meaning |
+|---|---|
+| `get_member`, `set_member` | a named field or property, by interned symbol |
+| `invoke` | call a named member with arguments |
+| `call` | call the object itself, if callable |
+| `index`, `set_index`, `len`, `iterate` | sequence and map access |
+| `to_string`, `hash`, `equals` | identity and display |
+| `unwrap_native` | the native payload of a plugin object |
+| `is_error`, `error_message`, `error_kind`, `error_cause`, `error_trace` | the error protocol |
+
+A message an object does not answer returns `Unsupported`; the calling
+language maps that to its own notion of a missing member.
+
+### Callables
+
+`Callable` is what the bridge invokes: a typed function (a C pointer plus an
+`hl_type_fun`-shaped signature) or a dynamic one (a `Value` that answers
+`call`). `bridge::call(callable, args) -> Result<Value, Error>` marshals
+dynamic values into a typed call by the signature, or passes them through
+to a dynamic one, and always returns through a protected boundary: an
+error leaving the callee's language becomes an `Error` value here and is
+re-raised natively by whoever receives it.
+
+Ash's typed dispatcher and its reflection trampoline stay Ash's; the Ash
+adapter registers them as the typed half of the bridge through the seam.
+
+### Errors
+
+`Error` is a heap value with a `TypeDesc` of the core's own language: a
+kind from `caribou_abi::ErrorKind`, a message, an optional cause, an
+optional native payload the originating language keeps its own error in,
+and a trace assembled one segment per boundary crossed. A value returning
+to the language that raised it is unwrapped to the original object.
+
 ## World
 
 A world is what a driver holds: the handle through which it registers the
