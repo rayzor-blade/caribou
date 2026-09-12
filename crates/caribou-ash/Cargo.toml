@@ -1,0 +1,34 @@
+[package]
+name = "caribou-ash"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Hosts Ash on the caribou core by filling ash_std's runtime seam with the core's heap and scheduler"
+
+# ash_std needs nightly (c_variadic), so this crate and its runner build with
+# `cargo +nightly`; the core itself stays on stable (rust-toolchain.toml).
+# Building ash_core also needs LLVM_SYS_211_PREFIX for its bindgen step even
+# though, without its `llvm` feature, the runner links no LLVM.
+
+[features]
+# The `caribou-ash` binary: ash's interpreter and Cranelift tier over the core.
+runner = ["dep:ash_core", "dep:ash_interp", "dep:anyhow"]
+
+[dependencies]
+caribou = { path = "../caribou" }
+caribou_abi = { workspace = true }
+# Path dependencies until ash is published; then git dependencies at one rev.
+ash_std = { path = "../../../ash/std" }
+ash_core = { path = "../../../ash/crates/ash", default-features = false, optional = true }
+ash_interp = { path = "../../../ash/crates/ash_interp", default-features = false, optional = true }
+anyhow = { version = "1", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc = { workspace = true }
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "caribou-ash"
+required-features = ["runner"]

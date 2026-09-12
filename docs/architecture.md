@@ -42,6 +42,7 @@ native-call marshaling.
 |---|---|
 | `caribou_abi` | `no_std`, zero dependencies. Layouts and constants shared by the core, every adapter and every plugin: HashLink's `hl.h` structs with size and offset tests, the NaN-boxed `Value`, allocation kinds, the plugin descriptor table, error kinds. It never defines a symbol. |
 | `caribou` | The core. Depends on `caribou_abi`, `libc` on unix, `windows-sys` on Windows. Stable Rust. |
+| `caribou-ash` | Ash's adapter: `install()` fills `ash_std::rt` with the core's heap and scheduler, and the `caribou-ash` binary (feature `runner`) runs a `.hl` on ash's interpreter over the core, or with `--no-install` on ash's own runtime for A/B. Depends on ash by path until ash is published; builds on nightly, as ash_std does. |
 
 ## Heap
 

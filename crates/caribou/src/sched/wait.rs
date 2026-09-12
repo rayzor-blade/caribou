@@ -22,12 +22,22 @@ pub struct Waiter {
 }
 
 impl Waiter {
+    pub fn world(&self) -> u64 {
+        self.world
+    }
+
     pub fn task(&self) -> TaskId {
         self.task
     }
 
     pub fn token(&self) -> u64 {
         self.token
+    }
+
+    /// Rebuild a waiter an adapter carried across an ABI in its own layout;
+    /// the parts must be ones this world handed out.
+    pub fn from_parts(world: u64, task: TaskId, token: u64) -> Self {
+        Self { world, task, token }
     }
 }
 

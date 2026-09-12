@@ -9,9 +9,12 @@ repository = "https://github.com/rayzor-blade/caribou"
 
 [workspace.dependencies]
 caribou_abi = { path = "crates/caribou_abi", version = "0.1.0" }
-# Every resident must agree on this rev: a world holds one copy of krio.
-krio-fiber = { git = "https://github.com/darmie/krio", rev = "286f5e0710e20772179fc2ca96f6fda8d13e3a70" }
-krio-core = { git = "https://github.com/darmie/krio", rev = "286f5e0710e20772179fc2ca96f6fda8d13e3a70" }
+# Every resident must agree on this: a world holds one copy of krio. ash_std
+# names it unpinned, and Cargo cannot unify two specs of one repository, so
+# the spec is the same here and Cargo.lock holds the rev (286f5e0); only
+# `cargo update -p krio-fiber` moves it.
+krio-fiber = { git = "https://github.com/darmie/krio" }
+krio-core = { git = "https://github.com/darmie/krio" }
 # Git, not the registry release: the batched compile API is only here.
 beadie = { git = "https://github.com/darmie/beadie", rev = "868d1069eeda1ea162460273869597a9b0866ebf", default-features = false }
 libc = "0.2"
@@ -22,6 +25,21 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# ash's crates at the opt-levels ash's own dev profile gives them, so the
+# caribou-ash runner and ash's binary differ only in what the seam replaces.
+[profile.dev.package.ash_std]
+opt-level = 1
+[profile.dev.package.ash_core]
+opt-level = 1
+[profile.dev.package.ash_interp]
+opt-level = 1
+[profile.dev.package.air]
+opt-level = 1
+[profile.dev.package.ash_trace]
+opt-level = 1
+[profile.dev.package.ash_native_call]
+opt-level = 0
 
 [profile.release]
 debug = false
