@@ -1,0 +1,3 @@
+# The core builds on stable; nothing here may need a nightly feature.
+[toolchain]
+channel = "stable"

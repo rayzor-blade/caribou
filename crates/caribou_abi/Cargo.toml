@@ -1,0 +1,13 @@
+[package]
+name = "caribou_abi"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Layouts and constants every Caribou runtime, plugin and the core agree on"
+
+# Deliberately empty: a dependency on the core would duplicate its exported
+# symbols in every plugin archive.
+[dependencies]
+
+[lib]
+crate-type = ["rlib"]
