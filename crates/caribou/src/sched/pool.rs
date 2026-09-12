@@ -2,9 +2,22 @@
 //! may run off the spawning thread. A task goes to the least-loaded worker
 //! before its stack exists and never moves afterwards.
 
+use std::cell::Cell;
+
 use krio_core::TaskId;
 
 pub(super) type SendBody = Box<dyn FnOnce() + Send + 'static>;
+
+thread_local! {
+    static POOL_WORKER: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether this thread is one the pool started. An adapter that keeps
+/// per-thread machinery on its main world uses it to keep pooled tasks off
+/// that machinery.
+pub fn is_pool_worker() -> bool {
+    POOL_WORKER.with(Cell::get)
+}
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 mod threaded {
@@ -31,7 +44,7 @@ mod threaded {
     /// none; default is the core count less one. A value that does not
     /// parse falls back to the default and says so, since a typo read as
     /// zero would look like a speed-up rather than a mistake.
-    fn configured_worker_count() -> usize {
+    pub(super) fn configured_worker_count() -> usize {
         static COUNT: OnceLock<usize> = OnceLock::new();
         *COUNT.get_or_init(|| {
             let machine_default = || {
@@ -114,6 +127,7 @@ mod threaded {
         sender: Option<std::sync::mpsc::Sender<Arc<WorldEndpoint>>>,
         first: Option<WorldCommand>,
     ) {
+        super::POOL_WORKER.with(|worker| worker.set(true));
         heap::gc_register_current_os_thread();
         let endpoint = world::endpoint();
         trace("worker-ready", world::world_id(), 0);
@@ -245,6 +259,19 @@ mod threaded {
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 pub(super) fn dispatch(id: TaskId, stack_size: usize, body: SendBody) -> Result<(), SendBody> {
     threaded::dispatch(id, stack_size, body)
+}
+
+/// Whether `spawn_fiber_on_pool` may place a task off the calling world.
+/// Reads the configuration only; the pool starts on the first dispatch. On
+/// wasm the host answers by granting or refusing the first thread.
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub fn has_worker_pool() -> bool {
+    cfg!(target_family = "wasm") || threaded::configured_worker_count() != 0
+}
+
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+pub fn has_worker_pool() -> bool {
+    false
 }
 
 /// No threads to make a pool from; the spawning world runs the task.

@@ -258,7 +258,9 @@ closure, a Wren fiber object, a Zyntax function), rooting that callable
 itself; the per-task host state the scheduler swaps; and a switch hook if it
 keeps interpreter roots to publish. It consumes: `spawn`, `spawn_fiber`,
 `park`, `wake`, `yield_now`, `sleep_until`, `poll`, `current_task`, and
-`tick(deadline)` for a driver that owns the frame loop. Ash's rule that a
+`tick(deadline)` for a driver that owns the frame loop; `has_worker_pool`,
+`is_pool_worker` and `any_live_tasks` answer the placement and blocking
+questions Ash's primitives ask before they spawn or wait. Ash's rule that a
 new thread runs to its first blocking point before `thread_create` returns
 is the adapter's to keep, with one `schedule_step` after spawning.
 

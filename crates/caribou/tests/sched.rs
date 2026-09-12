@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use caribou::sched::{
     DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter,
-    attach_host_state, current_task, live_tasks, new_waiter, park, request_park, resume_cause,
-    scheduler_idle, set_switch_hook, sleep_until, spawn, spawn_fiber, spawn_fiber_on_pool,
-    suspended_sp, tick, wake, world_id, yield_now,
+    attach_host_state, current_task, has_worker_pool, is_pool_worker, live_tasks, new_waiter, park,
+    request_park, resume_cause, scheduler_idle, set_switch_hook, sleep_until, spawn, spawn_fiber,
+    spawn_fiber_on_pool, suspended_sp, tick, wake, world_id, yield_now,
 };
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
@@ -341,6 +341,27 @@ fn pooled_task_runs_and_wakes_the_spawner() {
     // Notified whether the pool took the task or this world ran it.
     assert!(park(waiter, Some(Instant::now() + Duration::from_secs(5))));
     assert!(ran_on.lock().unwrap().is_some());
+}
+
+#[test]
+fn pool_workers_know_themselves() {
+    assert!(!is_pool_worker());
+    world_id();
+    let waiter = new_waiter();
+    let seen = Arc::new(Mutex::new(None));
+    let seen_task = Arc::clone(&seen);
+    spawn_fiber_on_pool(DEFAULT_STACK_SIZE, move || {
+        *seen_task.lock().unwrap() = Some((std::thread::current().id(), is_pool_worker()));
+        assert!(wake(waiter));
+    });
+    assert!(park(waiter, Some(Instant::now() + Duration::from_secs(5))));
+    let (ran_on, on_worker) = seen.lock().unwrap().expect("task ran");
+    // A pooled task is on a worker exactly when it left this thread.
+    assert_eq!(on_worker, ran_on != std::thread::current().id());
+    if !has_worker_pool() {
+        assert!(!on_worker);
+    }
+    assert!(!is_pool_worker());
 }
 
 #[test]

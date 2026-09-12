@@ -476,7 +476,7 @@ fn resume_task(id: TaskId) -> bool {
             let record = world.tasks.get_mut(&id)?;
             record.gc_blocking_depth = active.gc_blocking_depth;
             if suspension.is_done() {
-                let _ = world.endpoint.assigned.fetch_update(
+                let _ = world.endpoint.assigned.try_update(
                     Ordering::AcqRel,
                     Ordering::Acquire,
                     |n| Some(n.saturating_sub(1)),

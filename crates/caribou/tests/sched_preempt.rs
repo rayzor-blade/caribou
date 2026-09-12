@@ -8,7 +8,9 @@ use std::rc::Rc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use caribou::sched::{DEFAULT_STACK_SIZE, POLL_EPOCH, live_tasks, spawn_fiber, tick, yield_now};
+use caribou::sched::{
+    DEFAULT_STACK_SIZE, POLL_EPOCH, any_live_tasks, live_tasks, spawn_fiber, tick, yield_now,
+};
 
 #[test]
 fn poll_epoch_moves_only_while_tasks_exist() {
@@ -21,6 +23,7 @@ fn poll_epoch_moves_only_while_tasks_exist() {
             }
         });
     }
+    assert!(any_live_tasks());
     let before = POLL_EPOCH.load(Ordering::Acquire);
     tick(Some(Instant::now() + Duration::from_millis(30)));
     let during = POLL_EPOCH.load(Ordering::Acquire);
@@ -32,6 +35,7 @@ fn poll_epoch_moves_only_while_tasks_exist() {
     stop.set(true);
     while tick(None) {}
     assert_eq!(live_tasks(), 0);
+    assert!(!any_live_tasks());
     // The timer may complete one quantum after the last task goes.
     std::thread::sleep(Duration::from_millis(10));
     let settled = POLL_EPOCH.load(Ordering::Acquire);

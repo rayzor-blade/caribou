@@ -44,7 +44,9 @@ pub(super) fn tasks_removed(count: usize) {
     LIVE_TASKS.fetch_sub(count, Ordering::Release);
 }
 
-pub(super) fn any_live_tasks() -> bool {
+/// Whether any world holds a task. A blocking primitive asks this to tell a
+/// wait something could end from one nothing could.
+pub fn any_live_tasks() -> bool {
     LIVE_TASKS.load(Ordering::Acquire) != 0
 }
 

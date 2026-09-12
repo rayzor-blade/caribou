@@ -28,7 +28,8 @@ mod world;
 
 pub use krio_core::{Suspension, Task, TaskId};
 
-pub use preempt::{POLL_EPOCH, poll_epoch_address, request_poll};
+pub use pool::{has_worker_pool, is_pool_worker};
+pub use preempt::{POLL_EPOCH, any_live_tasks, poll_epoch_address, request_poll};
 pub use task::{DEFAULT_STACK_SIZE, HostState, ResumeCause, SwitchHook};
 pub use wait::{Waiter, new_waiter, park, request_park, sleep_until, wake};
 pub use world::{
