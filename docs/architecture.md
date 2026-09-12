@@ -150,12 +150,50 @@ inside the collector.
 A collection is triggered when bytes allocated since the last one, plus
 external bytes reported through `track_external`, cross an adaptive
 threshold: twice the live size, clamped between 8 MB and a ceiling that grows
-with the heap. A heartbeat collects at least every 30 seconds.
-`ASH_GC_TRIGGER_MB` fixes the threshold; `ASH_GC_STRESS` collects at every
-opportunity and disables the allocation buffer, which changes the allocation
-path as well as the frequency; `ASH_GC_STATS` prints a report at exit. The
-remaining `ASH_GC_*` switches are diagnostic and documented one line each
-where they are read.
+with the heap. A heartbeat collects at least every 30 seconds
+(`CARIBOU_GC_HEARTBEAT_MS` overrides the interval). `ASH_GC_TRIGGER_MB`
+fixes the threshold; `ASH_GC_STRESS` collects at every opportunity and
+disables the allocation buffer, which changes the allocation path as well as
+the frequency; `ASH_GC_STATS` prints a report at exit. The remaining
+`ASH_GC_*` switches are diagnostic and documented one line each where they
+are read.
+
+A trigger that fires inside an allocation collects there unless the
+allocating mutator's roots are complete only at a point of its own: an
+interpreter that publishes its scan-root table has this property once it
+registers the table, and a hosted collector asks for it with
+`set_deferred_collection`. For such a mutator the trigger records a pending
+collection instead, readable without the lock through `collect_pending`, and
+the collection runs at the next safepoint any mutator reaches: the
+interpreter's `scan_roots_done`, an allocation-buffer refill, or the hosted
+collector's own poll. Pressure past four thresholds, or past the ceiling if
+that is more, collects inline regardless.
+
+### Hosted collectors
+
+A runtime that keeps its own collector over this heap (caribou-wren does)
+runs its cycle on the core's per-cycle claim: `claim_for_cycle` marks what
+its trace reaches, it drops and forgets what was not claimed, and it ends
+with a core collection whose sweep clears the claims. Its objects are kept
+alive across every core collection by an anchor object whose trace hook
+marks them all, so no core root needs to reach them, and they are traced
+precisely through the descriptor's hook wherever the core reaches them.
+
+The runtime's thread is an ordinary mutator, registered at the OS's stack
+top and put in deferred mode, so a collection any other mutator starts waits
+for it to park, and the core's trigger never collects inside its allocation.
+Its `should_collect` is the mutual condition: the core's trigger is due, a
+collection is pending, the heap alone has allocated a threshold's worth
+since its own last cycle (so another mutator's collections, which reset the
+shared trigger, cannot starve it), or the heartbeat has elapsed with
+something allocated. A stop request is answered in the same poll by parking
+(`gc_safepoint`), not by a cycle: a cycle would stop the world in turn, and
+two hosted heaps would collect each other without end. `collect_begin`
+enters the rendezvous again before taking the lock. The invariant that makes
+the other thread's precise trace sound: the hosted thread parks only at a
+safepoint (its poll, its allocation, any slot that takes the GC lock), and
+its runtime completes every write to an object between two of those, so no
+object is mid-write while parked.
 
 ### Locking
 

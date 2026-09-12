@@ -183,6 +183,18 @@ const TRIGGER_CEILING_MAX: usize = 512 * 1024 * 1024;
 /// Wall-clock heartbeat: any allocation this long after the last collection
 /// forces one, so long-idle processes deflate.
 const HEARTBEAT: Duration = Duration::from_secs(30);
+
+/// The heartbeat interval; `CARIBOU_GC_HEARTBEAT_MS` overrides it (safe;
+/// for tests of the idle path).
+pub fn heartbeat_interval() -> Duration {
+    static V: OnceLock<Duration> = OnceLock::new();
+    *V.get_or_init(|| {
+        env_usize("CARIBOU_GC_HEARTBEAT_MS")
+            .map(|ms| Duration::from_millis(ms as u64))
+            .unwrap_or(HEARTBEAT)
+    })
+}
+
 /// Throttle for malloc_zone_pressure_relief.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // macOS-only mechanism
 const PRESSURE_RELIEF_MIN_INTERVAL: Duration = Duration::from_millis(500);
@@ -267,6 +279,7 @@ thread_local! {
             objects: Cell::new(std::ptr::null()),
             heap_base: Cell::new(0),
             registered: Cell::new(false),
+            deferred: Cell::new(false),
             polls: AtomicU64::new(0),
             site: AtomicU64::new(0),
         }
@@ -295,6 +308,10 @@ struct Tlab {
     /// Whether this thread is registered with `MUTATOR_WORLD`. Here because the
     /// allocation fast path reads it.
     registered: Cell<bool>,
+    /// This mutator's roots are complete only at its own safepoints, so a
+    /// trigger that fires inside its allocation is recorded, never run
+    /// there. See `set_deferred_collection`.
+    deferred: Cell<bool>,
 }
 
 /// Largest object the bump region serves. At one line, nothing in the
@@ -527,7 +544,10 @@ fn unregister_current_mutator() {
     let thread = thread_self_fast();
     let mut world = MUTATOR_WORLD.state.lock().unwrap();
     world.mutators.retain(|m| m.thread != thread);
-    TLAB.with(|t| t.registered.set(false));
+    TLAB.with(|t| {
+        t.registered.set(false);
+        t.deferred.set(false);
+    });
     MUTATOR_WORLD.changed.notify_all();
     drop(world);
 
@@ -538,6 +558,11 @@ fn unregister_current_mutator() {
 #[inline]
 fn current_mutator_registered() -> bool {
     TLAB.with(|t| t.registered.get())
+}
+
+#[inline]
+fn current_mutator_deferred() -> bool {
+    TLAB.with(|t| t.deferred.get())
 }
 
 /// Park a registered mutator at a safepoint. The spill buffer stays in this
@@ -1333,6 +1358,9 @@ static GC_ENABLED: AtomicBool = AtomicBool::new(true);
 /// `trigger_threshold`.
 static NEXT_TRIGGER_AT: AtomicU64 = AtomicU64::new(INITIAL_TRIGGER_BYTES as u64);
 static ALLOCATED_AT_COLLECT: AtomicU64 = AtomicU64::new(0);
+/// The singleton's `collect_pending`, for [`collect_pending`]'s lock-free
+/// read. Written under the lock beside the field.
+static COLLECT_PENDING: AtomicBool = AtomicBool::new(false);
 
 // ── Collector flags (`Gc.flags`) ────────────────────────────────────────────
 
@@ -1963,7 +1991,7 @@ struct ImmixHeap {
     /// True once the interpreter has registered scan ranges. Its snapshot is
     /// complete only at publication, so byte-driven collections are deferred to
     /// the next `scan_roots_done`. JIT mode never sets this: its roots are the
-    /// native stack.
+    /// native stack. One mutator defers alone through `Tlab::deferred`.
     safepoint_mode: bool,
     /// A trigger fired while in safepoint mode; collect at the next snapshot.
     collect_pending: bool,
@@ -2635,6 +2663,12 @@ impl ImmixAllocator {
         }
     }
 
+    /// Bytes of pressure at which the next automatic collection is due, as
+    /// the last collection set it.
+    pub fn trigger_threshold(&self) -> usize {
+        self.heap.trigger_threshold
+    }
+
     /// Whether an automatic collection is owed:
     /// 1. `ASH_GC_STRESS`: every Nth allocation.
     /// 2. Allocated + external bytes since the last collection >= threshold.
@@ -2650,7 +2684,7 @@ impl ImmixAllocator {
         pressure >= self.heap.trigger_threshold
             // Heartbeat: clock read only every 1024 allocations.
             || (self.heap.alloc_count & 1023 == 0
-                && self.heap.last_collect.elapsed() >= HEARTBEAT)
+                && self.heap.last_collect.elapsed() >= heartbeat_interval())
     }
 
     /// [`Self::collection_due`] checked at a point known to be a safepoint: a
@@ -2691,7 +2725,7 @@ impl ImmixAllocator {
         if !triggered_collection_allowed(pressure) {
             return;
         }
-        if self.heap.safepoint_mode {
+        if self.heap.safepoint_mode || current_mutator_deferred() {
             let hard = self
                 .heap
                 .trigger_threshold
@@ -2700,6 +2734,9 @@ impl ImmixAllocator {
                 .min(max_deferred_pressure());
             if pressure < hard {
                 self.heap.collect_pending = true;
+                if self.is_singleton() {
+                    COLLECT_PENDING.store(true, Ordering::Relaxed);
+                }
                 return;
             }
         }
@@ -3369,6 +3406,7 @@ impl ImmixAllocator {
                 Ordering::Relaxed,
             );
             ALLOCATED_AT_COLLECT.store(allocated, Ordering::Relaxed);
+            COLLECT_PENDING.store(false, Ordering::Relaxed);
         }
 
         self.heap.bytes_since_gc = 0;
@@ -4151,7 +4189,7 @@ impl ImmixAllocator {
         // reacquired block is REUSEd and zeroed before live data is written. Only
         // when the process has been quiet for a heartbeat: a churn workload would
         // otherwise pay a REUSABLE+REUSE pair per block per cycle.
-        let quiet = self.heap.last_collect.elapsed() >= HEARTBEAT;
+        let quiet = self.heap.last_collect.elapsed() >= heartbeat_interval();
         if quiet && !freed.is_empty() {
             let resident_target = 16;
             let surplus = self.heap.free_blocks.len().saturating_sub(resident_target);
@@ -4932,6 +4970,33 @@ pub fn should_collect() -> bool {
     }
     allocated + GC_STATS.external_bytes.load(Ordering::Relaxed)
         >= NEXT_TRIGGER_AT.load(Ordering::Relaxed)
+}
+
+/// Whether a trigger fired inside a deferring mutator's allocation and no
+/// collection has run since: someone should collect at their next
+/// safepoint. No lock.
+pub fn collect_pending() -> bool {
+    COLLECT_PENDING.load(Ordering::Relaxed)
+}
+
+/// Whether a collector is waiting for the world to stop. A registered
+/// mutator that sees this parks by calling [`gc_safepoint`]. No lock.
+pub fn stop_requested() -> bool {
+    GC_STOP_REQUESTED.load(Ordering::Acquire)
+}
+
+/// Whether the current thread is a registered mutator.
+pub fn thread_registered() -> bool {
+    current_mutator_registered()
+}
+
+/// Defer the current mutator's byte-driven trigger: while set, a trigger
+/// that fires inside this thread's allocation records [`collect_pending`]
+/// instead of collecting there, and the collection runs at the next
+/// safepoint any mutator reaches. For a hosted collector whose roots are
+/// complete only where it polls. Cleared by `unregister_thread`.
+pub fn set_deferred_collection(on: bool) {
+    TLAB.with(|t| t.deferred.set(on));
 }
 
 /// Collections completed so far, abandoned stops excluded.

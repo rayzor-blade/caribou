@@ -85,7 +85,7 @@ fn table() -> RuntimeVTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wren_lift::runtime::engine::InterpretResult;
+    use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
     use wren_lift::runtime::gc_trait::GcStrategy;
     use wren_lift::runtime::rt::{RT_VERSION, wlift_rt_installed};
     use wren_lift::runtime::vm::{VM, VMConfig};
@@ -112,22 +112,40 @@ mod tests {
 
     const CHILD_ENV: &str = "CARIBOU_WREN_INSTALL_CHILD";
 
-    /// The table is process-global and sealed by the first Immix VM, so the
-    /// install runs in a process of its own: the test re-runs its binary with
-    /// only itself selected and checks the exit.
+    /// The table is process-global and sealed by the first Immix VM, so a
+    /// test that installs runs in a process of its own: the parent re-runs
+    /// its binary with only `name` selected, checks the exit, and returns
+    /// true; the child returns false and goes on.
+    fn parent_of(name: &str, env: &[(&str, &str)]) -> bool {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("tests::{name}"), "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .envs(env.iter().copied())
+            .status()
+            .expect("re-run the test binary");
+        assert!(status.success(), "child test process failed: {status}");
+        true
+    }
+
+    fn immix_vm(mode: ExecutionMode) -> VM {
+        let mut vm = VM::new(VMConfig {
+            execution_mode: mode,
+            gc_strategy: GcStrategy::Immix,
+            ..VMConfig::default()
+        });
+        vm.output_buffer = Some(String::new());
+        vm
+    }
+
     #[test]
     fn install_takes_and_a_vm_then_allocates_through_the_core() {
-        if std::env::var_os(CHILD_ENV).is_none() {
-            let status = std::process::Command::new(std::env::current_exe().unwrap())
-                .args([
-                    "--exact",
-                    "tests::install_takes_and_a_vm_then_allocates_through_the_core",
-                    "--test-threads=1",
-                ])
-                .env(CHILD_ENV, "1")
-                .status()
-                .expect("re-run the test binary");
-            assert!(status.success(), "child test process failed: {status}");
+        if parent_of(
+            "install_takes_and_a_vm_then_allocates_through_the_core",
+            &[],
+        ) {
             return;
         }
 
@@ -169,5 +187,146 @@ mod tests {
         assert!(stats.objects_freed > 0, "a cycle reclaimed nothing");
         assert!(stats.total_allocated >= 100_000 * 32);
         drop(vm);
+    }
+
+    /// A core collection started on another thread waits for the VM's
+    /// thread to park. The other thread is a plain mutator forcing
+    /// collections while the VM allocates; a stop that never reached the VM
+    /// would hold each of them for the collector's deadline and abandon it.
+    #[test]
+    fn a_core_collection_from_another_thread_stops_the_vm_thread() {
+        if parent_of(
+            "a_core_collection_from_another_thread_stops_the_vm_thread",
+            &[],
+        ) {
+            return;
+        }
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::{Duration, Instant};
+
+        install().expect("a fresh process takes the table");
+        // The bump path expects the heap to exist, as it does under ash.
+        caribou::heap::init();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mutator = std::thread::spawn({
+            let stop = stop.clone();
+            move || {
+                caribou::heap::gc_register_current_os_thread();
+                let mut majors = 0u64;
+                let mut slowest = Duration::ZERO;
+                let mut mutators = 0;
+                let mut threads = [0u64; 8];
+                while !stop.load(Ordering::Acquire) {
+                    for _ in 0..64 {
+                        std::hint::black_box(caribou::heap::gc_alloc(64));
+                    }
+                    let started = Instant::now();
+                    caribou::heap::major();
+                    slowest = slowest.max(started.elapsed());
+                    majors += 1;
+                    let n = unsafe { caribou::heap::registered_threads(threads.as_mut_ptr(), 8) };
+                    mutators = mutators.max(n);
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                caribou::heap::gc_unregister_current_os_thread();
+                (majors, slowest, mutators)
+            }
+        });
+
+        let before = caribou::heap::collections();
+        let mut vm = immix_vm(ExecutionMode::Tiered);
+        let result = vm.interpret(
+            "main",
+            // Lists of lists: a loop-local list of strings puts almost nothing
+            // on the heap.
+            r#"
+                var start = System.clock
+                var total = 0
+                while (System.clock - start < 0.5) {
+                    var xs = []
+                    for (i in 0...1000) xs.add([i, "item-%(i)-padding"])
+                    total = total + xs.count
+                }
+                System.print(total % 1000 == 0 && total > 0)
+            "#,
+        );
+        let output = vm.take_output();
+        let stats = vm.gc.stats();
+        drop(vm);
+        stop.store(true, Ordering::Release);
+        let (majors, slowest, mutators) = mutator.join().unwrap();
+        let grew = caribou::heap::collections() - before;
+
+        assert_eq!(result, InterpretResult::Success);
+        assert_eq!(output.trim(), "true");
+        assert_eq!(mutators, 2, "the VM thread was not a registered mutator");
+        assert!(
+            majors >= 5,
+            "the other thread collected only {majors} times"
+        );
+        assert!(
+            slowest < Duration::from_secs(1),
+            "a collection waited {slowest:?} for the VM thread: the stop never reached it"
+        );
+        assert!(
+            grew >= majors,
+            "{grew} collections completed for {majors} forced"
+        );
+        // Its own trigger, under a shared one the other thread kept resetting.
+        assert!(
+            stats.major_collections >= 1,
+            "the VM ran no cycle of its own"
+        );
+        assert!(stats.objects_freed > 0);
+    }
+
+    /// Garbage left by a VM that polls without allocating is reclaimed on
+    /// the heartbeat. Interpreted, since a compiled loop without an
+    /// allocation never polls.
+    #[test]
+    fn idle_garbage_is_collected_on_the_heartbeat() {
+        if parent_of(
+            "idle_garbage_is_collected_on_the_heartbeat",
+            &[("CARIBOU_GC_HEARTBEAT_MS", "200")],
+        ) {
+            return;
+        }
+        install().expect("a fresh process takes the table");
+        let mut vm = immix_vm(ExecutionMode::Interpreter);
+        // Below the first trigger, so nothing collects for pressure.
+        let result = vm.interpret(
+            "alloc",
+            r#"
+                var xs = []
+                for (i in 0...5000) xs.add("s%(i)")
+                xs = null
+            "#,
+        );
+        assert_eq!(result, InterpretResult::Success);
+        assert_eq!(
+            vm.gc.stats().major_collections,
+            0,
+            "a cycle ran before the idle"
+        );
+
+        let result = vm.interpret(
+            "idle",
+            r#"
+                var start = System.clock
+                var n = 0
+                while (System.clock - start < 1.5) n = n + 1
+                System.print(n > 0)
+            "#,
+        );
+        assert_eq!(result, InterpretResult::Success);
+        assert_eq!(vm.take_output().trim(), "true");
+        let stats = vm.gc.stats();
+        assert!(stats.major_collections >= 1, "no cycle ran during the idle");
+        assert!(
+            stats.objects_freed >= 5000,
+            "the idle cycle freed {}",
+            stats.objects_freed
+        );
     }
 }

@@ -16,11 +16,24 @@
 //! sweep clears the claims and returns the lines. `WREN_DESC` has a trace hook
 //! and no drop hook: the core traces wren_lift objects precisely wherever it
 //! reaches them and never runs their drop.
+//!
+//! The thread a heap is minted on is an ordinary core mutator, in deferred
+//! mode. A collection another mutator starts waits for it to park, which it
+//! does in `should_collect`, where a slot takes the GC lock (`alloc_raw`
+//! first among them), and in `collect_begin`. The core's trigger, firing
+//! inside `alloc_raw`, records `collect_pending` instead of collecting
+//! there; `should_collect` reports it, and wren_lift's own cycle runs on it.
+//! The record keeps a trigger of its own beside the shared one, so another
+//! mutator's collections cannot starve its cycle. The invariant that makes
+//! the other thread's precise trace sound: wren_lift completes every write
+//! to an object between two of its polls, and this thread parks only at one.
 
+use std::cell::Cell;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::time::Instant;
 
 use caribou::heap::{self, Handle, ImmixAllocator, TraceFn, Tracer, TypeDesc};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
@@ -32,17 +45,67 @@ use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_obje
 const PREFIX: usize = 16;
 
 /// One wren_lift heap: the handle `heap_new` mints. Touched only under the
-/// GC lock, which the anchor's trace hook runs under too.
+/// GC lock, which the trace hooks run under too, except the atomics, which
+/// `should_collect` reads without it.
 pub struct WrenHeap {
     /// Core starts of every allocation wren_lift has not reclaimed.
     pins: Vec<usize>,
     /// Roots the anchor, whose word one points back at this record.
     anchor: Handle,
-    /// Bytes handed out since the last cycle; what the stress switch polls.
+    /// Bytes handed out since the last cycle, counted as the core counts
+    /// its trigger pressure; what the stress switch, this record's own
+    /// trigger and the heartbeat poll.
     bytes_since_cycle: AtomicUsize,
+    /// The core's threshold as of this record's last cycle: a cycle is due
+    /// when this record alone has allocated that much since, whatever
+    /// another mutator's collections did to the shared trigger meanwhile.
+    trigger: AtomicUsize,
+    /// `should_collect` calls since the last cycle; the heartbeat reads the
+    /// clock on every 1024th.
+    polls: AtomicU64,
+    /// When the last cycle closed.
+    last_cycle: Instant,
+    /// wren_lift has dropped every object and `heap_drop` is under way: the
+    /// pins hold dangling containers, and a trace must not walk them.
+    closing: AtomicBool,
     live_bytes: usize,
     allocated_bytes: usize,
     freed_bytes: usize,
+}
+
+thread_local! {
+    /// Heaps minted on this thread, and whether the first of them registered
+    /// the thread; one another runtime registered stays that runtime's.
+    static HEAPS_HERE: Cell<usize> = const { Cell::new(0) };
+    static REGISTERED_HERE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Make this thread a core mutator in deferred mode. The stack top is the
+/// OS's, so the call may come from any depth.
+fn enter_thread() {
+    let heaps = HEAPS_HERE.with(|c| c.replace(c.get() + 1));
+    if heaps == 0 && !heap::thread_registered() {
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+        heap::gc_register_current_os_thread();
+        REGISTERED_HERE.with(|c| c.set(heap::thread_registered()));
+    }
+    heap::set_deferred_collection(true);
+}
+
+/// The last heap on this thread is gone.
+fn leave_thread() {
+    let heaps = HEAPS_HERE.with(|c| {
+        let n = c.get().saturating_sub(1);
+        c.set(n);
+        n
+    });
+    if heaps != 0 {
+        return;
+    }
+    heap::set_deferred_collection(false);
+    if REGISTERED_HERE.with(|c| c.replace(false)) {
+        heap::unregister_thread();
+    }
 }
 
 const fn desc(name: &'static str, trace: TraceFn) -> TypeDesc {
@@ -72,6 +135,10 @@ fn desc_ptr(d: &'static TypeDesc) -> *mut hl_type {
 /// The core's precise trace of a wren_lift object: its children through
 /// wren_lift's own visitor.
 unsafe extern "C" fn trace_object(obj: *mut u8, tracer: *mut Tracer<'_>) {
+    let rec = unsafe { &*(*(obj as *const usize).add(1) as *const WrenHeap) };
+    if rec.closing.load(Ordering::Relaxed) {
+        return;
+    }
     unsafe { wlift_rt_object_trace()(obj.add(PREFIX), mark_child, tracer as *mut c_void) };
 }
 
@@ -88,9 +155,9 @@ unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
     }
 }
 
-/// The record behind a handle, to read. The anchor's trace hook reads the
-/// record too, from inside any core collection, so no exclusive borrow may
-/// be live across a call that can collect.
+/// The record behind a handle, to read. The trace hooks read the record
+/// too, from inside any core collection, so no exclusive borrow may be live
+/// across a call that can collect.
 #[inline(always)]
 unsafe fn record<'a>(heap: *mut c_void) -> &'a WrenHeap {
     unsafe { &*(heap as *const WrenHeap) }
@@ -118,6 +185,7 @@ fn stress_enabled() -> bool {
 }
 
 pub unsafe extern "C" fn heap_new() -> *mut c_void {
+    enter_thread();
     // One hold: the anchor is a traced object nothing reaches until its
     // handle exists, and a collection in between would forget it.
     let mut gc = heap::gc_locked_init();
@@ -125,6 +193,10 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         pins: Vec::new(),
         anchor: Handle::NULL,
         bytes_since_cycle: AtomicUsize::new(0),
+        trigger: AtomicUsize::new(gc.trigger_threshold()),
+        polls: AtomicU64::new(0),
+        last_cycle: Instant::now(),
+        closing: AtomicBool::new(false),
         live_bytes: 0,
         allocated_bytes: 0,
         freed_bytes: 0,
@@ -145,9 +217,12 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
 }
 
 /// wren_lift has dropped every object; their memory returns with the next
-/// core sweep.
+/// core sweep. `closing` is set before the lock, whose acquisition can park
+/// this thread in a collection that would otherwise trace the dropped
+/// objects.
 pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     let rec = unsafe { Box::from_raw(heap as *mut WrenHeap) };
+    rec.closing.store(true, Ordering::Relaxed);
     let mut gc = heap::gc_locked_init();
     for &start in &rec.pins {
         gc.forget_allocation(start as *const u8);
@@ -155,6 +230,8 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     let anchor = gc.handle_get(rec.anchor);
     gc.forget_allocation(anchor);
     gc.handle_release(rec.anchor);
+    drop(gc);
+    leave_thread();
 }
 
 pub unsafe extern "C" fn alloc_raw(heap: *mut c_void, size: usize) -> *mut u8 {
@@ -179,7 +256,9 @@ pub unsafe extern "C" fn alloc_raw(heap: *mut c_void, size: usize) -> *mut u8 {
     let rec = unsafe { record_mut(heap) };
     rec.pins.push(start);
     rec.allocated_bytes += reserved;
-    rec.bytes_since_cycle.fetch_add(reserved, Ordering::Relaxed);
+    // The core charges the 16-byte-aligned size, not the lines reserved.
+    rec.bytes_since_cycle
+        .fetch_add((size + PREFIX).next_multiple_of(16), Ordering::Relaxed);
     unsafe { p.add(PREFIX) }
 }
 
@@ -241,19 +320,44 @@ pub unsafe extern "C" fn track_external(_heap: *mut c_void, bytes: usize) {
     heap::track_external(bytes as u64);
 }
 
+/// True when this record has allocated a threshold's worth since its last
+/// cycle, the core's trigger is due, a trigger was deferred out of an
+/// allocation, or the heartbeat has elapsed with something allocated.
+///
+/// A stop another mutator asked for is answered here by parking, not by a
+/// cycle: a cycle stops the world in turn, and two hosted heaps would then
+/// collect each other without end. Parking here is sound for the reason
+/// `collect_begin` gives, and wren_lift polls only where it would accept a
+/// whole cycle.
 pub unsafe extern "C" fn should_collect(heap: *mut c_void) -> bool {
-    if stress_enabled() {
-        return unsafe { record(heap) }
-            .bytes_since_cycle
-            .load(Ordering::Relaxed)
-            > 0;
+    if heap::stop_requested() {
+        heap::gc_safepoint();
     }
-    heap::should_collect()
+    let rec = unsafe { record(heap) };
+    let since = rec.bytes_since_cycle.load(Ordering::Relaxed);
+    if stress_enabled() {
+        return since > 0;
+    }
+    if since >= rec.trigger.load(Ordering::Relaxed)
+        || heap::should_collect()
+        || heap::collect_pending()
+    {
+        return true;
+    }
+    // Only this thread writes the counter: a plain increment, no RMW.
+    let polls = rec.polls.load(Ordering::Relaxed).wrapping_add(1);
+    rec.polls.store(polls, Ordering::Relaxed);
+    polls & 1023 == 0 && since > 0 && rec.last_cycle.elapsed() >= heap::heartbeat_interval()
 }
 
-/// Holds the GC lock until `collect_end`: the claims made between are the
-/// core's, and a core collection meanwhile would sweep them away.
+/// Parks first if another mutator asked for the world: that collection runs
+/// before this cycle opens. Sound because this thread parks only at a
+/// safepoint, and every write wren_lift makes to an object is complete
+/// between two of them. Then holds the GC lock until `collect_end`: the
+/// claims made between are the core's, and a core collection meanwhile
+/// would sweep them away.
 pub unsafe extern "C" fn collect_begin(_heap: *mut c_void) {
+    heap::gc_safepoint();
     unsafe { heap::lock() };
 }
 
@@ -290,10 +394,13 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
             gc.unclaim(start as *const u8);
         }
     }
+    rec.trigger.store(gc.trigger_threshold(), Ordering::Relaxed);
     drop(gc);
     rec.live_bytes = live;
     rec.freed_bytes += freed;
     rec.bytes_since_cycle.store(0, Ordering::Relaxed);
+    rec.polls.store(0, Ordering::Relaxed);
+    rec.last_cycle = Instant::now();
     unsafe { heap::unlock() };
     live
 }
