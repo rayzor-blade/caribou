@@ -137,9 +137,8 @@ impl Task for RunThrough {
 #[cfg(not(target_family = "wasm"))]
 pub(super) struct StackfulTask {
     fiber: krio_fiber::Fiber,
-    /// The heap keys fiber stacks by a u32; the low bits of the task id
-    /// are unique until four billion tasks have been spawned.
-    // TODO(heap): key fiber stacks by u64 so a task id needs no truncation.
+    /// The low bits of the task id: the heap keys fiber stacks by a u32
+    /// (git-bug 0c7bfb5c717452391ab18aec34727a546c94bd7e2e24659c0618cc731f024d00).
     gc_id: u32,
     /// The stack pointer last published to the heap; zero before the
     /// first suspension.

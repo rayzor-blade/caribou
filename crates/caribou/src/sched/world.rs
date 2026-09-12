@@ -575,8 +575,8 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
     if !endpoint.commands.lock().unwrap().is_empty() {
         return;
     }
-    // TODO(reactor): sockets, file watches and cross-world channels register
-    // here and wake `changed`; until then only commands and timers do.
+    // Only commands and timers wake `changed` until the reactor exists
+    // (git-bug a655aa5662aaca7e2898ba349da5cfe4a2b92f45eff6999b1c91c0160760744e).
     heap::mark_site(heap::SITE_SCHEDULER_IDLE);
     heap::gc_set_blocking(true);
     {
@@ -606,7 +606,8 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
-    // TODO(reactor): the host's event source replaces this nap.
+    // A nap until the reactor gives the host an event source
+    // (git-bug a655aa5662aaca7e2898ba349da5cfe4a2b92f45eff6999b1c91c0160760744e).
     let nap = std::time::Duration::from_millis(1);
     let wait = wake_at.map_or(nap, |at| {
         at.saturating_duration_since(Instant::now()).min(nap)
