@@ -112,9 +112,10 @@ in this checkout's target directory.
 - [docs/interop.md](docs/interop.md) is the reference for what a program
   writes: namespaces, how each language sees the other's classes, export
   signatures, and what crosses how.
-- [docs/architecture.md](docs/architecture.md) describes each system as it
-  is built, and for the ones not built yet, the contract they will be
-  written against.
+- [docs/architecture.md](docs/architecture.md) is the map of the systems,
+  one page each under `docs/architecture/`: the heap, the scheduler, the
+  bridge, the adapters, the registry, imports in each direction, and the
+  world and driver.
 - Issues are tracked inside the repository with
   [git-bug](https://github.com/git-bug/git-bug); `git-bug bug` lists them.
 
