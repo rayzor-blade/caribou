@@ -253,6 +253,15 @@ pub fn live_tasks() -> usize {
     with_world(|world| world.tasks.len())
 }
 
+/// Whether `id` is a task of this world that has not finished. The main
+/// context (`NONE`) always exists. Does not create a world.
+pub fn task_exists(id: TaskId) -> bool {
+    if !id.is_task() {
+        return true;
+    }
+    try_with_world(|world| world.tasks.contains_key(&id)).unwrap_or(false)
+}
+
 fn next_task_id() -> TaskId {
     TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
 }

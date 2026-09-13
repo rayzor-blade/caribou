@@ -41,7 +41,7 @@ native-call marshaling.
 | Crate | Role |
 |---|---|
 | `caribou_abi` | `no_std`, zero dependencies. Layouts and constants shared by the core, every adapter and every plugin: HashLink's `hl.h` structs with size and offset tests, the NaN-boxed `Value`, allocation kinds, the plugin descriptor table, error kinds. It never defines a symbol. |
-| `caribou` | The core. Depends on `caribou_abi`, `libc` on unix, `windows-sys` on Windows. Stable Rust. |
+| `caribou` | The core. Depends on `caribou_abi`, `ariadne` for rendering diagnostics, `libc` on unix, `windows-sys` on Windows. Stable Rust. |
 | `caribou-ash` | Ash's adapter: `install()` fills `ash_std::rt` with the core's heap and scheduler, and the `caribou-ash` binary (feature `runner`) runs a `.hl` on ash's interpreter over the core, or with `--no-install` on ash's own runtime for A/B. Depends on ash by path until ash is published; builds on nightly, as ash_std does. |
 | `caribou-wren` | WrenLift's adapter: `install()` fills `wren_lift::runtime::rt`, the memory under its Immix strategy, with the core's heap, and the `caribou-wren` binary (feature `runner`) runs a `.wren` on WrenLift's interpreter or tiered JIT over the core, or with `--no-install` on WrenLift's own heap for A/B. Depends on wren_lift by path until it is published; stable Rust. |
 
@@ -220,6 +220,277 @@ the task kinds and host state, `wait.rs` the wait tokens and parking,
 `preempt.rs` the poll epoch and its timer, `pool.rs` the worker pool.
 
 ### Worlds and tasks
+
+A world is one OS thread with one scheduler and one reactor. Every language
+runs its concurrency on the world's scheduler: a Haxe `sys.thread.Thread`,
+a Wren `Fiber`, a Zyntax `fiber def` are all handles to scheduler tasks.
+Cross-language calls are synchronous calls on the current task, so a call
+chain through three languages suspends and resumes as one unit.
+
+The unit of scheduling is krio-core's `Task`, not the fiber. Two kinds
+exist:
+
+- A **stackful task** owns a krio fiber with its own machine stack. It
+  suspends from any call depth by switching stacks. Ash's threads, Wren's
+  fibers, and Zyntax's `fiber def` are stackful.
+- A **stackless task** is a compiled state machine whose `step` runs to its
+  next suspension point and returns. Zyntax's `async` and resumable effects,
+  and WrenLift's action-loop and AOT-transformed fibers, are stackless. On
+  wasm, where the host cannot switch stacks, every task is stackless or is
+  driven by the host's suspension.
+
+The scheduler does not distinguish them: it calls `step` and reads the
+`Suspension` that comes back. `spawn_fiber(stack_size, body)` makes a
+stackful task on the calling world, registering its stack with the heap and
+charging it as external pressure until the task is dropped; `spawn(task)`
+takes any `Task`; `spawn_fiber_on_pool` places a stackful task on the
+least-loaded worker world at spawn time. The default stack is 256 KB.
+
+### The scheduler loop
+
+Per world, the scheduler holds a ready queue of task ids, a timer heap
+keyed by deadline, and the tasks themselves. A turn resumes every task that
+was ready when the turn began; tasks parked on a token or a timer consume no
+switch. The main context, the thread's original stack, drives turns when it
+blocks or when the driver ticks the world; a task never drives a turn, it
+yields.
+
+Host state is a `HostState` object an adapter attaches to a task, or to the
+main context under `TaskId::NONE`, with `attach_host_state`: Ash's trap
+chain and pending exception, Zyntax's effect handler stack. Around each
+resume the scheduler swaps the main context's state out, the task's in,
+steps the task, publishes the task's suspended stack pointer to the heap,
+runs the world's switch hook, then swaps the task's state out and the main
+context's back in. The switch hook (`set_switch_hook`, one per world) runs
+only after the stack pointer is published, because a hook that publishes
+interpreter roots may honour a pending collection. A task's record stays in
+the world while it runs; only its body is taken out, so a running task can
+attach state to itself.
+
+### Parking
+
+`park(waiter, deadline)` is the one blocking primitive. A waiter is a wait
+token; `wake(token)` marks it notified and moves the task to the ready
+queue. On a task, park records the request and yields; on the main context,
+park drives scheduler turns and the reactor until notified or timed out; on
+a thread the runtime did not create, park polls the token with a short
+sleep, because such a thread has no fiber to yield and may not run tasks.
+Locks, semaphores, conditions, deques and sleeps are all built on park and
+wake. A task that parks with a deadline is also on the timer heap; whichever
+fires first wins and the other is cancelled. A stackless task cannot yield
+from inside `park`; it calls `request_park` and returns `Pending`, and reads
+`resume_cause` when next stepped. Whether a thread drives or polls is
+decided by `has_world()`: a thread that has spawned or ticked owns a world.
+
+### The reactor
+
+Not yet built. Today, when no task is ready, the main context blocks in
+`scheduler_idle` on the world's endpoint until a command arrives from
+another world or the next timer is due. The reactor will be the world's
+source of external wakeups beyond that: socket readiness, file watches,
+channels from OS threads. Blocking I/O in any language will register with
+it and park; the reactor wakes the token. The seam is marked in
+`world.rs`.
+
+### Preemption and safepoints
+
+Compiled loops poll one word, `POLL_EPOCH` (exported as the symbol
+`caribou_poll_epoch`; `poll_epoch_address` hands code generators its
+address), on every back-edge. A timer thread bumps it every two
+milliseconds while any task exists; the collector's stop request bumps it
+through the heap's poll hook, which the first world installs. A task that
+observes a changed epoch calls `poll`: a heap safepoint, then a yield on a
+task or one turn on the main context. So no task can starve the others and
+the world can always be stopped. The interpreter and every blocking
+primitive are safepoints as well. `enter_blocking` and `leave_blocking`
+mark a task as outside the heap's reach for the duration of a native call.
+
+### Multiple worlds
+
+A process may run several worlds on several OS threads over the one heap.
+Tasks are pinned to the world that created them; a krio fiber is `!Send`
+and never migrates. Ash's worker pool for compiled thread bodies is the
+first use: it chooses a world at spawn time and never moves the task
+afterwards. Worlds exchange `Wake` and `Spawn` commands through per-world
+endpoints. The pool is sized by `CARIBOU_WORKERS`, or `ASH_WORKERS`, or the
+machine; on wasm there is no pool and no timer thread, and `yield_now`
+routes through krio's host suspender. Collections stop every world at its
+safepoints. `CARIBOU_SCHED_TRACE` prints every switch and park; safe.
+
+### Adapter contract
+
+An adapter provides: a way to build a task from its own callable (a Haxe
+closure, a Wren fiber object, a Zyntax function), rooting that callable
+itself; the per-task host state the scheduler swaps; and a switch hook if it
+keeps interpreter roots to publish. It consumes: `spawn`, `spawn_fiber`,
+`park`, `wake`, `yield_now`, `sleep_until`, `poll`, `current_task`, and
+`tick(deadline)` for a driver that owns the frame loop; `has_worker_pool`,
+`is_pool_worker` and `any_live_tasks` answer the placement and blocking
+questions Ash's primitives ask before they spawn or wait. Ash's rule that a
+new thread runs to its first blocking point before `thread_create` returns
+is the adapter's to keep, with one `schedule_step` after spawning.
+
+### Boundaries of the current implementation
+
+- No reactor: idle blocks on the endpoint and the timer heap only.
+- Heap fiber-stack ids are `u32` and task ids `u64`; the id is truncated.
+- The main stack's published probe sits above the callee-saved registers
+  krio spills at a switch, as in Ash.
+
+## Object protocol and bridge
+
+`caribou::protocol` is the message set, `caribou::symbol` the names,
+`caribou::error` the error value, `caribou::bridge` the call, and
+`caribou::diag` the report a driver prints. What is not built yet is the
+adapter side: no runtime implements the protocol for its own types or
+registers a typed dispatcher.
+
+### Values at the boundary
+
+Two ABIs meet at every cross-language call. Typed HashLink code passes raw
+scalars and pointers by signature; every dynamically typed runtime passes
+`caribou_abi::Value`, one NaN-boxed word. The core converts between them
+once, at the edge, and never inside a language.
+
+An object `Value` that reaches the bridge has a `TypeDesc` at word zero.
+That is the protocol's contract: an adapter whose native objects carry a
+bare `hl_type` wraps them before they cross.
+
+### The protocol
+
+Every heap object answers a closed set of messages through the `Protocol`
+vtable its `TypeDesc` points at. An adapter implements the vtable once for
+its own types; the core dispatches through it when a value crosses into a
+language that did not make it.
+
+| Message | Meaning |
+|---|---|
+| `get_member`, `set_member` | a named field or property, by interned symbol |
+| `invoke` | call a named member with arguments |
+| `call` | call the object itself, if callable |
+| `index`, `set_index`, `len`, `iterate` | sequence and map access |
+| `to_string`, `hash`, `equals` | identity and display |
+| `unwrap_native` | the native payload of a plugin object |
+| `is_error`, `error_message`, `error_kind`, `error_cause`, `error_trace` | the error protocol |
+
+A message an object does not answer returns `Unsupported`; the calling
+language maps that to its own notion of a missing member. An entry that
+raises sets the error pending on the current task and answers `Raised`.
+Entries are `extern "C-unwind"`, so a panic inside a Rust entry travels to
+the bridge's protected boundary instead of aborting inside the entry.
+
+### Symbols
+
+`caribou::symbol` is one interner per process behind a lock. `intern`
+gives a `Symbol` for a name, `name` gives the name back, and the strings
+are leaked because a symbol lives as long as the process. Each symbol also
+carries `hash`, HashLink's field hash of its name: the same loop Ash's
+`hlp_hash_gen` runs, over UTF-16 code units, `h = 223 * h + unit` in
+wrapping 32-bit arithmetic and then a truncating remainder by
+`0x1FFFFF7B`. So a name hashes here to what `hashed_name` holds for it in
+Ash. HashLink's own table additionally probes upward when two live names
+collide; that depends on its cache and is not reproduced.
+
+### Errors
+
+`Error` is a heap object of the core's own language, `LANG_CORE`: a
+`KIND_DYNAMIC | TRACED` allocation under a static `TypeDesc` whose trace
+hook marks its fields and whose protocol answers the five error messages,
+`to_string` and `get_member` for `kind`, `message`, `cause`, `native`,
+`origin` and `trace`. Its fields are the kind from `caribou_abi::ErrorKind`,
+the language that raised it, a message, an optional cause, an optional
+native payload and a trace. The message is a core `Str`, a UTF-8 string
+whose bytes follow a two-word header; it is traced with no children, so the
+bytes are never scanned. The trace is a core `Trace`, a fixed-capacity list
+of frames that is replaced by a larger copy when it fills. A frame records
+the language crossed, the callable's name, and when known the source it was
+in (a file path or module name, as a core `Str`) and a byte span into that
+source. `push_frame` records a frame with a source and span; `push_segment`
+records one with neither, which is what the bridge does at a boundary.
+
+The native payload is the originating language's own error object, kept so
+that a round trip unwraps to it. `with_native` builds a `User` error around
+one; `from_value` tells an `Error` from any other value by its descriptor.
+
+Nothing in this module is boxed: every object is reached through a raw
+pointer or a `Value`. A NaN-boxed `Value` on the stack is invisible to the
+conservative scanner, so the module roots every object it creates by a
+handle from allocation until it is stored in a rooted parent or returned,
+and roots every object it holds across an allocation.
+
+### The pending error
+
+An error leaves a language as a pending value, not as an unwinding
+exception. `bridge::set_pending` stores it for the current task,
+`take_pending` returns it and clears the slot, `has_pending` asks. The slot
+is a thread-local map keyed by task id rather than a `HostState`: a task has
+one host-state slot and it belongs to the adapter that spawned it, and a
+task never leaves the world that created it, so this thread's map holds
+exactly one slot per task of this world. The slot roots its value through a
+handle while it waits, since the map is not a heap root. A task that
+finishes without its error being taken leaves an entry the next insert past
+a small threshold sweeps away.
+
+### Typed dispatch
+
+A typed callable is a C function pointer with an `hl_type_fun`-shaped
+signature and the language it belongs to. The bridge does not marshal such a
+call itself: each language registers a `TypedDispatch` with
+`set_typed_dispatch`, a C-ABI function that takes the function, the
+signature, the arguments as `Value`s and an out slot, and answers a reply
+code. Ash will register its `ash_native_call` and `ash_static_call`
+marshalling under its own id. The core registers a default for `LANG_CORE`
+that covers what the core's own callables and the tests need: up to four
+arguments of kinds `HI32`, `HBOOL`, `HF64` and `HDYN`, returning `HVOID`,
+`HI32`, `HBOOL`, `HF64` or `HDYN`, by transmuting the function to the C type
+those classes describe. It relies on integer-class arguments of any width
+sharing a register or slot, which holds on the native ABIs the core runs on
+and not on wasm.
+
+### Calls
+
+`bridge::call(callable, args, caller)` invokes a callable on behalf of the
+language `caller`. A dynamic callable is sent `call`; a typed one is checked
+for arity against its signature and handed to its language's dispatcher.
+`call_named` does the same with the callee's name for the trace;
+`invoke`, `get` and `set` send `invoke`, `get_member` and `set_member` with
+the same handling. Every crossing guarantees three things.
+
+It is protected: the dispatch runs under `catch_unwind`, and a panic becomes
+an `Internal` error carrying the panic's message. An entry that answered
+`Unsupported` or `Missing` becomes a `Type` or `Runtime` error naming the
+value and the member. An entry that answered `Raised` yields the pending
+error; a pending value that is not an `Error` is wrapped in one as its
+native payload, so it still unwraps at home.
+
+Every error leaving a call carries one more trace frame: the callee's
+language, its name if the caller gave one and `<callable>` otherwise, and no
+source.
+
+A value returning to the language that raised it is unwrapped: when the
+error's native payload is set and its origin is `caller`, the call returns
+the payload rather than the `Error`, so a Haxe exception that passed through
+Wren and back is the same Haxe object it was.
+
+### Diagnostics
+
+`caribou::diag` prints an error in two steps, the shape wren_lift and
+zyntax already use. `report(err)` turns an `Error` value into a plain
+`Diagnostic`: the kind and message, one label per frame that has a span
+(its language, name, source id and byte span), the frames without a span as
+notes in order, a note for a native payload, and the cause chain as nested
+diagnostics. No ariadne type appears in it, so an adapter can feed it to its
+own renderer, or hand the core a diagnostic of its own. `render(diag,
+sources, out, color)` draws one with ariadne: the kind and message as the
+header, each label on its source line coloured by language from a fixed
+palette, the notes, then each cause as a further report whose message
+begins `caused by:`. `sources` is a `SourceLookup`, one method from a
+source id to its text, implemented over a map in tests and over module
+tables in adapters; a label whose source cannot be found is written as a
+note. `render_string` returns the same as a string. Language names come
+from the process-wide table `World::register` fills, `world::language_name`.
+
+## Worlds and tasks
 
 A world is one OS thread with one scheduler and one reactor. Every language
 runs its concurrency on the world's scheduler: a Haxe `sys.thread.Thread`,

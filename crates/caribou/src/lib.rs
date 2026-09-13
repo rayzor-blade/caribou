@@ -6,7 +6,11 @@
 
 pub use caribou_abi as abi;
 
+pub mod bridge;
+pub mod diag;
+pub mod error;
 pub mod heap;
 pub mod protocol;
 pub mod sched;
+pub mod symbol;
 pub mod world;

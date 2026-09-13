@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{LazyLock, Mutex};
 
 use caribou_abi::LangId;
 
@@ -45,6 +46,25 @@ static NEXT_LANG: AtomicU32 = AtomicU32::new(1);
 /// `LangId` 0 is reserved: the core's own types.
 pub const LANG_CORE: LangId = 0;
 
+/// Ids are process-wide, so their names are too: what an error trace or a
+/// diagnostic prints for a language, whichever world registered it.
+static LANG_NAMES: LazyLock<Mutex<HashMap<LangId, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// The registered name of `lang`; `core` for the core's own id, `lang N`
+/// for an id no world has registered.
+pub fn language_name(lang: LangId) -> String {
+    if lang == LANG_CORE {
+        return "core".to_owned();
+    }
+    LANG_NAMES
+        .lock()
+        .unwrap()
+        .get(&lang)
+        .cloned()
+        .unwrap_or_else(|| format!("lang {lang}"))
+}
+
 impl World {
     pub fn new(_config: Config) -> World {
         heap::init();
@@ -80,6 +100,7 @@ impl World {
             .collect();
         for (name, &id) in names.iter().zip(&ids) {
             self.by_name.insert(name.clone(), id);
+            LANG_NAMES.lock().unwrap().insert(id, name.clone());
             self.languages.push(Language {
                 id,
                 name: name.clone(),
@@ -170,6 +191,10 @@ mod tests {
         assert_eq!(world.languages().len(), 3);
         assert!(world.adapter_for(more[1]).is_some());
         assert!(world.adapter_for(9999).is_none());
+        assert_eq!(language_name(ids[0]), "haxe");
+        assert_eq!(language_name(more[1]), "zyn:dialogue");
+        assert_eq!(language_name(LANG_CORE), "core");
+        assert_eq!(language_name(9999), "lang 9999");
     }
 
     #[test]

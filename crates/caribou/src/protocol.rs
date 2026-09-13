@@ -9,10 +9,7 @@ use caribou_abi::{ErrorKind, LangId, Value};
 
 use crate::heap::TypeDesc;
 
-/// An interned name. One table per process; the core assigns ids.
-#[repr(transparent)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct Symbol(pub u32);
+pub use crate::symbol::Symbol;
 
 /// Why a message did not produce a value.
 #[derive(Debug, PartialEq, Eq)]
@@ -30,15 +27,19 @@ pub type Reply = Result<Value, Fault>;
 /// The vtable a `TypeDesc` points at. Every entry has a default that
 /// answers `Unsupported`, so an adapter implements only what its type does.
 ///
-/// Entries are C-ABI so a plugin can supply one. `obj` is the object's
-/// address; `args` are `Value`s. A reply of `Err(Fault::Raised)` means the
-/// entry raised through the bridge and the error is pending.
+/// Entries are C-ABI so a plugin can supply one; they are `C-unwind` so a
+/// Rust entry's panic reaches the bridge's protected boundary instead of
+/// aborting inside the entry. `obj` is the object's address; `args` are
+/// `Value`s. A reply of `Err(Fault::Raised)` means the entry raised through
+/// the bridge and the error is pending on the current task.
 #[repr(C)]
 pub struct Protocol {
-    pub get_member: Option<unsafe extern "C" fn(obj: *mut u8, name: Symbol, out: *mut Value) -> u8>,
-    pub set_member: Option<unsafe extern "C" fn(obj: *mut u8, name: Symbol, value: Value) -> u8>,
+    pub get_member:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, name: Symbol, out: *mut Value) -> u8>,
+    pub set_member:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, name: Symbol, value: Value) -> u8>,
     pub invoke: Option<
-        unsafe extern "C" fn(
+        unsafe extern "C-unwind" fn(
             obj: *mut u8,
             name: Symbol,
             args: *const Value,
@@ -47,24 +48,32 @@ pub struct Protocol {
         ) -> u8,
     >,
     pub call: Option<
-        unsafe extern "C" fn(obj: *mut u8, args: *const Value, n: usize, out: *mut Value) -> u8,
+        unsafe extern "C-unwind" fn(
+            obj: *mut u8,
+            args: *const Value,
+            n: usize,
+            out: *mut Value,
+        ) -> u8,
     >,
-    pub index: Option<unsafe extern "C" fn(obj: *mut u8, key: Value, out: *mut Value) -> u8>,
-    pub set_index: Option<unsafe extern "C" fn(obj: *mut u8, key: Value, value: Value) -> u8>,
-    pub len: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut usize) -> u8>,
+    pub index: Option<unsafe extern "C-unwind" fn(obj: *mut u8, key: Value, out: *mut Value) -> u8>,
+    pub set_index:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, key: Value, value: Value) -> u8>,
+    pub len: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut usize) -> u8>,
     /// Steps an iterator: `state` starts as `Value::null()`; returns `Missing`
     /// when exhausted.
     pub iterate:
-        Option<unsafe extern "C" fn(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8>,
-    pub to_string: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut Value) -> u8>,
-    pub hash: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut u64) -> u8>,
-    pub equals: Option<unsafe extern "C" fn(obj: *mut u8, other: Value, out: *mut bool) -> u8>,
-    pub unwrap_native: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut *mut c_void) -> u8>,
-    pub is_error: Option<unsafe extern "C" fn(obj: *mut u8) -> bool>,
-    pub error_message: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut Value) -> u8>,
-    pub error_kind: Option<unsafe extern "C" fn(obj: *mut u8) -> ErrorKind>,
-    pub error_cause: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut Value) -> u8>,
-    pub error_trace: Option<unsafe extern "C" fn(obj: *mut u8, out: *mut Value) -> u8>,
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8>,
+    pub to_string: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
+    pub hash: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut u64) -> u8>,
+    pub equals:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, other: Value, out: *mut bool) -> u8>,
+    pub unwrap_native:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut *mut c_void) -> u8>,
+    pub is_error: Option<unsafe extern "C-unwind" fn(obj: *mut u8) -> bool>,
+    pub error_message: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
+    pub error_kind: Option<unsafe extern "C-unwind" fn(obj: *mut u8) -> ErrorKind>,
+    pub error_cause: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
+    pub error_trace: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
 }
 
 /// Reply codes an entry returns.
@@ -96,7 +105,8 @@ impl Protocol {
     };
 }
 
-fn reply(code: u8, out: Value) -> Reply {
+/// A reply code and an out-value into a `Reply`.
+pub(crate) fn reply(code: u8, out: Value) -> Reply {
     match code {
         REPLY_OK => Ok(out),
         REPLY_MISSING => Err(Fault::Missing),
@@ -169,6 +179,23 @@ impl Send {
         reply(unsafe { f(obj, key, &mut out) }, out)
     }
 
+    pub unsafe fn set_index(obj: *mut u8, key: Value, value: Value) -> Result<(), Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.set_index) else {
+            return Err(Fault::Unsupported);
+        };
+        reply(unsafe { f(obj, key, value) }, Value::null()).map(|_| ())
+    }
+
+    /// One step of iteration; `state` starts as `Value::null()`.
+    /// `Err(Missing)` when exhausted.
+    pub unsafe fn iterate(obj: *mut u8, state: &mut Value) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.iterate) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = Value::null();
+        reply(unsafe { f(obj, state, &mut out) }, out)
+    }
+
     pub unsafe fn len(obj: *mut u8) -> Result<usize, Fault> {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.len) else {
             return Err(Fault::Unsupported);
@@ -185,6 +212,30 @@ impl Send {
         reply(unsafe { f(obj, &mut out) }, out)
     }
 
+    pub unsafe fn hash(obj: *mut u8) -> Result<u64, Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.hash) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = 0u64;
+        reply(unsafe { f(obj, &mut out) }, Value::null()).map(|_| out)
+    }
+
+    pub unsafe fn equals(obj: *mut u8, other: Value) -> Result<bool, Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.equals) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = false;
+        reply(unsafe { f(obj, other, &mut out) }, Value::null()).map(|_| out)
+    }
+
+    pub unsafe fn unwrap_native(obj: *mut u8) -> Result<*mut c_void, Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.unwrap_native) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = core::ptr::null_mut();
+        reply(unsafe { f(obj, &mut out) }, Value::null()).map(|_| out)
+    }
+
     pub unsafe fn is_error(obj: *mut u8) -> bool {
         unsafe { Self::proto(obj) }
             .and_then(|p| p.is_error)
@@ -196,25 +247,45 @@ impl Send {
             .and_then(|p| p.error_kind)
             .map(|f| unsafe { f(obj) })
     }
+
+    pub unsafe fn error_message(obj: *mut u8) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.error_message) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = Value::null();
+        reply(unsafe { f(obj, &mut out) }, out)
+    }
+
+    pub unsafe fn error_cause(obj: *mut u8) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.error_cause) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = Value::null();
+        reply(unsafe { f(obj, &mut out) }, out)
+    }
+
+    pub unsafe fn error_trace(obj: *mut u8) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.error_trace) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = Value::null();
+        reply(unsafe { f(obj, &mut out) }, out)
+    }
 }
 
 /// What the bridge invokes.
 #[derive(Clone, Copy, Debug)]
 pub enum Callable {
     /// A C function with a HashLink-shaped signature: raw scalars and
-    /// pointers by kind. The bridge marshals `Value`s in and out by it.
+    /// pointers by kind. The dispatcher registered for `lang` marshals
+    /// `Value`s in and out by it; `lang` also names the segment in the trace.
     Typed {
         func: *const c_void,
         signature: *const caribou_abi::hl::hl_type,
+        lang: LangId,
     },
-    /// An object that answers `call`.
+    /// An object that answers `call`. Its language is its descriptor's.
     Dynamic(Value),
-}
-
-/// The language a callable belongs to, for the error trace.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Origin {
-    pub lang: LangId,
 }
 
 #[cfg(test)]
@@ -230,7 +301,7 @@ mod tests {
         y: f64,
     }
 
-    unsafe extern "C" fn point_get(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    unsafe extern "C-unwind" fn point_get(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
         let p = unsafe { &*(obj as *const Point) };
         let v = match name.0 {
             1 => p.x,
@@ -241,7 +312,7 @@ mod tests {
         REPLY_OK
     }
 
-    unsafe extern "C" fn point_len(_obj: *mut u8, out: *mut usize) -> u8 {
+    unsafe extern "C-unwind" fn point_len(_obj: *mut u8, out: *mut usize) -> u8 {
         unsafe { *out = 2 };
         REPLY_OK
     }

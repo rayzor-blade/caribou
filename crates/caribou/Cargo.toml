@@ -6,6 +6,9 @@ repository.workspace = true
 description = "Shared runtime core: heap, fibers, module registry, hot reload"
 
 [dependencies]
+# The version ash, wren_lift and zyntax use: one rendering engine and one look
+# for every report in a process.
+ariadne = "0.5.1"
 caribou_abi = { workspace = true }
 krio-core = { workspace = true }
 krio-fiber = { workspace = true }
