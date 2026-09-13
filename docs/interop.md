@@ -6,9 +6,7 @@ mechanism behind each rule is in [architecture.md](architecture.md).
 
 ## Namespaces and modules
 
-A program reaches another language's module through a namespace, never
-through a language name in the source. Namespaces are configured on the
-world:
+A program reaches another language's module through a namespace. Namespaces are configured on the world, defined in Rust as:
 
 ```rust
 World::new(Config {
