@@ -219,6 +219,7 @@ class Bridge {
 		var fields:Array<Field> = [];
 		var taken = new Map<String, Bool>();
 		var properties = new Map<String, {get:Bool, set:Bool, type:ComplexType}>();
+		var staticProperties = new Map<String, {get:Bool, set:Bool, type:ComplexType}>();
 		var hasConstructor = false;
 
 		function native(symbol:String, args:Array<FunctionArg>, ret:ComplexType, name:String):String {
@@ -278,23 +279,44 @@ class Bridge {
 						}})
 					});
 				case "factory", "static":
-					var isProperty = m.signature.indexOf("(") < 0;
-					var target = native(prefix + "static:" + m.signature, dynamicArgs(m), macro :Dynamic, nativeName);
-					var name = unique(m.name, arity);
-					if (isProperty) {
+					var isSetter = m.signature.indexOf("=(") >= 0;
+					var isGetter = m.signature.indexOf("(") < 0;
+					if (isSetter) {
+						// A static setter: the property's `set`.
+						var target = native(prefix + "static:" + m.signature, [{name: "value", type: macro :Dynamic}], macro :Void, nativeName);
+						var valueType = typedArgs(m)[0].type;
+						var p = staticProperties.get(m.name);
+						if (p == null) {
+							staticProperties.set(m.name, p = {get: false, set: false, type: valueType});
+						}
+						p.set = true;
 						fields.push({
-							name: name,
+							name: "set_" + m.name,
 							pos: pos,
-							access: [APublic, AStatic],
-							kind: FProp("get", "never", ret)
+							access: [AStatic, AInline],
+							kind: FFun({args: [{name: "value", type: valueType}], ret: valueType, expr: macro {
+								$i{target}(value);
+								return value;
+							}})
 						});
+					} else if (isGetter) {
+						// A static getter: the property's `get`.
+						var target = native(prefix + "static:" + m.signature, [], macro :Dynamic, nativeName);
+						var p = staticProperties.get(m.name);
+						if (p == null) {
+							staticProperties.set(m.name, p = {get: false, set: false, type: ret});
+						}
+						p.get = true;
+						p.type = ret;
 						fields.push({
-							name: "get_" + name,
+							name: "get_" + m.name,
 							pos: pos,
 							access: [AStatic, AInline],
 							kind: FFun({args: [], ret: ret, expr: macro return $i{target}()})
 						});
 					} else {
+						var target = native(prefix + "static:" + m.signature, dynamicArgs(m), macro :Dynamic, nativeName);
+						var name = unique(m.name, arity);
 						fields.push({
 							name: name,
 							pos: pos,
@@ -352,6 +374,15 @@ class Bridge {
 				name: name,
 				pos: pos,
 				access: [APublic],
+				kind: FProp(p.get ? "get" : "never", p.set ? "set" : "never", p.type)
+			});
+		}
+		for (name => p in staticProperties) {
+			taken.set(name, true);
+			fields.push({
+				name: name,
+				pos: pos,
+				access: [APublic, AStatic],
 				kind: FProp(p.get ? "get" : "never", p.set ? "set" : "never", p.type)
 			});
 		}

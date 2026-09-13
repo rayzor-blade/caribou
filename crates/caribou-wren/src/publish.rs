@@ -290,8 +290,12 @@ fn describe(vm: &VM, class: *mut ObjClass, module: &str, names: &[String]) -> Cl
         type_name,
         superclass,
         fields,
+        // A Wren class keeps its static state behind static getters and
+        // setters, which are methods.
+        statics: Vec::new(),
         methods,
         ctor,
+        class_object: class_value,
     }
 }
 

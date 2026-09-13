@@ -24,7 +24,7 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 const SCRIPT: &str = include_str!("../fixtures/wren/main.wren");
 
-const EXPECTED: &str = "ada\nfalse\n70\ntrue\n7\n";
+const EXPECTED: &str = "ada\nfalse\n70\ntrue\n7\n1\n11\n";
 
 /// A module the host serves itself, importing through the language's own
 /// namespace.

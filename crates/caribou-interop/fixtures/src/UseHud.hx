@@ -23,6 +23,8 @@ class UseHud {
 			Sys.println("caught " + e);
 		}
 		Sys.println(h.owner());
+		Hud.count = 5;
+		Sys.println(Hud.count);
 	}
 
 	@:keep static function after() {

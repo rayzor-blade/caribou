@@ -82,6 +82,9 @@ class Hero is Player {
 - A Haxe throw inside a call aborts the fiber with the exception's
   message. So does an argument Haxe cannot take, such as a string where an
   `Int` is declared. `Fiber.try` sees the message.
+- A static field is a static getter and setter of its name:
+  `Player.spawned` and `Player.spawned = 0` read and write the field where
+  Haxe keeps it, on the class object.
 - A Haxe object is an instance of the imported class. Two crossings of one
   Haxe object are two Wren instances today; identity is not kept in this
   direction yet.
@@ -134,7 +137,8 @@ Every Wren class of the module becomes a Haxe class of the same name.
 | `name` | property `name` with a getter |
 | `name=(v)` | property `name` with a setter |
 | `static name(...)` | `static function name(...)` |
-| `static name` | static property `name` |
+| `static name` | static property `name` with a getter |
+| `static name=(v)` | static property `name` with a setter |
 | operators, `[...]`, `[...]=(...)` | not exported |
 
 - Parameters are `Dynamic` and results are `Dynamic` unless the member
@@ -219,6 +223,20 @@ built on it.
 - A Wren abort inside a call is thrown into Haxe as a `String` with the
   message. A Haxe exception that crossed into Wren and comes back is
   rethrown as itself.
+
+## Static state
+
+State a class keeps for itself is shared by reference, never copied:
+every access goes through the owner, so a read sees the latest write
+from either language and a write lands in the owner's storage.
+
+- A Haxe `static var` is a static field of the class. Wren reads and
+  writes it as `Player.spawned`.
+- A Wren class keeps static state behind a static getter and setter,
+  `static count { __count }` and `static count=(v) { __count = v }`,
+  which Haxe sees as one static property, `Hud.count`.
+- A Wren module-level `var` belongs to no class. Another Wren module
+  imports it by name; Haxe does not see it.
 
 ## Names the runtime binds
 

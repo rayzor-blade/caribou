@@ -496,13 +496,24 @@ pub fn publish_module(
             }
         }
 
-        // Statics and the constructor, through the companion's bindings.
+        // Statics and the constructor, through the companion's bindings;
+        // its own unbound fields are the class's static fields.
         let mut ctor = None;
+        let mut statics: Vec<FieldIface> = Vec::new();
         if let Some(&ci) = by_name.get(companion_name(&obj.name).as_str())
             && let Some(companion) = types[ci].obj.as_ref()
         {
             let flat = flat_fields(types, ci);
             let inherited = flat.len() - companion.fields.len();
+            let bound: Vec<usize> = bindings(companion).map(|(fid, _)| fid).collect();
+            for (i, field) in companion.fields.iter().enumerate() {
+                if !bound.contains(&(inherited + i)) && !field.name.starts_with("__") {
+                    statics.push(FieldIface {
+                        name: field.name.clone(),
+                        ty: type_ref(types, &field.type_),
+                    });
+                }
+            }
             for (fid, findex) in bindings(companion) {
                 let Some(&name) = flat.get(fid) else {
                     continue;
@@ -557,8 +568,10 @@ pub fn publish_module(
                 type_name: obj.name.clone(),
                 superclass,
                 fields,
+                statics,
                 methods,
                 ctor,
+                class_object: proto::class_object(program.interpreter.c_type_of(index).cast()),
             }],
         };
         registry::publish(iface.clone()).map_err(|e| anyhow!("publishing {}: {e}", obj.name))?;

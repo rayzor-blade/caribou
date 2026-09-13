@@ -31,4 +31,8 @@ class Hud {
 
   // A Haxe object made and read here: its name, a Haxe String.
   owner() { Player.new("ada").name }
+
+  // Static state behind a static getter and setter: one property in Haxe.
+  static count { __count }
+  static count=(v) { __count = v }
 }

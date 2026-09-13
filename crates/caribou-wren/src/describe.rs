@@ -170,6 +170,7 @@ fn describe_class(
         type_name,
         superclass,
         fields: Vec::new(),
+        statics: Vec::new(),
         members,
     })
 }

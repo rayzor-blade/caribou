@@ -78,6 +78,9 @@ enum Kind {
     Static,
     Getter(Symbol),
     Setter(Symbol),
+    /// A static field, read on the class object the callable holds.
+    ClassGetter(Symbol),
+    ClassSetter(Symbol),
 }
 
 #[derive(Clone)]
@@ -391,6 +394,26 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
             },
         ));
     }
+    // A static field is a static getter and setter on the class object.
+    for field in &class.statics {
+        let sym = symbol::intern(&field.name);
+        members.push((
+            format!("static:{}", field.name),
+            Target {
+                kind: Kind::ClassGetter(sym),
+                name: qualify(&field.name),
+                callable: Callable::Dynamic(class.class_object),
+            },
+        ));
+        members.push((
+            format!("static:{}=(_)", field.name),
+            Target {
+                kind: Kind::ClassSetter(sym),
+                name: qualify(&field.name),
+                callable: Callable::Dynamic(class.class_object),
+            },
+        ));
+    }
     members
 }
 
@@ -638,6 +661,17 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             release(&roots);
             r
         }
+        Kind::ClassGetter(name) | Kind::ClassSetter(name) => {
+            let Callable::Dynamic(class_object) = target.callable else {
+                unreachable!("a static field's target is its class object");
+            };
+            let r = match target.kind {
+                Kind::ClassGetter(_) => bridge::get(class_object, name, wren),
+                _ => bridge::set(class_object, name, crossed[0], wren).map(|()| crossed[0]),
+            };
+            release(&roots);
+            r
+        }
         Kind::Method | Kind::Getter(_) | Kind::Setter(_) => {
             let this = foreign_of(recv).ok_or_else(|| {
                 release(&roots);
@@ -661,7 +695,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
         }
     };
     let value = result.map_err(message_of)?;
-    if let Kind::Setter(_) = target.kind {
+    if let Kind::Setter(_) | Kind::ClassSetter(_) = target.kind {
         // The assigned value, as Wren's own setters evaluate to.
         return Ok(args[1]);
     }
@@ -722,6 +756,10 @@ mod tests {
                     ty: TypeRef::Str,
                 },
             ],
+            statics: vec![FieldIface {
+                name: "spawned".to_owned(),
+                ty: TypeRef::Int,
+            }],
             methods: vec![
                 MethodIface {
                     name: "hit".to_owned(),
@@ -745,6 +783,7 @@ mod tests {
                 ret: TypeRef::Object("game.Player".to_owned()),
                 target: Callable::Dynamic(Value::null()),
             }),
+            class_object: Value::null(),
         };
         let iface = Interface {
             lang: 7,
@@ -781,6 +820,8 @@ mod tests {
                 "hp=(_) -> Player.hp",
                 "name -> Player.name",
                 "name=(_) -> Player.name",
+                "static:spawned -> Player.spawned",
+                "static:spawned=(_) -> Player.spawned",
             ]
         );
         if std::env::var_os("CARIBOU_DUMP_BLOB").is_some() {

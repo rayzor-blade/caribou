@@ -113,16 +113,19 @@ mod tests {
         .unwrap();
         std::fs::write(dir.join("game.hl"), "").unwrap();
 
-        let roots = roots(&dir.join("game.hl"));
-        assert_eq!(roots, vec![dir.join("src"), dir.join("lib")]);
-        let namespaces = namespaces(&roots, &["net".to_owned()]);
+        let found = roots(&dir.join("game.hl"));
+        assert_eq!(found, vec![dir.join("src"), dir.join("lib")]);
+        let namespaces = namespaces(&found, &["net".to_owned()]);
         let names: Vec<&str> = namespaces.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["game", "net", "ui"]);
         assert_eq!(namespaces[0].langs, ["haxe", "wren"]);
 
-        // Without an hxml: `src` when there is one.
+        // Without an hxml: `src` under the program's directory when there
+        // is one, beside whatever the working directory gives.
         std::fs::remove_file(dir.join("build.hxml")).unwrap();
-        assert_eq!(roots(&dir.join("game.hl")), vec![dir.join("src")]);
+        let found = roots(&dir.join("game.hl"));
+        assert!(found.contains(&dir.join("src")), "{found:?}");
+        assert!(!found.contains(&dir), "{found:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

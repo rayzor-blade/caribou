@@ -75,7 +75,8 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
             .iter()
             .map(|f| f.name.as_str())
             .collect::<Vec<_>>(),
-        ["spawnAt"]
+        ["spawned", "spawnAt"],
+        "a static field and a static method are both fields of the companion"
     );
     assert!(companion.proto.is_empty());
     assert_eq!(
@@ -112,6 +113,24 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
         .map(|f| (f.name.as_str(), &f.ty))
         .collect();
     assert_eq!(fields, [("hp", &TypeRef::Int), ("name", &TypeRef::Str)]);
+    // The unbound companion field is the class's static field, read and
+    // written on the class object once the program has made it.
+    let statics: Vec<(&str, &TypeRef)> = class
+        .statics
+        .iter()
+        .map(|f| (f.name.as_str(), &f.ty))
+        .collect();
+    assert_eq!(statics, [("spawned", &TypeRef::Int)]);
+    assert_eq!(
+        bridge::get(class.class_object, intern("spawned"), haxe),
+        Ok(Value::int(0))
+    );
+    bridge::set(class.class_object, intern("spawned"), Value::int(3), haxe).unwrap();
+    assert_eq!(
+        bridge::get(class.class_object, intern("spawned"), haxe),
+        Ok(Value::int(3))
+    );
+    assert_eq!(bridge::type_name(class.class_object).as_deref(), Some("game.Player"));
     let hit = class.methods.iter().find(|m| m.name == "hit").expect("hit");
     assert!(!hit.is_static);
     assert_eq!(hit.params, [TypeRef::Int]);

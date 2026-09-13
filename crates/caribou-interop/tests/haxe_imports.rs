@@ -26,7 +26,7 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 const HUD: &str = include_str!("../fixtures/src/game/hud.wren");
 
-const EXPECTED: &str = "7\n10\nhp: 10\ntrue\n10\ncaught boom\nada\n";
+const EXPECTED: &str = "7\n10\nhp: 10\ntrue\n10\ncaught boom\nada\n5\n";
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/hud.hl")

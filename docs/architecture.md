@@ -648,9 +648,14 @@ interpreter keeps that context private, so it is read off the type of a
 type is kept for the strings that cross. A constructor is published as a
 `Callable::Dynamic`: a small core object whose `call` allocates an instance
 of the type with `hlp_alloc_obj`, wraps it and runs `__constructor__` on it
-through the dispatcher, so the registry stays free of anything Haxe. Types
-under `hl.` and `haxe.`, the companions and `String` are not published; one
-module per class, named after it.
+through the dispatcher, so the registry stays free of anything Haxe. The
+companion's own unbound fields are the class's static fields, and the
+class's `class_object` is a core object naming the instance type that
+finds the `hl.Class` instance in the type's global at each use, since
+the entry function makes it after the program publishes; its
+`get_member` and `set_member` reach the static fields through the Haxe
+protocol on that instance. Types under `hl.` and `haxe.`, the companions
+and `String` are not published; one module per class, named after it.
 
 ### WrenLift publishes
 
@@ -697,7 +702,9 @@ an empty top level and nothing else, encodes it as a `.wlbc` and hands it
 to `interpret_bytecode`, the path a `.wlbc` takes. It then binds one native
 per member into the class's method table: `new(_)` for the constructor,
 `hit(_)` for a method, `hp` and `hp=(_)` for a field, statics under
-`static:`. wren_lift binds a class's foreign stubs only by `dlsym` in a
+`static:`, and `static:spawned` with `static:spawned=(_)` for a static
+field, which read and write the interface's class object through the
+protocol. wren_lift binds a class's foreign stubs only by `dlsym` in a
 `#!native` library and never consults `bind_foreign_method_fn`, so the
 binding happens here, right after the install. A namespaced name no
 interface answers is left to the VM, whose import error names it.

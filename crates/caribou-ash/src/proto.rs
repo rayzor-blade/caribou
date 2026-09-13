@@ -658,6 +658,111 @@ static CTOR_PROTO: Protocol = Protocol {
     ..Protocol::NONE
 };
 
+// ---------------------------------------------------------------------------
+// The class object
+// ---------------------------------------------------------------------------
+
+/// A Haxe class as a value the registry can hold: the receiver of its
+/// static fields. It names the instance type and finds the class object,
+/// the `hl.Class` instance the program's entry function stores in the
+/// type's global, at each use, since it is made after the program
+/// publishes and replaced by a reload.
+#[repr(C)]
+struct HaxeClass {
+    desc: *const TypeDesc,
+    t: *mut hl_type,
+}
+
+static mut CLASS_DESC: TypeDesc = {
+    let mut d = TypeDesc::new(haxe_type());
+    d.protocol = &CLASS_PROTO;
+    d.name = "haxe class".as_ptr();
+    d.name_len = "haxe class".len();
+    d
+};
+
+/// The class whose instance type is `t`, as a value.
+pub(crate) fn class_object(t: *mut hl_type) -> Value {
+    unsafe { CLASS_DESC.lang = lang() };
+    let _lock = heap::gc_guard();
+    let p = unsafe {
+        heap::alloc_gen(
+            &raw mut CLASS_DESC as *mut hl_type,
+            size_of::<HaxeClass>(),
+            KIND_NOPTR,
+        )
+    } as *mut HaxeClass;
+    if p.is_null() {
+        heap::out_of_memory("a haxe class");
+    }
+    unsafe {
+        (*p).desc = &raw const CLASS_DESC;
+        (*p).t = t;
+    }
+    // Kept for the process, as the interface that names it is.
+    let _keep = heap::handle_new(p as *mut u8);
+    Value::object(p as *const c_void)
+}
+
+/// The `hl.Class` instance of the class, once the program has made it.
+unsafe fn class_instance(obj: *mut u8) -> Option<*mut vdynamic> {
+    let t = unsafe { (*(obj as *const HaxeClass)).t };
+    let global = unsafe { (*(*t).detail.obj).global_value };
+    if global.is_null() {
+        return None;
+    }
+    let instance = unsafe { *global } as *mut vdynamic;
+    (!instance.is_null()).then_some(instance)
+}
+
+/// Run `f` on the class instance wrapped as a Haxe object, so the Haxe
+/// protocol answers for it.
+unsafe fn on_class_instance(obj: *mut u8, f: impl FnOnce(*mut u8) -> u8) -> u8 {
+    let Some(instance) = (unsafe { class_instance(obj) }) else {
+        return raise_core(
+            ErrorKind::Runtime,
+            "the class has no class object yet: the program has not started",
+        );
+    };
+    let (wrapper, root) = wrap_rooted(instance);
+    let code = f(wrapper.as_object().unwrap() as *mut u8);
+    heap::handle_release(root);
+    code
+}
+
+unsafe extern "C-unwind" fn class_get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    unsafe { on_class_instance(obj, |w| get_member(w, name, out)) }
+}
+
+unsafe extern "C-unwind" fn class_set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
+    unsafe { on_class_instance(obj, |w| set_member(w, name, value)) }
+}
+
+unsafe extern "C-unwind" fn class_invoke(
+    obj: *mut u8,
+    name: Symbol,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    unsafe { on_class_instance(obj, |w| invoke(w, name, args, n, out)) }
+}
+
+unsafe extern "C-unwind" fn class_type_name(obj: *mut u8, out: *mut Value) -> u8 {
+    let t = unsafe { (*(obj as *const HaxeClass)).t };
+    let name = unsafe { obj_name(t) }.unwrap_or_default();
+    unsafe { *out = Str::value(Str::new(&name)) };
+    REPLY_OK
+}
+
+static CLASS_PROTO: Protocol = Protocol {
+    get_member: Some(class_get_member),
+    set_member: Some(class_set_member),
+    invoke: Some(class_invoke),
+    type_name: Some(class_type_name),
+    ..Protocol::NONE
+};
+
 /// A new instance of `class`, constructed with `args`: the class's
 /// constructor callable through the bridge, on behalf of Haxe.
 pub fn construct(class: &ClassIface, args: &[Value]) -> Result<Value, Value> {

@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
-use caribou_abi::LangId;
+use caribou_abi::{LangId, Value};
 
 use crate::protocol::Callable;
 use crate::world::{self, RegisterError};
@@ -109,8 +109,16 @@ pub struct ClassIface {
     pub type_name: String,
     pub superclass: Option<String>,
     pub fields: Vec<FieldIface>,
+    /// Fields of the class itself, read and written on [`Self::class_object`]
+    /// through the protocol's `get_member` and `set_member`, so every
+    /// access sees the owner's storage.
+    pub statics: Vec<FieldIface>,
     pub methods: Vec<MethodIface>,
     pub ctor: Option<MethodIface>,
+    /// The class as a value of its language, the receiver of its static
+    /// fields; null when the language has no such object. Rooted by the
+    /// publisher, as a dynamic callable is.
+    pub class_object: Value,
 }
 
 /// One module's boundary.
@@ -395,7 +403,6 @@ pub fn class_for_type(lang: LangId, type_name: &str) -> Option<(Arc<Interface>, 
 mod tests {
     use super::*;
     use crate::world::{Adapter, Config, World};
-    use caribou_abi::Value;
 
     struct Fake(&'static str);
 
@@ -415,6 +422,7 @@ mod tests {
                 type_name: module.to_owned(),
                 superclass: None,
                 fields: vec![],
+                statics: vec![],
                 methods: vec![MethodIface {
                     name: "f".to_owned(),
                     is_static: false,
@@ -423,6 +431,7 @@ mod tests {
                     target: Callable::Dynamic(Value::null()),
                 }],
                 ctor: None,
+                class_object: Value::null(),
             }],
         }
     }

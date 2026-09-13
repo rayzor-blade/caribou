@@ -9,5 +9,11 @@ System.print(p.hit(30))
 System.print(p.hp)
 p.hp = 5
 System.print(p.hit(10))
+// The class's own static field, read and written where Haxe keeps it.
+Player.spawned = 0
 var q = Player.spawnAt(3, 4)
 System.print(q.hp)
+System.print(Player.spawned)
+Player.spawned = 10
+Player.spawnAt(0, 0)
+System.print(Player.spawned)

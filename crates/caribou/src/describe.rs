@@ -29,6 +29,9 @@ pub struct ClassDesc {
     pub superclass: Option<String>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub fields: Vec<FieldDesc>,
+    /// Fields of the class itself.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub statics: Vec<FieldDesc>,
     #[cfg_attr(feature = "serde", serde(default))]
     pub members: Vec<MemberDesc>,
 }
@@ -129,18 +132,19 @@ impl ModuleDesc {
                     name: c.name.clone(),
                     type_name: c.type_name.clone(),
                     superclass: c.superclass.clone(),
-                    fields: c
-                        .fields
-                        .iter()
-                        .map(|f| FieldDesc {
-                            name: f.name.clone(),
-                            ty: f.ty.clone(),
-                        })
-                        .collect(),
+                    fields: c.fields.iter().map(field).collect(),
+                    statics: c.statics.iter().map(field).collect(),
                     members: members(c),
                 })
                 .collect(),
         }
+    }
+}
+
+fn field(f: &crate::registry::FieldIface) -> FieldDesc {
+    FieldDesc {
+        name: f.name.clone(),
+        ty: f.ty.clone(),
     }
 }
 
