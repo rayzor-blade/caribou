@@ -2008,9 +2008,12 @@ struct Block {
     /// Set by the marker the first time any line in this block is claimed, so
     /// sweep can skip a block nothing reached: its bits are already clear.
     any_marked: AtomicBool,
-    /// True while a traced object starts in this block; a block without one
-    /// skips sweep's drop pass.
-    has_traced: bool,
+    /// Set when a traced object whose descriptor has a drop hook is allocated
+    /// in this block, cleared by the drop pass once no traced object survives
+    /// in it: only such a block needs that pass. A dead traced object without
+    /// a drop hook keeps its start until its lines are reused, as a raw object
+    /// does, and a stale pointer resolving to it only retains.
+    has_drop: bool,
 }
 
 /// Claim a line for the marker. Returns true for the thread that set it, so a
@@ -2751,7 +2754,7 @@ impl ImmixAllocator {
         let addr = self.heap.free_blocks.pop()?;
         self.clear_allocation_metadata(addr, BLOCK_SIZE);
         self.blocks[addr / BLOCK_SIZE].has_span = false;
-        self.blocks[addr / BLOCK_SIZE].has_traced = false;
+        self.blocks[addr / BLOCK_SIZE].has_drop = false;
         self.heap.used_blocks.insert(addr);
         self.reclaim_block_pages(addr);
         clear_marks(&self.blocks[addr / BLOCK_SIZE]);
@@ -2810,12 +2813,17 @@ impl ImmixAllocator {
     }
 
     /// Set the kind bits of a fresh allocation, under the lock that handed it
-    /// out: no collection can have seen it yet.
+    /// out: no collection can have seen it yet. A traced object's word zero
+    /// already holds its descriptor.
     fn set_allocation_kind(&mut self, offset: usize, kind: u8) {
         debug_assert_eq!(kind & !OBJECT_KIND_MASK, 0);
         self.heap.objects[offset / ALLOC_QUANTUM].fetch_or(kind, Ordering::Relaxed);
         if kind == OBJECT_KIND_TRACED {
-            self.blocks[offset / BLOCK_SIZE].has_traced = true;
+            let obj = unsafe { self.heap.memory.as_ptr().add(offset) };
+            let desc = unsafe { *(obj as *const *const TypeDesc) };
+            if unsafe { desc.as_ref() }.is_some_and(|d| d.drop.is_some()) {
+                self.blocks[offset / BLOCK_SIZE].has_drop = true;
+            }
         }
     }
 
@@ -2987,7 +2995,7 @@ impl ImmixAllocator {
                 for block in removed {
                     self.clear_allocation_metadata(block, BLOCK_SIZE);
                     self.blocks[block / BLOCK_SIZE].has_span = false;
-                    self.blocks[block / BLOCK_SIZE].has_traced = false;
+                    self.blocks[block / BLOCK_SIZE].has_drop = false;
                     self.heap.used_blocks.insert(block);
                     self.reclaim_block_pages(block);
                     clear_marks(&self.blocks[block / BLOCK_SIZE]);
@@ -3121,17 +3129,64 @@ impl ImmixAllocator {
     /// marker would, object bit and lines; true for the claimer. The claim
     /// stands until the next sweep clears it, so a host that claims outside a
     /// collection must end with one, or withdraw its claims.
+    ///
+    /// The caller holds the lock and no marker runs, so this thread is the
+    /// only writer of the bits: plain loads and stores, no read-modify-write.
+    #[inline]
     pub fn claim_for_cycle(&self, ptr: *const u8) -> bool {
-        self.offset_of(ptr as usize)
-            .and_then(|offset| {
-                claim_allocation(
-                    &self.blocks,
-                    &self.heap.alloc_sizes,
-                    &self.heap.objects,
-                    offset,
-                )
-            })
-            .is_some()
+        let Some(offset) = self.offset_of(ptr as usize) else {
+            return false;
+        };
+        let Some((start, size)) = allocation_at(
+            &self.blocks,
+            &self.heap.alloc_sizes,
+            &self.heap.objects,
+            offset,
+        ) else {
+            return false;
+        };
+        self.claim_serial(start, size)
+    }
+
+    /// [`Self::claim_for_cycle`] for a host that knows `start` is an
+    /// allocation start: no resolve, and a standing claim stands. The
+    /// allocation's size, `None` when nothing starts there.
+    #[inline]
+    pub fn claim_start(&self, start: *const u8) -> Option<usize> {
+        let offset = self.offset_of(start as usize)?;
+        let code = self.heap.objects[offset / ALLOC_QUANTUM].load(Ordering::Relaxed);
+        let size = match code & OBJECT_SIZE_MASK {
+            0 => return None,
+            SPAN_OBJECT => self.heap.alloc_sizes[offset / LINE_SIZE] as usize * LINE_SIZE,
+            quanta => quanta as usize * ALLOC_QUANTUM,
+        };
+        self.claim_serial(offset, size);
+        Some(size)
+    }
+
+    /// The object bit and line bits of the allocation at heap offset
+    /// `start`, without read-modify-writes; true for the claimer.
+    #[inline]
+    fn claim_serial(&self, start: usize, size: usize) -> bool {
+        let slot = &self.heap.objects[start / ALLOC_QUANTUM];
+        let code = slot.load(Ordering::Relaxed);
+        if code & OBJECT_MARK != 0 {
+            return false;
+        }
+        slot.store(code | OBJECT_MARK, Ordering::Relaxed);
+        for line in start / LINE_SIZE..=(start + size - 1) / LINE_SIZE {
+            let block = &self.blocks[line / LINES_PER_BLOCK];
+            let word = &block.mark_bits[(line % LINES_PER_BLOCK) >> 6];
+            let bit = 1u64 << (line & 63);
+            let bits = word.load(Ordering::Relaxed);
+            if bits & bit == 0 {
+                word.store(bits | bit, Ordering::Relaxed);
+                if !block.any_marked.load(Ordering::Relaxed) {
+                    block.any_marked.store(true, Ordering::Relaxed);
+                }
+            }
+        }
+        true
     }
 
     /// Whether the allocation containing `ptr` is claimed in the open cycle.
@@ -3863,14 +3918,15 @@ impl ImmixAllocator {
 
     /// Run the drop hook of every unmarked traced object and forget its start,
     /// so no later cycle can resolve a stale pointer into it and trace or drop
-    /// it again. Marks are standing and the world is stopped. Before any block
-    /// is reclaimed or poisoned: a hook reads its object, and a span may run
-    /// on into a block the reclaim loop would visit first.
+    /// it again. Only in blocks flagged `has_drop`; see it for the rest. Marks
+    /// are standing and the world is stopped. Before any block is reclaimed or
+    /// poisoned: a hook reads its object, and a span may run on into a block
+    /// the reclaim loop would visit first.
     fn drop_dead_traced(&mut self, used: &[usize]) {
         let base = self.heap.memory.as_ptr() as usize;
         for &block_addr in used {
             let block = &mut self.blocks[block_addr / BLOCK_SIZE];
-            if !block.has_traced {
+            if !block.has_drop {
                 continue;
             }
             let mut any_live = false;
@@ -3894,7 +3950,7 @@ impl ImmixAllocator {
                 }
                 *slot = 0;
             }
-            block.has_traced = any_live;
+            block.has_drop = any_live;
         }
     }
 
@@ -4149,7 +4205,7 @@ impl ImmixAllocator {
                     *slot.get_mut() = 0;
                 }
                 self.blocks[block_index].has_span = false;
-                self.blocks[block_index].has_traced = false;
+                self.blocks[block_index].has_drop = false;
                 freed.push(block_addr);
             }
         }
@@ -5825,7 +5881,10 @@ mod tests {
             "a bare hl_type has no hooks to read: Typed alone stays conservative"
         );
         assert_eq!(kind_of(&gc, traced - heap_start), OBJECT_KIND_TRACED);
-        assert!(gc.blocks[(traced - heap_start) / BLOCK_SIZE].has_traced);
+        assert!(
+            !gc.blocks[(traced - heap_start) / BLOCK_SIZE].has_drop,
+            "a hookless descriptor gives the sweep nothing to drop"
+        );
         assert_eq!(unsafe { *(traced as *const usize) }, desc as usize);
         assert_eq!(unsafe { *(typed as *const usize) }, &raw mut ty as usize);
         assert_eq!(unsafe { *(noptr as *const usize) }, 0);
@@ -5966,6 +6025,7 @@ mod tests {
         let _turn = holder_test_turn();
         let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
         let (holder, child, boxed) = traced_holder(&mut gc);
+        assert!(gc.blocks[holder / BLOCK_SIZE].has_drop);
         let sibling = gc.allocate(16).unwrap();
         let sibling = offset(&gc, sibling);
         let before = HOLDER_DROPS.load(Ordering::SeqCst);
@@ -5994,7 +6054,7 @@ mod tests {
         let find = |at| allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
         assert_eq!(find(holder + 8), None, "a dropped object is forgotten");
         assert_eq!(find(sibling), Some((sibling, 16)));
-        assert!(!gc.blocks[holder / BLOCK_SIZE].has_traced);
+        assert!(!gc.blocks[holder / BLOCK_SIZE].has_drop);
 
         // A stale pointer into it resolves to nothing, so no later cycle can
         // trace or drop it again.
@@ -6033,6 +6093,45 @@ mod tests {
         let mut work = Vec::new();
         gc.mark_allocation(at + LINE_SIZE + 8, &mut work);
         assert!(work.is_empty());
+    }
+
+    /// With no drop hook the sweep has nothing to run, so the block skips
+    /// the drop pass: the dead object keeps its start, and a stale pointer
+    /// retains it as it would a raw object, until its lines are reused.
+    #[test]
+    fn a_dead_traced_object_without_a_drop_hook_waits_for_line_reuse() {
+        static TRACE_ONLY: TypeDesc = TypeDesc {
+            trace: Some(trace_holder),
+            ..TypeDesc::new(plain_type())
+        };
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
+        let obj = gc.allocate(mem::size_of::<Holder>()).unwrap();
+        unsafe {
+            ptr::write(
+                obj.as_ptr() as *mut Holder,
+                Holder {
+                    desc: &TRACE_ONLY,
+                    items: Vec::new(),
+                    boxed: Vec::new(),
+                },
+            )
+        };
+        let at = offset(&gc, obj);
+        gc.set_allocation_kind(at, OBJECT_KIND_TRACED);
+        assert!(!gc.blocks[at / BLOCK_SIZE].has_drop);
+        let keeper = gc.allocate(16).unwrap();
+        let keeper = offset(&gc, keeper);
+        let mut work = Vec::new();
+        gc.mark_allocation(keeper, &mut work);
+        gc.sweep(&[]);
+        let find = |gc: &ImmixAllocator, at| {
+            allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at)
+        };
+        let size = find(&gc, at).expect("dead but still an allocation").1;
+        let mut work = Vec::new();
+        gc.mark_allocation(at + 8, &mut work);
+        assert_eq!(work, vec![(at, size)], "a stale pointer retains it");
+        gc.sweep(&[]);
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -6195,6 +6294,19 @@ mod tests {
         gc.unclaim(small.as_ptr());
         assert!(!gc.is_claimed(small.as_ptr()));
         assert!(gc.claim_for_cycle(small.as_ptr()));
+
+        // By start: the size, whether or not the claim stood already; a
+        // span's lines are all claimed; an interior address is no start.
+        assert_eq!(gc.claim_start(small.as_ptr()), Some(48));
+        assert_eq!(gc.claim_start(span.as_ptr()), Some(3 * LINE_SIZE));
+        assert!(gc.is_claimed(span.as_ptr()));
+        let first = offset(&gc, span) / LINE_SIZE;
+        for line in first..first + 3 {
+            assert!(gc.blocks[line / LINES_PER_BLOCK].is_marked(line % LINES_PER_BLOCK));
+        }
+        assert_eq!(gc.claim_start(span.as_ptr().wrapping_add(LINE_SIZE)), None);
+        assert_eq!(gc.claim_start(ptr::null()), None);
+        gc.unclaim(span.as_ptr());
 
         // The unclaimed span dies with the sweep; the claimed object survives
         // it with its claim cleared for the next cycle.

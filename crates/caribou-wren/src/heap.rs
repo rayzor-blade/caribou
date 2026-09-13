@@ -11,11 +11,12 @@
 //! collection must retain every one of them, and no root of the core's reaches
 //! them. So each record keeps the core starts of its allocations (its pins),
 //! and one core object, the anchor, rooted by a handle, whose trace marks every
-//! pin. A wren_lift cycle claims through the core's own per-cycle claim, drops
-//! and forgets what it did not claim, and ends with a core collection, whose
-//! sweep clears the claims and returns the lines. `WREN_DESC` has a trace hook
-//! and no drop hook: the core traces wren_lift objects precisely wherever it
-//! reaches them and never runs their drop.
+//! pin. A wren_lift cycle marks in a bit of each object's record word; at its
+//! end the marked pins become the core's per-cycle claims, in address order,
+//! the rest are dropped and forgotten, and a core collection, which the anchor
+//! sits out, sweeps: it clears the claims and returns the lines. `WREN_DESC`
+//! has a trace hook and no drop hook: the core traces wren_lift objects
+//! precisely wherever it reaches them and never runs their drop.
 //!
 //! The thread a heap is minted on is an ordinary core mutator, in deferred
 //! mode. A collection another mutator starts waits for it to park, which it
@@ -43,6 +44,21 @@ use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_obje
 /// Bytes before the wren_lift object: the descriptor word and the record
 /// word, padded so the object keeps the allocation's 16-byte alignment.
 const PREFIX: usize = 16;
+/// In the record word: wren_lift has marked the object in the open cycle.
+/// The record is a `Box`, so the bit is free. Cleared by `collect_end`.
+const MARKED: usize = 1;
+
+/// The record word of the core allocation at `start`.
+#[inline(always)]
+fn record_word(start: *mut u8) -> *mut usize {
+    (start as *mut usize).wrapping_add(1)
+}
+
+/// The record the core allocation at `start` belongs to.
+#[inline(always)]
+unsafe fn record_of<'a>(start: *mut u8) -> &'a WrenHeap {
+    unsafe { &*((*record_word(start) & !MARKED) as *const WrenHeap) }
+}
 
 /// One wren_lift heap: the handle `heap_new` mints. Touched only under the
 /// GC lock, which the trace hooks run under too, except the atomics, which
@@ -68,6 +84,9 @@ pub struct WrenHeap {
     /// wren_lift has dropped every object and `heap_drop` is under way: the
     /// pins hold dangling containers, and a trace must not walk them.
     closing: AtomicBool,
+    /// `collect_end` has claimed every pin it kept in the core's side table
+    /// and is collecting: the anchor has nothing to add.
+    claimed: bool,
     live_bytes: usize,
     allocated_bytes: usize,
     freed_bytes: usize,
@@ -135,7 +154,7 @@ fn desc_ptr(d: &'static TypeDesc) -> *mut hl_type {
 /// The core's precise trace of a wren_lift object: its children through
 /// wren_lift's own visitor.
 unsafe extern "C" fn trace_object(obj: *mut u8, tracer: *mut Tracer<'_>) {
-    let rec = unsafe { &*(*(obj as *const usize).add(1) as *const WrenHeap) };
+    let rec = unsafe { record_of(obj) };
     if rec.closing.load(Ordering::Relaxed) {
         return;
     }
@@ -146,9 +165,13 @@ unsafe extern "C" fn mark_child(child: *mut u8, ctx: *mut c_void) {
     unsafe { (*(ctx as *mut Tracer<'_>)).mark(child.wrapping_sub(PREFIX)) };
 }
 
-/// The anchor's trace: every pin of its record.
+/// The anchor's trace: every pin of its record, unless `collect_end` has
+/// just claimed them all itself.
 unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
-    let rec = unsafe { &*(*(obj as *const usize).add(1) as *const WrenHeap) };
+    let rec = unsafe { record_of(obj) };
+    if rec.claimed {
+        return;
+    }
     let tracer = unsafe { &mut *tracer };
     for &start in &rec.pins {
         tracer.mark(start as *const u8);
@@ -174,7 +197,7 @@ unsafe fn resolve(gc: &ImmixAllocator, rec: &WrenHeap, addr: usize) -> Option<(u
     let (start, size) = gc.allocation_containing(addr)?;
     let words = start as *const usize;
     let ours = unsafe { *words == &WREN_DESC as *const TypeDesc as usize }
-        && unsafe { *words.add(1) == rec as *const WrenHeap as usize };
+        && unsafe { *words.add(1) & !MARKED == rec as *const WrenHeap as usize };
     ours.then_some((start, size))
 }
 
@@ -197,6 +220,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         polls: AtomicU64::new(0),
         last_cycle: Instant::now(),
         closing: AtomicBool::new(false),
+        claimed: false,
         live_bytes: 0,
         allocated_bytes: 0,
         freed_bytes: 0,
@@ -211,7 +235,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
     if anchor.is_null() {
         heap::out_of_memory("a wren heap's anchor");
     }
-    unsafe { (anchor as *mut usize).add(1).write(rec as usize) };
+    unsafe { record_word(anchor).write(rec as usize) };
     unsafe { (*rec).anchor = gc.handle_new(anchor) };
     rec as *mut c_void
 }
@@ -249,7 +273,7 @@ pub unsafe extern "C" fn alloc_raw(heap: *mut c_void, size: usize) -> *mut u8 {
         return p;
     }
     let start = p as usize;
-    unsafe { (p as *mut usize).add(1).write(heap as usize) };
+    unsafe { record_word(p).write(heap as usize) };
     let reserved = gc
         .allocation_containing(start)
         .map_or(size + PREFIX, |(_, size)| size);
@@ -277,12 +301,20 @@ pub unsafe extern "C" fn is_heap_ptr(heap: *mut c_void, addr: usize) -> bool {
     unsafe { resolve(&gc, rec, addr) }.is_some()
 }
 
+/// The mark is a bit in the object's own prefix, as cheap as a header byte;
+/// the core's side table hears of it in `collect_end`, in address order.
 pub unsafe extern "C" fn mark_allocation(_heap: *mut c_void, ptr: *mut u8) -> bool {
-    heap::claim_for_cycle(ptr.wrapping_sub(PREFIX))
+    let word = record_word(ptr.wrapping_sub(PREFIX));
+    let w = unsafe { *word };
+    if w & MARKED != 0 {
+        return false;
+    }
+    unsafe { *word = w | MARKED };
+    true
 }
 
 pub unsafe extern "C" fn is_marked(_heap: *mut c_void, ptr: *mut u8) -> bool {
-    heap::is_claimed(ptr.wrapping_sub(PREFIX))
+    unsafe { *record_word(ptr.wrapping_sub(PREFIX)) & MARKED != 0 }
 }
 
 /// A word is a candidate as a raw address and, when its top 14 bits are set,
@@ -353,9 +385,10 @@ pub unsafe extern "C" fn should_collect(heap: *mut c_void) -> bool {
 /// Parks first if another mutator asked for the world: that collection runs
 /// before this cycle opens. Sound because this thread parks only at a
 /// safepoint, and every write wren_lift makes to an object is complete
-/// between two of them. Then holds the GC lock until `collect_end`: the
-/// claims made between are the core's, and a core collection meanwhile
-/// would sweep them away.
+/// between two of them. Then holds the GC lock until `collect_end`: this
+/// thread polls nowhere inside a cycle, so a collection another mutator
+/// started meanwhile would wait on it in vain, and the marks it makes are
+/// read by nothing else.
 pub unsafe extern "C" fn collect_begin(_heap: *mut c_void) {
     heap::gc_safepoint();
     unsafe { heap::lock() };
@@ -366,12 +399,20 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let mut gc = heap::gc_locked();
     let mut live = 0usize;
     let mut dead = Vec::new();
+    // Marked pins become the core's claims, in address order; the rest die.
     unsafe { record_mut(heap) }.pins.retain(|&start| {
-        let size = gc.allocation_containing(start).map_or(0, |(_, size)| size);
-        if gc.is_claimed(start as *const u8) {
-            live += size;
+        let word = record_word(start as *mut u8);
+        let w = unsafe { *word };
+        if w & MARKED != 0 {
+            unsafe { *word = w & !MARKED };
+            live += gc
+                .claim_start(start as *const u8)
+                .expect("a pin is an allocation start");
             true
         } else {
+            let (_, size) = gc
+                .allocation_containing(start)
+                .expect("a pin is an allocation start");
             dead.push((start, size));
             false
         }
@@ -384,23 +425,25 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     }
     // The core's collection is the sweep: it retains the pins, whose claims
     // stand, clears them, and returns the forgotten objects' lines. A
-    // collection the core abandoned leaves the claims for this cycle, and the
-    // next would then see them as already made.
+    // collection the core abandoned leaves the claims standing, and a claim
+    // made outside a collection is withdrawn.
     let before = heap::collections();
+    unsafe { record_mut(heap) }.claimed = true;
     gc.collect_garbage();
     let rec = unsafe { record_mut(heap) };
+    rec.claimed = false;
     if heap::collections() == before {
         for &start in &rec.pins {
             gc.unclaim(start as *const u8);
         }
     }
     rec.trigger.store(gc.trigger_threshold(), Ordering::Relaxed);
-    drop(gc);
     rec.live_bytes = live;
     rec.freed_bytes += freed;
     rec.bytes_since_cycle.store(0, Ordering::Relaxed);
     rec.polls.store(0, Ordering::Relaxed);
     rec.last_cycle = Instant::now();
+    drop(gc);
     unsafe { heap::unlock() };
     live
 }
