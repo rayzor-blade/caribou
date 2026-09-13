@@ -24,6 +24,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ptr;
 
 use wren_lift::intern::SymbolId;
@@ -300,9 +301,11 @@ fn has_method(vm: &VM, recv: WValue, sig: &str) -> bool {
 
 /// `args` as Wren values, or the raise for the first that cannot cross.
 /// Arguments crossed into Wren, with room for a receiver before them. On
-/// the stack for what a compiled body takes in registers, else on the heap.
+/// the stack for what a compiled body takes in registers, else on the
+/// heap. Only the slots in use are written; the lead slots hold null until
+/// the caller fills them.
 struct Args {
-    inline: [WValue; Args::INLINE],
+    inline: [MaybeUninit<WValue>; Args::INLINE],
     spill: Vec<WValue>,
     len: usize,
 }
@@ -310,7 +313,7 @@ struct Args {
 impl Args {
     const INLINE: usize = 10;
 
-    /// `args` crossed, after `lead` empty slots.
+    /// `args` crossed, after `lead` null slots.
     fn cross(vm: &mut VM, lead: usize, args: *const Value, n: usize) -> Result<Args, u8> {
         let args = if n == 0 {
             &[][..]
@@ -319,23 +322,34 @@ impl Args {
         };
         let len = lead + n;
         let mut out = Args {
-            inline: [WValue::null(); Args::INLINE],
+            inline: [MaybeUninit::uninit(); Args::INLINE],
             spill: Vec::new(),
             len,
         };
         if len > Args::INLINE {
             out.spill = vec![WValue::null(); len];
+        } else {
+            for slot in &mut out.inline[..lead] {
+                slot.write(WValue::null());
+            }
         }
         for (i, &arg) in args.iter().enumerate() {
-            out.slice_mut()[lead + i] = cross(vm, arg)?;
+            let v = cross(vm, arg)?;
+            if len > Args::INLINE {
+                out.spill[lead + i] = v;
+            } else {
+                out.inline[lead + i].write(v);
+            }
         }
         Ok(out)
     }
 
     /// Room for a receiver and nothing else.
     fn receiver_only() -> Args {
+        let mut inline = [MaybeUninit::uninit(); Args::INLINE];
+        inline[0].write(WValue::null());
         Args {
-            inline: [WValue::null(); Args::INLINE],
+            inline,
             spill: Vec::new(),
             len: 1,
         }
@@ -345,7 +359,7 @@ impl Args {
         if self.len > Args::INLINE {
             &mut self.spill
         } else {
-            &mut self.inline[..self.len]
+            unsafe { self.inline[..self.len].assume_init_mut() }
         }
     }
 
@@ -353,7 +367,7 @@ impl Args {
         if self.len > Args::INLINE {
             &self.spill
         } else {
-            &self.inline[..self.len]
+            unsafe { self.inline[..self.len].assume_init_ref() }
         }
     }
 }

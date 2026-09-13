@@ -24,6 +24,7 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Arc, RwLock};
@@ -427,12 +428,13 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<Value, *mut vdynamic> {
     } else {
         (ptr::null_mut(), raw)
     };
-    // On the stack, where the conservative scan sees them across the call.
-    let mut args = [Value::null(); MAX_ARGS];
+    // On the stack, where the conservative scan sees them across the call;
+    // only the slots in use are written.
+    let mut args = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
     for (slot, &p) in args.iter_mut().zip(params) {
-        *slot = unsafe { proto::dyn_to_value(p) };
+        slot.write(unsafe { proto::dyn_to_value(p) });
     }
-    let args = &args[..params.len()];
+    let args = unsafe { args[..params.len()].assume_init_ref() };
 
     let result = match s.kind {
         Kind::Method => unsafe { behind(receiver) }

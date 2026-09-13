@@ -112,12 +112,13 @@ fn run_pending_finalizers() {
     }
 }
 
-/// Handles given up inside a collection, by the drop hook of a traced
-/// object that owned one; released at the next outermost lock release, a
-/// hook being unable to take the lock itself.
-static DEFERRED_RELEASES: std::sync::Mutex<Vec<Handle>> = std::sync::Mutex::new(Vec::new());
-static DEFERRED_RELEASE_COUNT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+thread_local! {
+    /// Handles given up inside a collection, by the drop hook of a traced
+    /// object that owned one; released at the next outermost lock release
+    /// on this thread, a hook being unable to take the lock itself. Per
+    /// thread: a hook runs under the lock, on the thread that releases it.
+    static DEFERRED_RELEASES: RefCell<Vec<Handle>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Release `h` once the GC lock is next free: what a drop hook calls for a
 /// handle its object held. Nothing else should; `handle_release` is direct.
@@ -125,18 +126,17 @@ pub fn handle_release_deferred(h: Handle) {
     if h.is_null() {
         return;
     }
-    let mut queue = DEFERRED_RELEASES.lock().unwrap_or_else(|e| e.into_inner());
-    queue.push(h);
-    DEFERRED_RELEASE_COUNT.store(queue.len(), Ordering::Relaxed);
+    DEFERRED_RELEASES.with(|queue| queue.borrow_mut().push(h));
+}
+
+/// Whether this thread has handles queued.
+fn deferred_releases_pending() -> bool {
+    DEFERRED_RELEASES.with(|queue| !queue.borrow().is_empty())
 }
 
 /// Release the handles a collection queued. The GC lock must NOT be held.
 fn release_deferred_handles() {
-    let due = {
-        let mut queue = DEFERRED_RELEASES.lock().unwrap_or_else(|e| e.into_inner());
-        DEFERRED_RELEASE_COUNT.store(0, Ordering::Relaxed);
-        mem::take(&mut *queue)
-    };
+    let due = DEFERRED_RELEASES.with(|queue| mem::take(&mut *queue.borrow_mut()));
     if due.is_empty() {
         return;
     }
@@ -155,7 +155,7 @@ fn gc_lock_release() {
         return;
     }
     loop {
-        let releases = DEFERRED_RELEASE_COUNT.load(Ordering::Relaxed) != 0;
+        let releases = deferred_releases_pending();
         if releases {
             release_deferred_handles();
         }
@@ -6296,7 +6296,7 @@ mod tests {
         }
         assert!(handle_get(h).is_null(), "released with the lock");
         handle_release_deferred(Handle::NULL);
-        assert_eq!(DEFERRED_RELEASE_COUNT.load(Ordering::Relaxed), 0);
+        assert!(!deferred_releases_pending());
     }
 
     #[test]

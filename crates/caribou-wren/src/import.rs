@@ -33,6 +33,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::rc::Rc;
 
 use caribou::bridge;
@@ -61,11 +62,14 @@ use crate::proto::{current_vm, from_wren, to_wren};
 /// Members one installed class can bind.
 pub const SLOTS: usize = 256;
 
-/// The field of every instance that holds the handle.
+/// The fields of every instance: the handle on the object it stands for,
+/// and the object's address, as numbers. The heap does not move, so the
+/// address is good for as long as the handle holds.
 const HANDLE_FIELD: usize = 0;
-/// Its name in the class's field layout: not a name Wren source can spell,
-/// so a subclass's own fields never alias it.
-const HANDLE_FIELD_NAME: &str = "__caribou_handle";
+const OBJECT_FIELD: usize = 1;
+/// Their names in the class's field layout: not names Wren source can
+/// spell, so a subclass's own fields never alias them.
+const FIELD_NAMES: [&str; 2] = ["__caribou_handle", "__caribou_object"];
 
 // ---------------------------------------------------------------------------
 // The per-heap table
@@ -309,12 +313,15 @@ fn blob(iface: &Interface) -> Result<Vec<u8>, serialize::SerializeError> {
         .iter()
         .map(|class| {
             var_names.push(class.name.clone());
-            class_field_names.insert(class.name.clone(), vec![HANDLE_FIELD_NAME.to_owned()]);
+            class_field_names.insert(
+                class.name.clone(),
+                FIELD_NAMES.iter().map(|n| (*n).to_owned()).collect(),
+            );
             ClassMir {
                 name: interner.intern(&class.name),
                 superclass: None,
                 methods: Vec::new(),
-                num_fields: 1,
+                num_fields: FIELD_NAMES.len() as u16,
                 protocols: ProtocolSet::EMPTY,
                 attributes: Vec::new(),
                 native_library: None,
@@ -472,10 +479,13 @@ unsafe fn handle_of(instance: *mut ObjInstance) -> Handle {
     }
 }
 
-/// Root `obj` from `instance`'s field, recording it as live.
+/// Root `obj` from `instance`'s fields, recording it as live.
 fn adopt(rec: &WrenHeap, instance: *mut ObjInstance, obj: *mut u8) {
     let handle = heap::handle_new(obj);
-    unsafe { (*instance).set_field(HANDLE_FIELD, WValue::num(f64::from(handle.as_raw()))) };
+    unsafe {
+        (*instance).set_field(HANDLE_FIELD, WValue::num(f64::from(handle.as_raw())));
+        (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64));
+    }
     rec.imports()
         .borrow_mut()
         .live
@@ -483,18 +493,21 @@ fn adopt(rec: &WrenHeap, instance: *mut ObjInstance, obj: *mut u8) {
 }
 
 /// The object an instance of an installed class stands for, as the bridge
-/// value it crossed as; `None` for an instance of any other class.
+/// value it crossed as; `None` for an instance of any other class, or one
+/// whose constructor never reached the installed class's. Only `adopt`
+/// writes the fields, so a handle in the first means the second is the
+/// object, and no lock or lookup is needed.
 pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
     let ptr = v.as_object()?;
     if unsafe { (*(ptr as *const ObjHeader)).obj_type } != ObjType::Instance {
         return None;
     }
-    let rec = record_for(ptr);
-    if !rec.imports().borrow().live.contains_key(&(ptr as usize)) {
+    let instance = ptr as *mut ObjInstance;
+    if unsafe { handle_of(instance) }.is_null() {
         return None;
     }
-    let obj = heap::handle_get(unsafe { handle_of(ptr as *mut ObjInstance) });
-    (!obj.is_null()).then(|| Value::object(obj as *const c_void))
+    let obj = unsafe { (*instance).get_field(OBJECT_FIELD) }?.as_num()? as usize;
+    (obj != 0).then(|| Value::object(obj as *const c_void))
 }
 
 /// A foreign object as an instance of the class installed for its type,
@@ -711,10 +724,11 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
     let wren = wren_lang();
 
     // Arguments cross first, rooted for the call. On the stack: Wren's
-    // widest signature, with a slot before them for `this`.
+    // widest signature, with a slot before them for `this`; only the slots
+    // in use are written.
     let n = args.len() - 1;
     let mut roots = [Handle::NULL; WIDEST];
-    let mut buf = [Value::null(); WIDEST + 1];
+    let mut buf = [MaybeUninit::<Value>::uninit(); WIDEST + 1];
     if n > WIDEST {
         return Err(format!("{} takes too many arguments", target.name));
     }
@@ -725,13 +739,15 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             }
         }
     };
+    buf[0].write(Value::null());
     for (i, &arg) in args[1..].iter().enumerate() {
         let (v, root) = cross_in(arg);
-        buf[1 + i] = v;
+        buf[1 + i].write(v);
         roots[i] = root;
     }
     let roots = &roots[..n];
-    let crossed = &buf[1..=n];
+    // Slot 0 is `this` for a method and unused otherwise.
+    let with_this = unsafe { buf[..=n].assume_init_mut() };
 
     let result = match target.kind {
         Kind::Ctor => {
@@ -743,7 +759,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
                 recv
             };
             let ptr = instance.as_object().unwrap() as *mut ObjInstance;
-            let made = bridge::call_named(target.callable, crossed, wren, &target.name);
+            let made = bridge::call_named(target.callable, &with_this[1..], wren, &target.name);
             release(roots);
             let made = made.map_err(message_of)?;
             let Some(haxe) = made.as_object().filter(|p| !p.is_null()) else {
@@ -757,7 +773,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             return Ok(instance);
         }
         Kind::Static => {
-            let r = bridge::call_named(target.callable, crossed, wren, &target.name);
+            let r = bridge::call_named(target.callable, &with_this[1..], wren, &target.name);
             release(roots);
             r
         }
@@ -768,7 +784,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             })?;
             let r = match target.kind {
                 Kind::Call => {
-                    bridge::call_named(Callable::Dynamic(this), crossed, wren, &target.name)
+                    bridge::call_named(Callable::Dynamic(this), &with_this[1..], wren, &target.name)
                 }
                 _ => match bridge::arity(this) {
                     Some(n) => Ok(Value::number(n as f64)),
@@ -788,8 +804,8 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             };
             let r = match target.kind {
                 Kind::ClassGetter(_) => bridge::get_at(class_object, name, &target.site, wren),
-                _ => bridge::set_at(class_object, name, &target.site, crossed[0], wren)
-                    .map(|()| crossed[0]),
+                _ => bridge::set_at(class_object, name, &target.site, with_this[1], wren)
+                    .map(|()| with_this[1]),
             };
             release(roots);
             r
@@ -801,14 +817,12 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             })?;
             let r = match target.kind {
                 Kind::Method => {
-                    let mut with_this = buf;
                     with_this[0] = this;
-                    bridge::call_named(target.callable, &with_this[..=n], wren, &target.name)
+                    bridge::call_named(target.callable, with_this, wren, &target.name)
                 }
                 Kind::Getter(name) => bridge::get_at(this, name, &target.site, wren),
-                Kind::Setter(name) => {
-                    bridge::set_at(this, name, &target.site, crossed[0], wren).map(|()| crossed[0])
-                }
+                Kind::Setter(name) => bridge::set_at(this, name, &target.site, with_this[1], wren)
+                    .map(|()| with_this[1]),
                 _ => unreachable!(),
             };
             release(roots);
@@ -915,14 +929,11 @@ mod tests {
         let decoded = serialize::load(&bytes).unwrap();
         assert_eq!(decoded.var_names, ["Player"]);
         assert_eq!(decoded.var_sources, [None]);
-        assert_eq!(
-            decoded.class_field_names["Player"],
-            [HANDLE_FIELD_NAME.to_owned()]
-        );
+        assert_eq!(decoded.class_field_names["Player"], FIELD_NAMES);
         assert_eq!(decoded.module.classes.len(), 1);
         let class = &decoded.module.classes[0];
         assert_eq!(decoded.interner.resolve(class.name), "Player");
-        assert_eq!(class.num_fields, 1);
+        assert_eq!(class.num_fields as usize, FIELD_NAMES.len());
         assert!(class.methods.is_empty() && class.foreign_methods.is_empty());
         assert!(class.native_library.is_none() && class.superclass.is_none());
         assert!(decoded.module.closures.is_empty());

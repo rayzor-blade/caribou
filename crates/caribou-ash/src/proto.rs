@@ -23,6 +23,7 @@
 //! exception as its native payload, and the entry answers `Raised`.
 
 use std::ffi::c_void;
+use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -606,10 +607,26 @@ unsafe fn direct_call(
     if n > MAX_ARGS {
         return None;
     }
-    let mut ints = [0i64; MAX_ARGS];
-    let mut f32s = [0f32; MAX_ARGS];
-    let mut f64s = [0f64; MAX_ARGS];
-    let mut kinds = [0u8; MAX_ARGS];
+    // Only the first `n` of each are read; what is not an argument's own
+    // register file is left as it is.
+    let mut ints = [MaybeUninit::<i64>::uninit(); MAX_ARGS];
+    let mut f32s = [MaybeUninit::<f32>::uninit(); MAX_ARGS];
+    let mut f64s = [MaybeUninit::<f64>::uninit(); MAX_ARGS];
+    let mut kinds = [MaybeUninit::<u8>::uninit(); MAX_ARGS];
+    for i in 0..n {
+        ints[i].write(0);
+        f32s[i].write(0.0);
+        f64s[i].write(0.0);
+        kinds[i].write(0);
+    }
+    let (ints, f32s, f64s, kinds) = unsafe {
+        (
+            ints[..n].assume_init_mut(),
+            f32s[..n].assume_init_mut(),
+            f64s[..n].assume_init_mut(),
+            kinds[..n].assume_init_mut(),
+        )
+    };
     if let Some(value) = bound {
         ints[0] = value as i64;
     }
@@ -678,14 +695,7 @@ unsafe fn direct_call(
     let mut raw: Option<i64> = None;
     let call = trapped(|| {
         raw = unsafe {
-            ash_native_call::dispatch(
-                func as *mut c_void,
-                &ints[..n],
-                &f32s[..n],
-                &f64s[..n],
-                &kinds[..n],
-                ret_code,
-            )
+            ash_native_call::dispatch(func as *mut c_void, ints, f32s, f64s, kinds, ret_code)
         };
     });
     match call {
@@ -1305,10 +1315,13 @@ fn invoke_at_opt(
         // `this` first; on the stack for what a compiled body takes.
         let this = Value::object(obj as *const c_void);
         if n < 10 {
-            let mut with_this = [Value::null(); 10];
-            with_this[0] = this;
-            with_this[1..=n].copy_from_slice(args);
-            return unsafe { dispatch(func, sig, with_this.as_ptr(), n + 1, out) };
+            let mut with_this = [MaybeUninit::<Value>::uninit(); 10];
+            with_this[0].write(this);
+            for (slot, &arg) in with_this[1..=n].iter_mut().zip(args) {
+                slot.write(arg);
+            }
+            let with_this = with_this.as_ptr().cast::<Value>();
+            return unsafe { dispatch(func, sig, with_this, n + 1, out) };
         }
         let mut with_this = Vec::with_capacity(n + 1);
         with_this.push(this);
