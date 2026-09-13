@@ -21,3 +21,7 @@ wren_lift = { path = "../../../wren_lift" }
 
 [lib]
 crate-type = ["rlib"]
+
+[[bench]]
+name = "interop"
+harness = false

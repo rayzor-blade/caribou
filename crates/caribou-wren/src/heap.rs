@@ -429,6 +429,25 @@ pub unsafe extern "C" fn track_external(_heap: *mut c_void, bytes: usize) {
     heap::track_external(bytes as u64);
 }
 
+/// Have `object_drop` run for the plain allocation at `ptr` once a cycle
+/// finds it dead, as for a raw one: its plain bit is cleared, which is
+/// all the sweep consults. False when `ptr` is not a plain allocation of
+/// this heap.
+pub unsafe extern "C" fn watch(heap: *mut c_void, ptr: *mut u8) -> bool {
+    let rec = unsafe { record(heap) };
+    let start = ptr.wrapping_sub(PREFIX);
+    if !owns_start(rec, start as usize) {
+        return false;
+    }
+    let word = record_word(start);
+    let w = unsafe { *word };
+    if w & PLAIN == 0 {
+        return false;
+    }
+    unsafe { *word = w & !PLAIN };
+    true
+}
+
 /// True when this record has allocated a threshold's worth since its last
 /// cycle, the core's trigger is due, a trigger was deferred out of an
 /// allocation, or the heartbeat has elapsed with something allocated.

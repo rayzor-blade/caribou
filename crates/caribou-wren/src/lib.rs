@@ -132,6 +132,7 @@ fn table() -> RuntimeVTable {
         is_marked: Some(heap::is_marked),
         scan_range: Some(heap::scan_range),
         track_external: Some(heap::track_external),
+        watch: Some(heap::watch),
         should_collect: Some(heap::should_collect),
         collect_begin: Some(heap::collect_begin),
         collect_end: Some(heap::collect_end),

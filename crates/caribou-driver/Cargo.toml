@@ -10,6 +10,7 @@ description = "Runs a Caribou program: one world with every resident language, f
 [dependencies]
 anyhow = "1"
 caribou = { path = "../caribou", features = ["serde"] }
+caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash", features = ["runner"] }
 caribou-wren = { path = "../caribou-wren", features = ["runner"] }
 serde_json = "1"

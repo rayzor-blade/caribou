@@ -99,6 +99,9 @@ target/debug/caribou-ash --mode hybrid game.hl
 target/debug/caribou-wren --mode tiered script.wren
 ```
 
+`cargo bench -p caribou-interop` times a call across the bridge in each
+direction beside the same call inside each language, per operation.
+
 The Haxe library lives in `haxe/`. Until it is published, register the
 checkout once with `haxelib dev caribou haxe`; a program then builds with
 `-lib caribou`, and the library finds the `caribou` command on the path or

@@ -26,6 +26,7 @@
 //! answering. That is how a program's first use of a module loads it.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
 use caribou_abi::{LangId, Value};
@@ -167,6 +168,17 @@ static TABLE: LazyLock<RwLock<Table>> = LazyLock::new(|| {
 
 static NAMESPACES: RwLock<Vec<Namespace>> = RwLock::new(Vec::new());
 
+/// Bumped by every `publish`: what a cached lookup checks before trusting
+/// what it holds.
+static GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// The registry's generation: it changes whenever an interface is
+/// published, so anything resolved under one generation is still right
+/// while it lasts.
+pub fn generation() -> u64 {
+    GENERATION.load(Ordering::Acquire)
+}
+
 /// Install the world's namespace table, replacing the previous one.
 pub(crate) fn set_namespaces(namespaces: Vec<Namespace>) {
     *NAMESPACES.write().unwrap() = namespaces;
@@ -244,6 +256,7 @@ pub fn publish(iface: Interface) -> Result<(), RegisterError> {
     let lang_name = world::language_name(iface.lang);
     let namespaces = NAMESPACES.read().unwrap();
     let mut table = TABLE.write().unwrap();
+    GENERATION.fetch_add(1, Ordering::AcqRel);
     for ns in namespaces.iter().filter(|ns| ns.langs.contains(&lang_name)) {
         let mine = import_names(ns, &iface.module);
         if mine.is_empty() {

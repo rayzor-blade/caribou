@@ -25,7 +25,7 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(feature = "runner")]
 use anyhow::{Result, anyhow, bail};
@@ -38,7 +38,7 @@ use ash_interp::interpreter::HLInterpreter;
 use ash_std::error::hlp_throw;
 use ash_std::obj::{hlp_alloc_obj, hlp_get_obj_rt};
 use caribou::bridge;
-use caribou::protocol::Symbol;
+use caribou::protocol::{Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
 use caribou::symbol::intern;
 use caribou_abi::hl::{self, hl_type, vdynamic};
@@ -87,6 +87,34 @@ struct Slot {
     /// setter: what the bridge is asked for.
     member: Symbol,
     kind: Kind,
+    /// What a static or a constructor resolved to, under the registry
+    /// generation it was resolved in: good until something publishes.
+    resolved: Mutex<Option<(u64, Callable)>>,
+}
+
+// The callable's pointers belong to the publishing language's program,
+// which outlives the slot; the same rule an `Interface` is shared under.
+unsafe impl Send for Slot {}
+unsafe impl Sync for Slot {}
+
+impl Slot {
+    /// The callable a static or constructor slot reaches, resolved once
+    /// per registry generation.
+    fn target(
+        &self,
+        resolve: impl FnOnce() -> Result<Callable, String>,
+    ) -> Result<Callable, String> {
+        let generation = registry::generation();
+        let mut cached = self.resolved.lock().unwrap();
+        if let Some((at, target)) = *cached
+            && at == generation
+        {
+            return Ok(target);
+        }
+        let target = resolve()?;
+        *cached = Some((generation, target));
+        Ok(target)
+    }
 }
 
 /// Every slot ever bound: a slot's address is a native's context word for
@@ -146,6 +174,7 @@ fn slot_for(name: &str) -> Result<Slot, String> {
         class,
         member: intern(&member),
         kind,
+        resolved: Mutex::new(None),
     })
 }
 
@@ -381,8 +410,9 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<*mut vdynamic, *mut vdy
             .and_then(|target| {
                 bridge::set(target, s.member, args[0], haxe).map(|()| Value::null())
             }),
-        Kind::Static => published(&s)
-            .and_then(|(iface, index)| {
+        Kind::Static => s
+            .target(|| {
+                let (iface, index) = published(s)?;
                 static_member(&iface.classes[index], s.member)
                     .map(|m| m.target)
                     .ok_or_else(|| {
@@ -397,8 +427,9 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<*mut vdynamic, *mut vdy
             })
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| bridge::call_named(target, args, haxe, &s.name)),
-        Kind::Init => published(&s)
-            .and_then(|(iface, index)| {
+        Kind::Init => s
+            .target(|| {
+                let (iface, index) = published(s)?;
                 iface.classes[index]
                     .ctor
                     .as_ref()

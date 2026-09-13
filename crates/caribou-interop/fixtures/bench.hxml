@@ -1,0 +1,6 @@
+# The interop benchmark's program. Rebuild with `haxe bench.hxml` (Haxe
+# 4.3.6) from this directory; bench.hl is checked in.
+-cp src
+-lib caribou
+-main Bench
+-hl bench.hl
