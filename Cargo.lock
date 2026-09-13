@@ -437,7 +437,20 @@ dependencies = [
  "ash_std",
  "caribou",
  "caribou_abi",
+ "cc",
  "libc",
+]
+
+[[package]]
+name = "caribou-interop"
+version = "0.1.0"
+dependencies = [
+ "ash_std",
+ "caribou",
+ "caribou-ash",
+ "caribou-wren",
+ "caribou_abi",
+ "wren_lift",
 ]
 
 [[package]]

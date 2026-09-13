@@ -1,0 +1,21 @@
+[package]
+name = "caribou-interop"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Cross-language proofs: both adapters in one process, values crossing between them"
+
+# Tests only. Nightly, like caribou-ash: ash_std needs it.
+
+[dependencies]
+
+[dev-dependencies]
+caribou = { path = "../caribou" }
+caribou_abi = { workspace = true }
+caribou-ash = { path = "../caribou-ash" }
+caribou-wren = { path = "../caribou-wren" }
+ash_std = { path = "../../../ash/std" }
+wren_lift = { path = "../../../wren_lift" }
+
+[lib]
+crate-type = ["rlib"]

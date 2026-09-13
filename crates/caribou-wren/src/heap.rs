@@ -43,7 +43,7 @@ use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_obje
 
 /// Bytes before the wren_lift object: the descriptor word and the record
 /// word, padded so the object keeps the allocation's 16-byte alignment.
-const PREFIX: usize = 16;
+pub(crate) const PREFIX: usize = 16;
 /// In the record word: wren_lift has marked the object in the open cycle.
 /// The record is a `Box`, so the bit is free. Cleared by `collect_end`.
 const MARKED: usize = 1;
@@ -142,13 +142,35 @@ const fn desc(name: &'static str, trace: TraceFn) -> TypeDesc {
     d
 }
 
-/// Word zero of every wren_lift object's allocation.
-static WREN_DESC: TypeDesc = desc("wren object", trace_object);
+/// Word zero of every wren_lift object's allocation. Mutable for one field:
+/// `lang` is the id the world assigns, written by `set_wren_lang` before the
+/// first VM exists and read from then on.
+static mut WREN_DESC: TypeDesc = {
+    let mut d = desc("wren object", trace_object);
+    d.protocol = &crate::proto::WREN_PROTO;
+    d
+};
 /// Word zero of a record's anchor.
 static ANCHOR_DESC: TypeDesc = desc("wren heap", trace_anchor);
 
-fn desc_ptr(d: &'static TypeDesc) -> *mut hl_type {
-    d as *const TypeDesc as *mut hl_type
+/// The descriptor every wren_lift object carries.
+pub(crate) fn wren_desc() -> *const TypeDesc {
+    &raw const WREN_DESC
+}
+
+/// The language id of Wren objects, as the world assigned it.
+pub(crate) fn wren_lang() -> u32 {
+    unsafe { (*wren_desc()).lang }
+}
+
+/// Record the world's id for Wren. Before any VM allocates: a descriptor is
+/// read by every collection and every message from then on.
+pub(crate) fn set_wren_lang(lang: u32) {
+    unsafe { WREN_DESC.lang = lang };
+}
+
+fn desc_ptr(d: *const TypeDesc) -> *mut hl_type {
+    d as *mut hl_type
 }
 
 /// The core's precise trace of a wren_lift object: its children through
@@ -196,7 +218,7 @@ unsafe fn record_mut<'a>(heap: *mut c_void) -> &'a mut WrenHeap {
 unsafe fn resolve(gc: &ImmixAllocator, rec: &WrenHeap, addr: usize) -> Option<(usize, usize)> {
     let (start, size) = gc.allocation_containing(addr)?;
     let words = start as *const usize;
-    let ours = unsafe { *words == &WREN_DESC as *const TypeDesc as usize }
+    let ours = unsafe { *words == wren_desc() as usize }
         && unsafe { *words.add(1) & !MARKED == rec as *const WrenHeap as usize };
     ours.then_some((start, size))
 }
@@ -264,7 +286,7 @@ pub unsafe extern "C" fn alloc_raw(heap: *mut c_void, size: usize) -> *mut u8 {
     let gc = heap::gc_locked_init();
     let p = unsafe {
         heap::alloc_gen(
-            desc_ptr(&WREN_DESC),
+            desc_ptr(wren_desc()),
             size + PREFIX,
             mem::KIND_DYNAMIC | mem::TRACED,
         )

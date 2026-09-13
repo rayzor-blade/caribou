@@ -26,6 +26,10 @@ anyhow = { version = "1", optional = true }
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
+[build-dependencies]
+# One C function: the setjmp frame a HashLink trap needs (src/trap.c).
+cc = "1"
+
 [lib]
 crate-type = ["rlib"]
 

@@ -44,6 +44,7 @@ native-call marshaling.
 | `caribou` | The core. Depends on `caribou_abi`, `ariadne` for rendering diagnostics, `libc` on unix, `windows-sys` on Windows. Stable Rust. |
 | `caribou-ash` | Ash's adapter: `install()` fills `ash_std::rt` with the core's heap and scheduler, and the `caribou-ash` binary (feature `runner`) runs a `.hl` on ash's interpreter over the core, or with `--no-install` on ash's own runtime for A/B. Depends on ash by path until ash is published; builds on nightly, as ash_std does. |
 | `caribou-wren` | WrenLift's adapter: `install()` fills `wren_lift::runtime::rt`, the memory under its Immix strategy, with the core's heap, and the `caribou-wren` binary (feature `runner`) runs a `.wren` on WrenLift's interpreter or tiered JIT over the core, or with `--no-install` on WrenLift's own heap for A/B. Depends on wren_lift by path until it is published; stable Rust. |
+| `caribou-interop` | Tests only: both adapters in one process, values crossing between them through the bridge. Nightly, as caribou-ash is. |
 
 ## Heap
 
@@ -341,9 +342,9 @@ is the adapter's to keep, with one `schedule_step` after spawning.
 
 `caribou::protocol` is the message set, `caribou::symbol` the names,
 `caribou::error` the error value, `caribou::bridge` the call, and
-`caribou::diag` the report a driver prints. What is not built yet is the
-adapter side: no runtime implements the protocol for its own types or
-registers a typed dispatcher.
+`caribou::diag` the report a driver prints. Each adapter supplies its half:
+the protocol for its own objects, and for Ash the typed dispatcher
+(see "Adapters" below).
 
 ### Values at the boundary
 
@@ -438,8 +439,8 @@ signature and the language it belongs to. The bridge does not marshal such a
 call itself: each language registers a `TypedDispatch` with
 `set_typed_dispatch`, a C-ABI function that takes the function, the
 signature, the arguments as `Value`s and an out slot, and answers a reply
-code. Ash will register its `ash_native_call` and `ash_static_call`
-marshalling under its own id. The core registers a default for `LANG_CORE`
+code. Ash registers one that goes through its own `hlp_dyn_call`, under its
+own id. The core registers a default for `LANG_CORE`
 that covers what the core's own callables and the tests need: up to four
 arguments of kinds `HI32`, `HBOOL`, `HF64` and `HDYN`, returning `HVOID`,
 `HI32`, `HBOOL`, `HF64` or `HDYN`, by transmuting the function to the C type
@@ -489,6 +490,66 @@ source id to its text, implemented over a map in tests and over module
 tables in adapters; a label whose source cannot be found is written as a
 note. `render_string` returns the same as a string. Language names come
 from the process-wide table `World::register` fills, `world::language_name`.
+
+### Adapters
+
+Each adapter's `Runtime` implements `world::Adapter` with one language,
+`haxe` or `wren`. `World::register` hands it an id; the adapter writes the
+id into the descriptor its objects carry, and Ash also registers its typed
+dispatcher under it. The order is fixed: both seams (`caribou_ash::install`,
+`caribou_wren::install`) before either runtime allocates, then the world
+and its registrations, then the first VM. Registration comes before the VM
+because the id it writes is read from the descriptor by every message and
+every collection from then on.
+
+A Haxe object crosses wrapped. Its word zero is a bare `hl_type`, which has
+no protocol slot, so `caribou_ash::wrap` makes a `HaxeRef`: a two-word core
+object under a static descriptor whose trace hook marks the object and
+whose protocol reaches it through ash's own dynamic access. `get_member`
+and `set_member` go through `hlp_dyn_getp` and `hlp_dyn_setp`, by the
+field hash `hlp_hash_gen` gives the symbol's name, computed once per
+symbol. `invoke` finds the method on the runtime's lookup chain and calls
+it through the typed dispatcher with the object as `this`. `call` runs a
+closure through `hlp_dyn_call`, and `to_string` is `hlp_value_to_string`.
+`equals` and `hash` are the wrapped object's identity, so two wrappers of
+one object compare equal and no cache is kept. `unwrap` gives the object
+back. Sequence access is not answered yet.
+
+Ash's dispatcher builds a `vclosure` without a bound value around the code
+pointer and its signature, boxes each argument by the signature's kind into
+the `vdynamic` `hlp_dyn_call` takes (an object argument is the wrapped
+object itself), and unboxes the result by the return kind. Every call into
+Haxe code runs under a HashLink trap whose setjmp frame is a C function of
+the adapter's own (`trap.c`), armed with `hlp_setup_trap_jit`, so a
+`hl_throw` inside lands there instead of unwinding through Rust. The thrown
+value becomes a core `Error`: a bytes value is the runtime's own error and
+its kind is read from the message (`Null access`, out of bounds, divide by
+zero), a String or any other object is a `User` error; the exception itself
+is the error's native payload, wrapped, so it is the same object when it
+returns to Haxe.
+
+A Wren object crosses as its own core address: the start of the prefixed
+allocation, where word zero is the shared `WREN_DESC`, sixteen bytes before
+the address wren_lift holds. `caribou_wren::wrap` and `unwrap` translate,
+and every protocol entry adds the prefix back before touching the object.
+A core int becomes a Wren number on the way in, Wren having no other, and
+a core string becomes a Wren string; an object of another language cannot
+enter Wren yet. The protocol answers through the runtime's own methods by
+Wren's signature convention: `get_member` is the getter `name`, else an
+instance field of that name; `set_member` is `name=(_)`; `invoke` is
+`name(_,_)` by arity, falling back to the getter for an arity of zero;
+`call` runs a closure; `index`, `set_index`, `len` and `iterate` are `[_]`,
+`[_]=(_)`, `count` and `iterate(_)` with `iteratorValue(_)`. A method the
+class lacks raises Wren's own `does not implement` error. wren_lift's error
+is a message string, so a Wren error crossing the bridge is a core `Error`
+whose native payload is that message as a Wren string, rooted by a VM
+handle; no Wren object is an error by itself.
+
+The Wren entries run on a VM, and `install` cannot know it. Whoever creates
+a VM enters it: `enter_vm` and `leave_vm` around a run, or `with_vm` around
+a call that may reach Wren objects; the runner enters its VM for the whole
+run. An entry with no VM entered falls back to the one wren_lift reports as
+dispatching, and raises an `Internal` error if there is none.
 
 ## Worlds and tasks
 

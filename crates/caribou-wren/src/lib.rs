@@ -8,13 +8,61 @@
 //! stays wren_lift's: its object layouts, its precise trace, its roots and its
 //! cycle; the two slots it fills for a host, `object_trace` and `object_drop`,
 //! are left to it.
+//!
+//! The other half is the bridge (`proto.rs`): the object protocol every Wren
+//! object answers through the descriptor in its prefix, the conversions
+//! between wren_lift's values and the core's, and the VM the entries run on.
+//! [`Runtime`] registers Wren with a world.
 
 mod heap;
+mod proto;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use caribou::world::Adapter;
+use caribou_abi::LangId;
 use wren_lift::runtime::rt::{RuntimeVTable, wlift_rt_install};
+
+pub use proto::{current_vm, enter_vm, from_wren, leave_vm, to_wren, unwrap, with_vm, wrap};
+
+/// Wren as a resident of a world: one language, `wren`. Registering it gives
+/// Wren objects their language id; do so before the first VM allocates, and
+/// after [`install`].
+#[derive(Default)]
+pub struct Runtime {
+    lang: Option<LangId>,
+}
+
+impl Runtime {
+    pub fn new() -> Runtime {
+        Runtime::default()
+    }
+
+    /// The id the world assigned, once registered.
+    pub fn lang(&self) -> Option<LangId> {
+        self.lang
+    }
+}
+
+impl Adapter for Runtime {
+    fn languages(&self) -> Vec<String> {
+        vec!["wren".to_owned()]
+    }
+
+    fn assign_languages(&mut self, ids: &[LangId]) {
+        self.lang = ids.first().copied();
+        if let Some(&id) = ids.first() {
+            heap::set_wren_lang(id);
+        }
+    }
+}
+
+/// The language id Wren objects carry: what the world assigned through
+/// [`Runtime`], or the core's id before any registration.
+pub fn lang() -> LangId {
+    heap::wren_lang()
+}
 
 /// Why an install did not happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

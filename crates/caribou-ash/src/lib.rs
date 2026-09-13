@@ -7,15 +7,62 @@
 //! Haxe program's objects live in the core's heap and its threads are the
 //! core's tasks. Nothing in Ash names this crate.
 //!
+//! The other half is the bridge (`proto.rs`): the typed dispatcher for
+//! Haxe callables, the wrapper a Haxe object crosses in and the protocol it
+//! answers. [`Runtime`] registers Haxe with a world and the dispatcher with
+//! the bridge.
+//!
 //! Builds with `cargo +nightly`: ash_std needs it. The core stays stable.
 
 mod heap;
+mod proto;
 mod sched;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ash_std::rt::RuntimeVTable;
+use caribou::world::Adapter;
+use caribou_abi::LangId;
+
+pub use proto::{lang, unwrap, wrap};
+
+/// Haxe as a resident of a world: one language, `haxe`. Registering it
+/// gives Haxe objects their language id and the bridge its typed
+/// dispatcher; do so before any Haxe object crosses.
+#[derive(Default)]
+pub struct Runtime {
+    lang: Option<LangId>,
+}
+
+impl Runtime {
+    pub fn new() -> Runtime {
+        Runtime::default()
+    }
+
+    /// The id the world assigned, once registered.
+    pub fn lang(&self) -> Option<LangId> {
+        self.lang
+    }
+}
+
+impl Adapter for Runtime {
+    fn languages(&self) -> Vec<String> {
+        vec!["haxe".to_owned()]
+    }
+
+    fn assign_languages(&mut self, ids: &[LangId]) {
+        let Some(&id) = ids.first() else {
+            return;
+        };
+        self.lang = Some(id);
+        proto::set_lang(id);
+        caribou::bridge::set_typed_dispatch(id, proto::dispatch);
+        // The dynamic-call hook `hlp_dyn_call` reaches native code through;
+        // ash's own startup installs the same one, so this is idempotent.
+        unsafe { ash_std::fun::hlp_install_static_call() };
+    }
+}
 
 /// Why an install did not happen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

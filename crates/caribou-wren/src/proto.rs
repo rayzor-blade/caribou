@@ -1,0 +1,619 @@
+//! The object protocol for Wren objects, and the value conversions under it.
+//!
+//! A Wren object crosses the bridge as its core address: the start of the
+//! prefixed allocation, where word zero is [`WREN_DESC`](crate::heap). Every
+//! entry here receives that address and adds `PREFIX` to reach wren_lift's
+//! object; `from_wren` and `to_wren` translate at every edge, so wren_lift
+//! never sees a core address and the core never sees a wren_lift one.
+//!
+//! Every message is answered through the runtime's own methods, by Wren's
+//! signature convention (`name`, `name=(_)`, `name(_,_)`, `[_]`, `count`,
+//! `iterate(_)`), so a Wren class answers the protocol exactly as it answers
+//! Wren code. A runtime error inside an entry is the VM's pending message;
+//! it becomes a core `Error` whose native payload is that message as a Wren
+//! string, rooted by a VM handle, and the entry answers `Raised`.
+//!
+//! The entries need the VM. It is the one entered on this thread with
+//! `enter_vm` or `with_vm`, falling back to the VM wren_lift itself reports
+//! as dispatching.
+
+use std::cell::Cell;
+use std::ffi::c_void;
+use std::ptr;
+
+use caribou::bridge;
+use caribou::error::{Error, Str};
+use caribou::protocol::{Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Symbol, desc_of};
+use caribou_abi::{ErrorKind, Value};
+use wren_lift::runtime::object::{
+    NativeContext, ObjClass, ObjClosure, ObjForeign, ObjHeader, ObjInstance, ObjString, ObjType,
+};
+use wren_lift::runtime::value::Value as WValue;
+use wren_lift::runtime::vm::{self, VM};
+
+use crate::heap::{PREFIX, wren_desc, wren_lang};
+
+// ---------------------------------------------------------------------------
+// The VM the entries use
+// ---------------------------------------------------------------------------
+
+thread_local! {
+    static VM_HERE: Cell<*mut VM> = const { Cell::new(ptr::null_mut()) };
+}
+
+/// Make `vm` the VM the protocol entries use on this thread until
+/// [`leave_vm`]; returns the VM entered before it, for `leave_vm`.
+///
+/// # Safety
+/// `vm` must outlive its entry and be used on this thread only; an entry
+/// borrows it mutably for the length of one message.
+pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
+    VM_HERE.with(|cell| cell.replace(vm))
+}
+
+/// Restore what [`enter_vm`] replaced.
+pub fn leave_vm(previous: *mut VM) {
+    VM_HERE.with(|cell| cell.set(previous));
+}
+
+/// Run `f` with `vm` entered. Messages the bridge delivers to Wren objects
+/// while `f` runs reach this VM.
+pub fn with_vm<R>(vm: &mut VM, f: impl FnOnce(&mut VM) -> R) -> R {
+    let previous = unsafe { enter_vm(vm) };
+    let result = f(vm);
+    leave_vm(previous);
+    result
+}
+
+/// The VM entered on this thread, else the one wren_lift is dispatching on;
+/// null when there is neither.
+pub fn current_vm() -> *mut VM {
+    let entered = VM_HERE.with(Cell::get);
+    if entered.is_null() {
+        vm::current_vm_ptr()
+    } else {
+        entered
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Values
+// ---------------------------------------------------------------------------
+
+/// A wren_lift value as a core value: an object by its core address, every
+/// other value bit for bit (the layouts agree on null, the booleans, numbers
+/// and the object tag).
+pub fn from_wren(v: WValue) -> Value {
+    match v.as_object() {
+        Some(p) => Value::object(p.wrapping_sub(PREFIX) as *const c_void),
+        None => Value::from_bits(v.to_bits()),
+    }
+}
+
+/// A core value as a wren_lift value. An int becomes a number, Wren having
+/// no other; a Wren object is translated back; a core `Str` becomes a Wren
+/// string. `None` for an object of another language, which Wren cannot hold
+/// yet.
+pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
+    if let Some(n) = v.as_int() {
+        return Some(WValue::num(f64::from(n)));
+    }
+    let Some(p) = v.as_object() else {
+        return Some(WValue::from_bits(v.to_bits()));
+    };
+    if p.is_null() {
+        return Some(WValue::null());
+    }
+    let p = p as *mut u8;
+    if ptr::eq(unsafe { desc_of(p) }, wren_desc()) {
+        return Some(WValue::object(p.wrapping_add(PREFIX)));
+    }
+    let text = unsafe { Str::text(v) }?;
+    Some(vm.alloc_string(text.to_owned()))
+}
+
+/// [`from_wren`], for a host handing a Wren value to the bridge.
+pub fn wrap(v: WValue) -> Value {
+    from_wren(v)
+}
+
+/// [`to_wren`], for a host taking a bridge value into Wren.
+pub fn unwrap(vm: &mut VM, v: Value) -> Option<WValue> {
+    to_wren(vm, v)
+}
+
+/// wren_lift's object at the core address `obj`.
+#[inline(always)]
+unsafe fn wren_ptr(obj: *mut u8) -> *mut u8 {
+    unsafe { obj.add(PREFIX) }
+}
+
+unsafe fn receiver(obj: *mut u8) -> WValue {
+    WValue::object(unsafe { wren_ptr(obj) })
+}
+
+unsafe fn obj_type(obj: *mut u8) -> ObjType {
+    unsafe { (*(wren_ptr(obj) as *const ObjHeader)).obj_type }
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+/// A Wren runtime message's place in the core's list. wren_lift keeps one
+/// message string for every error, so `Fiber.abort` is not told apart from
+/// the runtime's own.
+fn kind_of(message: &str) -> ErrorKind {
+    if message.starts_with("Null does not implement") {
+        ErrorKind::NullAccess
+    } else if message.contains("out of bounds") {
+        ErrorKind::Index
+    } else if message.starts_with("Stack overflow") || message == "stack overflow" {
+        ErrorKind::StackOverflow
+    } else {
+        ErrorKind::Runtime
+    }
+}
+
+/// Raise `message` as a Wren error: a core `Error` of Wren's language whose
+/// native payload is the message as a Wren string. The string is rooted by
+/// a VM handle, since nothing on Wren's side reaches it.
+fn raise_wren(vm: &mut VM, message: String) -> u8 {
+    let kind = kind_of(&message);
+    let native = vm.alloc_string(message.clone());
+    vm.make_handle(native);
+    let e = Error::new(kind, &message, wren_lang());
+    unsafe { Error::set_native(e, from_wren(native)) };
+    bridge::raise(e)
+}
+
+fn raise_core(kind: ErrorKind, message: &str) -> u8 {
+    bridge::raise(Error::new(kind, message, wren_lang()))
+}
+
+/// The VM's pending error, taken, as a raise; `None` when there is none.
+fn take_error(vm: &mut VM) -> Option<u8> {
+    if !vm.has_error {
+        return None;
+    }
+    vm.has_error = false;
+    let message = vm
+        .last_error
+        .take()
+        .unwrap_or_else(|| "Runtime error.".to_owned());
+    Some(raise_wren(vm, message))
+}
+
+/// The VM this entry runs on, or the raise to answer with.
+fn vm_here() -> Result<&'static mut VM, u8> {
+    let vm = current_vm();
+    if vm.is_null() {
+        return Err(raise_core(
+            ErrorKind::Internal,
+            "no Wren VM is entered on this thread",
+        ));
+    }
+    Ok(unsafe { &mut *vm })
+}
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+/// Wren's signature for `name` taking `arity` arguments: `name()`,
+/// `name(_)`, `name(_,_)`.
+fn signature(name: &str, arity: usize) -> String {
+    let mut sig = String::with_capacity(name.len() + 2 * arity + 2);
+    sig.push_str(name);
+    sig.push('(');
+    for i in 0..arity {
+        if i > 0 {
+            sig.push(',');
+        }
+        sig.push('_');
+    }
+    sig.push(')');
+    sig
+}
+
+/// Whether `recv`'s class answers `sig`: on the class, or as a static when
+/// the receiver is itself a class.
+fn has_method(vm: &VM, recv: WValue, sig: &str) -> bool {
+    let class = vm.class_of(recv);
+    if let Some(sym) = vm.interner.lookup(sig)
+        && !class.is_null()
+        && unsafe { (*class).find_method(sym) }.is_some()
+    {
+        return true;
+    }
+    let Some(p) = recv.as_object() else {
+        return false;
+    };
+    if unsafe { (*(p as *const ObjHeader)).obj_type } != ObjType::Class {
+        return false;
+    }
+    match vm.interner.lookup(&format!("static:{sig}")) {
+        Some(sym) => unsafe { (*(p as *const ObjClass)).find_method(sym) }.is_some(),
+        None => false,
+    }
+}
+
+/// `args` as Wren values, or the raise for the first that cannot cross.
+fn wren_args(vm: &mut VM, args: *const Value, n: usize) -> Result<Vec<WValue>, u8> {
+    let args = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, n) }
+    };
+    let mut out = Vec::with_capacity(n);
+    for &arg in args {
+        out.push(cross(vm, arg)?);
+    }
+    Ok(out)
+}
+
+fn cross(vm: &mut VM, v: Value) -> Result<WValue, u8> {
+    to_wren(vm, v).ok_or_else(|| {
+        raise_core(
+            ErrorKind::Type,
+            &format!("{} cannot cross into Wren", bridge::describe(v)),
+        )
+    })
+}
+
+/// Send `sig` to `recv` and write the result. The caller has checked that
+/// the method exists; `None` from the VM is then a failure of its own.
+fn send(vm: &mut VM, recv: WValue, sig: &str, args: &[WValue], out: *mut Value) -> u8 {
+    let result = vm.call_method_on(recv, sig, args);
+    finish(vm, result, sig, out)
+}
+
+fn finish(vm: &mut VM, result: Option<WValue>, sig: &str, out: *mut Value) -> u8 {
+    if let Some(code) = take_error(vm) {
+        return code;
+    }
+    match result {
+        Some(v) => {
+            unsafe { *out = from_wren(v) };
+            REPLY_OK
+        }
+        None => raise_core(
+            ErrorKind::Internal,
+            &format!("the Wren VM could not run `{sig}`"),
+        ),
+    }
+}
+
+/// The slot index of the field `name` (or `_name`) on the instance's class,
+/// from the layouts the VM keeps per class.
+fn field_slot(vm: &VM, recv: WValue, name: &str) -> Option<usize> {
+    let class_name = vm.class_name_of(recv);
+    let layout = vm.field_layouts.get(&class_name)?;
+    layout
+        .iter()
+        .position(|f| f == name || (f.starts_with('_') && f[1..] == *name))
+}
+
+// ---------------------------------------------------------------------------
+// Entries
+// ---------------------------------------------------------------------------
+
+/// A getter, else a field of an instance by name.
+unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    let vm = match vm_here() {
+        Ok(vm) => vm,
+        Err(code) => return code,
+    };
+    let recv = unsafe { receiver(obj) };
+    let name = name.name();
+    if has_method(vm, recv, name) {
+        return send(vm, recv, name, &[], out);
+    }
+    if unsafe { obj_type(obj) } == ObjType::Instance
+        && let Some(slot) = field_slot(vm, recv, name)
+        && let Some(v) = unsafe { &*(wren_ptr(obj) as *const ObjInstance) }.get_field(slot)
+    {
+        unsafe { *out = from_wren(v) };
+        return REPLY_OK;
+    }
+    REPLY_MISSING
+}
+
+/// A setter `name=(_)`, else a field of an instance by name.
+unsafe extern "C-unwind" fn set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
+    let vm = match vm_here() {
+        Ok(vm) => vm,
+        Err(code) => return code,
+    };
+    let recv = unsafe { receiver(obj) };
+    let name = name.name();
+    let value = match cross(vm, value) {
+        Ok(v) => v,
+        Err(code) => return code,
+    };
+    let sig = format!("{name}=(_)");
+    if has_method(vm, recv, &sig) {
+        let mut ignored = Value::null();
+        return send(vm, recv, &sig, &[value], &mut ignored);
+    }
+    if unsafe { obj_type(obj) } == ObjType::Instance
+        && let Some(slot) = field_slot(vm, recv, name)
+    {
+        unsafe { &mut *(wren_ptr(obj) as *mut ObjInstance) }.set_field(slot, value);
+        return REPLY_OK;
+    }
+    REPLY_MISSING
+}
+
+/// A method by name and arity. With no arguments, a getter of that name
+/// answers when the class has no `name()`: languages without Wren's
+/// distinction call `toString()`. A method the class lacks raises Wren's
+/// own error, as a call in Wren would.
+unsafe extern "C-unwind" fn invoke(
+    obj: *mut u8,
+    name: Symbol,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let vm = match vm_here() {
+        Ok(vm) => vm,
+        Err(code) => return code,
+    };
+    let recv = unsafe { receiver(obj) };
+    let mut sig = signature(name.name(), n);
+    if !has_method(vm, recv, &sig) {
+        if n == 0 && has_method(vm, recv, name.name()) {
+            sig = name.name().to_owned();
+        } else {
+            let class = vm.class_name_of(recv);
+            return raise_wren(vm, format!("{class} does not implement '{sig}'"));
+        }
+    }
+    let args = match wren_args(vm, args, n) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+    send(vm, recv, &sig, &args, out)
+}
+
+/// A closure, called with the arguments as its parameters.
+unsafe extern "C-unwind" fn call(
+    obj: *mut u8,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    if unsafe { obj_type(obj) } != ObjType::Closure {
+        return REPLY_UNSUPPORTED;
+    }
+    let vm = match vm_here() {
+        Ok(vm) => vm,
+        Err(code) => return code,
+    };
+    let args = match wren_args(vm, args, n) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+    let closure = unsafe { wren_ptr(obj) } as *mut ObjClosure;
+    let result = vm.call_closure_sync(closure, &args, None);
+    finish(vm, result, "call", out)
+}
+
+/// Send `sig` with `args` if the class has it, else `Unsupported`.
+fn send_if_present(obj: *mut u8, sig: &str, args: &[Value], out: *mut Value) -> u8 {
+    let vm = match vm_here() {
+        Ok(vm) => vm,
+        Err(code) => return code,
+    };
+    let recv = unsafe { receiver(obj) };
+    if !has_method(vm, recv, sig) {
+        return REPLY_UNSUPPORTED;
+    }
+    let args = match wren_args(vm, args.as_ptr(), args.len()) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+    send(vm, recv, sig, &args, out)
+}
+
+unsafe extern "C-unwind" fn index(obj: *mut u8, key: Value, out: *mut Value) -> u8 {
+    send_if_present(obj, "[_]", &[key], out)
+}
+
+unsafe extern "C-unwind" fn set_index(obj: *mut u8, key: Value, value: Value) -> u8 {
+    let mut ignored = Value::null();
+    send_if_present(obj, "[_]=(_)", &[key, value], &mut ignored)
+}
+
+/// `count`, for anything that has one.
+unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
+    let mut count = Value::null();
+    let code = send_if_present(obj, "count", &[], &mut count);
+    if code != REPLY_OK {
+        return code;
+    }
+    match count.as_number() {
+        Some(n) if n >= 0.0 => {
+            unsafe { *out = n as usize };
+            REPLY_OK
+        }
+        _ => REPLY_UNSUPPORTED,
+    }
+}
+
+/// Wren's iterator protocol: `iterate(_)` advances the state, `false`
+/// ending it; `iteratorValue(_)` reads the element at a state.
+unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8 {
+    let mut next = Value::null();
+    let code = send_if_present(obj, "iterate(_)", &[unsafe { *state }], &mut next);
+    if code != REPLY_OK {
+        return code;
+    }
+    if next.as_bool() == Some(false) {
+        return REPLY_MISSING;
+    }
+    unsafe { *state = next };
+    let vm = match vm_here() {
+        Ok(vm) => vm,
+        Err(code) => return code,
+    };
+    let recv = unsafe { receiver(obj) };
+    let Some(state) = to_wren(vm, next) else {
+        return REPLY_UNSUPPORTED;
+    };
+    send(vm, recv, "iteratorValue(_)", &[state], out)
+}
+
+/// `toString`, as a core string.
+unsafe extern "C-unwind" fn to_string(obj: *mut u8, out: *mut Value) -> u8 {
+    let mut text = Value::null();
+    let code = send_if_present(obj, "toString", &[], &mut text);
+    if code != REPLY_OK {
+        return code;
+    }
+    let rendered = match wren_string(text) {
+        Some(s) => s.to_owned(),
+        None => bridge::describe(text),
+    };
+    unsafe { *out = Str::value(Str::new(&rendered)) };
+    REPLY_OK
+}
+
+/// The text of a core value that is a Wren string.
+fn wren_string<'a>(v: Value) -> Option<&'a str> {
+    let p = v.as_object()? as *mut u8;
+    if p.is_null() || !ptr::eq(unsafe { desc_of(p) }, wren_desc()) {
+        return None;
+    }
+    if unsafe { obj_type(p) } != ObjType::String {
+        return None;
+    }
+    Some(unsafe { &(*(wren_ptr(p) as *const ObjString)).value })
+}
+
+/// A string's content hash; identity for everything else, as Wren's own
+/// equality has it.
+unsafe extern "C-unwind" fn hash(obj: *mut u8, out: *mut u64) -> u8 {
+    let h = if unsafe { obj_type(obj) } == ObjType::String {
+        unsafe { (*(wren_ptr(obj) as *const ObjString)).hash }
+    } else {
+        (unsafe { wren_ptr(obj) }) as usize as u64
+    };
+    unsafe { *out = h };
+    REPLY_OK
+}
+
+/// Wren's `==`: strings by content, other objects by identity. A core
+/// string compares by content against a Wren string; an object of another
+/// language is never equal.
+unsafe extern "C-unwind" fn equals(obj: *mut u8, other: Value, out: *mut bool) -> u8 {
+    let mine = unsafe { receiver(obj) };
+    let same = match other.as_object() {
+        Some(p) if !p.is_null() && ptr::eq(unsafe { desc_of(p as *mut u8) }, wren_desc()) => {
+            mine.equals(WValue::object((p as *mut u8).wrapping_add(PREFIX)))
+        }
+        Some(_) => match (wren_string(Value::object(obj as *const c_void)), unsafe {
+            Str::text(other)
+        }) {
+            (Some(a), Some(b)) => a == b,
+            _ => false,
+        },
+        None => mine.equals(WValue::from_bits(other.to_bits())),
+    };
+    unsafe { *out = same };
+    REPLY_OK
+}
+
+/// A foreign object's data.
+unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -> u8 {
+    if unsafe { obj_type(obj) } != ObjType::Foreign {
+        return REPLY_UNSUPPORTED;
+    }
+    let foreign = unsafe { &*(wren_ptr(obj) as *const ObjForeign) };
+    unsafe { *out = foreign.data.as_ptr() as *mut c_void };
+    REPLY_OK
+}
+
+/// No Wren object is an error by itself: wren_lift's error is a message,
+/// and one that reaches the bridge arrives wrapped in a core `Error` whose
+/// native payload is that message as a Wren string. So the error entries
+/// stay unanswered.
+pub static WREN_PROTO: Protocol = Protocol {
+    get_member: Some(get_member),
+    set_member: Some(set_member),
+    invoke: Some(invoke),
+    call: Some(call),
+    index: Some(index),
+    set_index: Some(set_index),
+    len: Some(len),
+    iterate: Some(iterate),
+    to_string: Some(to_string),
+    hash: Some(hash),
+    equals: Some(equals),
+    unwrap_native: Some(unwrap_native),
+    ..Protocol::NONE
+};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scalars_cross_bit_for_bit_and_ints_become_numbers() {
+        for bits in [
+            Value::null().to_bits(),
+            Value::bool(true).to_bits(),
+            Value::bool(false).to_bits(),
+            Value::number(2.5).to_bits(),
+            Value::number(-0.0).to_bits(),
+        ] {
+            let w = WValue::from_bits(bits);
+            assert_eq!(from_wren(w).to_bits(), bits);
+        }
+        assert!(WValue::from_bits(Value::null().to_bits()).is_null());
+        assert_eq!(
+            WValue::from_bits(Value::bool(true).to_bits()).as_bool(),
+            Some(true)
+        );
+        assert_eq!(
+            WValue::from_bits(Value::number(2.5).to_bits()).as_num(),
+            Some(2.5)
+        );
+        // An int is not a Wren value at all, so it is converted.
+        let int = WValue::from_bits(Value::int(7).to_bits());
+        assert!(!int.is_num() && !int.is_object() && !int.is_null() && !int.is_bool());
+    }
+
+    #[test]
+    fn an_object_crosses_by_its_core_address() {
+        let wren_side = 0x1000usize as *mut u8;
+        let v = from_wren(WValue::object(wren_side));
+        assert_eq!(v.as_object(), Some((0x1000 - PREFIX) as *mut c_void));
+        assert_eq!(
+            WValue::object(wren_side).to_bits() & !0xFFFF,
+            v.to_bits() & !0xFFFF
+        );
+    }
+
+    #[test]
+    fn signatures_follow_wrens_convention() {
+        assert_eq!(signature("inc", 0), "inc()");
+        assert_eq!(signature("add", 1), "add(_)");
+        assert_eq!(signature("at", 3), "at(_,_,_)");
+    }
+
+    #[test]
+    fn kinds_come_from_the_message() {
+        assert_eq!(
+            kind_of("Null does not implement 'x'"),
+            ErrorKind::NullAccess
+        );
+        assert_eq!(kind_of("Subscript out of bounds."), ErrorKind::Index);
+        assert_eq!(
+            kind_of("Counter does not implement 'nope()'"),
+            ErrorKind::Runtime
+        );
+        assert_eq!(kind_of("boom"), ErrorKind::Runtime);
+    }
+}
