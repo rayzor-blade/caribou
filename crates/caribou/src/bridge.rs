@@ -497,6 +497,25 @@ pub fn type_name(v: Value) -> Option<String> {
     }
 }
 
+/// How many arguments `v` takes when it is a function of its language,
+/// else `None`. Nothing is raised: an entry that raises is `None`, and its
+/// pending error is dropped.
+pub fn arity(v: Value) -> Option<usize> {
+    let obj = object_of(v)?;
+    let outcome = protected(
+        || unsafe { protocol::Send::arity(obj).map(|n| Value::int(n as i32)) },
+        |_| (ErrorKind::Type, String::new()),
+    );
+    match outcome {
+        Outcome::Ok(n) => n.as_int().map(|n| n as usize),
+        Outcome::Raised => {
+            drop(take_pending_rooted());
+            None
+        }
+        _ => None,
+    }
+}
+
 /// Call `callable` with `args` on behalf of `caller`. `Ok` is the callee's
 /// result; `Err` is an `Error` value carrying one more trace frame, or the
 /// caller's own error object when the error started there.

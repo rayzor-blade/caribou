@@ -25,6 +25,10 @@ class UseHud {
 		Sys.println(h.owner());
 		Hud.count = 5;
 		Sys.println(Hud.count);
+		// A Haxe function Wren keeps and calls later, and one it calls at once.
+		Hud.onTick(function(n:Dynamic):Dynamic return n * 2);
+		Sys.println(Hud.tick(21));
+		Sys.println(Hud.twice(function(x:Float):Float return x + 1, 1));
 	}
 
 	@:keep static function after() {

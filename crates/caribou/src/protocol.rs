@@ -59,6 +59,9 @@ pub struct Protocol {
     pub set_index:
         Option<unsafe extern "C-unwind" fn(obj: *mut u8, key: Value, value: Value) -> u8>,
     pub len: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut usize) -> u8>,
+    /// How many arguments `call` takes; `Unsupported` for what is not a
+    /// function. The mark of a callable value.
+    pub arity: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut usize) -> u8>,
     /// Steps an iterator: `state` starts as `Value::null()`; returns `Missing`
     /// when exhausted.
     pub iterate:
@@ -95,6 +98,7 @@ impl Protocol {
         index: None,
         set_index: None,
         len: None,
+        arity: None,
         iterate: None,
         to_string: None,
         hash: None,
@@ -202,6 +206,14 @@ impl Send {
 
     pub unsafe fn len(obj: *mut u8) -> Result<usize, Fault> {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.len) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = 0usize;
+        reply(unsafe { f(obj, &mut out) }, Value::null()).map(|_| out)
+    }
+
+    pub unsafe fn arity(obj: *mut u8) -> Result<usize, Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.arity) else {
             return Err(Fault::Unsupported);
         };
         let mut out = 0usize;

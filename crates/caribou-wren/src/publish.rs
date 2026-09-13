@@ -603,3 +603,57 @@ var Alias = Hud
         assert_eq!(parse("is(_)"), Some(("is", 1, Shape::Method)));
     }
 }
+
+#[cfg(test)]
+mod vm_tests {
+    use super::*;
+    use crate::testutil::{immix_vm, parent_of};
+    use crate::with_vm;
+    use caribou::bridge;
+    use caribou::error::Error;
+    use caribou::heap;
+    use caribou::world::{Config, LANG_CORE, World};
+    use caribou_abi::Value;
+    use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
+
+    /// A value of one VM does not run on another, nor on its own once that
+    /// is gone: the message says so instead of running foreign frames.
+    #[test]
+    fn a_value_runs_only_on_its_own_vm() {
+        if parent_of("publish::vm_tests::a_value_runs_only_on_its_own_vm", &[]) {
+            return;
+        }
+        crate::install().expect("a fresh process takes the table");
+        let mut world = World::new(Config::default());
+        world
+            .register(Box::new(crate::Runtime::new()))
+            .expect("wren registers");
+        let mut a = immix_vm(ExecutionMode::Interpreter);
+        assert_eq!(
+            a.interpret("m", "var f = Fn.new {|x| x + 1 }\n"),
+            InterpretResult::Success
+        );
+        let f = from_wren(a.find_imported_var_from("f", "m").unwrap());
+        let root = heap::handle_new(f.as_object().unwrap() as *mut u8);
+        let call = |vm: &mut VM| {
+            with_vm(vm, |_| {
+                bridge::call_named(Callable::Dynamic(f), &[Value::number(1.0)], LANG_CORE, "f")
+            })
+        };
+        assert_eq!(call(&mut a).map(|v| v.as_number()), Ok(Some(2.0)));
+
+        let mut b = immix_vm(ExecutionMode::Interpreter);
+        let err = call(&mut b).unwrap_err();
+        let e = unsafe { Error::from_value(err) }.expect("an Error");
+        assert!(
+            unsafe { Error::message_str(e) }.contains("another Wren VM"),
+            "{}",
+            unsafe { Error::message_str(e) }
+        );
+        drop(a);
+        let err = call(&mut b).unwrap_err();
+        let e = unsafe { Error::from_value(err) }.expect("an Error");
+        assert!(unsafe { Error::message_str(e) }.contains("another Wren VM"));
+        heap::handle_release(root);
+    }
+}

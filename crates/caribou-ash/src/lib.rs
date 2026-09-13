@@ -16,6 +16,7 @@
 //!
 //! Builds with `cargo +nightly`: ash_std needs it. The core stays stable.
 
+mod callback;
 mod heap;
 mod import;
 #[cfg(feature = "runner")]

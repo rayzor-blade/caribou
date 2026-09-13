@@ -224,6 +224,43 @@ built on it.
   message. A Haxe exception that crossed into Wren and comes back is
   rethrown as itself.
 
+## Functions and callbacks
+
+A function crosses by reference, keeps its captured environment, and
+comes home as itself.
+
+```wren
+// Wren gives Haxe functions: a typed parameter, an untyped one, and a
+// static Haxe keeps and fires later from its own code.
+Player.twice(Fn.new {|x| x * 3 }, 2)
+Player.apply(Fn.new {|s| s + "!" }, "hi")
+Player.onHit = Fn.new {|d| System.print("hit for %(d)") }
+```
+
+```haxe
+// Haxe gives Wren functions, which Wren calls as any Fn.
+Hud.onTick(function(n:Dynamic):Dynamic return n * 2);
+Hud.twice(function(x:Float):Float return x + 1, 1);
+```
+
+- A Wren `Fn` arrives in Haxe as a real function value, variadic, the one
+  `Reflect.makeVarArgs` makes: `cb(3)` calls it, `Reflect.isFunction`
+  says so, and a parameter or field declared `Int -> Void` takes it. Read
+  back by Wren, it is the same `Fn`.
+- A Haxe function arrives in Wren as an object answering `call(...)` with
+  up to eight arguments and `arity`, as a `Fn` does. It is not a `Fn`:
+  `cb is Fn` is false.
+- A throw inside a callback propagates as any call does: a Haxe throw
+  aborts the Wren fiber with its message, a Wren abort is thrown into
+  Haxe as a `String`. A result Haxe has no form for is `null`.
+- The callee keeps the function alive for as long as it holds it, the
+  same as for objects.
+- A Wren function belongs to its VM. Called on another VM, or once its VM
+  is gone, it raises "belongs to another Wren VM" instead of running. A
+  Haxe static that holds a Wren callback must be cleared before that VM
+  goes; in a project there is one VM for the program's life.
+- `#export = "onTick(cb: Fn)"` maps to `Dynamic` in Haxe today.
+
 ## Static state
 
 State a class keeps for itself is shared by reference, never copied:

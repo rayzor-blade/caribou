@@ -53,6 +53,7 @@ use caribou_abi::hl::{
 use caribou_abi::mem::{KIND_DYNAMIC, KIND_NOPTR, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
 
+use crate::callback;
 use crate::import;
 
 /// `HL_MAX_ARGS`: what `hlp_dyn_call` takes.
@@ -410,6 +411,11 @@ pub(crate) unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
             Some(obj) => obj,
             None => wrap(d),
         },
+        // A function of another language goes home as itself.
+        hl::HFUN => match unsafe { callback::behind(d) } {
+            Some(function) => function,
+            None => wrap(d),
+        },
         _ => wrap(d),
     }
 }
@@ -467,6 +473,8 @@ pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut v
                 Some(unsafe { box_f64(n) })
             } else if let Some(b) = v.as_bool() {
                 Some(unsafe { hlp_alloc_dynbool(b) }.cast())
+            } else if bridge::arity(v).is_some() {
+                Some(callback::function_for(v))
             } else if v.as_object().is_some() {
                 return import::face_for(v);
             } else {
@@ -949,6 +957,20 @@ unsafe extern "C-unwind" fn invoke(
 }
 
 /// A closure, called.
+/// A closure's arity: what its visible type declares, or none for a
+/// variadic one.
+unsafe extern "C-unwind" fn arity(obj: *mut u8, out: *mut usize) -> u8 {
+    let d = unsafe { inner(obj) };
+    if unsafe { kind_of(d) } != hl::HFUN {
+        return REPLY_UNSUPPORTED;
+    }
+    let Some(fun) = (unsafe { fun_of((*d).t) }) else {
+        return REPLY_UNSUPPORTED;
+    };
+    unsafe { *out = (*fun).nargs.max(0) as usize };
+    REPLY_OK
+}
+
 unsafe extern "C-unwind" fn call(
     obj: *mut u8,
     args: *const Value,
@@ -1025,6 +1047,7 @@ static HAXE_PROTO: Protocol = Protocol {
     set_member: Some(set_member),
     invoke: Some(invoke),
     call: Some(call),
+    arity: Some(arity),
     to_string: Some(to_string),
     hash: Some(hash),
     equals: Some(equals),

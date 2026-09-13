@@ -35,4 +35,12 @@ class Hud {
   // Static state behind a static getter and setter: one property in Haxe.
   static count { __count }
   static count=(v) { __count = v }
+
+  // A Haxe function kept here and called later, and one called at once.
+  #export = "onTick(cb: Fn)"
+  static onTick(cb) { __tick = cb }
+  #export = "tick(n: Num) -> Num"
+  static tick(n) { __tick.call(n) }
+  #export = "twice(f: Fn, x: Num) -> Num"
+  static twice(f, x) { f.call(f.call(x)) }
 }

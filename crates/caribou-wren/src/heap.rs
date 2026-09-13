@@ -122,6 +122,13 @@ pub(crate) fn record_for<'a>(obj: *mut u8) -> &'a WrenHeap {
     unsafe { record_of(obj.wrapping_sub(PREFIX)) }
 }
 
+/// The address of the record an object of the core start `start` belongs
+/// to, without reading the record: what to compare when the record may be
+/// gone.
+pub(crate) fn record_address(start: *mut u8) -> usize {
+    unsafe { *record_word(start) & !FLAGS }
+}
+
 /// Whether `start` is the core start of an object of `rec`'s heap.
 pub(crate) fn owns_start(rec: &WrenHeap, start: usize) -> bool {
     let gc = heap::gc_locked_init();

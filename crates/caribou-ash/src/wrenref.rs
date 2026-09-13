@@ -292,6 +292,16 @@ unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
     }
 }
 
+unsafe extern "C-unwind" fn arity(obj: *mut u8, out: *mut usize) -> u8 {
+    match unsafe { Send::arity(inner(obj)) } {
+        Ok(n) => {
+            unsafe { *out = n };
+            REPLY_OK
+        }
+        Err(fault) => code_of(fault),
+    }
+}
+
 unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8 {
     code(unsafe { Send::iterate(inner(obj), &mut *state) }, out)
 }
@@ -360,6 +370,7 @@ static WRENREF_PROTO: Protocol = Protocol {
     index: Some(index),
     set_index: Some(set_index),
     len: Some(len),
+    arity: Some(arity),
     iterate: Some(iterate),
     to_string: Some(to_string),
     hash: Some(hash),

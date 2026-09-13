@@ -796,6 +796,28 @@ published type, found through the registry by the object's `type_name`,
 else under `caribou.Ref` when the program has that class. The ref and its
 face hold each other, and both die when Haxe lets go.
 
+### Functions across the bridge
+
+The protocol's `arity` message marks a callable: a Wren closure answers
+its function's arity, a Haxe closure its visible type's, and a ref
+forwards it. A Wren function crossing into Haxe (`caribou-ash`'s
+`callback.rs`) becomes the var-args closure `Reflect.makeVarArgs` makes,
+`hlp_make_var_args` over an inner closure `hlp_alloc_closure_ptr` binds
+to the function's ref; a Haxe call is packed into the inner closure's
+array by ash, whichever tier runs the caller (the interpreter calls a
+wrapped native entry directly since ash 425107a), and the entry sends the
+arguments through the bridge, throwing a bridge error into Haxe and
+answering null for a result Haxe has no form for. A closure so made going
+back is recognised by its entries and unwrapped to the function. A Haxe
+function crossing into Wren becomes an instance of `Function`, a class
+the adapter installs on first need in the bridge's own module, whose
+`call` natives for each arity and `arity` reach the object behind the
+instance through `bridge::call`; it is chosen over the published class's
+proxy when the value answers `arity`. Every Wren entry taking a receiver
+first checks that the object belongs to the entered VM, by the record
+address in its prefix, and raises otherwise: a value of another VM, or
+of one that is gone, must not run on this one.
+
 ### Declaring types
 
 Wren declares no types, so a member says what it exposes in one of

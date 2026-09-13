@@ -17,3 +17,16 @@ System.print(Player.spawned)
 Player.spawned = 10
 Player.spawnAt(0, 0)
 System.print(Player.spawned)
+// A Wren function where Haxe declares a typed callback, and an untyped one.
+System.print(Player.twice(Fn.new {|x| x * 3 }, 2))
+System.print(Player.apply(Fn.new {|s| s + "!" }, "hi"))
+// One Haxe keeps and fires later, from its own code.
+var onHit = Fn.new {|d| System.print("hit for %(d)") }
+Player.onHit = onHit
+p.hit(1)
+// Read back from Haxe, it is the same function.
+System.print(Player.onHit == onHit)
+System.print(Player.onHit.arity)
+// The callback is this module's; Haxe must not fire it once the module's
+// VM is gone.
+Player.onHit = null

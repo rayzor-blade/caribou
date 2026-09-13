@@ -8,6 +8,10 @@ class Player {
 		language. */
 	public static var spawned:Int = 0;
 
+	/** Fired on every hit, when set: a typed callback any language may
+		set. */
+	public static var onHit:Int->Void;
+
 	public var hp:Int = 100;
 	public var name:String;
 
@@ -17,7 +21,19 @@ class Player {
 
 	public function hit(dmg:Int):Bool {
 		hp -= dmg;
+		if (onHit != null)
+			onHit(dmg);
 		return hp <= 0;
+	}
+
+	/** A typed callback parameter. */
+	public static function twice(f:Int->Int, n:Int):Int {
+		return f(f(n));
+	}
+
+	/** An untyped one. */
+	public static function apply(f:Dynamic, x:Dynamic):Dynamic {
+		return f(x);
 	}
 
 	public function explode():Void {

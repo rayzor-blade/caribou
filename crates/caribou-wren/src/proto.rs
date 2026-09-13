@@ -39,7 +39,7 @@ use wren_lift::runtime::object::{
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{self, VM};
 
-use crate::heap::{PREFIX, owns_start, record_for, wren_desc, wren_lang};
+use crate::heap::{PREFIX, WrenHeap, owns_start, record_address, record_for, wren_desc, wren_lang};
 
 // ---------------------------------------------------------------------------
 // The VM the entries use
@@ -218,6 +218,20 @@ fn take_error(vm: &mut VM) -> Option<u8> {
 }
 
 /// The VM this entry runs on, or the raise to answer with.
+/// The VM entered on this thread, which must be the one `obj` belongs to:
+/// a value of another VM, or of one that is gone, has no VM to run on.
+fn vm_of(obj: *mut u8) -> Result<&'static mut VM, u8> {
+    let vm = vm_here()?;
+    let mine = record_for(vm.object_class as *mut u8) as *const WrenHeap as usize;
+    if record_address(obj) != mine {
+        return Err(raise_core(
+            ErrorKind::Runtime,
+            "the object belongs to another Wren VM, or to one that is gone",
+        ));
+    }
+    Ok(vm)
+}
+
 fn vm_here() -> Result<&'static mut VM, u8> {
     let vm = current_vm();
     if vm.is_null() {
@@ -340,7 +354,7 @@ fn field_slot(vm: &VM, recv: WValue, name: &str) -> Option<usize> {
 
 /// A getter, else a field of an instance by name.
 unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -361,7 +375,7 @@ unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Val
 
 /// A setter `name=(_)`, else a field of an instance by name.
 unsafe extern "C-unwind" fn set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -397,7 +411,7 @@ unsafe extern "C-unwind" fn invoke(
     n: usize,
     out: *mut Value,
 ) -> u8 {
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -440,7 +454,7 @@ unsafe extern "C-unwind" fn call(
     if unsafe { obj_type(obj) } != ObjType::Closure {
         return REPLY_UNSUPPORTED;
     }
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -455,7 +469,7 @@ unsafe extern "C-unwind" fn call(
 
 /// Send `sig` with `args` if the class has it, else `Unsupported`.
 fn send_if_present(obj: *mut u8, sig: &str, args: &[Value], out: *mut Value) -> u8 {
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -480,6 +494,20 @@ unsafe extern "C-unwind" fn set_index(obj: *mut u8, key: Value, value: Value) ->
 }
 
 /// `count`, for anything that has one.
+/// A closure's arity: what `call` takes.
+unsafe extern "C-unwind" fn arity(obj: *mut u8, out: *mut usize) -> u8 {
+    if unsafe { obj_type(obj) } != ObjType::Closure {
+        return REPLY_UNSUPPORTED;
+    }
+    let closure = unsafe { wren_ptr(obj) } as *const ObjClosure;
+    let function = unsafe { (*closure).function };
+    if function.is_null() {
+        return REPLY_UNSUPPORTED;
+    }
+    unsafe { *out = usize::from((*function).arity) };
+    REPLY_OK
+}
+
 unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
     let mut count = Value::null();
     let code = send_if_present(obj, "count", &[], &mut count);
@@ -507,7 +535,7 @@ unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut V
         return REPLY_MISSING;
     }
     unsafe { *state = next };
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -591,7 +619,7 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
 /// The name the receiver's class was published under (`hud.Hud`), else
 /// its bare name.
 unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
-    let vm = match vm_here() {
+    let vm = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -619,6 +647,7 @@ pub static WREN_PROTO: Protocol = Protocol {
     index: Some(index),
     set_index: Some(set_index),
     len: Some(len),
+    arity: Some(arity),
     iterate: Some(iterate),
     to_string: Some(to_string),
     hash: Some(hash),

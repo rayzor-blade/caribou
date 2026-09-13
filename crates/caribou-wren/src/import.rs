@@ -42,7 +42,7 @@ use caribou::protocol::Callable;
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
 use caribou::symbol::{self, Symbol};
 use caribou::world::language_name;
-use caribou_abi::{LangId, Value};
+use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::intern::Interner;
 use wren_lift::mir::{BasicBlock, BlockId, ClassMir, MirFunction, ModuleMir, Terminator};
 use wren_lift::runtime::engine::InterpretResult;
@@ -81,6 +81,10 @@ enum Kind {
     /// A static field, read on the class object the callable holds.
     ClassGetter(Symbol),
     ClassSetter(Symbol),
+    /// `call(...)` on a foreign function: the object behind the instance.
+    Call,
+    /// `arity` of a foreign function.
+    Arity,
 }
 
 #[derive(Clone)]
@@ -106,6 +110,8 @@ pub(crate) struct Imports {
     /// Every live instance and the handle in its field, for the sweep and
     /// for `heap_drop`.
     live: HashMap<usize, Handle>,
+    /// The class a foreign function is an instance of, once installed.
+    function: Option<*mut ObjClass>,
 }
 
 impl Imports {
@@ -419,11 +425,19 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
 
 /// Bind one native per member of `class` onto the installed `ptr`.
 fn bind(vm: &mut VM, ptr: *mut ObjClass, class: &ClassIface) -> Result<ClassBinding, ImportError> {
-    let members = members(class);
+    bind_members(vm, ptr, &class.name, members(class))
+}
+
+/// Bind one native per `(signature, target)` onto the installed `ptr`.
+fn bind_members(
+    vm: &mut VM,
+    ptr: *mut ObjClass,
+    name: &str,
+    members: Vec<(String, Target)>,
+) -> Result<ClassBinding, ImportError> {
     if members.len() > SLOTS {
         return Err(ImportError(format!(
-            "`{}` has {} members; a class can bind at most {SLOTS}",
-            class.name,
+            "`{name}` has {} members; a class can bind at most {SLOTS}",
             members.len()
         )));
     }
@@ -477,32 +491,99 @@ pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
 /// A foreign object as an instance of the class installed for its type,
 /// installing the class's module on first need. `None` when its language
 /// publishes no class for it.
+/// The class a foreign function is an instance of: `Function`, in the
+/// bridge's own module, answering `call` with up to `MAX_CALL_ARITY`
+/// arguments and `arity`, as a `Fn` does. Installed on first need.
+pub const FUNCTION_CLASS: &str = "Function";
+const FUNCTION_MODULE: &str = "caribou:Function";
+const MAX_CALL_ARITY: usize = 8;
+
+fn function_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
+    let rec = record_for(vm.object_class as *mut u8);
+    if let Some(class) = rec.imports().borrow().function {
+        return Ok(class);
+    }
+    let shell = Interface {
+        lang: caribou::world::LANG_CORE,
+        module: FUNCTION_MODULE.to_owned(),
+        classes: vec![ClassIface {
+            name: FUNCTION_CLASS.to_owned(),
+            type_name: FUNCTION_CLASS.to_owned(),
+            superclass: None,
+            fields: Vec::new(),
+            statics: Vec::new(),
+            methods: Vec::new(),
+            ctor: None,
+            class_object: Value::null(),
+        }],
+    };
+    let bytes = blob(&shell).map_err(|e| ImportError(format!("`{FUNCTION_MODULE}`: {e}")))?;
+    if vm.interpret_bytecode(FUNCTION_MODULE, &bytes) != InterpretResult::Success {
+        return Err(ImportError(format!("`{FUNCTION_MODULE}` did not install")));
+    }
+    let value = vm
+        .find_imported_var_from(FUNCTION_CLASS, FUNCTION_MODULE)
+        .ok_or_else(|| ImportError(format!("`{FUNCTION_MODULE}` installed no class")))?;
+    let ptr = value.as_object().unwrap_or(std::ptr::null_mut()) as *mut ObjClass;
+    let mut members: Vec<(String, Target)> = Vec::with_capacity(MAX_CALL_ARITY + 2);
+    for arity in 0..=MAX_CALL_ARITY {
+        members.push((
+            signature("call", arity),
+            Target {
+                kind: Kind::Call,
+                name: format!("{FUNCTION_CLASS}.call"),
+                callable: Callable::Dynamic(Value::null()),
+            },
+        ));
+    }
+    members.push((
+        "arity".to_owned(),
+        Target {
+            kind: Kind::Arity,
+            name: format!("{FUNCTION_CLASS}.arity"),
+            callable: Callable::Dynamic(Value::null()),
+        },
+    ));
+    let binding = bind_members(vm, ptr, FUNCTION_CLASS, members)?;
+    let mut imports = rec.imports().borrow_mut();
+    imports.classes.insert(ptr as usize, Rc::new(binding));
+    imports.function = Some(ptr);
+    Ok(ptr)
+}
+
+/// The instance of an installed class that stands for `v`: of the class
+/// installed for its type, or of `Function` when `v` is a function.
 pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
         return None;
     }
     let lang = bridge::language_of(v)?;
-    let type_name = bridge::type_name(v)?;
     let rec = record_for(vm.object_class as *mut u8);
-    let class = rec
-        .imports()
-        .borrow()
-        .by_type
-        .get(&(lang, type_name.clone()))
-        .copied();
     // `v` is unrooted on the caller's frame, and installing and allocating
     // the instance both allocate.
     let root = heap::handle_new(obj);
-    let class = class.or_else(|| {
-        let (iface, _) = registry::class_for_type(lang, &type_name)?;
-        install(vm, lang, &iface.module).ok()?;
-        rec.imports()
+    let class = if bridge::arity(v).is_some() {
+        function_class(vm).ok()
+    } else if let Some(type_name) = bridge::type_name(v) {
+        let known = rec
+            .imports()
             .borrow()
             .by_type
-            .get(&(lang, type_name))
-            .copied()
-    });
+            .get(&(lang, type_name.clone()))
+            .copied();
+        known.or_else(|| {
+            let (iface, _) = registry::class_for_type(lang, &type_name)?;
+            install(vm, lang, &iface.module).ok()?;
+            rec.imports()
+                .borrow()
+                .by_type
+                .get(&(lang, type_name))
+                .copied()
+        })
+    } else {
+        None
+    };
     let instance = class.map(|class| {
         let instance = vm.alloc_instance(class);
         adopt(rec, instance.as_object().unwrap() as *mut ObjInstance, obj);
@@ -658,6 +739,27 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
         }
         Kind::Static => {
             let r = bridge::call_named(target.callable, &crossed, wren, &target.name);
+            release(&roots);
+            r
+        }
+        Kind::Call | Kind::Arity => {
+            let this = foreign_of(recv).ok_or_else(|| {
+                release(&roots);
+                format!("{} has no function behind it", vm.class_name_of(recv))
+            })?;
+            let r = match target.kind {
+                Kind::Call => {
+                    bridge::call_named(Callable::Dynamic(this), &crossed, wren, &target.name)
+                }
+                _ => match bridge::arity(this) {
+                    Some(n) => Ok(Value::number(n as f64)),
+                    None => Err(Error::value(Error::new(
+                        ErrorKind::Type,
+                        "not a function",
+                        wren,
+                    ))),
+                },
+            };
             release(&roots);
             r
         }

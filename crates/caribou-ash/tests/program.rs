@@ -75,14 +75,14 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
             .iter()
             .map(|f| f.name.as_str())
             .collect::<Vec<_>>(),
-        ["spawned", "spawnAt"],
-        "a static field and a static method are both fields of the companion"
+        ["spawned", "onHit", "twice", "apply", "spawnAt"],
+        "static fields and static methods are all fields of the companion"
     );
     assert!(companion.proto.is_empty());
     assert_eq!(
         companion.bindings.len(),
-        4,
-        "the constructor and one static: {:?}",
+        8,
+        "the constructor and three statics, a field index and a findex each: {:?}",
         companion.bindings
     );
     // Publishing before the start is allowed: the interpreter registers
@@ -120,7 +120,10 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
         .iter()
         .map(|f| (f.name.as_str(), &f.ty))
         .collect();
-    assert_eq!(statics, [("spawned", &TypeRef::Int)]);
+    assert_eq!(
+        statics,
+        [("spawned", &TypeRef::Int), ("onHit", &TypeRef::Fun)]
+    );
     assert_eq!(
         bridge::get(class.class_object, intern("spawned"), haxe),
         Ok(Value::int(0))
@@ -130,7 +133,10 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
         bridge::get(class.class_object, intern("spawned"), haxe),
         Ok(Value::int(3))
     );
-    assert_eq!(bridge::type_name(class.class_object).as_deref(), Some("game.Player"));
+    assert_eq!(
+        bridge::type_name(class.class_object).as_deref(),
+        Some("game.Player")
+    );
     let hit = class.methods.iter().find(|m| m.name == "hit").expect("hit");
     assert!(!hit.is_static);
     assert_eq!(hit.params, [TypeRef::Int]);
