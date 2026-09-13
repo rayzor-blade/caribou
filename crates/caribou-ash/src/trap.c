@@ -2,7 +2,7 @@
 #include <stddef.h>
 
 typedef void *(*caribou_ash_trap_setup_fn)(void *storage, size_t size);
-typedef void (*caribou_ash_trap_remove_fn)(void);
+typedef void (*caribou_ash_trap_remove_fn)(void *storage);
 typedef void (*caribou_ash_trap_callback_fn)(void *context);
 
 /*
@@ -19,9 +19,10 @@ typedef void (*caribou_ash_trap_callback_fn)(void *context);
  * alive until the callee has returned. A Rust helper cannot own it: it would
  * return before the callee ran, and the jump would land in a dead frame.
  * `setup` arms the trap in this frame's own storage and hands back its
- * buffer; `remove` disarms it after a normal return. A throw pops the trap
- * itself before it jumps, so nothing is removed on that path. Returns 0 on
- * a normal return, 1 on a throw, 2 when the runtime wants more storage.
+ * buffer; `remove` disarms the trap in that storage after a normal return.
+ * A throw pops the trap itself before it jumps, so nothing is removed on
+ * that path. Returns 0 on a normal return, 1 on a throw, 2 when the
+ * runtime wants more storage.
  */
 int caribou_ash_run_with_hl_trap(
     caribou_ash_trap_setup_fn setup,
@@ -41,6 +42,6 @@ int caribou_ash_run_with_hl_trap(
         return 1;
     }
     callback(context);
-    remove();
+    remove(storage);
     return 0;
 }

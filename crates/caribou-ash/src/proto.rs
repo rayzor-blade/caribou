@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
-    hlp_clear_exc_value, hlp_get_exc_value, hlp_remove_trap_jit, hlp_setup_trap_in,
+    hlp_clear_exc_value, hlp_get_exc_value, hlp_remove_trap_in, hlp_setup_trap_in,
 };
 use ash_std::fun::hlp_dyn_call;
 use ash_std::obj::{
@@ -163,7 +163,7 @@ unsafe fn inner(obj: *mut u8) -> *mut vdynamic {
 unsafe extern "C" {
     fn caribou_ash_run_with_hl_trap(
         setup: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
-        remove: unsafe extern "C" fn(),
+        remove: unsafe extern "C" fn(*mut c_void),
         callback: unsafe extern "C" fn(*mut c_void),
         context: *mut c_void,
     ) -> i32;
@@ -181,7 +181,7 @@ fn trapped<F: FnMut()>(mut f: F) -> Result<(), *mut vdynamic> {
     let threw = unsafe {
         caribou_ash_run_with_hl_trap(
             hlp_setup_trap_in,
-            hlp_remove_trap_jit,
+            hlp_remove_trap_in,
             thunk::<F>,
             &mut f as *mut F as *mut c_void,
         )

@@ -52,9 +52,12 @@ argument is the wrapped object itself), and unboxes the result by the
 return kind.
 
 Every call into Haxe code runs under a HashLink trap. The trap's setjmp
-frame is a C function of the adapter's own (`trap.c`), armed with
-`hlp_setup_trap_jit`, so an `hl_throw` inside lands there instead of
-unwinding through Rust. The thrown value becomes a core `Error`. A bytes
+frame is a C function of the adapter's own (`trap.c`), and its context
+lives in that frame too: `hlp_setup_trap_in` arms it there, so the
+runtime allocates and pools nothing for it, and `hlp_remove_trap_in` pops
+it by its storage after a normal return. An `hl_throw` inside lands in
+that frame instead of unwinding through Rust. The thrown value becomes a
+core `Error`. A bytes
 value is the runtime's own error, and its kind is read from the message
 (`Null access`, out of bounds, divide by zero); a String or any other
 object is a `User` error. The exception itself is the error's native

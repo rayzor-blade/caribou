@@ -611,10 +611,10 @@ fn call_at_opt(
             if let Some(site) = site
                 && let Some(reply) = direct(site, func as usize, args)
             {
-                if let Outcome::Ok(v) = reply {
-                    return Ok(v);
-                }
-                return settle(reply, lang, name, caller);
+                return match reply {
+                    Ok(v) => Ok(v),
+                    Err(()) => settle(Outcome::Raised, lang, name, caller),
+                };
             }
             let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
@@ -628,10 +628,10 @@ fn call_at_opt(
             if let Some(site) = site
                 && let Some(reply) = direct(site, func as usize, args)
             {
-                if let Outcome::Ok(v) = reply {
-                    return Ok(v);
-                }
-                return settle(reply, lang, name, caller);
+                return match reply {
+                    Ok(v) => Ok(v),
+                    Err(()) => settle(Outcome::Raised, lang, name, caller),
+                };
             }
             let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
@@ -748,7 +748,10 @@ fn invoke_named<'f>(
     if let Some(site) = site
         && let Some(reply) = direct(site, target as usize, args)
     {
-        return settle_lazy(reply, segment, frame, caller);
+        return match reply {
+            Ok(v) => Ok(v),
+            Err(()) => settle(Outcome::Raised, segment, frame(), caller),
+        };
     }
     let outcome = protected(
         || match site {
@@ -774,16 +777,17 @@ fn settle_lazy<'f>(
     settle(outcome, segment, name(), caller)
 }
 
-/// The site's direct send, when it has one and it answers: `None` when it
-/// has none or answered that it no longer fits, which also forgets it.
+/// The site's direct send, when it has one and it answers: the value, or
+/// `Err` when the callee raised. `None` when the site has none or it
+/// answered that it no longer fits, which also forgets it.
 #[inline]
-fn direct(site: &CallSite, target: usize, args: &[Value]) -> Option<Outcome> {
+fn direct(site: &CallSite, target: usize, args: &[Value]) -> Option<Result<Value, ()>> {
     let f = site.direct()?;
     let mut out = Value::null();
     let code = unsafe { f(site, target, args.as_ptr(), args.len(), &mut out) };
     match code {
-        protocol::REPLY_OK => Some(Outcome::Ok(out)),
-        protocol::REPLY_RAISED => Some(Outcome::Raised),
+        protocol::REPLY_OK => Some(Ok(out)),
+        protocol::REPLY_RAISED => Some(Err(())),
         _ => {
             site.clear_direct();
             None
@@ -822,7 +826,10 @@ fn get_at_opt(
     if let Some(site) = site
         && let Some(reply) = direct(site, target as usize, &[])
     {
-        return settle_lazy(reply, segment, || name.name(), caller);
+        return match reply {
+            Ok(v) => Ok(v),
+            Err(()) => settle(Outcome::Raised, segment, name.name(), caller),
+        };
     }
     let outcome = protected(
         || match site {
@@ -873,7 +880,10 @@ fn set_at_opt(
     if let Some(site) = site
         && let Some(reply) = direct(site, target as usize, &[value])
     {
-        return settle_lazy(reply, segment, || name.name(), caller).map(|_| ());
+        return match reply {
+            Ok(_) => Ok(()),
+            Err(()) => settle(Outcome::Raised, segment, name.name(), caller).map(|_| ()),
+        };
     }
     let outcome = protected(
         || {
