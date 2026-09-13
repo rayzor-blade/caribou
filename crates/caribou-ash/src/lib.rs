@@ -10,11 +10,14 @@
 //! The other half is the bridge (`proto.rs`): the typed dispatcher for
 //! Haxe callables, the wrapper a Haxe object crosses in and the protocol it
 //! answers. [`Runtime`] registers Haxe with a world and the dispatcher with
-//! the bridge.
+//! the bridge. With the `runner` feature, `program` loads a `.hl` on ash's
+//! interpreter, runs it and publishes its classes to the registry.
 //!
 //! Builds with `cargo +nightly`: ash_std needs it. The core stays stable.
 
 mod heap;
+#[cfg(feature = "runner")]
+pub mod program;
 mod proto;
 mod sched;
 
@@ -25,7 +28,9 @@ use ash_std::rt::RuntimeVTable;
 use caribou::world::Adapter;
 use caribou_abi::LangId;
 
-pub use proto::{lang, unwrap, wrap};
+#[cfg(feature = "runner")]
+pub use program::{Mode, Options, Program, load, publish_module};
+pub use proto::{construct, is_constructor, lang, unwrap, wrap};
 
 /// Haxe as a resident of a world: one language, `haxe`. Registering it
 /// gives Haxe objects their language id and the bridge its typed

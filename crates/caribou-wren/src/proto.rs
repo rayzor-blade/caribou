@@ -92,8 +92,9 @@ pub fn from_wren(v: WValue) -> Value {
 
 /// A core value as a wren_lift value. An int becomes a number, Wren having
 /// no other; a Wren object is translated back; a core `Str` becomes a Wren
-/// string. `None` for an object of another language, which Wren cannot hold
-/// yet.
+/// string; an object of another language becomes an instance of the class
+/// installed for its type (see `import`), or `None` when its language
+/// publishes none.
 pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     if let Some(n) = v.as_int() {
         return Some(WValue::num(f64::from(n)));
@@ -108,8 +109,10 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     if ptr::eq(unsafe { desc_of(p) }, wren_desc()) {
         return Some(WValue::object(p.wrapping_add(PREFIX)));
     }
-    let text = unsafe { Str::text(v) }?;
-    Some(vm.alloc_string(text.to_owned()))
+    if let Some(text) = unsafe { Str::text(v) } {
+        return Some(vm.alloc_string(text.to_owned()));
+    }
+    crate::import::proxy(vm, v)
 }
 
 /// [`from_wren`], for a host handing a Wren value to the bridge.

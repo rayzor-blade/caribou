@@ -57,9 +57,10 @@ come out identical through `caribou-ash`. WrenLift's benchmarks come out
 identical through `caribou-wren`, including under collector stress, and a
 collection costs the same as it does under WrenLift's own collector.
 
-What is not there yet: the bridge that lets one language call another,
-the module registry with hot reload, the plugin loader, and the Zyntax
-adapter.
+The bridge lets one language call another, and the module registry lets
+a Wren program import a Haxe class with an ordinary `import`. What is not
+there yet: the other direction, hot reload, the plugin loader, and the
+Zyntax adapter.
 
 ## Building
 

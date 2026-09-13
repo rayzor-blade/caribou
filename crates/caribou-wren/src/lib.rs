@@ -12,9 +12,11 @@
 //! The other half is the bridge (`proto.rs`): the object protocol every Wren
 //! object answers through the descriptor in its prefix, the conversions
 //! between wren_lift's values and the core's, and the VM the entries run on.
-//! [`Runtime`] registers Wren with a world.
+//! [`Runtime`] registers Wren with a world. `import` answers a Wren
+//! program's `import "game:Player"` with the class the registry publishes.
 
 mod heap;
+pub mod import;
 mod proto;
 
 use std::fmt;
@@ -115,6 +117,7 @@ fn table() -> RuntimeVTable {
         heap_new: Some(heap::heap_new),
         heap_drop: Some(heap::heap_drop),
         alloc_raw: Some(heap::alloc_raw),
+        alloc_plain: Some(heap::alloc_plain),
         containing_allocation: Some(heap::containing_allocation),
         is_heap_ptr: Some(heap::is_heap_ptr),
         mark_allocation: Some(heap::mark_allocation),

@@ -1,0 +1,7 @@
+# The interop tests' Haxe program. Rebuild with `haxe game.hxml` (Haxe
+# 4.3.6) from this directory; game.hl is checked in. Main is empty: the
+# other language drives Player, which is listed here so it is compiled.
+-cp src
+-main Main
+game.Player
+-hl game.hl

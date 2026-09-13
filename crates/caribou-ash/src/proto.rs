@@ -10,6 +10,10 @@
 //! access: `hlp_dyn_getp`, `hlp_dyn_setp`, `hlp_dyn_call`, by the field
 //! hash `hlp_hash_gen` gives a name.
 //!
+//! A Haxe `String` crosses as a value, not wrapped: it becomes a core `Str`
+//! on the way out, and a core `Str` becomes a fresh `String` on the way in,
+//! allocated under the type the loaded program's `String` class carries.
+//!
 //! The dispatcher takes a typed callable (a code pointer and its
 //! `hl_type_fun`), boxes each argument by the signature's kind into the
 //! `vdynamic` `hlp_dyn_call` takes, and unboxes the result by the return
@@ -21,27 +25,32 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{LazyLock, Mutex};
 
+use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
     hlp_clear_exc_value, hlp_get_exc_value, hlp_remove_trap_jit, hlp_setup_trap_jit,
 };
 use ash_std::fun::hlp_dyn_call;
 use ash_std::obj::{
-    hl_get_obj_proto, hlp_alloc_dynamic, hlp_alloc_dynbool, hlp_dyn_getp, hlp_dyn_setp,
-    hlp_hash_gen, hlp_lookup_find, hlp_obj_has_field,
+    hl_get_obj_proto, hlp_alloc_dynamic, hlp_alloc_dynbool, hlp_alloc_obj, hlp_dyn_getp,
+    hlp_dyn_setp, hlp_hash_gen, hlp_lookup_find, hlp_obj_has_field,
 };
 use ash_std::strings::hlp_value_to_string;
 use ash_std::types::{hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
 use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap::{self, Handle, Tracer, TypeDesc};
-use caribou::protocol::{Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Symbol, desc_of};
+use caribou::protocol::{
+    Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Symbol, desc_of,
+};
+use caribou::registry::ClassIface;
 use caribou_abi::hl::{
     self, hl_field_lookup, hl_runtime_obj, hl_type, hl_type_detail, hl_type_fun, hl_type_kind,
     uchar, vclosure, vdynamic,
 };
-use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
+use caribou_abi::mem::{KIND_DYNAMIC, KIND_NOPTR, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
 
 /// `HL_MAX_ARGS`: what `hlp_dyn_call` takes.
@@ -266,11 +275,76 @@ fn raise_core(kind: ErrorKind, message: &str) -> u8 {
 }
 
 // ---------------------------------------------------------------------------
+// Strings
+// ---------------------------------------------------------------------------
+
+/// The loaded program's `String` type, for allocating one; null until a
+/// program publishes.
+static STRING_TYPE: AtomicPtr<hl_type> = AtomicPtr::new(ptr::null_mut());
+
+pub(crate) fn set_string_type(t: *mut hl_type) {
+    STRING_TYPE.store(t, Ordering::Release);
+}
+
+/// `String`'s fields as HashLink lays them out: the bytes, then the length
+/// in UTF-16 units.
+const STRING_BYTES: usize = size_of::<*mut hl_type>();
+const STRING_LENGTH: usize = STRING_BYTES + size_of::<*const uchar>();
+
+/// The name of `t` when it is an object type.
+pub(crate) unsafe fn obj_name(t: *const hl_type) -> Option<String> {
+    let t = unsafe { t.as_ref()? };
+    if !matches!(t.kind, hl::HOBJ | hl::HSTRUCT) {
+        return None;
+    }
+    let obj = unsafe { t.detail.obj };
+    (!obj.is_null()).then(|| unsafe { utf16z((*obj).name) })
+}
+
+unsafe fn is_string(d: *mut vdynamic) -> bool {
+    unsafe { obj_name((*d).t) }.as_deref() == Some("String")
+}
+
+/// The text of a `String` object.
+unsafe fn string_text(d: *mut vdynamic) -> String {
+    let base = d as *const u8;
+    let bytes = unsafe { *(base.add(STRING_BYTES) as *const *const uchar) };
+    let len = unsafe { *(base.add(STRING_LENGTH) as *const i32) };
+    if bytes.is_null() || len <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(bytes, len as usize) })
+}
+
+/// A `String` object holding `text`, or `None` before a program has
+/// published its `String` type. Unrooted, like every fresh Haxe object:
+/// the caller keeps it where the scanner sees it.
+unsafe fn alloc_string(text: &str) -> Option<*mut vdynamic> {
+    let t = STRING_TYPE.load(Ordering::Acquire);
+    if t.is_null() {
+        return None;
+    }
+    let units: Vec<uchar> = text.encode_utf16().collect();
+    let bytes = unsafe { hlp_alloc_bytes(((units.len() + 1) * 2) as i32) } as *mut uchar;
+    unsafe {
+        ptr::copy_nonoverlapping(units.as_ptr(), bytes, units.len());
+        *bytes.add(units.len()) = 0;
+    }
+    let s = unsafe { hlp_alloc_obj(t.cast()) } as *mut vdynamic;
+    let base = s as *mut u8;
+    unsafe {
+        *(base.add(STRING_BYTES) as *mut *const uchar) = bytes;
+        *(base.add(STRING_LENGTH) as *mut i32) = units.len() as i32;
+    }
+    Some(s)
+}
+
+// ---------------------------------------------------------------------------
 // Values
 // ---------------------------------------------------------------------------
 
-/// A boxed dynamic as a bridge value: a scalar unboxed by its type, an
-/// object wrapped.
+/// A boxed dynamic as a bridge value: a scalar unboxed by its type, a
+/// `String` copied into a core `Str`, any other object wrapped.
 unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
     if d.is_null() {
         return Value::null();
@@ -289,6 +363,10 @@ unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
         hl::HF32 => Value::number(f64::from(unsafe { v.f })),
         hl::HF64 => Value::number(unsafe { v.d }),
         hl::HBOOL => Value::bool(unsafe { v.b }),
+        hl::HOBJ if unsafe { is_string(d) } => {
+            let text = unsafe { string_text(d) };
+            Str::value(Str::new(&text))
+        }
         _ => wrap(d),
     }
 }
@@ -313,7 +391,8 @@ unsafe fn box_f64(n: f64) -> *mut vdynamic {
 
 /// A bridge value as the boxed dynamic `hlp_dyn_call` and `hlp_dyn_setp`
 /// take for a slot of kind `kind`; the runtime casts the box to the slot's
-/// exact type. An object of another language cannot cross yet.
+/// exact type. A core `Str` becomes a `String`. An object of another
+/// language cannot cross yet.
 unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, String> {
     let int = || {
         v.as_int()
@@ -332,6 +411,13 @@ unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, St
                 Some(ptr::null_mut())
             } else if let Some(obj) = unwrap(v) {
                 Some(obj)
+            } else if let Some(text) = unsafe { Str::text(v) } {
+                match unsafe { alloc_string(text) } {
+                    Some(s) => Some(s),
+                    None => {
+                        return Err("a string cannot cross into Haxe before a program has published its String type".to_owned());
+                    }
+                }
             } else if let Some(n) = v.as_int() {
                 Some(unsafe { box_int(n) })
             } else if let Some(n) = v.as_number() {
@@ -433,6 +519,120 @@ pub(crate) unsafe extern "C-unwind" fn dispatch(
         value: ptr::null_mut(),
     };
     unsafe { call_closure(&mut closure, args, out) }
+}
+
+// ---------------------------------------------------------------------------
+// Construction
+// ---------------------------------------------------------------------------
+
+/// A class's constructor as a callable: allocates an instance of `t` and
+/// runs `__constructor__` on it. A core object with no children, rooted
+/// for the process by the handle `constructor` takes and keeps.
+#[repr(C)]
+struct HaxeCtor {
+    desc: *const TypeDesc,
+    t: *mut hl_type,
+    func: *const c_void,
+    sig: *const hl_type,
+}
+
+static mut CTOR_DESC: TypeDesc = {
+    let mut d = TypeDesc::new(haxe_type());
+    d.protocol = &CTOR_PROTO;
+    d.name = "haxe constructor".as_ptr();
+    d.name_len = "haxe constructor".len();
+    d
+};
+
+/// The constructor of the class whose instance type is `t`, as a value
+/// the registry can hold: `func` and `sig` are `__constructor__`'s code
+/// pointer and full type, `this` first.
+pub(crate) fn constructor(t: *mut hl_type, func: *const c_void, sig: *const hl_type) -> Value {
+    unsafe { CTOR_DESC.lang = lang() };
+    let _lock = heap::gc_guard();
+    let p = unsafe {
+        heap::alloc_gen(
+            &raw mut CTOR_DESC as *mut hl_type,
+            size_of::<HaxeCtor>(),
+            KIND_NOPTR,
+        )
+    } as *mut HaxeCtor;
+    if p.is_null() {
+        heap::out_of_memory("a haxe constructor");
+    }
+    unsafe {
+        (*p).desc = &raw const CTOR_DESC;
+        (*p).t = t;
+        (*p).func = func;
+        (*p).sig = sig;
+    }
+    // Kept for the process, as the interface that names it is.
+    let _keep = heap::handle_new(p as *mut u8);
+    Value::object(p as *const c_void)
+}
+
+/// Allocate, wrap, construct; the wrapper is the result.
+unsafe extern "C-unwind" fn ctor_call(
+    obj: *mut u8,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let ctor = unsafe { &*(obj as *const HaxeCtor) };
+    let args = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, n) }
+    };
+    let instance = unsafe { hlp_alloc_obj(ctor.t.cast()) } as *mut vdynamic;
+    let (this, root) = wrap_rooted(instance);
+    let mut with_this = Vec::with_capacity(n + 1);
+    with_this.push(this);
+    with_this.extend_from_slice(args);
+    let mut ignored = Value::null();
+    let code = unsafe {
+        dispatch(
+            ctor.func,
+            ctor.sig,
+            with_this.as_ptr(),
+            with_this.len(),
+            &mut ignored,
+        )
+    };
+    heap::handle_release(root);
+    if code == REPLY_OK {
+        unsafe { *out = this };
+    }
+    code
+}
+
+static CTOR_PROTO: Protocol = Protocol {
+    call: Some(ctor_call),
+    ..Protocol::NONE
+};
+
+/// A new instance of `class`, constructed with `args`: the class's
+/// constructor callable through the bridge, on behalf of Haxe.
+pub fn construct(class: &ClassIface, args: &[Value]) -> Result<Value, Value> {
+    let Some(ctor) = &class.ctor else {
+        let e = Error::new(
+            ErrorKind::Runtime,
+            &format!("{} has no constructor", class.name),
+            lang(),
+        );
+        return Err(Error::value(e));
+    };
+    bridge::call_named(ctor.target, args, lang(), &format!("{}.new", class.name))
+}
+
+/// Whether `callable` is a constructor made here.
+pub fn is_constructor(callable: Callable) -> bool {
+    match callable {
+        Callable::Dynamic(v) => v.as_object().is_some_and(|p| {
+            !p.is_null() && ptr::eq(unsafe { desc_of(p as *mut u8) }, &raw const CTOR_DESC)
+        }),
+        Callable::Typed { .. } => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -653,6 +853,19 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
     REPLY_OK
 }
 
+/// The class name of an object or struct: what the registry publishes it
+/// under.
+unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
+    let d = unsafe { inner(obj) };
+    match unsafe { obj_name((*d).t) } {
+        Some(name) => {
+            unsafe { *out = Str::value(Str::new(&name)) };
+            REPLY_OK
+        }
+        None => REPLY_UNSUPPORTED,
+    }
+}
+
 /// Sequence access is not answered yet: a Haxe array is a class instance
 /// whose element storage differs by element type.
 static HAXE_PROTO: Protocol = Protocol {
@@ -664,6 +877,7 @@ static HAXE_PROTO: Protocol = Protocol {
     hash: Some(hash),
     equals: Some(equals),
     unwrap_native: Some(unwrap_native),
+    type_name: Some(type_name),
     ..Protocol::NONE
 };
 

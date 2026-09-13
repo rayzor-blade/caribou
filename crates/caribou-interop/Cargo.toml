@@ -12,7 +12,7 @@ description = "Cross-language proofs: both adapters in one process, values cross
 [dev-dependencies]
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
-caribou-ash = { path = "../caribou-ash" }
+caribou-ash = { path = "../caribou-ash", features = ["runner"] }
 caribou-wren = { path = "../caribou-wren" }
 ash_std = { path = "../../../ash/std" }
 wren_lift = { path = "../../../wren_lift" }

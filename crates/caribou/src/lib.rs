@@ -11,6 +11,7 @@ pub mod diag;
 pub mod error;
 pub mod heap;
 pub mod protocol;
+pub mod registry;
 pub mod sched;
 pub mod symbol;
 pub mod world;

@@ -42,9 +42,9 @@ native-call marshaling.
 |---|---|
 | `caribou_abi` | `no_std`, zero dependencies. Layouts and constants shared by the core, every adapter and every plugin: HashLink's `hl.h` structs with size and offset tests, the NaN-boxed `Value`, allocation kinds, the plugin descriptor table, error kinds. It never defines a symbol. |
 | `caribou` | The core. Depends on `caribou_abi`, `ariadne` for rendering diagnostics, `libc` on unix, `windows-sys` on Windows. Stable Rust. |
-| `caribou-ash` | Ash's adapter: `install()` fills `ash_std::rt` with the core's heap and scheduler, and the `caribou-ash` binary (feature `runner`) runs a `.hl` on ash's interpreter over the core, or with `--no-install` on ash's own runtime for A/B. Depends on ash by path until ash is published; builds on nightly, as ash_std does. |
+| `caribou-ash` | Ash's adapter: `install()` fills `ash_std::rt` with the core's heap and scheduler; with the `runner` feature, `program` loads a `.hl` on ash's interpreter over the core, runs it and publishes its classes to the registry, and the `caribou-ash` binary runs one, or with `--no-install` on ash's own runtime for A/B. Depends on ash by path until ash is published; builds on nightly, as ash_std does. |
 | `caribou-wren` | WrenLift's adapter: `install()` fills `wren_lift::runtime::rt`, the memory under its Immix strategy, with the core's heap, and the `caribou-wren` binary (feature `runner`) runs a `.wren` on WrenLift's interpreter or tiered JIT over the core, or with `--no-install` on WrenLift's own heap for A/B. Depends on wren_lift by path until it is published; stable Rust. |
-| `caribou-interop` | Tests only: both adapters in one process, values crossing between them through the bridge. Nightly, as caribou-ash is. |
+| `caribou-interop` | Tests only: both adapters in one process, values crossing between them through the bridge, and a Wren program importing a Haxe class from the fixture under `fixtures/`. Nightly, as caribou-ash is. |
 
 ## Heap
 
@@ -511,9 +511,13 @@ field hash `hlp_hash_gen` gives the symbol's name, computed once per
 symbol. `invoke` finds the method on the runtime's lookup chain and calls
 it through the typed dispatcher with the object as `this`. `call` runs a
 closure through `hlp_dyn_call`, and `to_string` is `hlp_value_to_string`.
+`type_name` is the class's name, what the registry publishes it under.
 `equals` and `hash` are the wrapped object's identity, so two wrappers of
 one object compare equal and no cache is kept. `unwrap` gives the object
-back. Sequence access is not answered yet.
+back. A Haxe `String` is not wrapped: it crosses as a core `Str`, and a
+core `Str` entering Haxe becomes a fresh `String` under the type the
+loaded program's `String` class carries. Sequence access is not answered
+yet.
 
 Ash's dispatcher builds a `vclosure` without a bound value around the code
 pointer and its signature, boxes each argument by the signature's kind into
@@ -533,23 +537,141 @@ allocation, where word zero is the shared `WREN_DESC`, sixteen bytes before
 the address wren_lift holds. `caribou_wren::wrap` and `unwrap` translate,
 and every protocol entry adds the prefix back before touching the object.
 A core int becomes a Wren number on the way in, Wren having no other, and
-a core string becomes a Wren string; an object of another language cannot
-enter Wren yet. The protocol answers through the runtime's own methods by
-Wren's signature convention: `get_member` is the getter `name`, else an
-instance field of that name; `set_member` is `name=(_)`; `invoke` is
-`name(_,_)` by arity, falling back to the getter for an arity of zero;
-`call` runs a closure; `index`, `set_index`, `len` and `iterate` are `[_]`,
-`[_]=(_)`, `count` and `iterate(_)` with `iteratorValue(_)`. A method the
-class lacks raises Wren's own `does not implement` error. wren_lift's error
-is a message string, so a Wren error crossing the bridge is a core `Error`
-whose native payload is that message as a Wren string, rooted by a VM
-handle; no Wren object is an error by itself.
+a core string becomes a Wren string; an object of another language becomes
+an instance of the class installed for its type when its language has
+published one (see "Module registry"), and cannot enter Wren otherwise.
+The protocol answers through the runtime's own methods by Wren's signature
+convention: `get_member` is the getter `name`, else an instance field of
+that name; `set_member` is `name=(_)`; `invoke` is `name(_,_)` by arity,
+falling back to the getter for an arity of zero; `call` runs a closure;
+`index`, `set_index`, `len` and `iterate` are `[_]`, `[_]=(_)`, `count`
+and `iterate(_)` with `iteratorValue(_)`. A method the class lacks raises
+Wren's own `does not implement` error. wren_lift's error is a message
+string, so a Wren error crossing the bridge is a core `Error` whose native
+payload is that message as a Wren string, rooted by a VM handle; no Wren
+object is an error by itself.
 
 The Wren entries run on a VM, and `install` cannot know it. Whoever creates
 a VM enters it: `enter_vm` and `leave_vm` around a run, or `with_vm` around
 a call that may reach Wren objects; the runner enters its VM for the whole
 run. An entry with no VM entered falls back to the one wren_lift reports as
 dispatching, and raises an `Internal` error if there is none.
+
+## Module registry
+
+`caribou::registry` is where one language's classes become visible to
+another. An adapter that loads a module publishes its interface; the
+adapter answering another language's import reads it and installs a class
+of its own that targets the bridge. Nothing is generated: each compiler
+binds the imported class where it binds its own.
+
+### Interfaces
+
+An `Interface` describes one module of one language: its `lang`, its
+`module` name in that language's own terms (`game.Player` for Haxe), and
+its classes. A `ClassIface` has the class's simple name, its `type_name`
+(what the language calls the type, and what an instance reports through
+the protocol's `type_name` message), its superclass, its fields with their
+types, its methods and its constructor. A `MethodIface` has a name, a
+static flag, parameter and return types, and the `Callable` the bridge
+invokes for it: an instance method's takes the receiver first, a static's
+takes only its parameters, and a constructor's takes the constructor's
+parameters and returns the new object. Types are `TypeRef`s: `Void`,
+`Bool`, `Int`, `Float`, `Str`, `Object(type name)`, `Array`, `Dyn` and
+`Fun`, the terms every language can map to.
+
+`publish(iface)` puts an interface in the process-wide table, replacing
+an earlier one of the same `(lang, module)`. `interface(lang, module)`
+reads one back, `class_for_type(lang, type_name)` finds the class an
+object belongs to, and `lookup(namespace, module)` and `lookup_class`
+resolve an import path first.
+
+### Namespaces
+
+An import addresses a module through a namespace, not a language name:
+`import "game:Player"` names the namespace `game` and the module `Player`.
+`World::new` publishes `Config.namespaces` process-wide, the way it
+publishes language names, so an adapter callback with no world handle can
+resolve one. A `Namespace` has a name, the languages it covers and, when
+given, the modules it exposes. A module is addressable in a namespace by
+its own name and, when the name begins with the namespace's name and a
+dot, by the remainder: that is how the Haxe package `game` becomes the
+namespace `game`, and `game:Player` reaches `game.Player`. Every registered
+language is also a namespace under its own name, so `haxe:game.Player`
+resolves with no configuration. `publish` refuses an interface when a
+configured namespace holding its language and another would answer one
+import name with a module of each; the error is a `RegisterError`.
+
+### Ash publishes
+
+`caribou_ash::program` loads a `.hl` the way ash's CLI does and is what the
+runner and the tests share. `load` installs the seam, initialises ash's
+standard library, decodes the bytecode and builds the interpreter; `start`
+runs the entry point, which is HashLink's entry function creating every
+class object and running the static initialisers before `main`. The
+interpreter registers its closure runner, stub resolver and exception
+hooks only there, so nothing in a program can be called from outside
+before it has started. `publish` then walks the decoded types.
+
+HashLink's shape is: an instance type (`game.Player`) carries the fields
+and the instance methods as protos; its companion (`game.$Player`, an
+`hl.Class`) carries the statics as function-typed fields, bound by its
+binding list to their functions, and binds the inherited `__constructor__`
+field to the constructor. Every published callable is `Callable::Typed`
+with the interpreter's own function pointer and function type for the
+bytecode function, read from the module context the interpreter built; the
+pointer is a stub sentinel that `hlp_dyn_call` routes to the closure
+runner, or the compiled entry once the tier has promoted the function. The
+interpreter keeps that context private, so it is read off the type of a
+`String` the program allocates through its own `String.__alloc__`, and that
+type is kept for the strings that cross. A constructor is published as a
+`Callable::Dynamic`: a small core object whose `call` allocates an instance
+of the type with `hlp_alloc_obj`, wraps it and runs `__constructor__` on it
+through the dispatcher, so the registry stays free of anything Haxe. Types
+under `hl.` and `haxe.`, the companions and `String` are not published; one
+module per class, named after it.
+
+### Wren imports
+
+`caribou_wren::import::configure` installs `resolve_module_fn` and
+`load_module_fn` ahead of any the host set. A name `ns:module` under a
+namespace the registry knows resolves to the language's own module name,
+`haxe:game.Player`, so every namespace addressing one module reaches one
+class, and the first resolution installs it: the adapter builds a wren_lift
+`ModuleBlob` in memory, one `ClassMir` per published class with one field,
+an empty top level and nothing else, encodes it as a `.wlbc` and hands it
+to `interpret_bytecode`, the path a `.wlbc` takes. It then binds one native
+per member into the class's method table: `new(_)` for the constructor,
+`hit(_)` for a method, `hp` and `hp=(_)` for a field, statics under
+`static:`. wren_lift binds a class's foreign stubs only by `dlsym` in a
+`#!native` library and never consults `bind_foreign_method_fn`, so the
+binding happens here, right after the install. A namespaced name no
+interface answers is left to the VM, whose import error names it.
+
+A `NativeFn` is a bare function receiving the receiver and the arguments,
+so the natives are trampolines: a fixed number of distinct functions, the
+`i`th calling the `i`th member bound on the receiver's class. A call costs
+one lookup by class pointer in the table the VM's heap record keeps, then
+the bridge call: `call_named` with the typed callable for a method or a
+static, `get` and `set` by interned symbol for a field, the constructor's
+callable for `new`. Arguments cross as bridge values, a Wren string as a
+core `Str` rooted for the call; results come back through `to_wren`, so an
+object of another language becomes an instance of the class installed for
+its type, installing that class's module on first need. A Haxe throw or a
+refused argument arrives as the error's message and aborts the fiber, as
+`Fiber.try` sees. A Wren class may extend an installed one; its
+constructor's `super` call reaches the same native with the instance
+already made.
+
+### Lifetime
+
+An instance of an installed class is an ordinary `ObjInstance` whose one
+field holds a core `Handle`, as a number, to the object it stands for: the
+`HaxeRef` the bridge wraps a Haxe object in. The handle roots that object
+for as long as the Wren instance lives. The adapter's own sweep, which
+drops every dead wren_lift object, releases the handle first; `heap_drop`
+releases whatever a VM leaves behind. No identity cache is kept: two
+instances made for one Haxe object are distinct Wren objects.
 
 ## Worlds and tasks
 
@@ -766,6 +888,7 @@ from inside a collection or a switch.
 
 ### Boundaries of the current implementation
 
-Not yet built beyond the adapter registry and the language table. Module
-loading, lookup, call and events arrive with the bridge and the module
-registry.
+Built so far: the adapter registry, the language table and the namespace
+table. Module loading, call and events through the world arrive with the
+reload pipeline; today an adapter loads its own modules and publishes them
+to the registry itself.

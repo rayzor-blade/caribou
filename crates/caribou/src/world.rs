@@ -1,5 +1,5 @@
-//! The driver's handle: adapter registry and language table. Module loading,
-//! lookup, call and events arrive with the bridge and the module registry.
+//! The driver's handle: adapter registry, language table and namespace
+//! table. Module loading, call and events arrive with the reload pipeline.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -8,7 +8,10 @@ use std::sync::{LazyLock, Mutex};
 use caribou_abi::LangId;
 
 use crate::heap;
+use crate::registry;
 use crate::sched;
+
+pub use crate::registry::Namespace;
 
 /// A runtime taught the core. Implemented by each resident adapter.
 pub trait Adapter: 'static {
@@ -29,8 +32,11 @@ pub struct Language {
 /// What `World::new` takes.
 #[derive(Clone, Debug, Default)]
 pub struct Config {
-    /// Kept for the reactor and the module registry; nothing reads it yet.
+    /// Kept for the reactor; nothing reads it yet.
     pub name: String,
+    /// The namespaces imports are addressed through, beside the one every
+    /// registered language gets under its own name. See `caribou::registry`.
+    pub namespaces: Vec<Namespace>,
 }
 
 /// The driver's handle. One per OS thread; `new` initialises that thread's
@@ -51,6 +57,11 @@ pub const LANG_CORE: LangId = 0;
 static LANG_NAMES: LazyLock<Mutex<HashMap<LangId, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// The reverse: a name to the id most recently registered under it, for
+/// resolving a namespace's language names.
+static LANG_IDS: LazyLock<Mutex<HashMap<String, LangId>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// The registered name of `lang`; `core` for the core's own id, `lang N`
 /// for an id no world has registered.
 pub fn language_name(lang: LangId) -> String {
@@ -65,11 +76,19 @@ pub fn language_name(lang: LangId) -> String {
         .unwrap_or_else(|| format!("lang {lang}"))
 }
 
+/// The id most recently registered under `name`, in any world.
+pub fn language_id(name: &str) -> Option<LangId> {
+    LANG_IDS.lock().unwrap().get(name).copied()
+}
+
 impl World {
-    pub fn new(_config: Config) -> World {
+    /// Also publishes `config.namespaces` process-wide, replacing the table
+    /// an earlier world published.
+    pub fn new(config: Config) -> World {
         heap::init();
         // Materialise this thread's scheduler and install the heap's poll hook.
         let _ = sched::world_id();
+        registry::set_namespaces(config.namespaces);
         World {
             adapters: Vec::new(),
             languages: Vec::new(),
@@ -101,6 +120,7 @@ impl World {
         for (name, &id) in names.iter().zip(&ids) {
             self.by_name.insert(name.clone(), id);
             LANG_NAMES.lock().unwrap().insert(id, name.clone());
+            LANG_IDS.lock().unwrap().insert(name.clone(), id);
             self.languages.push(Language {
                 id,
                 name: name.clone(),
@@ -136,6 +156,12 @@ impl World {
 pub enum RegisterError {
     NoLanguages,
     NameTaken(String),
+    /// Two languages of one namespace would both answer `namespace:module`.
+    ModuleClash {
+        namespace: String,
+        module: String,
+        langs: [String; 2],
+    },
 }
 
 impl std::fmt::Display for RegisterError {
@@ -143,11 +169,25 @@ impl std::fmt::Display for RegisterError {
         match self {
             RegisterError::NoLanguages => write!(f, "adapter registers no languages"),
             RegisterError::NameTaken(name) => write!(f, "language `{name}` is already registered"),
+            RegisterError::ModuleClash {
+                namespace,
+                module,
+                langs,
+            } => write!(
+                f,
+                "`{namespace}:{module}` names a module of both `{}` and `{}`",
+                langs[0], langs[1]
+            ),
         }
     }
 }
 
 impl std::error::Error for RegisterError {}
+
+/// `World::new` replaces the process-wide namespace table, so tests that
+/// make worlds take turns.
+#[cfg(test)]
+pub(crate) static SERIAL: Mutex<()> = Mutex::new(());
 
 #[cfg(test)]
 mod tests {
@@ -169,6 +209,7 @@ mod tests {
 
     #[test]
     fn languages_get_distinct_ids_and_resolve_by_name() {
+        let _serial = SERIAL.lock().unwrap();
         let mut world = World::new(Config::default());
         let ids = world
             .register(Box::new(Fake {
@@ -193,12 +234,15 @@ mod tests {
         assert!(world.adapter_for(9999).is_none());
         assert_eq!(language_name(ids[0]), "haxe");
         assert_eq!(language_name(more[1]), "zyn:dialogue");
+        assert_eq!(language_id("zyn:dialogue"), Some(more[1]));
+        assert_eq!(language_id("never registered"), None);
         assert_eq!(language_name(LANG_CORE), "core");
         assert_eq!(language_name(9999), "lang 9999");
     }
 
     #[test]
     fn a_taken_name_is_refused_and_nothing_is_registered() {
+        let _serial = SERIAL.lock().unwrap();
         let mut world = World::new(Config::default());
         world
             .register(Box::new(Fake {
@@ -228,6 +272,7 @@ mod tests {
 
     #[test]
     fn tick_with_no_tasks_returns_promptly() {
+        let _serial = SERIAL.lock().unwrap();
         let mut world = World::new(Config::default());
         assert!(!world.tick(Some(std::time::Instant::now())));
     }

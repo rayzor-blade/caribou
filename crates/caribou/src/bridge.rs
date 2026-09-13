@@ -436,7 +436,7 @@ pub fn describe(v: Value) -> String {
     } else if v.is_bool() {
         "a bool".to_owned()
     } else if let Some(obj) = object_of(v) {
-        let name = unsafe { type_name(obj) };
+        let name = unsafe { desc_name(obj) };
         if name.is_empty() {
             "an object".to_owned()
         } else {
@@ -455,7 +455,7 @@ fn object_of(v: Value) -> Option<*mut u8> {
     }
 }
 
-unsafe fn type_name<'a>(obj: *mut u8) -> &'a str {
+unsafe fn desc_name<'a>(obj: *mut u8) -> &'a str {
     let Some(desc) = (unsafe { desc_of(obj).as_ref() }) else {
         return "";
     };
@@ -468,6 +468,33 @@ unsafe fn type_name<'a>(obj: *mut u8) -> &'a str {
 /// The language that defines `obj`'s type.
 unsafe fn lang_of(obj: *mut u8) -> LangId {
     unsafe { desc_of(obj).as_ref() }.map_or(LANG_CORE, |d| d.lang)
+}
+
+/// The language of `v`'s type, for an object.
+pub fn language_of(v: Value) -> Option<LangId> {
+    object_of(v).map(|obj| unsafe { lang_of(obj) })
+}
+
+/// The name `v`'s own language gives its type, when its protocol answers
+/// `type_name`. Nothing is raised: an entry that raises or answers with a
+/// non-string is `None`, and its pending error is dropped.
+pub fn type_name(v: Value) -> Option<String> {
+    let obj = object_of(v)?;
+    let outcome = protected(
+        || unsafe { protocol::Send::type_name(obj) },
+        |_| (ErrorKind::Type, String::new()),
+    );
+    match outcome {
+        Outcome::Ok(name) => {
+            let text = unsafe { crate::error::Str::text(name) }?;
+            Some(text.to_owned())
+        }
+        Outcome::Raised => {
+            drop(take_pending_rooted());
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Call `callable` with `args` on behalf of `caller`. `Ok` is the callee's

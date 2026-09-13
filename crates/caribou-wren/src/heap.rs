@@ -29,7 +29,7 @@
 //! the other thread's precise trace sound: wren_lift completes every write
 //! to an object between two of its polls, and this thread parks only at one.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::OnceLock;
@@ -41,12 +41,17 @@ use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::mem;
 use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_object_trace};
 
+use crate::import::{self, Imports};
+
 /// Bytes before the wren_lift object: the descriptor word and the record
 /// word, padded so the object keeps the allocation's 16-byte alignment.
 pub(crate) const PREFIX: usize = 16;
 /// In the record word: wren_lift has marked the object in the open cycle.
 /// The record is a `Box`, so the bit is free. Cleared by `collect_end`.
 const MARKED: usize = 1;
+/// The object owns nothing outside the heap: the sweep skips `object_drop`.
+const PLAIN: usize = 2;
+const FLAGS: usize = MARKED | PLAIN;
 
 /// The record word of the core allocation at `start`.
 #[inline(always)]
@@ -57,7 +62,7 @@ fn record_word(start: *mut u8) -> *mut usize {
 /// The record the core allocation at `start` belongs to.
 #[inline(always)]
 unsafe fn record_of<'a>(start: *mut u8) -> &'a WrenHeap {
-    unsafe { &*((*record_word(start) & !MARKED) as *const WrenHeap) }
+    unsafe { &*((*record_word(start) & !FLAGS) as *const WrenHeap) }
 }
 
 /// One wren_lift heap: the handle `heap_new` mints. Touched only under the
@@ -90,6 +95,21 @@ pub struct WrenHeap {
     live_bytes: usize,
     allocated_bytes: usize,
     freed_bytes: usize,
+    freed_objects: usize,
+    /// The other languages' classes installed in this heap's VM, and the
+    /// handles its instances of them hold.
+    imports: RefCell<Imports>,
+}
+
+impl WrenHeap {
+    pub(crate) fn imports(&self) -> &RefCell<Imports> {
+        &self.imports
+    }
+}
+
+/// The record of the heap holding the wren_lift object at `obj`.
+pub(crate) fn record_for<'a>(obj: *mut u8) -> &'a WrenHeap {
+    unsafe { record_of(obj.wrapping_sub(PREFIX)) }
 }
 
 thread_local! {
@@ -219,7 +239,7 @@ unsafe fn resolve(gc: &ImmixAllocator, rec: &WrenHeap, addr: usize) -> Option<(u
     let (start, size) = gc.allocation_containing(addr)?;
     let words = start as *const usize;
     let ours = unsafe { *words == wren_desc() as usize }
-        && unsafe { *words.add(1) & !MARKED == rec as *const WrenHeap as usize };
+        && unsafe { *words.add(1) & !FLAGS == rec as *const WrenHeap as usize };
     ours.then_some((start, size))
 }
 
@@ -246,6 +266,8 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         live_bytes: 0,
         allocated_bytes: 0,
         freed_bytes: 0,
+        freed_objects: 0,
+        imports: RefCell::new(Imports::default()),
     }));
     let anchor = unsafe {
         heap::alloc_gen(
@@ -270,6 +292,7 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     let rec = unsafe { Box::from_raw(heap as *mut WrenHeap) };
     rec.closing.store(true, Ordering::Relaxed);
     let mut gc = heap::gc_locked_init();
+    import::release_all(&rec, &mut gc);
     for &start in &rec.pins {
         gc.forget_allocation(start as *const u8);
     }
@@ -281,6 +304,14 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
 }
 
 pub unsafe extern "C" fn alloc_raw(heap: *mut c_void, size: usize) -> *mut u8 {
+    unsafe { alloc_with(heap, size, 0) }
+}
+
+pub unsafe extern "C" fn alloc_plain(heap: *mut c_void, size: usize) -> *mut u8 {
+    unsafe { alloc_with(heap, size, PLAIN) }
+}
+
+unsafe fn alloc_with(heap: *mut c_void, size: usize, flags: usize) -> *mut u8 {
     // One hold from allocation to pin: a fresh traced object is unmarked, and
     // a collection before it is pinned would forget it.
     let gc = heap::gc_locked_init();
@@ -295,7 +326,7 @@ pub unsafe extern "C" fn alloc_raw(heap: *mut c_void, size: usize) -> *mut u8 {
         return p;
     }
     let start = p as usize;
-    unsafe { record_word(p).write(heap as usize) };
+    unsafe { record_word(p).write(heap as usize | flags) };
     let reserved = gc
         .allocation_containing(start)
         .map_or(size + PREFIX, |(_, size)| size);
@@ -435,16 +466,23 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
             let (_, size) = gc
                 .allocation_containing(start)
                 .expect("a pin is an allocation start");
-            dead.push((start, size));
+            dead.push((start, size, w & PLAIN != 0));
             false
         }
     });
     let mut freed = 0usize;
-    for (start, size) in dead {
-        unsafe { drop_object((start + PREFIX) as *mut u8) };
+    let rec = unsafe { record(heap) };
+    let dead_count = dead.len();
+    for (start, size, plain) in dead {
+        let obj = (start + PREFIX) as *mut u8;
+        import::finalize_dead(rec, obj, &mut gc);
+        if !plain {
+            unsafe { drop_object(obj) };
+        }
         gc.forget_allocation(start as *const u8);
         freed += size;
     }
+    unsafe { record_mut(heap) }.freed_objects += dead_count;
     // The core's collection is the sweep: it retains the pins, whose claims
     // stand, clears them, and returns the forgotten objects' lines. A
     // collection the core abandoned leaves the claims standing, and a claim
@@ -489,6 +527,7 @@ pub unsafe extern "C" fn stats(heap: *mut c_void, out: *mut RtStats) {
             live_bytes: rec.live_bytes,
             allocated_bytes: rec.allocated_bytes,
             freed_bytes: rec.freed_bytes,
+            freed_objects: rec.freed_objects,
         })
     };
 }

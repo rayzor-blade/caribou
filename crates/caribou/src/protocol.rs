@@ -74,6 +74,9 @@ pub struct Protocol {
     pub error_kind: Option<unsafe extern "C-unwind" fn(obj: *mut u8) -> ErrorKind>,
     pub error_cause: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
     pub error_trace: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
+    /// The object's type in its own language's terms, as a core `Str`:
+    /// what the registry's `ClassIface::type_name` holds for its class.
+    pub type_name: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
 }
 
 /// Reply codes an entry returns.
@@ -102,6 +105,7 @@ impl Protocol {
         error_kind: None,
         error_cause: None,
         error_trace: None,
+        type_name: None,
     };
 }
 
@@ -271,6 +275,14 @@ impl Send {
         let mut out = Value::null();
         reply(unsafe { f(obj, &mut out) }, out)
     }
+
+    pub unsafe fn type_name(obj: *mut u8) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.type_name) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = Value::null();
+        reply(unsafe { f(obj, &mut out) }, out)
+    }
 }
 
 /// What the bridge invokes.
@@ -354,6 +366,7 @@ mod tests {
             assert_eq!(Send::len(obj), Ok(2));
             assert_eq!(Send::call(obj, &[]), Err(Fault::Unsupported));
             assert_eq!(Send::to_string(obj), Err(Fault::Unsupported));
+            assert_eq!(Send::type_name(obj), Err(Fault::Unsupported));
             assert!(!Send::is_error(obj));
             assert_eq!(Send::error_kind(obj), None);
         }
