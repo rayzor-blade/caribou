@@ -5138,13 +5138,49 @@ pub fn collections() -> u64 {
 /// Initialises the heap on first use, as HashLink does.
 pub unsafe fn alloc_gen(t: *mut hl_type, size: usize, flags: u32) -> *mut c_void {
     use caribou_abi::mem::{AllocKind, TRACED};
+    let kind = AllocKind::from_flags(flags);
+    // A typed, raw or pointer-free allocation whose descriptor has no drop
+    // hook needs the lock for nothing: it bumps through the thread's buffer
+    // as `gc_alloc` does, and its kind is one byte in the side table, which
+    // nothing reads until this thread next parks. A drop hook is recorded
+    // per block, under the lock; a finalizer is registered there too.
+    let traced = kind == AllocKind::Typed && flags & TRACED != 0;
+    let has_drop = traced && unsafe { (*(t as *const TypeDesc)).drop.is_some() };
+    if kind != AllocKind::Finalizer && !has_drop {
+        let Some(ptr) = gc_alloc(size) else {
+            return ptr::null_mut();
+        };
+        let p = ptr.as_ptr();
+        if kind == AllocKind::Typed {
+            unsafe { (*(p as *mut hl::vdynamic)).t = t };
+        }
+        let mark = match kind {
+            AllocKind::Typed if traced => OBJECT_KIND_TRACED,
+            AllocKind::NoPtr => OBJECT_KIND_NOPTR,
+            _ => 0,
+        };
+        if mark != 0 {
+            // The side table through the buffer's own pointer to it, which a
+            // thread has once it has refilled; else under the lock.
+            let (objects, base) = TLAB.with(|tl| (tl.objects.get(), tl.heap_base.get()));
+            if !objects.is_null() {
+                let index = (p as usize - base) / ALLOC_QUANTUM;
+                unsafe { (*objects.add(index)).fetch_or(mark, Ordering::Relaxed) };
+            } else {
+                let mut gc = gc_locked_init();
+                let offset = p as usize - gc.heap.memory.as_ptr() as usize;
+                gc.set_allocation_kind(offset, mark);
+            }
+        }
+        return p as *mut c_void;
+    }
     let mut gc = gc_locked_init();
     let Some(ptr) = gc.allocate(size) else {
         return ptr::null_mut();
     };
     let p = ptr.as_ptr();
     let offset = p as usize - gc.heap.memory.as_ptr() as usize;
-    match AllocKind::from_flags(flags) {
+    match kind {
         AllocKind::Typed => {
             unsafe { (*(p as *mut hl::vdynamic)).t = t };
             if flags & TRACED != 0 {

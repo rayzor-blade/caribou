@@ -74,7 +74,7 @@ unsafe fn record_of<'a>(start: *mut u8) -> &'a WrenHeap {
 /// `should_collect` reads without it.
 pub struct WrenHeap {
     /// Core starts of every allocation wren_lift has not reclaimed.
-    pins: Vec<usize>,
+    pins: Vec<Pin>,
     /// Roots the anchor, whose word one points back at this record.
     anchor: Handle,
     /// Bytes handed out since the last cycle, counted as the core counts
@@ -108,6 +108,14 @@ pub struct WrenHeap {
     signatures: RefCell<crate::proto::Signatures>,
     /// This heap's classes published to the registry.
     exports: RefCell<Exports>,
+}
+
+/// One allocation of a record: its core start, and the bytes the core
+/// reserved for it, so a cycle needs no lookup to account for it.
+#[derive(Clone, Copy)]
+struct Pin {
+    start: usize,
+    size: u32,
 }
 
 impl WrenHeap {
@@ -245,8 +253,8 @@ unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
         return;
     }
     let tracer = unsafe { &mut *tracer };
-    for &start in &rec.pins {
-        tracer.mark(start as *const u8);
+    for pin in &rec.pins {
+        tracer.mark(pin.start as *const u8);
     }
 }
 
@@ -325,8 +333,8 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     rec.closing.store(true, Ordering::Relaxed);
     let mut gc = heap::gc_locked_init();
     import::release_all(&rec, &mut gc);
-    for &start in &rec.pins {
-        gc.forget_allocation(start as *const u8);
+    for pin in &rec.pins {
+        gc.forget_allocation(pin.start as *const u8);
     }
     let anchor = gc.handle_get(rec.anchor);
     gc.forget_allocation(anchor);
@@ -344,9 +352,11 @@ pub unsafe extern "C" fn alloc_plain(heap: *mut c_void, size: usize) -> *mut u8 
 }
 
 unsafe fn alloc_with(heap: *mut c_void, size: usize, flags: usize) -> *mut u8 {
-    // One hold from allocation to pin: a fresh traced object is unmarked, and
-    // a collection before it is pinned would forget it.
-    let gc = heap::gc_locked_init();
+    // A fresh traced object is unmarked, and a collection before it is
+    // pinned would forget it. None can come between: the allocator
+    // collects, or parks for another mutator's collection, before it bumps,
+    // and this thread reaches no safepoint until the pin is pushed.
+    let reserved = (size + PREFIX).next_multiple_of(16);
     let p = unsafe {
         heap::alloc_gen(
             desc_ptr(wren_desc()),
@@ -359,15 +369,13 @@ unsafe fn alloc_with(heap: *mut c_void, size: usize, flags: usize) -> *mut u8 {
     }
     let start = p as usize;
     unsafe { record_word(p).write(heap as usize | flags) };
-    let reserved = gc
-        .allocation_containing(start)
-        .map_or(size + PREFIX, |(_, size)| size);
     let rec = unsafe { record_mut(heap) };
-    rec.pins.push(start);
+    rec.pins.push(Pin {
+        start,
+        size: reserved.min(u32::MAX as usize) as u32,
+    });
     rec.allocated_bytes += reserved;
-    // The core charges the 16-byte-aligned size, not the lines reserved.
-    rec.bytes_since_cycle
-        .fetch_add((size + PREFIX).next_multiple_of(16), Ordering::Relaxed);
+    rec.bytes_since_cycle.fetch_add(reserved, Ordering::Relaxed);
     unsafe { p.add(PREFIX) }
 }
 
@@ -539,7 +547,8 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let mut live = 0usize;
     let mut dead = Vec::new();
     // Marked pins become the core's claims, in address order; the rest die.
-    unsafe { record_mut(heap) }.pins.retain(|&start| {
+    unsafe { record_mut(heap) }.pins.retain(|pin| {
+        let start = pin.start;
         let word = record_word(start as *mut u8);
         let w = unsafe { *word };
         if w & MARKED != 0 {
@@ -549,10 +558,7 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
                 .expect("a pin is an allocation start");
             true
         } else {
-            let (_, size) = gc
-                .allocation_containing(start)
-                .expect("a pin is an allocation start");
-            dead.push((start, size, w & PLAIN != 0));
+            dead.push((start, pin.size as usize, w & PLAIN != 0));
             false
         }
     });
@@ -579,8 +585,8 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let rec = unsafe { record_mut(heap) };
     rec.claimed = false;
     if heap::collections() == before {
-        for &start in &rec.pins {
-            gc.unclaim(start as *const u8);
+        for pin in &rec.pins {
+            gc.unclaim(pin.start as *const u8);
         }
     }
     rec.trigger.store(gc.trigger_threshold(), Ordering::Relaxed);
@@ -599,7 +605,7 @@ pub unsafe extern "C" fn for_each_allocation(heap: *mut c_void, visit: Visit, ct
     let _gc = heap::gc_locked_init();
     // By index: `visit` may not allocate, so the list cannot grow under it.
     for i in 0..rec.pins.len() {
-        unsafe { visit((rec.pins[i] + PREFIX) as *mut u8, ctx) };
+        unsafe { visit((rec.pins[i].start + PREFIX) as *mut u8, ctx) };
     }
 }
 
