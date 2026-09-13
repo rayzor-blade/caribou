@@ -133,7 +133,9 @@ pointer is real code rather than one of the interpreter's stub sentinels,
 and the arity matches, the arguments are placed by the signature's kinds
 through `ash_native_call`, with no boxing, under a HashLink trap. A stub,
 a mismatch, or a kind the direct path does not take goes through
-`hlp_dyn_call`, as a dynamic call in Ash does.
+`hlp_dyn_call`, as a dynamic call in Ash does. The other direction, a
+call from Haxe into the bridge, is a host native called by record; see
+[haxe-imports.md](haxe-imports.md#binding-the-natives).
 
 The core registers a default for `LANG_CORE` that covers what the core's
 own callables and the tests need: up to four arguments of kinds `HI32`,

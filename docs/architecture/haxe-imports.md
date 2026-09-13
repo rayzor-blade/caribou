@@ -68,11 +68,12 @@ namespace, the module, the class and the member's Wren signature, with
 
 The native is a static taking the receiver, since genhl emits nothing for
 `@:hlNative` on an instance method, and an inline method or property
-wraps it with the declared types. The arguments are `Dynamic`, so one
-entry per argument count serves every member. The result is `Float` or
-`Bool` when the member declares one and `Dynamic` otherwise, so a number
-comes back in a register, and only anything else in a box the wrapper
-casts.
+wraps it with the declared types. The parameters carry the declared
+types, so a number crosses as itself and nothing is boxed on the way in.
+The result is `Float` or `Bool` when the member declares one and
+`Dynamic` otherwise: a number comes back in a register, and an object
+comes back boxed and is cast by the wrapper, since the cast is what
+checks its class.
 
 The constructor calls its native with the fresh Haxe object, and the
 native makes the Wren object and binds the two. A named constructor is a
@@ -85,11 +86,15 @@ and a Wren subclass's constructor is its own.
 
 When the program loads, `caribou_ash::import::bind` reads its natives.
 Each `caribou` one is parsed into a slot: namespace, module, class,
-member, kind. The slot is registered with ash's resolver as one of the
-entries by argument count and result register, with the slot's address as
-the native's context word. Ash's interpreter, Cranelift tier and LLVM
-tier pass that word ahead of the declared arguments
-(`native_lib::HostNative`).
+member, kind. The slot keeps the kinds the program declared the native
+with, and is registered with ash's resolver as the one entry, called by
+record with the slot's address as its context (`native_lib::HostNative`).
+Ash's interpreter, Cranelift tier and LLVM tier write the typed
+arguments as one word each into a record on the stack and call
+`entry(slot, record)`; the entry reads each word by the slot's kinds, and
+answers with one word the tier reads by the declared result kind. So one
+entry serves every signature, and a native can be declared with whatever
+types the member has.
 
 Binding is by name alone. Nothing has to be published before the program
 starts, ash looks for no library, and the call finds the member when it

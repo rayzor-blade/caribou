@@ -147,7 +147,7 @@ Every Wren class of the module becomes a Haxe class of the same name.
   method. The second keeps its name with the arity appended.
 - A subclass gets its superclass's members from the same module, but is
   not a Haxe subclass of it: every emitted class extends `caribou.Ref`.
-- A member takes at most six parameters, a static at most seven.
+- A member takes at most sixteen parameters, as in Wren.
 
 ### Export signatures
 

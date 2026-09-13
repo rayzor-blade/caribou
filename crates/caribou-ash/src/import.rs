@@ -43,7 +43,7 @@ use caribou::bridge;
 use caribou::protocol::{CallSite, Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
 use caribou::symbol::intern;
-use caribou_abi::hl::{self, hl_type, vdynamic};
+use caribou_abi::hl::{self, hl_type, hl_type_kind, vdynamic};
 use caribou_abi::{LangId, Value};
 
 use crate::proto::{self, lang};
@@ -54,9 +54,9 @@ pub const LIB: &str = "caribou";
 /// The class every face extends, whose first field holds the ref.
 pub const REF_CLASS: &str = "caribou.Ref";
 
-/// Arguments a native declares, receiver included: `ash_native_call`'s
-/// limit less the context word.
-const MAX_ARGS: usize = 7;
+/// Arguments a native declares, receiver included: Wren's widest
+/// signature and one more.
+const MAX_ARGS: usize = 17;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Kind {
@@ -96,12 +96,23 @@ struct Slot {
     resolved: AtomicPtr<Resolved>,
     /// What the callee's protocol derived for this slot last time.
     site: CallSite,
+    /// The kinds the program declared the native with, set by `bind`, and
+    /// what the record's words are read by. Null until bound; replaced
+    /// whole by a program that declares the name again.
+    kinds: AtomicPtr<Kinds>,
 }
 
 #[derive(Debug)]
 struct Resolved {
     generation: u64,
     target: Callable,
+}
+
+/// A native's declared argument and result kinds.
+#[derive(Debug)]
+struct Kinds {
+    args: Vec<hl_type_kind>,
+    ret: hl_type_kind,
 }
 
 // The callable's pointers belong to the publishing language's program,
@@ -189,36 +200,25 @@ fn slot_for(name: &str) -> Result<Slot, String> {
         kind,
         resolved: AtomicPtr::new(ptr::null_mut()),
         site: CallSite::new(),
+        kinds: AtomicPtr::new(ptr::null_mut()),
     })
 }
 
-/// What a native declares: how many arguments, and how it returns. The
-/// arguments are `Dynamic`; the result is typed where the Haxe library
-/// could, so a number comes back in a register and not in a box.
+/// The kinds a native declares, from its function type.
 #[cfg(feature = "runner")]
-fn declared(bytecode: &DecodedBytecode, type_index: usize) -> Option<(usize, Returns)> {
+fn declared(bytecode: &DecodedBytecode, type_index: usize) -> Option<Kinds> {
     let fun = bytecode.types.get(type_index)?.fun.as_ref()?;
-    let ret = match bytecode.types.get(fun.ret.0)?.kind {
-        hl::HF64 => Returns::Float,
-        hl::HBOOL => Returns::Bool,
-        hl::HVOID => Returns::Nothing,
-        _ => Returns::Boxed,
-    };
-    Some((fun.args.len(), ret))
-}
-
-/// The register a native's result comes back in.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Returns {
-    /// A pointer: a boxed dynamic, or nothing.
-    Boxed,
-    Nothing,
-    Float,
-    Bool,
+    let kind = |t: &ash_core::types::TypeRef| bytecode.types.get(t.0).map(|t| t.kind);
+    Some(Kinds {
+        args: fun.args.iter().map(kind).collect::<Option<_>>()?,
+        ret: kind(&fun.ret)?,
+    })
 }
 
 /// Give every `caribou` native the program declares its entry and slot:
-/// the map ash's resolver takes before it looks for libraries.
+/// the map ash's resolver takes before it looks for libraries. Every
+/// native is the one entry, called by record with the slot as its
+/// context, so the program may declare each with the types it has.
 #[cfg(feature = "runner")]
 pub fn bind(bytecode: &DecodedBytecode) -> Result<HashMap<(String, String), HostNative>> {
     let mut table = SLOT_TABLE.write().unwrap();
@@ -231,8 +231,9 @@ pub fn bind(bytecode: &DecodedBytecode) -> Result<HashMap<(String, String), Host
                 table.len() - 1
             }
         };
-        let (nargs, returns) = declared(bytecode, native.type_.0)
+        let kinds = declared(bytecode, native.type_.0)
             .ok_or_else(|| anyhow!("`{}` has no function type", native.name))?;
+        let nargs = kinds.args.len();
         if nargs > MAX_ARGS {
             bail!(
                 "`{}` takes {nargs} arguments; at most {MAX_ARGS}",
@@ -249,16 +250,14 @@ pub fn bind(bytecode: &DecodedBytecode) -> Result<HashMap<(String, String), Host
         if s.kind == Kind::Set && nargs != 2 || s.kind == Kind::Get && nargs != 1 {
             bail!("`{}` declares {nargs} arguments", native.name);
         }
-        let entries = match returns {
-            Returns::Boxed | Returns::Nothing => &ENTRIES,
-            Returns::Float => &ENTRIES_F64,
-            Returns::Bool => &ENTRIES_BOOL,
-        };
+        s.kinds
+            .store(Box::into_raw(Box::new(kinds)), Ordering::Release);
         natives.insert(
             (LIB.to_owned(), native.name.clone()),
             HostNative {
-                addr: entries[nargs] as usize,
+                addr: entry as *const () as usize,
                 context: Arc::as_ptr(&table[slot]) as usize,
+                record: true,
             },
         );
     }
@@ -419,20 +418,73 @@ fn static_member(class: &ClassIface, member: Symbol) -> Option<&registry::Method
     })
 }
 
-/// Run the call for the slot: the result, or what to throw. Everything
-/// owned here is dropped before the throw.
-unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<Value, *mut vdynamic> {
+/// A record word as a value, by the kind the program declared for it
+/// (`native_lib::HostNative::record`).
+unsafe fn word_to_value(word: i64, kind: hl_type_kind) -> Value {
+    match kind {
+        hl::HVOID => Value::null(),
+        hl::HUI8 => Value::int(i32::from(word as u8)),
+        hl::HUI16 => Value::int(i32::from(word as u16)),
+        hl::HI32 => Value::int(word as i32),
+        hl::HI64 => Value::number(word as f64),
+        hl::HF32 | hl::HF64 => Value::number(f64::from_bits(word as u64)),
+        hl::HBOOL => Value::bool(word as u8 != 0),
+        _ => unsafe { proto::dyn_to_value(word as *mut vdynamic) },
+    }
+}
+
+/// A result as the record word the program reads by `kind`; `None` for a
+/// value the kind cannot take.
+unsafe fn value_to_word(v: Value, kind: hl_type_kind) -> Result<i64, String> {
+    let int = || {
+        v.as_int()
+            .or_else(|| v.as_number().map(|n| n as i32))
+            .or_else(|| v.as_bool().map(i32::from))
+            .or_else(|| v.is_null().then_some(0))
+    };
+    let float = || {
+        v.as_number()
+            .or_else(|| v.as_int().map(f64::from))
+            .or_else(|| v.is_null().then_some(0.0))
+    };
+    let word = match kind {
+        hl::HVOID => Some(0),
+        hl::HUI8 | hl::HUI16 | hl::HI32 => int().map(i64::from),
+        hl::HI64 => int().map(i64::from),
+        hl::HF32 | hl::HF64 => float().map(|n| n.to_bits() as i64),
+        hl::HBOOL => v
+            .as_bool()
+            .or_else(|| v.is_null().then_some(false))
+            .map(i64::from),
+        _ => return unsafe { proto::value_to_dyn(v, kind) }.map(|p| p as i64),
+    };
+    word.ok_or_else(|| format!("{} is not a {}", bridge::describe(v), kind_name(kind)))
+}
+
+fn kind_name(kind: hl_type_kind) -> &'static str {
+    match kind {
+        hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HI64 => "Int",
+        hl::HF32 | hl::HF64 => "Float",
+        hl::HBOOL => "Bool",
+        _ => "value of the declared type",
+    }
+}
+
+/// Run the call for the slot on the record `words`: the result, or what
+/// to throw. Everything owned here is dropped before the throw.
+unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut vdynamic> {
     let haxe = lang();
-    let (receiver, params) = if s.kind.takes_receiver() {
-        (raw[0], &raw[1..])
+    let words = unsafe { std::slice::from_raw_parts(words, kinds.args.len()) };
+    let (receiver, params, kinds_of) = if s.kind.takes_receiver() {
+        (words[0] as *mut vdynamic, &words[1..], &kinds.args[1..])
     } else {
-        (ptr::null_mut(), raw)
+        (ptr::null_mut(), words, &kinds.args[..])
     };
     // On the stack, where the conservative scan sees them across the call;
     // only the slots in use are written.
     let mut args = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
-    for (slot, &p) in args.iter_mut().zip(params) {
-        slot.write(unsafe { proto::dyn_to_value(p) });
+    for (slot, (&w, &k)) in args.iter_mut().zip(params.iter().zip(kinds_of)) {
+        slot.write(unsafe { word_to_value(w, k) });
     }
     let args = unsafe { args[..params.len()].assume_init_ref() };
 
@@ -489,105 +541,24 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<Value, *mut vdynamic> {
     result.map_err(proto::throwable)
 }
 
-/// `slot` is the context word ash passes first: the slot `bind`
-/// registered. The result as the native declared it, through `convert`;
-/// a value the declaration cannot take is thrown.
-unsafe fn enter<R>(
-    slot: *const Slot,
-    raw: &[*mut vdynamic],
-    convert: impl FnOnce(Value) -> Result<R, String>,
-) -> R {
+/// The one entry behind every native, called by record with the slot
+/// `bind` registered as its context: the words are read by the kinds the
+/// program declared, and the result goes back as the word it reads by
+/// the declared return kind. A value the declaration cannot take is
+/// thrown.
+unsafe extern "C" fn entry(slot: *const Slot, words: *const i64) -> i64 {
     let s = unsafe { &*slot };
-    let thrown = match unsafe { run(s, raw) } {
-        Ok(v) => match convert(v) {
-            Ok(r) => return r,
+    let kinds =
+        unsafe { s.kinds.load(Ordering::Acquire).as_ref() }.expect("a bound slot has its kinds");
+    let thrown = match unsafe { run(s, kinds, words) } {
+        Ok(v) => match unsafe { value_to_word(v, kinds.ret) } {
+            Ok(word) => return word,
             Err(m) => proto::throwable(proto::error_value(&s.name, &m)),
         },
         Err(thrown) => thrown,
     };
     unsafe { hlp_throw(thrown.cast()) };
     std::process::abort()
-}
-
-fn boxed(v: Value) -> Result<*mut vdynamic, String> {
-    unsafe { proto::value_to_dyn(v, hl::HDYN) }
-}
-
-fn float(v: Value) -> Result<f64, String> {
-    v.as_number()
-        .or_else(|| v.as_int().map(f64::from))
-        .or_else(|| v.is_null().then_some(0.0))
-        .ok_or_else(|| format!("{} is not a Float", bridge::describe(v)))
-}
-
-fn boolean(v: Value) -> Result<bool, String> {
-    v.as_bool()
-        .or_else(|| v.is_null().then_some(false))
-        .ok_or_else(|| format!("{} is not a Bool", bridge::describe(v)))
-}
-
-// ---------------------------------------------------------------------------
-// Entries: one per argument count and result register, the slot first
-// ---------------------------------------------------------------------------
-
-macro_rules! entry {
-    ($name:ident, $ret:ty, $convert:expr; $($a:ident),*) => {
-        unsafe extern "C" fn $name(slot: *const Slot, $($a: *mut vdynamic),*) -> $ret {
-            unsafe { enter(slot, &[$($a),*], $convert) }
-        }
-    };
-}
-
-macro_rules! entries {
-    ($table:ident, $ret:ty, $convert:expr; $($name:ident: $($a:ident),*;)*) => {
-        $(entry!($name, $ret, $convert; $($a),*);)*
-        static $table: Entries = Entries([$($name as *const c_void),*]);
-    };
-}
-
-entries!(ENTRIES, *mut vdynamic, boxed;
-    entry0: ;
-    entry1: a0;
-    entry2: a0, a1;
-    entry3: a0, a1, a2;
-    entry4: a0, a1, a2, a3;
-    entry5: a0, a1, a2, a3, a4;
-    entry6: a0, a1, a2, a3, a4, a5;
-    entry7: a0, a1, a2, a3, a4, a5, a6;
-);
-
-entries!(ENTRIES_F64, f64, float;
-    entry_f0: ;
-    entry_f1: a0;
-    entry_f2: a0, a1;
-    entry_f3: a0, a1, a2;
-    entry_f4: a0, a1, a2, a3;
-    entry_f5: a0, a1, a2, a3, a4;
-    entry_f6: a0, a1, a2, a3, a4, a5;
-    entry_f7: a0, a1, a2, a3, a4, a5, a6;
-);
-
-entries!(ENTRIES_BOOL, bool, boolean;
-    entry_b0: ;
-    entry_b1: a0;
-    entry_b2: a0, a1;
-    entry_b3: a0, a1, a2;
-    entry_b4: a0, a1, a2, a3;
-    entry_b5: a0, a1, a2, a3, a4;
-    entry_b6: a0, a1, a2, a3, a4, a5;
-    entry_b7: a0, a1, a2, a3, a4, a5, a6;
-);
-
-struct Entries([*const c_void; MAX_ARGS + 1]);
-
-// Code addresses.
-unsafe impl Sync for Entries {}
-
-impl std::ops::Index<usize> for Entries {
-    type Output = *const c_void;
-    fn index(&self, nargs: usize) -> &*const c_void {
-        &self.0[nargs]
-    }
 }
 
 #[cfg(test)]
@@ -619,12 +590,24 @@ mod tests {
     }
 
     #[test]
-    fn every_entry_is_distinct() {
-        let mut seen = std::collections::HashSet::new();
-        for table in [&ENTRIES, &ENTRIES_F64, &ENTRIES_BOOL] {
-            for nargs in 0..=MAX_ARGS {
-                assert!(seen.insert(table[nargs] as usize));
-            }
+    fn words_round_trip_by_kind() {
+        unsafe {
+            assert_eq!(word_to_value(7, hl::HI32).as_int(), Some(7));
+            assert_eq!(
+                word_to_value(-1i32 as u32 as i64, hl::HI32).as_int(),
+                Some(-1)
+            );
+            assert_eq!(word_to_value(1, hl::HBOOL).as_bool(), Some(true));
+            let bits = 2.5f64.to_bits() as i64;
+            assert_eq!(word_to_value(bits, hl::HF64).as_number(), Some(2.5));
+            assert_eq!(value_to_word(Value::number(2.5), hl::HF64), Ok(bits));
+            assert_eq!(
+                value_to_word(Value::int(3), hl::HF64),
+                Ok(3.0f64.to_bits() as i64)
+            );
+            assert_eq!(value_to_word(Value::bool(true), hl::HBOOL), Ok(1));
+            assert_eq!(value_to_word(Value::null(), hl::HVOID), Ok(0));
+            assert!(value_to_word(Value::bool(true), hl::HF64).is_err());
         }
     }
 }

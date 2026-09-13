@@ -240,10 +240,6 @@ class Bridge {
 			return name;
 		}
 
-		function dynamicArgs(m:MemberDesc):Array<FunctionArg> {
-			return [for (p in m.params) {name: p.name, type: macro :Dynamic}];
-		}
-
 		function typedArgs(m:MemberDesc):Array<FunctionArg> {
 			return [for (p in m.params) {name: p.name, type: haxeType(p.ty, pack, classes)}];
 		}
@@ -278,7 +274,7 @@ class Bridge {
 					// `new Hud(3)`: the native makes the foreign object for
 					// the fresh Haxe one and binds the two.
 					hasConstructor = true;
-					var init = native(prefix + "construct:" + m.signature, [{name: "self", type: self}].concat(dynamicArgs(m)), macro :Void, nativeName);
+					var init = native(prefix + "construct:" + m.signature, [{name: "self", type: self}].concat(typedArgs(m)), macro :Void, nativeName);
 					var call = [macro this].concat(callArgs);
 					fields.push({
 						name: "new",
@@ -294,8 +290,8 @@ class Bridge {
 					var isGetter = m.signature.indexOf("(") < 0;
 					if (isSetter) {
 						// A static setter: the property's `set`.
-						var target = native(prefix + "static:" + m.signature, [{name: "value", type: macro :Dynamic}], macro :Void, nativeName);
 						var valueType = typedArgs(m)[0].type;
+						var target = native(prefix + "static:" + m.signature, [{name: "value", type: valueType}], macro :Void, nativeName);
 						var p = staticProperties.get(m.name);
 						if (p == null) {
 							staticProperties.set(m.name, p = {get: false, set: false, type: valueType});
@@ -326,7 +322,7 @@ class Bridge {
 							kind: FFun({args: [], ret: ret, expr: macro return $i{target}()})
 						});
 					} else {
-						var target = native(prefix + "static:" + m.signature, dynamicArgs(m), nativeRet, nativeName);
+						var target = native(prefix + "static:" + m.signature, typedArgs(m), nativeRet, nativeName);
 						var name = unique(m.name, arity);
 						fields.push({
 							name: name,
@@ -336,7 +332,7 @@ class Bridge {
 						});
 					}
 				case "method":
-					var target = native(prefix + m.signature, [{name: "self", type: self}].concat(dynamicArgs(m)), nativeRet, nativeName);
+					var target = native(prefix + m.signature, [{name: "self", type: self}].concat(typedArgs(m)), nativeRet, nativeName);
 					var name = unique(m.name, arity);
 					var call = [macro this].concat(callArgs);
 					fields.push({
@@ -360,8 +356,8 @@ class Bridge {
 						kind: FFun({args: [], ret: ret, expr: macro return $i{target}(this)})
 					});
 				case "setter":
-					var target = native(prefix + m.signature, [{name: "self", type: self}, {name: "value", type: macro :Dynamic}], macro :Void, nativeName);
 					var valueType = typedArgs(m)[0].type;
+					var target = native(prefix + m.signature, [{name: "self", type: self}, {name: "value", type: valueType}], macro :Void, nativeName);
 					var p = properties.get(m.name);
 					if (p == null) {
 						properties.set(m.name, p = {get: false, set: false, type: valueType});
