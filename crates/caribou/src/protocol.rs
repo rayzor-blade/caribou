@@ -298,6 +298,15 @@ pub enum Callable {
     },
     /// An object that answers `call`. Its language is its descriptor's.
     Dynamic(Value),
+    /// A method of a Wren class, sent by its Wren signature (`hit(_)`,
+    /// `hp`, `hp=(_)`, `new(_)`) through the receiver's protocol: the
+    /// first argument for an instance method, `class` for a static or a
+    /// constructor. `class` is rooted by its publisher.
+    WrenMethod {
+        class: Value,
+        signature: Symbol,
+        is_static: bool,
+    },
 }
 
 #[cfg(test)]

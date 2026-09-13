@@ -12,11 +12,14 @@
 //! them. So each record keeps the core starts of its allocations (its pins),
 //! and one core object, the anchor, rooted by a handle, whose trace marks every
 //! pin. A wren_lift cycle marks in a bit of each object's record word; at its
-//! end the marked pins become the core's per-cycle claims, in address order,
-//! the rest are dropped and forgotten, and a core collection, which the anchor
-//! sits out, sweeps: it clears the claims and returns the lines. `WREN_DESC`
-//! has a trace hook and no drop hook: the core traces wren_lift objects
-//! precisely wherever it reaches them and never runs their drop.
+//! end the objects the core's handles reach are marked too, with everything
+//! reachable from them, since a handle is how another language holds a Wren
+//! object and wren_lift's roots do not include it. Then the marked pins
+//! become the core's per-cycle claims, in address order, the rest are dropped
+//! and forgotten, and a core collection, which the anchor sits out, sweeps: it
+//! clears the claims and returns the lines. `WREN_DESC` has a trace hook and
+//! no drop hook: the core traces wren_lift objects precisely wherever it
+//! reaches them and never runs their drop.
 //!
 //! The thread a heap is minted on is an ordinary core mutator, in deferred
 //! mode. A collection another mutator starts waits for it to park, which it
@@ -42,6 +45,7 @@ use caribou_abi::mem;
 use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_object_trace};
 
 use crate::import::{self, Imports};
+use crate::publish::Exports;
 
 /// Bytes before the wren_lift object: the descriptor word and the record
 /// word, padded so the object keeps the allocation's 16-byte alignment.
@@ -99,17 +103,29 @@ pub struct WrenHeap {
     /// The other languages' classes installed in this heap's VM, and the
     /// handles its instances of them hold.
     imports: RefCell<Imports>,
+    /// This heap's classes published to the registry.
+    exports: RefCell<Exports>,
 }
 
 impl WrenHeap {
     pub(crate) fn imports(&self) -> &RefCell<Imports> {
         &self.imports
     }
+
+    pub(crate) fn exports(&self) -> &RefCell<Exports> {
+        &self.exports
+    }
 }
 
 /// The record of the heap holding the wren_lift object at `obj`.
 pub(crate) fn record_for<'a>(obj: *mut u8) -> &'a WrenHeap {
     unsafe { record_of(obj.wrapping_sub(PREFIX)) }
+}
+
+/// Whether `start` is the core start of an object of `rec`'s heap.
+pub(crate) fn owns_start(rec: &WrenHeap, start: usize) -> bool {
+    let gc = heap::gc_locked_init();
+    unsafe { resolve(&gc, rec, start) }.is_some_and(|(found, _)| found == start)
 }
 
 thread_local! {
@@ -268,6 +284,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         freed_bytes: 0,
         freed_objects: 0,
         imports: RefCell::new(Imports::default()),
+        exports: RefCell::new(Exports::default()),
     }));
     let anchor = unsafe {
         heap::alloc_gen(
@@ -447,9 +464,44 @@ pub unsafe extern "C" fn collect_begin(_heap: *mut c_void) {
     unsafe { heap::lock() };
 }
 
+/// Mark every object of `rec` a core handle reaches, and everything
+/// reachable from it, as wren_lift's own marking would have: a handle is
+/// how another language holds a Wren object that crossed out.
+fn mark_held(gc: &ImmixAllocator, rec: &WrenHeap) {
+    let mut gray: Vec<*mut u8> = Vec::new();
+    gc.for_each_handle(|p| {
+        if let Some((start, _)) = unsafe { resolve(gc, rec, p as usize) } {
+            let obj = (start + PREFIX) as *mut u8;
+            if unsafe { mark_allocation(ptr::null_mut(), obj) } {
+                gray.push(obj);
+            }
+        }
+    });
+    if gray.is_empty() {
+        return;
+    }
+    let trace = wlift_rt_object_trace();
+    while let Some(obj) = gray.pop() {
+        unsafe {
+            trace(
+                obj,
+                mark_gray,
+                &mut gray as *mut Vec<*mut u8> as *mut c_void,
+            )
+        };
+    }
+}
+
+unsafe extern "C" fn mark_gray(child: *mut u8, ctx: *mut c_void) {
+    if unsafe { mark_allocation(ptr::null_mut(), child) } {
+        unsafe { (*(ctx as *mut Vec<*mut u8>)).push(child) };
+    }
+}
+
 pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let drop_object = wlift_rt_object_drop();
     let mut gc = heap::gc_locked();
+    mark_held(&gc, unsafe { record(heap) });
     let mut live = 0usize;
     let mut dead = Vec::new();
     // Marked pins become the core's claims, in address order; the rest die.

@@ -26,7 +26,8 @@ pub use immix::{
     add_scan_root, clear_scan_roots, gc_add_persistent, gc_remove_persistent, register_root,
     scan_roots_done, set_globals, set_scan_roots, set_scan_roots_live,
     // Handles and root ranges.
-    handle_get, handle_new, handle_release, handle_retain, register_root_range,
+    handle_get, handle_new, handle_release, handle_release_deferred, handle_retain,
+    register_root_range,
     unregister_root_range, Handle,
     // Fiber stacks.
     gc_register_fiber_stack, gc_unregister_fiber_stack, gc_update_fiber_sp,

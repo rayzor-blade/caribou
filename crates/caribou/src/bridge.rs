@@ -543,6 +543,29 @@ pub fn call_named(
             let outcome = typed_call(func, signature, lang, args);
             settle(outcome, lang, name, caller)
         }
+        Callable::WrenMethod {
+            class,
+            signature,
+            is_static,
+        } => {
+            let (receiver, args) = if is_static {
+                (class, args)
+            } else {
+                match args.split_first() {
+                    Some((&receiver, rest)) => (receiver, rest),
+                    None => {
+                        let message = format!("`{}` takes a receiver", signature.name());
+                        return settle(
+                            Outcome::Fault(ErrorKind::Type, message),
+                            LANG_CORE,
+                            name,
+                            caller,
+                        );
+                    }
+                }
+            };
+            invoke_named(receiver, signature, args, caller, name)
+        }
     }
 }
 
@@ -589,12 +612,23 @@ fn typed_call(
 
 /// Call the member `name` of `obj`.
 pub fn invoke(obj: Value, name: Symbol, args: &[Value], caller: LangId) -> Result<Value, Value> {
+    invoke_named(obj, name, args, caller, name.name())
+}
+
+/// `invoke` with `frame` as the trace frame's name.
+fn invoke_named(
+    obj: Value,
+    name: Symbol,
+    args: &[Value],
+    caller: LangId,
+    frame: &str,
+) -> Result<Value, Value> {
     let Some(target) = object_of(obj) else {
         let message = format!("cannot invoke `{}` on {}", name.name(), describe(obj));
         return settle(
             Outcome::Fault(ErrorKind::Type, message),
             LANG_CORE,
-            name.name(),
+            frame,
             caller,
         );
     };
@@ -603,7 +637,7 @@ pub fn invoke(obj: Value, name: Symbol, args: &[Value], caller: LangId) -> Resul
         || unsafe { protocol::Send::invoke(target, name, args) },
         |fault| member_fault(fault, obj, name, "invoke"),
     );
-    settle(outcome, segment, name.name(), caller)
+    settle(outcome, segment, frame, caller)
 }
 
 /// Read the member `name` of `obj`.
@@ -668,6 +702,7 @@ mod tests {
     use crate::error::Str;
     use crate::heap::TypeDesc;
     use crate::protocol::{Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED};
+    use crate::symbol::intern;
     use caribou_abi::hl::hl_type_detail;
     use core::ptr;
 
@@ -821,6 +856,63 @@ mod tests {
         );
         assert_eq!(r, Ok(Value::int(10)));
         assert!(!has_pending());
+    }
+
+    /// A Wren method is an `invoke` of its signature: on the first argument
+    /// for an instance method, on the class for a static one.
+    #[test]
+    fn a_wren_method_invokes_its_signature_on_the_receiver() {
+        let _lock = locked();
+        let p = probe(SUMS);
+        let sum = intern("sum");
+        let r = call(
+            Callable::WrenMethod {
+                class: Value::null(),
+                signature: sum,
+                is_static: false,
+            },
+            &[value_of(&p), Value::int(2), Value::int(3)],
+            LANG_B,
+        );
+        assert_eq!(r, Ok(Value::int(5)));
+        let r = call(
+            Callable::WrenMethod {
+                class: value_of(&p),
+                signature: sum,
+                is_static: true,
+            },
+            &[Value::int(4), Value::int(3)],
+            LANG_B,
+        );
+        assert_eq!(r, Ok(Value::int(7)));
+        // No receiver to send to; a member the receiver lacks.
+        let err = call(
+            Callable::WrenMethod {
+                class: Value::null(),
+                signature: sum,
+                is_static: false,
+            },
+            &[],
+            LANG_B,
+        )
+        .unwrap_err();
+        assert_eq!(unsafe { Error::kind(error(err)) }, ErrorKind::Type);
+        let err = call_named(
+            Callable::WrenMethod {
+                class: Value::null(),
+                signature: intern("nope(_)"),
+                is_static: false,
+            },
+            &[value_of(&p), Value::int(1)],
+            LANG_B,
+            "Probe.nope",
+        )
+        .unwrap_err();
+        let e = unsafe { error(err) };
+        unsafe {
+            assert_eq!(Error::kind(e), ErrorKind::Runtime);
+            assert_eq!(Error::frames(e)[0].name_str(), "Probe.nope");
+        }
     }
 
     #[test]

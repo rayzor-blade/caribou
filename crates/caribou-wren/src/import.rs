@@ -106,6 +106,11 @@ pub(crate) struct Imports {
 }
 
 impl Imports {
+    /// Whether `class` was installed here for another language's.
+    pub(crate) fn installed(&self, class: *mut ObjClass) -> bool {
+        self.classes.contains_key(&(class as usize))
+    }
+
     /// The binding of `class` or of its nearest bound superclass.
     fn binding_of(&self, mut class: *mut ObjClass) -> Option<Rc<ClassBinding>> {
         while !class.is_null() {
@@ -495,17 +500,18 @@ fn trampoline(slot: usize) -> NativeFn {
 }
 
 /// A Wren argument as a bridge value, with the root it needs for the
-/// call: a string becomes a core `Str`; an instance of an installed class
-/// becomes the object it stands for.
+/// call: an instance of an installed class becomes the object it stands
+/// for; a string becomes a fresh core `Str`, rooted here.
 fn cross_in(v: WValue) -> (Value, Handle) {
-    if v.is_string_object() {
-        let s = Str::new(wren_lift::runtime::core::as_string(v));
-        return (Str::value(s), heap::handle_new(s as *mut u8));
-    }
     if let Some(obj) = foreign_of(v) {
         return (obj, Handle::NULL);
     }
-    (from_wren(v), Handle::NULL)
+    let crossed = from_wren(v);
+    let root = match crossed.as_object() {
+        Some(p) if v.is_string_object() => heap::handle_new(p as *mut u8),
+        _ => Handle::NULL,
+    };
+    (crossed, root)
 }
 
 /// A bridge result as a Wren value.

@@ -112,10 +112,54 @@ fn run_pending_finalizers() {
     }
 }
 
-/// Release one level of the GC lock, and drain the finalizer queue if that
-/// freed it. Every release goes through here so the drain cannot be missed.
+/// Handles given up inside a collection, by the drop hook of a traced
+/// object that owned one; released at the next outermost lock release, a
+/// hook being unable to take the lock itself.
+static DEFERRED_RELEASES: std::sync::Mutex<Vec<Handle>> = std::sync::Mutex::new(Vec::new());
+static DEFERRED_RELEASE_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Release `h` once the GC lock is next free: what a drop hook calls for a
+/// handle its object held. Nothing else should; `handle_release` is direct.
+pub fn handle_release_deferred(h: Handle) {
+    if h.is_null() {
+        return;
+    }
+    let mut queue = DEFERRED_RELEASES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    queue.push(h);
+    DEFERRED_RELEASE_COUNT.store(queue.len(), Ordering::Relaxed);
+}
+
+/// Release the handles a collection queued. The GC lock must NOT be held.
+fn release_deferred_handles() {
+    let due = {
+        let mut queue = DEFERRED_RELEASES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        DEFERRED_RELEASE_COUNT.store(0, Ordering::Relaxed);
+        mem::take(&mut *queue)
+    };
+    if due.is_empty() {
+        return;
+    }
+    let mut gc = gc_locked_init();
+    for h in due {
+        gc.handle_release(h);
+    }
+}
+
+/// Release one level of the GC lock, and drain the deferred queues if that
+/// freed it. Every release goes through here so the drains cannot be missed.
 fn gc_lock_release() {
-    if GC_LOCK.release() && PENDING_FINALIZER_COUNT.load(Ordering::Relaxed) != 0 {
+    if !GC_LOCK.release() {
+        return;
+    }
+    if DEFERRED_RELEASE_COUNT.load(Ordering::Relaxed) != 0 {
+        release_deferred_handles();
+    }
+    if PENDING_FINALIZER_COUNT.load(Ordering::Relaxed) != 0 {
         run_pending_finalizers();
     }
 }
@@ -4398,6 +4442,15 @@ impl ImmixAllocator {
         self.handles.release(h);
     }
 
+    /// The address behind every live handle: the roots a hosted collector
+    /// adds to its own, since a handle held by another language is the
+    /// only reference to an object of its heap that crossed out.
+    pub fn for_each_handle(&self, mut f: impl FnMut(*mut u8)) {
+        for slot in self.handles.slots.iter().filter(|s| s.refs != 0) {
+            f(slot.ptr as *mut u8);
+        }
+    }
+
     /// Scan `len` bytes from `start` conservatively at every collection until
     /// unregistered. The memory must outlive the registration.
     pub fn register_root_range(&mut self, start: *const u8, len: usize) {
@@ -6211,6 +6264,24 @@ mod tests {
         assert_eq!(handle_get(h), p);
         handle_release(h);
         assert!(handle_get(h).is_null());
+    }
+
+    /// A deferred release waits for the outermost lock release, as a drop
+    /// hook's would; a nested release does not run it.
+    #[test]
+    fn a_deferred_release_runs_when_the_lock_is_next_free() {
+        let p;
+        let h;
+        {
+            let _lock = gc_guard();
+            p = gc_locked_init().allocate(16).unwrap().as_ptr();
+            h = handle_new(p);
+            handle_release_deferred(h);
+            assert_eq!(handle_get(h), p, "still held under the lock");
+        }
+        assert!(handle_get(h).is_null(), "released with the lock");
+        handle_release_deferred(Handle::NULL);
+        assert_eq!(DEFERRED_RELEASE_COUNT.load(Ordering::Relaxed), 0);
     }
 
     #[test]

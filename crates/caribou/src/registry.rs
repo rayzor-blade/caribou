@@ -63,6 +63,36 @@ pub struct MethodIface {
     pub target: Callable,
 }
 
+/// What a member of [`ClassIface::methods`] is to its class. A getter or
+/// setter stands where another language has a field: a Wren class's
+/// `hp` and `hp=(_)`. A constructor is [`ClassIface::ctor`], never here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MethodKind {
+    Method,
+    Getter,
+    Setter,
+}
+
+impl MethodIface {
+    /// Read from the Wren signature a `WrenMethod` target carries; every
+    /// other target is a method.
+    pub fn kind(&self) -> MethodKind {
+        match self.target {
+            Callable::WrenMethod { signature, .. } => {
+                let sig = signature.name();
+                if sig.ends_with("=(_)") {
+                    MethodKind::Setter
+                } else if sig.contains('(') {
+                    MethodKind::Method
+                } else {
+                    MethodKind::Getter
+                }
+            }
+            _ => MethodKind::Method,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ClassIface {
     /// The class's simple name: what an importer binds.
@@ -387,5 +417,28 @@ mod tests {
         assert!(class_for_type(a, "rgame.Player").is_none());
         assert!(class_for_type(a, "rgame.Player2").is_some());
         assert_eq!(interfaces_of(a).len(), 2);
+    }
+
+    #[test]
+    fn a_members_kind_follows_the_wren_signature_its_target_carries() {
+        let wren = |sig: &str| MethodIface {
+            name: sig.to_owned(),
+            is_static: false,
+            params: vec![],
+            ret: TypeRef::Dyn,
+            target: Callable::WrenMethod {
+                class: Value::null(),
+                signature: crate::symbol::intern(sig),
+                is_static: false,
+            },
+        };
+        assert_eq!(wren("hp").kind(), MethodKind::Getter);
+        assert_eq!(wren("hp=(_)").kind(), MethodKind::Setter);
+        assert_eq!(wren("hit(_)").kind(), MethodKind::Method);
+        assert_eq!(wren("draw()").kind(), MethodKind::Method);
+        assert_eq!(
+            iface(1, "m", "C").classes[0].methods[0].kind(),
+            MethodKind::Method
+        );
     }
 }

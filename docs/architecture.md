@@ -106,7 +106,8 @@ world, for every traced object the trace did not reach, before any line is
 recycled: it releases what the object owns outside the heap. The object's
 start is then forgotten, so a stale pointer into it resolves to nothing and
 no later cycle traces or drops it again. A drop hook must not allocate on the
-heap or take the GC lock. Finalizer blocks keep their own deferred path.
+heap or take the GC lock; a handle it owns it gives up through
+`handle_release_deferred`. Finalizer blocks keep their own deferred path.
 
 ### Roots
 
@@ -122,7 +123,11 @@ of parked mutators.
 
 A handle (`handle_new`, `handle_get`, `handle_retain`, `handle_release`) is a
 counted slot in a table under the GC lock: what a plugin or adapter holds
-across calls instead of a raw pointer the scanner cannot see. A root range
+across calls instead of a raw pointer the scanner cannot see.
+`handle_release_deferred` is the release for a traced object's drop hook,
+which runs inside the collector and cannot take the lock: the handle is
+released at the next outermost release of the lock, as queued finalizers
+run. A root range
 (`register_root_range`, `unregister_root_range`) is an address range scanned
 conservatively at every collection: a linked spoke's data section, a module's
 variable array.
@@ -179,6 +184,10 @@ with a core collection whose sweep clears the claims. Its objects are kept
 alive across every core collection by an anchor object whose trace hook
 marks them all, so no core root needs to reach them, and they are traced
 precisely through the descriptor's hook wherever the core reaches them.
+The core's handles are roots of its cycle too: `for_each_handle` gives the
+addresses live handles root, and the hosted collector marks those of its
+objects among them, with what they reach, before it decides what is dead.
+That is how another language keeps a hosted object alive: by a handle.
 
 The runtime's thread is an ordinary mutator, registered at the OS's stack
 top and put in deferred mode, so a collection any other mutator starts waits
@@ -452,10 +461,14 @@ and not on wasm.
 
 `bridge::call(callable, args, caller)` invokes a callable on behalf of the
 language `caller`. A dynamic callable is sent `call`; a typed one is checked
-for arity against its signature and handed to its language's dispatcher.
-`call_named` does the same with the callee's name for the trace;
-`invoke`, `get` and `set` send `invoke`, `get_member` and `set_member` with
-the same handling. Every crossing guarantees three things.
+for arity against its signature and handed to its language's dispatcher; a
+Wren method (`Callable::WrenMethod`: a class, a Wren signature such as
+`hit(_)`, and whether it is static) is an `invoke` of that signature on the
+first argument, or on the class for a static or a constructor, so the call
+lands in the Wren protocol like any other message. `call_named` does the
+same with the callee's name for the trace; `invoke`, `get` and `set` send
+`invoke`, `get_member` and `set_member` with the same handling. Every
+crossing guarantees three things.
 
 It is protected: the dispatch runs under `catch_unwind`, and a panic becomes
 an `Internal` error carrying the panic's message. An entry that answered
@@ -536,20 +549,28 @@ A Wren object crosses as its own core address: the start of the prefixed
 allocation, where word zero is the shared `WREN_DESC`, sixteen bytes before
 the address wren_lift holds. `caribou_wren::wrap` and `unwrap` translate,
 and every protocol entry adds the prefix back before touching the object.
-A core int becomes a Wren number on the way in, Wren having no other, and
-a core string becomes a Wren string; an object of another language becomes
-an instance of the class installed for its type when its language has
-published one (see "Module registry"), and cannot enter Wren otherwise.
-The protocol answers through the runtime's own methods by Wren's signature
-convention: `get_member` is the getter `name`, else an instance field of
-that name; `set_member` is `name=(_)`; `invoke` is `name(_,_)` by arity,
-falling back to the getter for an arity of zero; `call` runs a closure;
-`index`, `set_index`, `len` and `iterate` are `[_]`, `[_]=(_)`, `count`
-and `iterate(_)` with `iteratorValue(_)`. A method the class lacks raises
-Wren's own `does not implement` error. wren_lift's error is a message
-string, so a Wren error crossing the bridge is a core `Error` whose native
-payload is that message as a Wren string, rooted by a VM handle; no Wren
-object is an error by itself.
+Strings cross by value in both directions: a Wren string leaving becomes a
+core `Str` at the edge, whichever entry or conversion it leaves through,
+and a core `Str` entering becomes a Wren string; so a Wren string reaching
+Haxe is a `Str`, which Ash turns into a Haxe `String` as it does any other.
+A core int becomes a Wren number on the way in, Wren having no other. An
+object of another language that stands for one of this VM's own objects
+(a `WrenRef`, below, answers `unwrap_native` with the object it holds)
+becomes that object again, so identity survives a round trip; any other
+becomes an instance of the class installed for its type when its language
+has published one (see "Module registry"), and cannot enter Wren
+otherwise. The protocol answers through the runtime's own methods by
+Wren's signature convention: `get_member` is the getter `name`, else an
+instance field of that name; `set_member` is `name=(_)`; `invoke` is
+`name(_,_)` by arity, or the full signature when given one, falling back
+to the getter for an arity of zero; `call` runs a closure; `index`,
+`set_index`, `len` and `iterate` are `[_]`, `[_]=(_)`, `count` and
+`iterate(_)` with `iteratorValue(_)`; `type_name` is the name the class was
+published under (`hud.Hud`), else its bare name. A method the class lacks
+raises Wren's own `does not implement` error. wren_lift's error is a
+message string, so a Wren error crossing the bridge is a core `Error`
+whose native payload is that message as a core string; no Wren object is
+an error by itself.
 
 The Wren entries run on a VM, and `install` cannot know it. Whoever creates
 a VM enters it: `enter_vm` and `leave_vm` around a run, or `with_vm` around
@@ -631,6 +652,39 @@ through the dispatcher, so the registry stays free of anything Haxe. Types
 under `hl.` and `haxe.`, the companions and `String` are not published; one
 module per class, named after it.
 
+### WrenLift publishes
+
+`caribou_wren::publish_module(vm, "hud")` publishes the classes a loaded
+Wren module defines, under Wren's language and the module's own name, so
+another language reaches them as `wren:hud` or, through a configured
+namespace, `game:hud`. Each class is described from what the VM built for
+it. Its name and its superclass, unless that is Object. Its fields are the
+names in the VM's layout for the class, inherited ones included, all
+`Dyn`. Its members come from its method table, which is a copy of the
+superclass's plus the class's own, so an entry the class defines is one
+that differs from the superclass's at the same slot; the entries are Wren
+signatures, `draw()`, `hit(_)`, `score` for a getter, `score=(_)` for a
+setter, and under `static:` the class's own side, where a constructor is
+`static:new(_)`. A getter or setter is published as a `MethodIface` whose
+`kind()` says so, read from the signature its callable carries, since
+Wren's getters stand where Haxe has fields. Parameters and results are
+`Dyn`, Wren declaring no types; a declaration file may refine them later.
+Operators and subscripts have no name an importer can spell and are not
+published. A class belongs to the module when one of its own methods was
+compiled in it, which leaves out what the module imported and what the
+adapter installed for another language. One constructor is the class's
+`ctor`, `new` when there is one; any other is a static method returning
+the class. The type name an instance reports is `hud.Hud`, kept on the
+heap record so the protocol's `type_name` can answer it.
+
+Every member's target is a `Callable::WrenMethod`: the class as a core
+value, the signature as a core symbol, and whether the class or the first
+argument receives it. The bridge turns it into an `invoke` of that
+signature through the object protocol, so a call from Haxe is the call
+Wren code would make, dispatched by wren_lift itself. The class stays
+valid while its module does, and the VM must be entered on the calling
+thread, as for any message to a Wren object.
+
 ### Wren imports
 
 `caribou_wren::import::configure` installs `resolve_module_fn` and
@@ -672,6 +726,48 @@ for as long as the Wren instance lives. The adapter's own sweep, which
 drops every dead wren_lift object, releases the handle first; `heap_drop`
 releases whatever a VM leaves behind. No identity cache is kept: two
 instances made for one Haxe object are distinct Wren objects.
+
+### How a Wren object is held by Haxe
+
+A Wren object reaching Haxe must be something Haxe can keep, that Haxe's
+collector sees, and that stays alive in Wren for as long as Haxe keeps it.
+`caribou_ash::wrap_foreign` answers with a `WrenRef`: a traced core object
+under a static descriptor of Haxe's language, holding the object's bridge
+value and a core `Handle` on it. The name is the common case; whatever is
+not Haxe's is wrapped the same way, a core `Str` or `Error` included, and
+a Haxe value or a scalar passes through. Haxe keeps the ref as the raw
+pointer `wrenref_as_abstract` gives, in the `hl.Abstract<"caribou_obj">`
+field of the class the build macro emits for the Wren class: a word the
+conservative scan sees and HashLink never reads. `wrenref_from_abstract`
+turns it back into a value, `unwrap_foreign` into the object.
+
+The ref's protocol forwards every message to the object, so a Haxe caller
+reaching it through `Dynamic` gets Wren semantics, and `equals` sees
+through a ref on either side. It answers `unwrap_native` with the object
+itself, which is the convention by which the Wren adapter recognises one
+of its own objects coming back and restores identity.
+
+The handle is what keeps the object. wren_lift's cycle is the only
+reclaimer of Wren objects and its roots are its own, so at the end of its
+marking the adapter marks every object of the heap a core handle reaches,
+and everything reachable from it, before the sweep; a handle held by
+another language is thereby a root of the Wren cycle. The core's
+collection retains every Wren object regardless (see "Hosted
+collectors"), and the ref's trace hook marks the object for it too.
+
+One ref per object: a process-wide map from the object's address to the
+ref's. The map holds no handle, so a ref is reachable only from Haxe and
+dies when Haxe drops it. Its drop hook, run by the core's sweep before the
+ref's lines can be reused, removes the map entry and gives up the handle;
+the release is deferred to the end of the collection through
+`heap::handle_release_deferred`, since a drop hook cannot take the GC
+lock. The invariant the map keeps: an entry names a live ref. Presence
+means alive, because the only way out of the map is the drop of the ref
+named, and the object cannot die before its ref, which holds its handle.
+So `wrap_foreign` on an object that already has a ref returns that ref,
+and a second wrap of one object is the same ref until Haxe lets it go.
+Once it does, the object dies with the next Wren cycle that finds no
+other reference to it.
 
 ## Worlds and tasks
 
@@ -826,12 +922,14 @@ language maps that to its own notion of a missing member.
 ### Callables
 
 `Callable` is what the bridge invokes: a typed function (a C pointer plus an
-`hl_type_fun`-shaped signature) or a dynamic one (a `Value` that answers
-`call`). `bridge::call(callable, args) -> Result<Value, Error>` marshals
-dynamic values into a typed call by the signature, or passes them through
-to a dynamic one, and always returns through a protected boundary: an
-error leaving the callee's language becomes an `Error` value here and is
-re-raised natively by whoever receives it.
+`hl_type_fun`-shaped signature), a dynamic one (a `Value` that answers
+`call`), or a Wren method (a class and a Wren signature, sent as an
+`invoke` through the protocol). `bridge::call(callable, args) ->
+Result<Value, Error>` marshals dynamic values into a typed call by the
+signature, or passes them through to the others, and always returns
+through a protected boundary: an error leaving the callee's language
+becomes an `Error` value here and is re-raised natively by whoever
+receives it.
 
 Ash's typed dispatcher and its reflection trampoline stay Ash's; the Ash
 adapter registers them as the typed half of the bridge through the seam.

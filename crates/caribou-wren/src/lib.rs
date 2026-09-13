@@ -13,11 +13,13 @@
 //! object answers through the descriptor in its prefix, the conversions
 //! between wren_lift's values and the core's, and the VM the entries run on.
 //! [`Runtime`] registers Wren with a world. `import` answers a Wren
-//! program's `import "game:Player"` with the class the registry publishes.
+//! program's `import "game:Player"` with the class the registry publishes;
+//! `publish` puts a Wren module's own classes there for another language.
 
 mod heap;
 pub mod import;
 mod proto;
+pub mod publish;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -27,6 +29,7 @@ use caribou_abi::LangId;
 use wren_lift::runtime::rt::{RuntimeVTable, wlift_rt_install};
 
 pub use proto::{current_vm, enter_vm, from_wren, leave_vm, to_wren, unwrap, with_vm, wrap};
+pub use publish::{PublishError, publish_module};
 
 /// Wren as a resident of a world: one language, `wren`. Registering it gives
 /// Wren objects their language id; do so before the first VM allocates, and
@@ -133,8 +136,47 @@ fn table() -> RuntimeVTable {
     }
 }
 
+/// Shared by the tests that need a VM on the core heap.
+#[cfg(test)]
+pub(crate) mod testutil {
+    use wren_lift::runtime::engine::ExecutionMode;
+    use wren_lift::runtime::gc_trait::GcStrategy;
+    use wren_lift::runtime::vm::{VM, VMConfig};
+
+    const CHILD_ENV: &str = "CARIBOU_WREN_INSTALL_CHILD";
+
+    /// The table is process-global and sealed by the first Immix VM, so a
+    /// test that installs runs in a process of its own: the parent re-runs
+    /// its binary with only the test at `path` selected, checks the exit,
+    /// and returns true; the child returns false and goes on.
+    pub(crate) fn parent_of(path: &str, env: &[(&str, &str)]) -> bool {
+        if std::env::var_os(CHILD_ENV).is_some() {
+            return false;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", path, "--test-threads=1"])
+            .env(CHILD_ENV, "1")
+            .envs(env.iter().copied())
+            .status()
+            .expect("re-run the test binary");
+        assert!(status.success(), "child test process failed: {status}");
+        true
+    }
+
+    pub(crate) fn immix_vm(mode: ExecutionMode) -> VM {
+        let mut vm = VM::new(VMConfig {
+            execution_mode: mode,
+            gc_strategy: GcStrategy::Immix,
+            ..VMConfig::default()
+        });
+        vm.output_buffer = Some(String::new());
+        vm
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testutil::{immix_vm, parent_of};
     use super::*;
     use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
     use wren_lift::runtime::gc_trait::GcStrategy;
@@ -161,40 +203,10 @@ mod tests {
         assert!(table.object_drop.is_none());
     }
 
-    const CHILD_ENV: &str = "CARIBOU_WREN_INSTALL_CHILD";
-
-    /// The table is process-global and sealed by the first Immix VM, so a
-    /// test that installs runs in a process of its own: the parent re-runs
-    /// its binary with only `name` selected, checks the exit, and returns
-    /// true; the child returns false and goes on.
-    fn parent_of(name: &str, env: &[(&str, &str)]) -> bool {
-        if std::env::var_os(CHILD_ENV).is_some() {
-            return false;
-        }
-        let status = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &format!("tests::{name}"), "--test-threads=1"])
-            .env(CHILD_ENV, "1")
-            .envs(env.iter().copied())
-            .status()
-            .expect("re-run the test binary");
-        assert!(status.success(), "child test process failed: {status}");
-        true
-    }
-
-    fn immix_vm(mode: ExecutionMode) -> VM {
-        let mut vm = VM::new(VMConfig {
-            execution_mode: mode,
-            gc_strategy: GcStrategy::Immix,
-            ..VMConfig::default()
-        });
-        vm.output_buffer = Some(String::new());
-        vm
-    }
-
     #[test]
     fn install_takes_and_a_vm_then_allocates_through_the_core() {
         if parent_of(
-            "install_takes_and_a_vm_then_allocates_through_the_core",
+            "tests::install_takes_and_a_vm_then_allocates_through_the_core",
             &[],
         ) {
             return;
@@ -247,7 +259,7 @@ mod tests {
     #[test]
     fn a_core_collection_from_another_thread_stops_the_vm_thread() {
         if parent_of(
-            "a_core_collection_from_another_thread_stops_the_vm_thread",
+            "tests::a_core_collection_from_another_thread_stops_the_vm_thread",
             &[],
         ) {
             return;
@@ -338,7 +350,7 @@ mod tests {
     #[test]
     fn idle_garbage_is_collected_on_the_heartbeat() {
         if parent_of(
-            "idle_garbage_is_collected_on_the_heartbeat",
+            "tests::idle_garbage_is_collected_on_the_heartbeat",
             &[("CARIBOU_GC_HEARTBEAT_MS", "200")],
         ) {
             return;

@@ -11,7 +11,11 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use caribou::registry::Namespace;
+use caribou::bridge;
+use caribou::error::Str;
+use caribou::heap;
+use caribou::registry::{self, Namespace};
+use caribou::symbol::intern;
 use caribou::world::{Config, World};
 use caribou_ash::{Mode, Options};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
@@ -116,6 +120,40 @@ fn drive(mode: ExecutionMode) {
         errors.iter().any(|e| e.contains("game:Nope")),
         "the error names the module: {errors:?}"
     );
+
+    strings_cross_by_value(mode);
+}
+
+/// A string crosses by value at every edge: a Wren string leaves as a core
+/// `Str`, which Haxe takes as a `String`; a Haxe `String` leaves as a core
+/// `Str`, which Wren takes as a Wren string.
+fn strings_cross_by_value(mode: ExecutionMode) {
+    let errors = Rc::new(RefCell::new(Vec::new()));
+    let mut vm = vm(mode, &errors);
+    assert_eq!(
+        vm.interpret("strings", "var s = \"ada\"\n"),
+        InterpretResult::Success
+    );
+    let s = vm
+        .find_imported_var_from("s", "strings")
+        .expect("`s` is defined");
+    let (player, _) = registry::lookup_class("game", "Player", "Player").expect("published");
+    caribou_wren::with_vm(&mut vm, |vm| {
+        let crossed = caribou_wren::wrap(s);
+        assert_eq!(unsafe { Str::text(crossed) }, Some("ada"));
+        let root = heap::handle_new(crossed.as_object().unwrap() as *mut u8);
+        let p = caribou_ash::construct(&player.classes[0], &[crossed]).expect("a Player");
+        let p_root = heap::handle_new(p.as_object().unwrap() as *mut u8);
+        let name = bridge::get(p, intern("name"), caribou_wren::lang()).expect("its name");
+        assert_eq!(unsafe { Str::text(name) }, Some("ada"));
+        let back = caribou_wren::unwrap(vm, name).expect("a Wren value");
+        assert!(back.is_string_object());
+        assert_eq!(wren_lift::runtime::core::as_string(back), "ada");
+        heap::handle_release(p_root);
+        heap::handle_release(root);
+    });
+    drop(vm);
+    assert!(errors.take().is_empty());
 }
 
 #[test]

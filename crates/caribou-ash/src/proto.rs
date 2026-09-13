@@ -72,7 +72,7 @@ unsafe extern "C" fn trace_ref(obj: *mut u8, tracer: *mut Tracer) {
     unsafe { (*tracer).mark(r.obj as *const u8) };
 }
 
-const fn haxe_type() -> hl_type {
+pub(crate) const fn haxe_type() -> hl_type {
     hl_type {
         kind: hl::HABSTRACT,
         detail: hl_type_detail {
@@ -631,7 +631,7 @@ pub fn is_constructor(callable: Callable) -> bool {
         Callable::Dynamic(v) => v.as_object().is_some_and(|p| {
             !p.is_null() && ptr::eq(unsafe { desc_of(p as *mut u8) }, &raw const CTOR_DESC)
         }),
-        Callable::Typed { .. } => false,
+        _ => false,
     }
 }
 

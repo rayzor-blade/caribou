@@ -9,7 +9,8 @@
 //!
 //! The other half is the bridge (`proto.rs`): the typed dispatcher for
 //! Haxe callables, the wrapper a Haxe object crosses in and the protocol it
-//! answers. [`Runtime`] registers Haxe with a world and the dispatcher with
+//! answers; and `wrenref.rs`, the ref Haxe holds another language's object
+//! through. [`Runtime`] registers Haxe with a world and the dispatcher with
 //! the bridge. With the `runner` feature, `program` loads a `.hl` on ash's
 //! interpreter, runs it and publishes its classes to the registry.
 //!
@@ -20,6 +21,7 @@ mod heap;
 pub mod program;
 mod proto;
 mod sched;
+mod wrenref;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +33,9 @@ use caribou_abi::LangId;
 #[cfg(feature = "runner")]
 pub use program::{Mode, Options, Program, load, publish_module};
 pub use proto::{construct, is_constructor, lang, unwrap, wrap};
+pub use wrenref::{
+    foreign_ref, unwrap_foreign, wrap_foreign, wrenref_as_abstract, wrenref_from_abstract,
+};
 
 /// Haxe as a resident of a world: one language, `haxe`. Registering it
 /// gives Haxe objects their language id and the bridge its typed
@@ -62,6 +67,7 @@ impl Adapter for Runtime {
         };
         self.lang = Some(id);
         proto::set_lang(id);
+        wrenref::set_lang(id);
         caribou::bridge::set_typed_dispatch(id, proto::dispatch);
         // The dynamic-call hook `hlp_dyn_call` reaches native code through;
         // ash's own startup installs the same one, so this is idempotent.
