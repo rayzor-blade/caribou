@@ -51,8 +51,10 @@ pub unsafe extern "C" fn allocation_size(ptr: *const c_void) -> usize {
     unsafe { heap::allocation_size(ptr) }
 }
 
+/// Whether `ptr` is a heap object's start, from the side table and without
+/// the lock: what a closure's bound value is tested as on every call.
 pub unsafe extern "C" fn is_gc_ptr(ptr: *const c_void) -> bool {
-    unsafe { heap::gc_locked_init().is_gc_ptr(ptr) }
+    heap::is_allocation_start(ptr)
 }
 
 pub unsafe extern "C" fn out_of_memory(what: *const u8, len: usize) -> ! {

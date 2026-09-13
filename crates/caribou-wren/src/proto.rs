@@ -552,16 +552,30 @@ unsafe extern "C-unwind" fn direct_call(
         return REPLY_MISSING;
     };
     let (_, closure, _) = site.words();
-    let mut args = match Args::cross(vm, 1, args, n) {
-        Ok(args) => args,
-        Err(code) => return code,
-    };
-    args.slice_mut()[0] = recv;
-    let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
+    // The receiver and what a compiled body takes in registers, on the
+    // stack; anything wider goes the long way.
+    if n >= Args::INLINE {
+        return REPLY_MISSING;
+    }
+    let mut with_recv = [MaybeUninit::<WValue>::uninit(); Args::INLINE];
+    with_recv[0].write(recv);
+    for (i, &arg) in unsafe { std::slice::from_raw_parts(args, n) }
+        .iter()
+        .enumerate()
+    {
+        match cross(vm, arg) {
+            Ok(v) => with_recv[1 + i].write(v),
+            Err(code) => return code,
+        };
+    }
+    let with_recv = unsafe { with_recv[..=n].assume_init_ref() };
+    // The closure the site found, called as a send would once it has found
+    // it, with the thread's JIT state read once.
+    let bits = wren_lift::codegen::runtime_fns::call_found_closure(
         vm,
-        Method::Closure(closure as *mut ObjClosure),
-        args.as_slice(),
-        Some(class),
+        closure as *mut ObjClosure,
+        with_recv,
+        class,
     );
     finish(vm, Some(WValue::from_bits(bits)), "", out)
 }
@@ -599,16 +613,30 @@ unsafe extern "C-unwind" fn direct_construct(
 /// receiver, through the VM's own method dispatch: what its compiled code
 /// calls once it has found a method.
 fn run(vm: &mut VM, recv: WValue, found: Found, args: &mut Args, out: *mut Value) -> u8 {
-    if let Method::Constructor(closure) = found.method {
-        tick(vm, closure);
-    }
     args.slice_mut()[0] = recv;
-    let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
-        vm,
-        found.method,
-        args.as_slice(),
-        Some(found.class),
-    );
+    let bits = match found.method {
+        Method::Closure(closure) => wren_lift::codegen::runtime_fns::call_found_closure(
+            vm,
+            closure,
+            args.as_slice(),
+            found.class,
+        ),
+        Method::Constructor(closure) => {
+            tick(vm, closure);
+            wren_lift::codegen::runtime_fns::dispatch_method_pub(
+                vm,
+                found.method,
+                args.as_slice(),
+                Some(found.class),
+            )
+        }
+        _ => wren_lift::codegen::runtime_fns::dispatch_method_pub(
+            vm,
+            found.method,
+            args.as_slice(),
+            Some(found.class),
+        ),
+    };
     finish(vm, Some(WValue::from_bits(bits)), "", out)
 }
 
@@ -831,13 +859,13 @@ unsafe extern "C-unwind" fn call(
         Err(code) => return code,
     };
     let closure = unsafe { wren_ptr(obj) } as *mut ObjClosure;
-    // A closure's compiled body when it has one; a `Fn` takes no receiver.
-    tick(vm, closure);
-    let bits = wren_lift::codegen::runtime_fns::call_closure_jit_or_sync(
+    // A closure's compiled body when it has one; a `Fn` takes no receiver
+    // and belongs to no class.
+    let bits = wren_lift::codegen::runtime_fns::call_found_closure(
         vm,
         closure,
         args.as_slice(),
-        None,
+        ptr::null_mut(),
     );
     finish(vm, Some(WValue::from_bits(bits)), "call", out)
 }

@@ -1976,10 +1976,49 @@ pub fn gc_locked_init() -> GcRef {
     // lock, and `ImmixAllocator::new` never re-enters it, so the second call
     // finds exactly what the first installed.
     let gc = unsafe {
-        (*(&raw const GC)).get_or_init(ImmixAllocator::new);
+        (*(&raw const GC)).get_or_init(|| {
+            let gc = ImmixAllocator::new();
+            RESERVATION.get_or_init(|| Reservation {
+                base: gc.heap.memory.as_ptr() as usize,
+                len: gc.heap.memory.len,
+                objects: gc.heap.objects.as_ptr(),
+            });
+            gc
+        });
         (*(&raw mut GC)).get_mut().expect("GC initialized above") as *mut ImmixAllocator
     };
     GcRef { gc, _guard: guard }
+}
+
+/// The singleton's reservation and side table, which never move: what a
+/// query answers from without the lock.
+struct Reservation {
+    base: usize,
+    len: usize,
+    objects: *const std::sync::atomic::AtomicU8,
+}
+
+// A pointer into the singleton's own table, which outlives every thread.
+unsafe impl Send for Reservation {}
+unsafe impl Sync for Reservation {}
+
+static RESERVATION: OnceLock<Reservation> = OnceLock::new();
+
+/// Whether `ptr` is the start of a live allocation of the singleton heap,
+/// answered from the side table without the lock: a start's byte is
+/// non-zero from its allocation until the sweep frees it. A collection
+/// runs only while this thread is parked, so the byte is what it was when
+/// the caller's pointer was live.
+pub fn is_allocation_start(ptr: *const c_void) -> bool {
+    let Some(r) = RESERVATION.get() else {
+        return false;
+    };
+    let addr = ptr as usize;
+    if addr < r.base || addr >= r.base + r.len || addr % ALLOC_QUANTUM != 0 {
+        return false;
+    }
+    let index = (addr - r.base) / ALLOC_QUANTUM;
+    unsafe { (*r.objects.add(index)).load(Ordering::Relaxed) & !OBJECT_KIND_MASK != 0 }
 }
 
 /// Depth of the current thread's hold on the GC lock (0 = not held).

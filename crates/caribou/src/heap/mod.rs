@@ -12,8 +12,8 @@ mod immix;
 pub use desc::{DropFn, TraceFn, TypeDesc};
 pub use immix::{
     // Allocation.
-    alloc_gen, alloc_with_finalizer, allocation_size, gc_alloc, mark_size, out_of_memory, zalloc,
-    Finalizer, ImmixAllocator, Tracer, GC,
+    alloc_gen, alloc_with_finalizer, allocation_size, gc_alloc, is_allocation_start, mark_size,
+    out_of_memory, zalloc, Finalizer, ImmixAllocator, Tracer, GC,
     // The reentrant GC lock.
     gc_guard, gc_lock_held_depth, gc_lock_unwind_to, gc_locked, gc_locked_init, lock, unlock,
     GcGuard, GcRef, HL_GLOBAL_LOCK,

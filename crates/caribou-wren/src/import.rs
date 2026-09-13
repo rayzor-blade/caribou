@@ -17,25 +17,21 @@
 //! releases it when the instance dies, and `heap_drop` releases whatever
 //! is left.
 //!
-//! A `NativeFn` is a bare `fn` and receives only the receiver and the
-//! arguments, so the natives are trampolines: `SLOTS` distinct functions,
-//! the `i`th of which calls the `i`th member bound on the receiver's class.
-//! A call is one lookup, by class pointer, in the table its VM's heap
-//! record keeps (walking to the superclass for a Wren subclass), then the
-//! bridge call with the typed callable the interface published. Each class
-//! is limited to `SLOTS` members.
+//! Each member is bound as a host method (`Method::Host`) with its
+//! `Target` as the word wren_lift tells the entry on every call, so a call
+//! is the bridge call with the typed callable the interface published and
+//! nothing looked up. The targets live in the binding the VM's heap record
+//! keeps for the class, which outlives every call on it.
 //!
-//! The VM the callbacks and the trampolines act on is the one entered on
-//! this thread (`enter_vm`, `with_vm`) or the one wren_lift is dispatching
-//! on: a `VMConfig` callback and a `NativeContext` carry no VM handle the
-//! adapter could use to install a module.
+//! The VM the callbacks act on is the one entered on this thread
+//! (`enter_vm`, `with_vm`) or the one wren_lift is dispatching on: a
+//! `VMConfig` callback carries no VM handle the adapter could use to
+//! install a module.
 
-use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::MaybeUninit;
-use std::ptr;
 use std::rc::Rc;
 
 use caribou::bridge;
@@ -50,9 +46,7 @@ use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::intern::Interner;
 use wren_lift::mir::{BasicBlock, BlockId, ClassMir, MirFunction, ModuleMir, Terminator};
 use wren_lift::runtime::engine::InterpretResult;
-use wren_lift::runtime::object::{
-    NativeContext, NativeFn, ObjClass, ObjHeader, ObjInstance, ObjType,
-};
+use wren_lift::runtime::object::{NativeContext, ObjClass, ObjHeader, ObjInstance, ObjType};
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{VM, VMConfig};
 use wren_lift::sema::protocol::ProtocolSet;
@@ -60,9 +54,6 @@ use wren_lift::serialize;
 
 use crate::heap::{WrenHeap, record_for, wren_lang};
 use crate::proto::{current_vm, from_wren, to_wren};
-
-/// Members one installed class can bind.
-pub const SLOTS: usize = 256;
 
 /// The fields of every instance: the handle on the object it stands for,
 /// and the object's address, as numbers. The heap does not move, so the
@@ -77,7 +68,7 @@ const FIELD_NAMES: [&str; 2] = ["__caribou_handle", "__caribou_object"];
 // The per-heap table
 // ---------------------------------------------------------------------------
 
-/// What one trampoline slot of a class does.
+/// What one bound member of a class does.
 #[derive(Clone)]
 enum Kind {
     Ctor,
@@ -114,33 +105,11 @@ impl Target {
     }
 }
 
-/// The class last asked for a binding and the binding, one count held.
-#[derive(Default)]
-struct LastBinding(Cell<Option<(usize, ptr::NonNull<ClassBinding>)>>);
-
-impl LastBinding {
-    fn get(&self) -> (usize, *const ClassBinding) {
-        match self.0.get() {
-            Some((class, b)) => (class, b.as_ptr()),
-            None => (0, ptr::null()),
-        }
-    }
-
-    fn set(&self, at: (usize, *const ClassBinding)) {
-        self.0
-            .set(ptr::NonNull::new(at.1 as *mut ClassBinding).map(|b| (at.0, b)));
-    }
-
-    fn replace(&self, at: (usize, *const ClassBinding)) -> (usize, *const ClassBinding) {
-        let old = self.get();
-        self.set(at);
-        old
-    }
-}
-
-/// One installed class: per slot, the member it binds.
+/// One installed class: the members it binds, kept for the words its host
+/// methods were told, which point into this box.
 struct ClassBinding {
-    targets: Vec<Target>,
+    #[allow(dead_code)]
+    targets: Box<[Target]>,
 }
 
 /// The installed classes of one VM, kept on its heap record so they die
@@ -150,8 +119,7 @@ pub(crate) struct Imports {
     classes: AddressMap<Rc<ClassBinding>>,
     /// `(lang, type name)` to the class that stands for it.
     by_type: HashMap<(LangId, String), *mut ObjClass>,
-    /// The class last asked for and its binding, one count held.
-    last: LastBinding,
+
     /// Every live instance and the handle in its field, for the sweep and
     /// for `heap_drop`.
     live: AddressMap<Handle>,
@@ -163,37 +131,6 @@ impl Imports {
     /// Whether `class` was installed here for another language's.
     pub(crate) fn installed(&self, class: *mut ObjClass) -> bool {
         self.classes.contains_key(&(class as usize))
-    }
-
-    /// Forget the cached binding, giving up its count.
-    fn forget_last(&self) {
-        let (_, last) = self.last.replace((0, ptr::null()));
-        if !last.is_null() {
-            drop(unsafe { Rc::from_raw(last) });
-        }
-    }
-
-    /// The binding of `class` or of its nearest bound superclass. The last
-    /// answer is kept, since a call site mostly sees one class; a binding
-    /// lives as long as its entry in `classes`, which only `release_all`
-    /// clears.
-    fn binding_of(&self, class: *mut ObjClass) -> Option<Rc<ClassBinding>> {
-        let (last_class, last) = self.last.get();
-        if last_class == class as usize && !last.is_null() {
-            // A count for the caller; the cache keeps its own.
-            unsafe { Rc::increment_strong_count(last) };
-            return Some(unsafe { Rc::from_raw(last) });
-        }
-        let mut at = class;
-        while !at.is_null() {
-            if let Some(b) = self.classes.get(&(at as usize)) {
-                self.forget_last();
-                self.last.set((class as usize, Rc::into_raw(b.clone())));
-                return Some(b.clone());
-            }
-            at = unsafe { (*at).superclass };
-        }
-        None
     }
 }
 
@@ -217,7 +154,6 @@ pub(crate) fn release_all(rec: &WrenHeap, gc: &mut heap::ImmixAllocator) {
     for (_, handle) in imports.live.drain() {
         gc.handle_release(handle);
     }
-    imports.forget_last();
     imports.classes.clear();
     imports.by_type.clear();
 }
@@ -493,24 +429,20 @@ fn bind(vm: &mut VM, ptr: *mut ObjClass, class: &ClassIface) -> Result<ClassBind
     bind_members(vm, ptr, &class.name, members(class))
 }
 
-/// Bind one native per `(signature, target)` onto the installed `ptr`.
+/// Bind one host method per `(signature, target)` onto the installed
+/// `ptr`, each told its target. The targets are boxed in place first, so
+/// the words handed out stay good for the binding's life.
 fn bind_members(
     vm: &mut VM,
     ptr: *mut ObjClass,
-    name: &str,
+    _name: &str,
     members: Vec<(String, Target)>,
 ) -> Result<ClassBinding, ImportError> {
-    if members.len() > SLOTS {
-        return Err(ImportError(format!(
-            "`{name}` has {} members; a class can bind at most {SLOTS}",
-            members.len()
-        )));
-    }
-    let mut targets: Vec<Target> = Vec::with_capacity(members.len());
-    for (sig, target) in members {
-        let sym = vm.interner.intern(&sig);
-        unsafe { (*ptr).bind_native(sym, trampoline(targets.len())) };
-        targets.push(target);
+    let (sigs, targets): (Vec<String>, Vec<Target>) = members.into_iter().unzip();
+    let targets: Box<[Target]> = targets.into_boxed_slice();
+    for (sig, target) in sigs.iter().zip(targets.iter()) {
+        let sym = vm.interner.intern(sig);
+        unsafe { (*ptr).bind_host(sym, host_entry, target as *const Target as usize) };
     }
     Ok(ClassBinding { targets })
 }
@@ -668,32 +600,20 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
 }
 
 // ---------------------------------------------------------------------------
-// Trampolines
+// The host entry
 // ---------------------------------------------------------------------------
 
-macro_rules! row {
-    ($hi:literal; $($lo:literal),*) => {
-        [$({
-            fn t(ctx: &mut dyn NativeContext, args: &[WValue]) -> WValue {
-                dispatch($hi + $lo, ctx, args)
-            }
-            t as NativeFn
-        }),*]
-    };
-}
-
-macro_rules! rows {
-    ($($hi:literal),*) => {
-        [$(row!($hi; 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)),*]
-    };
-}
-
-static TRAMPOLINES: [[NativeFn; 16]; 16] = rows!(
-    0, 16, 32, 48, 64, 80, 96, 112, 128, 144, 160, 176, 192, 208, 224, 240
-);
-
-fn trampoline(slot: usize) -> NativeFn {
-    TRAMPOLINES[slot >> 4][slot & 15]
+/// Every bound member's entry: `context` is the member's `Target`, which
+/// `bind_members` boxed for the life of the binding.
+fn host_entry(vm: &mut VM, context: usize, args: &[WValue]) -> WValue {
+    let target = unsafe { &*(context as *const Target) };
+    match run(vm, target, args) {
+        Ok(v) => v,
+        Err(message) => {
+            vm.runtime_error(message);
+            WValue::null()
+        }
+    }
 }
 
 /// A Wren argument as a bridge value, with the root it needs for the
@@ -734,66 +654,38 @@ fn message_of(err: Value) -> String {
     }
 }
 
-fn dispatch(slot: usize, ctx: &mut dyn NativeContext, args: &[WValue]) -> WValue {
-    // `ctx` is the VM itself, which is the only `NativeContext` wren_lift
-    // dispatches a native with; its data pointer is the VM's address, and
-    // is what the entered VM would answer without the thread-local read.
-    let vm = ctx as *mut dyn NativeContext as *mut VM;
-    debug_assert!(vm == current_vm(), "the native's context is the entered VM");
-    let vm = unsafe { &mut *vm };
-    match run(vm, slot, args) {
-        Ok(v) => v,
-        Err(message) => {
-            vm.runtime_error(message);
-            WValue::null()
-        }
-    }
-}
-
-fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
+fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> {
     let recv = args[0];
     let Some(obj) = recv.as_object() else {
         return Err("the receiver is not an object".to_owned());
     };
-    let is_class = unsafe { (*(obj as *const ObjHeader)).obj_type } == ObjType::Class;
-    let class = if is_class {
-        obj as *mut ObjClass
-    } else {
-        vm.class_of(recv)
-    };
-    let rec = record_for(obj);
-    let Some(binding) = rec.imports().borrow().binding_of(class) else {
-        return Err(format!(
-            "{} is not an imported class",
-            vm.class_name_of(recv)
-        ));
-    };
-    let target = &binding.targets[slot];
     let wren = wren_lang();
 
     // Arguments cross first, rooted for the call. On the stack: Wren's
     // widest signature, with a slot before them for `this`; only the slots
-    // in use are written.
+    // in use are written, and only the roots taken are released.
     let n = args.len() - 1;
-    let mut roots = [Handle::NULL; WIDEST];
+    let mut roots = [MaybeUninit::<Handle>::uninit(); WIDEST];
     let mut buf = [MaybeUninit::<Value>::uninit(); WIDEST + 1];
     if n > WIDEST {
         return Err(format!("{} takes too many arguments", target.name));
     }
-    let release = |roots: &[Handle]| {
-        for &h in roots {
-            if !h.is_null() {
-                heap::handle_release(h);
-            }
-        }
-    };
+    let mut rooted = 0;
     buf[0].write(Value::null());
     for (i, &arg) in args[1..].iter().enumerate() {
         let (v, root) = cross_in(arg);
         buf[1 + i].write(v);
-        roots[i] = root;
+        if !root.is_null() {
+            roots[rooted].write(root);
+            rooted += 1;
+        }
     }
-    let roots = &roots[..n];
+    let roots = unsafe { roots[..rooted].assume_init_ref() };
+    let release = |roots: &[Handle]| {
+        for &h in roots {
+            heap::handle_release(h);
+        }
+    };
     // Slot 0 is `this` for a method and unused otherwise.
     let with_this = unsafe { buf[..=n].assume_init_mut() };
 
@@ -801,8 +693,9 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
         Kind::Ctor => {
             // A subclass's constructor arrives with its instance already
             // made; a call on the class makes one.
+            let is_class = unsafe { (*(obj as *const ObjHeader)).obj_type } == ObjType::Class;
             let instance = if is_class {
-                vm.alloc_instance(class)
+                vm.alloc_instance(obj as *mut ObjClass)
             } else {
                 recv
             };
@@ -817,7 +710,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
                     bridge::describe(made)
                 ));
             };
-            adopt(rec, ptr, haxe as *mut u8);
+            adopt(record_for(obj), ptr, haxe as *mut u8);
             return Ok(instance);
         }
         Kind::Static => {
@@ -912,18 +805,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn signatures_and_slots() {
+    fn signatures_follow_wrens_convention() {
         assert_eq!(signature("new", 0), "new()");
         assert_eq!(signature("hit", 1), "hit(_)");
         assert_eq!(signature("spawnAt", 2), "spawnAt(_,_)");
-        // Every slot is its own function.
-        let mut seen = std::collections::HashSet::new();
-        for slot in 0..SLOTS {
-            assert!(
-                seen.insert(trampoline(slot) as usize),
-                "slot {slot} repeats"
-            );
-        }
     }
 
     /// The blob wren_lift installs: one class per published class, the
@@ -1017,7 +902,7 @@ mod tests {
                 decoded.module.top_level.blocks[0].terminator
             );
             for (i, line) in bound.iter().enumerate() {
-                println!("slot {i}: {line} ({:#x})", trampoline(i) as usize);
+                println!("member {i}: {line}");
             }
         }
     }
