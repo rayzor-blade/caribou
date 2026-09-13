@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 
 use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
-    hlp_clear_exc_value, hlp_get_exc_value, hlp_remove_trap_jit, hlp_setup_trap_jit,
+    hlp_clear_exc_value, hlp_get_exc_value, hlp_remove_trap_jit, hlp_setup_trap_in,
 };
 use ash_std::fun::hlp_dyn_call;
 use ash_std::obj::{
@@ -162,7 +162,7 @@ unsafe fn inner(obj: *mut u8) -> *mut vdynamic {
 
 unsafe extern "C" {
     fn caribou_ash_run_with_hl_trap(
-        setup: unsafe extern "C" fn() -> *mut c_void,
+        setup: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
         remove: unsafe extern "C" fn(),
         callback: unsafe extern "C" fn(*mut c_void),
         context: *mut c_void,
@@ -171,25 +171,30 @@ unsafe extern "C" {
 
 /// Run `f` under a HashLink trap; `Err` is what it threw. A throw abandons
 /// the frames inside `f` without running their drops, so `f` owns nothing
-/// that needs one: it reads and writes slots the caller prepared.
+/// that needs one: it reads and writes slots the caller prepared. The
+/// trap's context lives in the C frame that sets the jump, so the runtime
+/// allocates and pools nothing for it.
 fn trapped<F: FnMut()>(mut f: F) -> Result<(), *mut vdynamic> {
     unsafe extern "C" fn thunk<F: FnMut()>(context: *mut c_void) {
         unsafe { (*(context as *mut F))() }
     }
     let threw = unsafe {
         caribou_ash_run_with_hl_trap(
-            hlp_setup_trap_jit,
+            hlp_setup_trap_in,
             hlp_remove_trap_jit,
             thunk::<F>,
             &mut f as *mut F as *mut c_void,
         )
     };
-    if threw == 0 {
-        return Ok(());
+    match threw {
+        0 => Ok(()),
+        1 => {
+            let exception = unsafe { hlp_get_exc_value() };
+            unsafe { hlp_clear_exc_value() };
+            Err(exception.cast())
+        }
+        _ => panic!("the runtime's trap context outgrew the frame that holds it"),
     }
-    let exception = unsafe { hlp_get_exc_value() };
-    unsafe { hlp_clear_exc_value() };
-    Err(exception.cast())
 }
 
 // ---------------------------------------------------------------------------
