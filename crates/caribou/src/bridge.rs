@@ -611,6 +611,9 @@ fn call_at_opt(
             if let Some(site) = site
                 && let Some(reply) = direct(site, func as usize, args)
             {
+                if let Outcome::Ok(v) = reply {
+                    return Ok(v);
+                }
                 return settle(reply, lang, name, caller);
             }
             let outcome = typed_call(func, signature, lang, args, site);
@@ -625,6 +628,9 @@ fn call_at_opt(
             if let Some(site) = site
                 && let Some(reply) = direct(site, func as usize, args)
             {
+                if let Outcome::Ok(v) = reply {
+                    return Ok(v);
+                }
                 return settle(reply, lang, name, caller);
             }
             let outcome = typed_call(func, signature, lang, args, site);

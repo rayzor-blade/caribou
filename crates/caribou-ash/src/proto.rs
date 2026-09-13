@@ -599,8 +599,9 @@ unsafe fn code_of(fun: usize) -> Option<*const c_void> {
 struct Kinds {
     n: usize,
     arg: [hl_type_kind; MAX_ARGS],
-    /// `ash_native_call`'s code per argument: 0 integer, 1 `f32`, 2 `f64`.
-    code: [u8; MAX_ARGS],
+    /// `ash_native_call`'s codes per argument, 0 integer, 1 `f32`, 2
+    /// `f64`, folded into the pattern its table is keyed by.
+    pattern: u32,
     ret: hl_type_kind,
     ret_code: u8,
 }
@@ -615,19 +616,21 @@ unsafe fn kinds_of(fun: *const hl_type_fun) -> Option<Kinds> {
     let mut kinds = Kinds {
         n,
         arg: [hl::HVOID; MAX_ARGS],
-        code: [0; MAX_ARGS],
+        pattern: 0,
         ret: unsafe { (*(*fun).ret).kind },
         ret_code: 0,
     };
+    let mut codes = [0u8; MAX_ARGS];
     for a in 0..n {
         let kind = unsafe { (**(*fun).args.add(a)).kind };
         kinds.arg[a] = kind;
-        kinds.code[a] = match kind {
+        codes[a] = match kind {
             hl::HF64 => 2,
             hl::HF32 => 1,
             _ => 0,
         };
     }
+    kinds.pattern = ash_native_call::pattern_of(&codes[..n]);
     kinds.ret_code = match kinds.ret {
         hl::HF64 => 2,
         hl::HF32 => 1,
@@ -678,43 +681,47 @@ unsafe fn call_by_kinds(
     args: &[Value],
     out: *mut Value,
 ) -> Option<Result<(), *mut vdynamic>> {
-    // A bound value goes first, as a pointer.
+    // A bound value goes first, as a pointer; the pattern then shifts by
+    // one integer digit.
     let lead = usize::from(bound.is_some());
     let n = args.len() + lead;
     if n > MAX_ARGS || args.len() != sig.n {
         return None;
     }
-    let mut ints = [0i64; MAX_ARGS];
-    let mut f32s = [0f32; MAX_ARGS];
-    let mut f64s = [0f64; MAX_ARGS];
-    let mut kinds = [0u8; MAX_ARGS];
-    if let Some(value) = bound {
-        ints[0] = value as i64;
-    }
+    let mut words = [0u64; MAX_ARGS];
+    let pattern = if let Some(value) = bound {
+        words[0] = value as u64;
+        sig.pattern * 3
+    } else {
+        sig.pattern
+    };
     for (a, &arg) in args.iter().enumerate() {
         let i = a + lead;
         let kind = sig.arg[a];
-        kinds[i] = sig.code[a];
         match kind {
             hl::HF64 => {
-                f64s[i] = arg.as_number().or_else(|| arg.as_int().map(f64::from))?;
+                words[i] = arg
+                    .as_number()
+                    .or_else(|| arg.as_int().map(f64::from))?
+                    .to_bits();
             }
             hl::HF32 => {
-                f32s[i] = arg.as_number().or_else(|| arg.as_int().map(f64::from))? as f32;
+                let f = arg.as_number().or_else(|| arg.as_int().map(f64::from))? as f32;
+                words[i] = u64::from(f.to_bits());
             }
             hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HBOOL => {
                 let v = arg
                     .as_int()
                     .or_else(|| arg.as_number().map(|n| n as i32))
                     .or_else(|| arg.as_bool().map(i32::from))?;
-                ints[i] = i64::from(v);
+                words[i] = i64::from(v) as u64;
             }
             hl::HI64 => {
                 let v = arg
                     .as_int()
                     .map(i64::from)
                     .or_else(|| arg.as_number().map(|n| n as i64))?;
-                ints[i] = v;
+                words[i] = v as u64;
             }
             // Pointers: what the boxed path would pass, checked against the
             // declared kind, since nothing casts on a direct call.
@@ -739,7 +746,7 @@ unsafe fn call_by_kinds(
                 {
                     return None;
                 }
-                ints[i] = p as i64;
+                words[i] = p as u64;
             }
             _ => return None,
         }
@@ -748,13 +755,11 @@ unsafe fn call_by_kinds(
     let mut raw: Option<i64> = None;
     let call = trapped(|| {
         raw = unsafe {
-            ash_native_call::dispatch(
+            ash_native_call::dispatch_by_pattern(
                 func as *mut c_void,
-                &ints[..n],
-                &f32s[..n],
-                &f64s[..n],
-                &kinds[..n],
+                &words[..n],
                 sig.ret_code,
+                pattern,
             )
         };
     });

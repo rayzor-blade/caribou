@@ -619,7 +619,12 @@ fn host_entry(vm: &mut VM, context: usize, args: &[WValue]) -> WValue {
 /// A Wren argument as a bridge value, with the root it needs for the
 /// call: an instance of an installed class becomes the object it stands
 /// for; a string becomes a fresh core `Str`, rooted here.
+#[inline]
 fn cross_in(v: WValue) -> (Value, Handle) {
+    // A number, bool or null crosses as itself.
+    if v.as_object().is_none() {
+        return (Value::from_bits(v.to_bits()), Handle::NULL);
+    }
     if let Some(obj) = foreign_of(v) {
         return (obj, Handle::NULL);
     }
@@ -781,13 +786,19 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
         // The assigned value, as Wren's own setters evaluate to.
         return Ok(args[1]);
     }
-    // Rooted before anything can allocate: the result is not.
+    // A number, which most results are, crosses as itself. An object is
+    // rooted before anything can allocate, since the result is not.
+    if value.as_object().is_none() {
+        return cross_out(vm, value);
+    }
     let root = match value.as_object() {
         Some(p) if !p.is_null() => heap::handle_new(p as *mut u8),
         _ => Handle::NULL,
     };
     let out = cross_out(vm, value);
-    heap::handle_release(root);
+    if !root.is_null() {
+        heap::handle_release(root);
+    }
     out
 }
 
