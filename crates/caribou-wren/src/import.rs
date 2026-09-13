@@ -735,12 +735,11 @@ fn message_of(err: Value) -> String {
 }
 
 fn dispatch(slot: usize, ctx: &mut dyn NativeContext, args: &[WValue]) -> WValue {
-    let vm = current_vm();
-    if vm.is_null() {
-        ctx.runtime_error("no Wren VM is entered on this thread".to_owned());
-        return WValue::null();
-    }
-    // The same VM `ctx` is; `ctx` is not touched again.
+    // `ctx` is the VM itself, which is the only `NativeContext` wren_lift
+    // dispatches a native with; its data pointer is the VM's address, and
+    // is what the entered VM would answer without the thread-local read.
+    let vm = ctx as *mut dyn NativeContext as *mut VM;
+    debug_assert!(vm == current_vm(), "the native's context is the entered VM");
     let vm = unsafe { &mut *vm };
     match run(vm, slot, args) {
         Ok(v) => v,
