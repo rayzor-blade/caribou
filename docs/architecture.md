@@ -667,9 +667,9 @@ signatures, `draw()`, `hit(_)`, `score` for a getter, `score=(_)` for a
 setter, and under `static:` the class's own side, where a constructor is
 `static:new(_)`. A getter or setter is published as a `MethodIface` whose
 `kind()` says so, read from the signature its callable carries, since
-Wren's getters stand where Haxe has fields. Parameters and results are
-`Dyn`, Wren declaring no types; a declaration file may refine them later.
-Operators and subscripts have no name an importer can spell and are not
+Wren's getters stand where Haxe has fields. A member's name and types come
+from its `#export` attribute (see "Declaring types"), else it is Wren's
+name and `Dyn`. Operators and subscripts have no name an importer can spell and are not
 published. A class belongs to the module when one of its own methods was
 compiled in it, which leaves out what the module imported and what the
 adapter installed for another language. One constructor is the class's

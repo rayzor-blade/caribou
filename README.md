@@ -96,6 +96,9 @@ checkout's target directory.
 
 ## Documentation
 
+- [docs/interop.md](docs/interop.md) is the reference for what a program
+  writes: namespaces, how each language sees the other's classes, export
+  signatures, and what crosses how.
 - [docs/architecture.md](docs/architecture.md) describes each system as it
   is built, and for the ones not built yet, the contract they will be
   written against.
