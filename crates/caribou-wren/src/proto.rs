@@ -490,6 +490,111 @@ fn tick(vm: &mut VM, closure: *mut ObjClosure) {
     }
 }
 
+/// Leave the whole send in `site` for the next call from it: the closure
+/// and the class it was found on, under the VM's record, so the next call
+/// checks the receiver against the class and dispatches. Only a closure
+/// or a constructor; anything else keeps the plain path.
+fn leave_direct(site: Option<&CallSite>, key: usize, found: &Found) {
+    let Some(site) = site else {
+        return;
+    };
+    match found.method {
+        Method::Closure(closure) => {
+            site.set_direct(direct_call, key, closure as usize, found.class as usize);
+        }
+        Method::Constructor(closure) => {
+            site.set_direct(
+                direct_construct,
+                key,
+                closure as usize,
+                found.class as usize,
+            );
+        }
+        _ => {}
+    }
+}
+
+/// The VM and receiver a direct send runs on, when the site still fits:
+/// the object is this thread's VM's, and the receiver is the class the
+/// site was filled for, or an instance of exactly it.
+#[inline]
+fn direct_receiver(
+    site: &CallSite,
+    obj: *mut u8,
+) -> Option<(&'static mut VM, WValue, *mut ObjClass)> {
+    let (key, _, class) = site.words();
+    let vm = current_vm();
+    if vm.is_null() || record_address(obj) != key {
+        return None;
+    }
+    let vm = unsafe { &mut *vm };
+    let mine = record_for(vm.object_class as *mut u8) as *const WrenHeap as usize;
+    if mine != key {
+        return None;
+    }
+    let recv = unsafe { receiver(obj) };
+    let class = class as *mut ObjClass;
+    let fits = recv.as_object() == Some(class as *mut u8) || vm.class_of(recv) == class;
+    fits.then_some((vm, recv, class))
+}
+
+/// The direct send of a method or getter: the closure the site holds, on
+/// the receiver, through the VM's own dispatch.
+unsafe extern "C-unwind" fn direct_call(
+    site: *const CallSite,
+    obj: usize,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let site = unsafe { &*site };
+    let Some((vm, recv, class)) = direct_receiver(site, obj as *mut u8) else {
+        return REPLY_MISSING;
+    };
+    let (_, closure, _) = site.words();
+    let mut args = match Args::cross(vm, 1, args, n) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+    args.slice_mut()[0] = recv;
+    let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
+        vm,
+        Method::Closure(closure as *mut ObjClosure),
+        args.as_slice(),
+        Some(class),
+    );
+    finish(vm, Some(WValue::from_bits(bits)), "", out)
+}
+
+/// The direct send of a constructor: the class is the receiver.
+unsafe extern "C-unwind" fn direct_construct(
+    site: *const CallSite,
+    obj: usize,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let site = unsafe { &*site };
+    let Some((vm, recv, class)) = direct_receiver(site, obj as *mut u8) else {
+        return REPLY_MISSING;
+    };
+    let (_, closure, _) = site.words();
+    let closure = closure as *mut ObjClosure;
+    let mut args = match Args::cross(vm, 1, args, n) {
+        Ok(args) => args,
+        Err(code) => return code,
+    };
+    args.slice_mut()[0] = recv;
+    tick(vm, closure);
+    let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
+        vm,
+        Method::Constructor(closure),
+        args.as_slice(),
+        Some(class),
+    );
+    finish(vm, Some(WValue::from_bits(bits)), "", out)
+}
+
 /// Run `found` on `recv` with `args`, whose slot 0 is free for the
 /// receiver, through the VM's own method dispatch: what its compiled code
 /// calls once it has found a method.
@@ -572,6 +677,7 @@ fn get_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, out: *mut Value) 
     };
     let recv = unsafe { receiver(obj) };
     if let Some(found) = find_by(vm, key, recv, name, Shape::Get, site) {
+        leave_direct(site, key, &found);
         let mut args = Args::receiver_only();
         return run(vm, recv, found, &mut args, out);
     }
@@ -611,6 +717,7 @@ fn set_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, value: Value) -> 
         Err(code) => return code,
     };
     if let Some(found) = find_by(vm, key, recv, name, Shape::Set, site) {
+        leave_direct(site, key, &found);
         let mut ignored = Value::null();
         return run(vm, recv, found, &mut args, &mut ignored);
     }
@@ -697,6 +804,7 @@ fn invoke_at_opt(
             }
         },
     };
+    leave_direct(site, key, &found);
     let mut args = match Args::cross(vm, 1, args, n) {
         Ok(args) => args,
         Err(code) => return code,

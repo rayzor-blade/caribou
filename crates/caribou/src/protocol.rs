@@ -154,13 +154,33 @@ impl Protocol {
 /// empty. Owned by the caller for the life of the site; shared, since a
 /// site may be reached from several threads, and a stale read costs one
 /// lookup.
+///
+/// A callee that can do the whole send for the site in one function
+/// leaves that function in `direct`, with `a` and `b` as its own data:
+/// the bridge then calls it before anything else, and takes the plain
+/// path again when it answers `Missing` or `Unsupported`. `key`, `a` and
+/// `b` belong to whichever the callee filled last.
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct CallSite {
     pub key: AtomicUsize,
     pub a: AtomicUsize,
     pub b: AtomicUsize,
+    pub direct: AtomicUsize,
 }
+
+/// The whole send for one site: `target` is what the bridge would have
+/// sent to, the receiver's core address or a typed callable's function,
+/// and the site holds what the callee left there for itself. Answers as a
+/// protocol entry does; `Missing` and `Unsupported` mean the site no
+/// longer fits and the plain path should decide.
+pub type Direct = unsafe extern "C-unwind" fn(
+    site: *const CallSite,
+    target: usize,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8;
 
 impl CallSite {
     pub const fn new() -> CallSite {
@@ -168,29 +188,68 @@ impl CallSite {
             key: AtomicUsize::new(0),
             a: AtomicUsize::new(0),
             b: AtomicUsize::new(0),
+            direct: AtomicUsize::new(0),
         }
     }
 
-    /// `(a, b)` when the site was filled under `key`.
+    /// `(a, b)` when the site was filled under `key` and holds no direct
+    /// send.
     #[inline]
     pub fn get(&self, key: usize) -> Option<(usize, usize)> {
-        (key != 0 && self.key.load(Ordering::Acquire) == key).then(|| {
-            (
-                self.a.load(Ordering::Relaxed),
-                self.b.load(Ordering::Relaxed),
-            )
-        })
+        (key != 0
+            && self.direct.load(Ordering::Relaxed) == 0
+            && self.key.load(Ordering::Acquire) == key)
+            .then(|| {
+                (
+                    self.a.load(Ordering::Relaxed),
+                    self.b.load(Ordering::Relaxed),
+                )
+            })
     }
 
     #[inline]
     pub fn set(&self, key: usize, a: usize, b: usize) {
+        self.direct.store(0, Ordering::Relaxed);
         self.a.store(a, Ordering::Relaxed);
         self.b.store(b, Ordering::Relaxed);
         self.key.store(key, Ordering::Release);
     }
+
+    /// The direct send, when the callee left one.
+    #[inline]
+    pub fn direct(&self) -> Option<Direct> {
+        let f = self.direct.load(Ordering::Acquire);
+        (f != 0).then(|| unsafe { std::mem::transmute::<usize, Direct>(f) })
+    }
+
+    /// Leave `f` as the direct send, with `key`, `a` and `b` for it.
+    #[inline]
+    pub fn set_direct(&self, f: Direct, key: usize, a: usize, b: usize) {
+        self.key.store(key, Ordering::Relaxed);
+        self.a.store(a, Ordering::Relaxed);
+        self.b.store(b, Ordering::Relaxed);
+        self.direct.store(f as usize, Ordering::Release);
+    }
+
+    /// Forget the direct send; the plain path fills the site again.
+    #[inline]
+    pub fn clear_direct(&self) {
+        self.direct.store(0, Ordering::Release);
+    }
+
+    /// `key`, `a` and `b` as the direct send left them.
+    #[inline]
+    pub fn words(&self) -> (usize, usize, usize) {
+        (
+            self.key.load(Ordering::Relaxed),
+            self.a.load(Ordering::Relaxed),
+            self.b.load(Ordering::Relaxed),
+        )
+    }
 }
 
 /// A reply code and an out-value into a `Reply`.
+#[inline]
 pub(crate) fn reply(code: u8, out: Value) -> Reply {
     match code {
         REPLY_OK => Ok(out),
@@ -217,11 +276,13 @@ pub struct Send;
 
 #[allow(clippy::missing_safety_doc)]
 impl Send {
+    #[inline]
     unsafe fn proto(obj: *mut u8) -> Option<&'static Protocol> {
         let desc = unsafe { desc_of(obj).as_ref()? };
         unsafe { desc.protocol.as_ref() }
     }
 
+    #[inline]
     pub unsafe fn get_member(obj: *mut u8, name: Symbol) -> Reply {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.get_member) else {
             return Err(Fault::Unsupported);
@@ -230,6 +291,7 @@ impl Send {
         reply(unsafe { f(obj, name, &mut out) }, out)
     }
 
+    #[inline]
     pub unsafe fn set_member(obj: *mut u8, name: Symbol, value: Value) -> Result<(), Fault> {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.set_member) else {
             return Err(Fault::Unsupported);
@@ -238,6 +300,7 @@ impl Send {
     }
 
     /// [`Self::get_member`] through `site`, when the protocol caches.
+    #[inline]
     pub unsafe fn get_member_at(obj: *mut u8, name: Symbol, site: &CallSite) -> Reply {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.get_member_at) else {
             return unsafe { Self::get_member(obj, name) };
@@ -257,6 +320,7 @@ impl Send {
     }
 
     /// [`Self::set_member`] through `site`, when the protocol caches.
+    #[inline]
     pub unsafe fn set_member_at(
         obj: *mut u8,
         name: Symbol,
@@ -274,6 +338,7 @@ impl Send {
     }
 
     /// [`Self::invoke`] through `site`, when the protocol caches.
+    #[inline]
     pub unsafe fn invoke_at(obj: *mut u8, name: Symbol, site: &CallSite, args: &[Value]) -> Reply {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.invoke_at) else {
             return unsafe { Self::invoke(obj, name, args) };
@@ -294,6 +359,7 @@ impl Send {
         )
     }
 
+    #[inline]
     pub unsafe fn invoke(obj: *mut u8, name: Symbol, args: &[Value]) -> Reply {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.invoke) else {
             return Err(Fault::Unsupported);
@@ -305,6 +371,7 @@ impl Send {
         )
     }
 
+    #[inline]
     pub unsafe fn call(obj: *mut u8, args: &[Value]) -> Reply {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.call) else {
             return Err(Fault::Unsupported);

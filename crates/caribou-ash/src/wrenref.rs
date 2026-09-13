@@ -258,17 +258,18 @@ unsafe extern "C-unwind" fn invoke(
     code(unsafe { Send::invoke(inner(obj), name, args) }, out)
 }
 
-// The site is the caller's; the Wren object's protocol fills it.
+// The site is the caller's; the Wren object's protocol fills it. A direct
+// send it leaves there would be called on the ref, not the object, so
+// none is kept: a call through a ref takes the plain path every time.
 unsafe extern "C-unwind" fn get_member_at(
     obj: *mut u8,
     name: Symbol,
     site: *mut CallSite,
     out: *mut Value,
 ) -> u8 {
-    code(
-        unsafe { Send::get_member_at(inner(obj), name, &*site) },
-        out,
-    )
+    let r = unsafe { Send::get_member_at(inner(obj), name, &*site) };
+    unsafe { &*site }.clear_direct();
+    code(r, out)
 }
 
 unsafe extern "C-unwind" fn set_member_at(
@@ -277,7 +278,9 @@ unsafe extern "C-unwind" fn set_member_at(
     site: *mut CallSite,
     value: Value,
 ) -> u8 {
-    match unsafe { Send::set_member_at(inner(obj), name, &*site, value) } {
+    let r = unsafe { Send::set_member_at(inner(obj), name, &*site, value) };
+    unsafe { &*site }.clear_direct();
+    match r {
         Ok(()) => REPLY_OK,
         Err(fault) => code_of(fault),
     }
@@ -296,10 +299,9 @@ unsafe extern "C-unwind" fn invoke_at(
     } else {
         unsafe { std::slice::from_raw_parts(args, n) }
     };
-    code(
-        unsafe { Send::invoke_at(inner(obj), name, &*site, args) },
-        out,
-    )
+    let r = unsafe { Send::invoke_at(inner(obj), name, &*site, args) };
+    unsafe { &*site }.clear_direct();
+    code(r, out)
 }
 
 unsafe extern "C-unwind" fn call(

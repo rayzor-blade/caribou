@@ -108,9 +108,12 @@ pub fn raise(err: *mut Error) -> u8 {
 /// Calls `func` with `nargs` `Value`s marshalled by `sig`, an `hl_type` of
 /// kind `HFUN`, and writes the result to `out` as a `Value`. Returns a
 /// reply code; on `REPLY_RAISED` the error is pending.
+/// `site` is the caller's call site when it keeps one, else null; the
+/// dispatcher may leave a direct send in it for the next call.
 pub type TypedDispatch = unsafe extern "C-unwind" fn(
     func: *const c_void,
     sig: *const hl_type,
+    site: *mut CallSite,
     args: *const Value,
     nargs: usize,
     out: *mut Value,
@@ -262,6 +265,7 @@ const CORE_MAX_ARGS: usize = 4;
 unsafe extern "C-unwind" fn core_dispatch(
     func: *const c_void,
     sig: *const hl_type,
+    _site: *mut CallSite,
     args: *const Value,
     nargs: usize,
     out: *mut Value,
@@ -379,6 +383,7 @@ enum Outcome {
 
 /// Run `f` inside the protected boundary: a fault is described by
 /// `on_fault`, a panic is caught.
+#[inline]
 fn protected(
     f: impl FnOnce() -> Reply,
     on_fault: impl FnOnce(Fault) -> (ErrorKind, String),
@@ -465,6 +470,7 @@ pub fn describe(v: Value) -> String {
 }
 
 /// The object behind `v`, if it is a non-null object.
+#[inline]
 fn object_of(v: Value) -> Option<*mut u8> {
     match v.as_object() {
         Some(p) if !p.is_null() => Some(p as *mut u8),
@@ -483,6 +489,7 @@ unsafe fn desc_name<'a>(obj: *mut u8) -> &'a str {
 }
 
 /// The language that defines `obj`'s type.
+#[inline]
 unsafe fn lang_of(obj: *mut u8) -> LangId {
     unsafe { desc_of(obj).as_ref() }.map_or(LANG_CORE, |d| d.lang)
 }
@@ -553,6 +560,7 @@ pub fn call_named(
 /// [`call_named`] through a call site the caller keeps, for a callable
 /// that is a member send: the callee's protocol may cache what it derived
 /// there.
+#[inline]
 pub fn call_at(
     callable: Callable,
     site: &CallSite,
@@ -563,6 +571,7 @@ pub fn call_at(
     call_at_opt(callable, args, caller, name, Some(site))
 }
 
+#[inline]
 fn call_at_opt(
     callable: Callable,
     args: &[Value],
@@ -599,7 +608,12 @@ fn call_at_opt(
             signature,
             lang,
         } => {
-            let outcome = typed_call(func, signature, lang, args);
+            if let Some(site) = site
+                && let Some(reply) = direct(site, func as usize, args)
+            {
+                return settle(reply, lang, name, caller);
+            }
+            let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
         }
         Callable::Cell {
@@ -607,7 +621,13 @@ fn call_at_opt(
             signature,
             lang,
         } => {
-            let outcome = typed_call(unsafe { *cell }, signature, lang, args);
+            let func = unsafe { *cell };
+            if let Some(site) = site
+                && let Some(reply) = direct(site, func as usize, args)
+            {
+                return settle(reply, lang, name, caller);
+            }
+            let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
         }
         Callable::WrenMethod {
@@ -631,7 +651,7 @@ fn call_at_opt(
                     }
                 }
             };
-            invoke_named(receiver, signature, args, caller, name, site)
+            invoke_named(receiver, signature, args, caller, || name, site)
         }
     }
 }
@@ -641,6 +661,7 @@ fn typed_call(
     signature: *const hl_type,
     lang: LangId,
     args: &[Value],
+    site: Option<&CallSite>,
 ) -> Outcome {
     let Some(fun) = (unsafe { fun_of(signature) }) else {
         return Outcome::Fault(
@@ -661,10 +682,12 @@ fn typed_call(
             format!("no typed dispatcher is registered for language {lang}"),
         );
     };
+    let site = site.map_or(ptr::null_mut(), |s| s as *const CallSite as *mut CallSite);
     protected(
         || {
             let mut out = Value::null();
-            let code = unsafe { dispatch(func, signature, args.as_ptr(), args.len(), &mut out) };
+            let code =
+                unsafe { dispatch(func, signature, site, args.as_ptr(), args.len(), &mut out) };
             protocol::reply(code, out)
         },
         |fault| match fault {
@@ -679,11 +702,12 @@ fn typed_call(
 
 /// Call the member `name` of `obj`.
 pub fn invoke(obj: Value, name: Symbol, args: &[Value], caller: LangId) -> Result<Value, Value> {
-    invoke_named(obj, name, args, caller, name.name(), None)
+    invoke_named(obj, name, args, caller, || name.name(), None)
 }
 
 /// [`invoke`] through a call site the caller keeps: the callee's protocol
 /// may cache what it derived there.
+#[inline]
 pub fn invoke_at(
     obj: Value,
     name: Symbol,
@@ -691,16 +715,18 @@ pub fn invoke_at(
     args: &[Value],
     caller: LangId,
 ) -> Result<Value, Value> {
-    invoke_named(obj, name, args, caller, name.name(), Some(site))
+    invoke_named(obj, name, args, caller, || name.name(), Some(site))
 }
 
-/// `invoke` with `frame` as the trace frame's name.
-fn invoke_named(
+/// `invoke` with `frame` as the trace frame's name, asked for only when
+/// there is an error to name.
+#[inline]
+fn invoke_named<'f>(
     obj: Value,
     name: Symbol,
     args: &[Value],
     caller: LangId,
-    frame: &str,
+    frame: impl FnOnce() -> &'f str,
     site: Option<&CallSite>,
 ) -> Result<Value, Value> {
     let Some(target) = object_of(obj) else {
@@ -708,11 +734,16 @@ fn invoke_named(
         return settle(
             Outcome::Fault(ErrorKind::Type, message),
             LANG_CORE,
-            frame,
+            frame(),
             caller,
         );
     };
     let segment = unsafe { lang_of(target) };
+    if let Some(site) = site
+        && let Some(reply) = direct(site, target as usize, args)
+    {
+        return settle_lazy(reply, segment, frame, caller);
+    }
     let outcome = protected(
         || match site {
             Some(site) => unsafe { protocol::Send::invoke_at(target, name, site, args) },
@@ -720,7 +751,38 @@ fn invoke_named(
         },
         |fault| member_fault(fault, obj, name, "invoke"),
     );
-    settle(outcome, segment, frame, caller)
+    settle_lazy(outcome, segment, frame, caller)
+}
+
+/// `settle` with the frame's name asked for only on the error path.
+#[inline]
+fn settle_lazy<'f>(
+    outcome: Outcome,
+    segment: LangId,
+    name: impl FnOnce() -> &'f str,
+    caller: LangId,
+) -> Result<Value, Value> {
+    if let Outcome::Ok(v) = outcome {
+        return Ok(v);
+    }
+    settle(outcome, segment, name(), caller)
+}
+
+/// The site's direct send, when it has one and it answers: `None` when it
+/// has none or answered that it no longer fits, which also forgets it.
+#[inline]
+fn direct(site: &CallSite, target: usize, args: &[Value]) -> Option<Outcome> {
+    let f = site.direct()?;
+    let mut out = Value::null();
+    let code = unsafe { f(site, target, args.as_ptr(), args.len(), &mut out) };
+    match code {
+        protocol::REPLY_OK => Some(Outcome::Ok(out)),
+        protocol::REPLY_RAISED => Some(Outcome::Raised),
+        _ => {
+            site.clear_direct();
+            None
+        }
+    }
 }
 
 /// Read the member `name` of `obj`.
@@ -729,10 +791,12 @@ pub fn get(obj: Value, name: Symbol, caller: LangId) -> Result<Value, Value> {
 }
 
 /// [`get`] through a call site the caller keeps.
+#[inline]
 pub fn get_at(obj: Value, name: Symbol, site: &CallSite, caller: LangId) -> Result<Value, Value> {
     get_at_opt(obj, name, Some(site), caller)
 }
 
+#[inline]
 fn get_at_opt(
     obj: Value,
     name: Symbol,
@@ -749,6 +813,11 @@ fn get_at_opt(
         );
     };
     let segment = unsafe { lang_of(target) };
+    if let Some(site) = site
+        && let Some(reply) = direct(site, target as usize, &[])
+    {
+        return settle_lazy(reply, segment, || name.name(), caller);
+    }
     let outcome = protected(
         || match site {
             Some(site) => unsafe { protocol::Send::get_member_at(target, name, site) },
@@ -756,7 +825,7 @@ fn get_at_opt(
         },
         |fault| member_fault(fault, obj, name, "read"),
     );
-    settle(outcome, segment, name.name(), caller)
+    settle_lazy(outcome, segment, || name.name(), caller)
 }
 
 /// Write the member `name` of `obj`.
@@ -765,6 +834,7 @@ pub fn set(obj: Value, name: Symbol, value: Value, caller: LangId) -> Result<(),
 }
 
 /// [`set`] through a call site the caller keeps.
+#[inline]
 pub fn set_at(
     obj: Value,
     name: Symbol,
@@ -775,6 +845,7 @@ pub fn set_at(
     set_at_opt(obj, name, Some(site), value, caller)
 }
 
+#[inline]
 fn set_at_opt(
     obj: Value,
     name: Symbol,
@@ -793,6 +864,11 @@ fn set_at_opt(
         .map(|_| ());
     };
     let segment = unsafe { lang_of(target) };
+    if let Some(site) = site
+        && let Some(reply) = direct(site, target as usize, &[value])
+    {
+        return settle_lazy(reply, segment, || name.name(), caller).map(|_| ());
+    }
     let outcome = protected(
         || {
             match site {
@@ -803,7 +879,7 @@ fn set_at_opt(
         },
         |fault| member_fault(fault, obj, name, "write"),
     );
-    settle(outcome, segment, name.name(), caller).map(|_| ())
+    settle_lazy(outcome, segment, || name.name(), caller).map(|_| ())
 }
 
 fn member_fault(fault: Fault, obj: Value, name: Symbol, verb: &str) -> (ErrorKind, String) {
@@ -1411,6 +1487,7 @@ mod tests {
         unsafe extern "C-unwind" fn always_seven(
             _func: *const c_void,
             _sig: *const hl_type,
+            _site: *mut CallSite,
             _args: *const Value,
             _nargs: usize,
             out: *mut Value,

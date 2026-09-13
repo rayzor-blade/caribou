@@ -125,6 +125,13 @@ Arguments cross into a buffer on the stack, with a slot for the receiver
 before them. They go on the heap only past what a compiled body takes in
 registers.
 
+A message with a call site leaves a direct send in it once it has found
+a closure or a constructor (see [call sites](bridge.md#call-sites)): the
+closure and the class, under the VM's record. The direct send checks
+that the object is this thread's VM's and that the receiver is that
+class or an instance of exactly it, then dispatches as above; otherwise
+it answers `Missing` and the plain path decides.
+
 ### The VM an entry runs on
 
 The Wren entries run on a VM, and `install` cannot know which. Whoever

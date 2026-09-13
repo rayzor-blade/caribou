@@ -589,6 +589,66 @@ unsafe fn code_of(fun: usize) -> Option<*const c_void> {
     (entry >= STUB_SENTINEL_LIMIT).then_some(entry as *const c_void)
 }
 
+/// A signature's kinds, read once: what each argument is placed as and
+/// what the result is read as.
+struct Kinds {
+    n: usize,
+    arg: [hl_type_kind; MAX_ARGS],
+    /// `ash_native_call`'s code per argument: 0 integer, 1 `f32`, 2 `f64`.
+    code: [u8; MAX_ARGS],
+    ret: hl_type_kind,
+    ret_code: u8,
+}
+
+/// The kinds of `fun`, `None` when it takes more than a direct call
+/// places.
+unsafe fn kinds_of(fun: *const hl_type_fun) -> Option<Kinds> {
+    let n = unsafe { (*fun).nargs }.max(0) as usize;
+    if n > MAX_ARGS {
+        return None;
+    }
+    let mut kinds = Kinds {
+        n,
+        arg: [hl::HVOID; MAX_ARGS],
+        code: [0; MAX_ARGS],
+        ret: unsafe { (*(*fun).ret).kind },
+        ret_code: 0,
+    };
+    for a in 0..n {
+        let kind = unsafe { (**(*fun).args.add(a)).kind };
+        kinds.arg[a] = kind;
+        kinds.code[a] = match kind {
+            hl::HF64 => 2,
+            hl::HF32 => 1,
+            _ => 0,
+        };
+    }
+    kinds.ret_code = match kinds.ret {
+        hl::HF64 => 2,
+        hl::HF32 => 1,
+        _ => 0,
+    };
+    Some(kinds)
+}
+
+/// The kinds of `sig`, kept once per signature for the direct sends that
+/// name it.
+fn kinds_for(sig: *const hl_type) -> Option<&'static Kinds> {
+    static KINDS: RwLock<Vec<(usize, &'static Kinds)>> = RwLock::new(Vec::new());
+    if let Some((_, k)) = KINDS
+        .read()
+        .unwrap()
+        .iter()
+        .find(|(s, _)| *s == sig as usize)
+    {
+        return Some(k);
+    }
+    let fun = unsafe { fun_of(sig) }?;
+    let kinds: &'static Kinds = Box::leak(Box::new(unsafe { kinds_of(fun) }?));
+    KINDS.write().unwrap().push((sig as usize, kinds));
+    Some(kinds)
+}
+
 /// Call compiled code directly by its signature: each argument placed as
 /// its kind wants, integers, pointers, `f32` or `f64`, and the result
 /// read back the same way, with no box on either side. `None` when the
@@ -601,47 +661,41 @@ unsafe fn direct_call(
     args: &[Value],
     out: *mut Value,
 ) -> Option<Result<(), *mut vdynamic>> {
+    let kinds = unsafe { kinds_of(fun) }?;
+    unsafe { call_by_kinds(func, &kinds, bound, args, out) }
+}
+
+/// `direct_call` with the signature's kinds already read.
+unsafe fn call_by_kinds(
+    func: *const c_void,
+    sig: &Kinds,
+    bound: Option<*mut c_void>,
+    args: &[Value],
+    out: *mut Value,
+) -> Option<Result<(), *mut vdynamic>> {
     // A bound value goes first, as a pointer.
     let lead = usize::from(bound.is_some());
     let n = args.len() + lead;
-    if n > MAX_ARGS {
+    if n > MAX_ARGS || args.len() != sig.n {
         return None;
     }
-    // Only the first `n` of each are read; what is not an argument's own
-    // register file is left as it is.
-    let mut ints = [MaybeUninit::<i64>::uninit(); MAX_ARGS];
-    let mut f32s = [MaybeUninit::<f32>::uninit(); MAX_ARGS];
-    let mut f64s = [MaybeUninit::<f64>::uninit(); MAX_ARGS];
-    let mut kinds = [MaybeUninit::<u8>::uninit(); MAX_ARGS];
-    for i in 0..n {
-        ints[i].write(0);
-        f32s[i].write(0.0);
-        f64s[i].write(0.0);
-        kinds[i].write(0);
-    }
-    let (ints, f32s, f64s, kinds) = unsafe {
-        (
-            ints[..n].assume_init_mut(),
-            f32s[..n].assume_init_mut(),
-            f64s[..n].assume_init_mut(),
-            kinds[..n].assume_init_mut(),
-        )
-    };
+    let mut ints = [0i64; MAX_ARGS];
+    let mut f32s = [0f32; MAX_ARGS];
+    let mut f64s = [0f64; MAX_ARGS];
+    let mut kinds = [0u8; MAX_ARGS];
     if let Some(value) = bound {
         ints[0] = value as i64;
     }
     for (a, &arg) in args.iter().enumerate() {
         let i = a + lead;
-        let t = unsafe { *(*fun).args.add(a) };
-        let kind = unsafe { (*t).kind };
+        let kind = sig.arg[a];
+        kinds[i] = sig.code[a];
         match kind {
             hl::HF64 => {
                 f64s[i] = arg.as_number().or_else(|| arg.as_int().map(f64::from))?;
-                kinds[i] = 2;
             }
             hl::HF32 => {
                 f32s[i] = arg.as_number().or_else(|| arg.as_int().map(f64::from))? as f32;
-                kinds[i] = 1;
             }
             hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HBOOL => {
                 let v = arg
@@ -685,17 +739,18 @@ unsafe fn direct_call(
             _ => return None,
         }
     }
-    let ret_t = unsafe { (*fun).ret };
-    let ret_kind = unsafe { (*ret_t).kind };
-    let ret_code = match ret_kind {
-        hl::HF64 => 2,
-        hl::HF32 => 1,
-        _ => 0,
-    };
+    let ret_kind = sig.ret;
     let mut raw: Option<i64> = None;
     let call = trapped(|| {
         raw = unsafe {
-            ash_native_call::dispatch(func as *mut c_void, ints, f32s, f64s, kinds, ret_code)
+            ash_native_call::dispatch(
+                func as *mut c_void,
+                &ints[..n],
+                &f32s[..n],
+                &f64s[..n],
+                &kinds[..n],
+                sig.ret_code,
+            )
         };
     });
     match call {
@@ -719,6 +774,33 @@ unsafe fn direct_call(
     }
 }
 
+/// The direct send for a typed call site: the kinds it was filled with,
+/// then `call_by_kinds`. A stub, or a value the kinds cannot take, is
+/// left to the plain path.
+unsafe extern "C-unwind" fn direct_typed(
+    site: *const CallSite,
+    func: usize,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    if func < STUB_SENTINEL_LIMIT {
+        return REPLY_MISSING;
+    }
+    let (_, kinds, _) = unsafe { &*site }.words();
+    let kinds = unsafe { &*(kinds as *const Kinds) };
+    let args = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, n) }
+    };
+    match unsafe { call_by_kinds(func as *const c_void, kinds, None, args, out) } {
+        Some(Ok(())) => REPLY_OK,
+        Some(Err(exception)) => unsafe { raise_exception(exception) },
+        None => REPLY_MISSING,
+    }
+}
+
 /// The typed dispatcher for Haxe: `func` under `sig`. Compiled code is
 /// called directly by its signature; one of the interpreter's stubs takes
 /// `hlp_dyn_call` and the closure runner ash registered, as every dynamic
@@ -726,6 +808,7 @@ unsafe fn direct_call(
 pub(crate) unsafe extern "C-unwind" fn dispatch(
     func: *const c_void,
     sig: *const hl_type,
+    site: *mut CallSite,
     args: *const Value,
     nargs: usize,
     out: *mut Value,
@@ -736,11 +819,22 @@ pub(crate) unsafe extern "C-unwind" fn dispatch(
         unsafe { std::slice::from_raw_parts(args, nargs) }
     };
     if func as usize >= STUB_SENTINEL_LIMIT
-        && let Some(fun) = (unsafe { fun_of(sig) })
-        && unsafe { (*fun).nargs }.max(0) as usize == nargs
+        && let Some(kinds) = kinds_for(sig)
+        && kinds.n == nargs
     {
-        match unsafe { direct_call(func, fun, None, args, out) } {
-            Some(Ok(())) => return REPLY_OK,
+        match unsafe { call_by_kinds(func, kinds, None, args, out) } {
+            Some(Ok(())) => {
+                // The next call from this site goes straight to the code.
+                if let Some(site) = unsafe { site.as_ref() } {
+                    site.set_direct(
+                        direct_typed,
+                        sig as usize,
+                        kinds as *const Kinds as usize,
+                        0,
+                    );
+                }
+                return REPLY_OK;
+            }
             Some(Err(exception)) => return unsafe { raise_exception(exception) },
             None => {}
         }
@@ -833,6 +927,7 @@ unsafe extern "C-unwind" fn ctor_call(
         dispatch(
             *ctor.cell,
             ctor.sig,
+            ptr::null_mut(),
             with_this.as_ptr(),
             with_this.len(),
             &mut ignored,
@@ -1321,12 +1416,21 @@ fn invoke_at_opt(
                 slot.write(arg);
             }
             let with_this = with_this.as_ptr().cast::<Value>();
-            return unsafe { dispatch(func, sig, with_this, n + 1, out) };
+            return unsafe { dispatch(func, sig, ptr::null_mut(), with_this, n + 1, out) };
         }
         let mut with_this = Vec::with_capacity(n + 1);
         with_this.push(this);
         with_this.extend_from_slice(args);
-        return unsafe { dispatch(func, sig, with_this.as_ptr(), with_this.len(), out) };
+        return unsafe {
+            dispatch(
+                func,
+                sig,
+                ptr::null_mut(),
+                with_this.as_ptr(),
+                with_this.len(),
+                out,
+            )
+        };
     }
     let hfield = field_hash(name);
     if !unsafe { hlp_obj_has_field(d.cast(), hfield) } {

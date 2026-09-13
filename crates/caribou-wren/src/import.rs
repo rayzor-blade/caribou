@@ -30,10 +30,12 @@
 //! on: a `VMConfig` callback and a `NativeContext` carry no VM handle the
 //! adapter could use to install a module.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::MaybeUninit;
+use std::ptr;
 use std::rc::Rc;
 
 use caribou::bridge;
@@ -112,6 +114,30 @@ impl Target {
     }
 }
 
+/// The class last asked for a binding and the binding, one count held.
+#[derive(Default)]
+struct LastBinding(Cell<Option<(usize, ptr::NonNull<ClassBinding>)>>);
+
+impl LastBinding {
+    fn get(&self) -> (usize, *const ClassBinding) {
+        match self.0.get() {
+            Some((class, b)) => (class, b.as_ptr()),
+            None => (0, ptr::null()),
+        }
+    }
+
+    fn set(&self, at: (usize, *const ClassBinding)) {
+        self.0
+            .set(ptr::NonNull::new(at.1 as *mut ClassBinding).map(|b| (at.0, b)));
+    }
+
+    fn replace(&self, at: (usize, *const ClassBinding)) -> (usize, *const ClassBinding) {
+        let old = self.get();
+        self.set(at);
+        old
+    }
+}
+
 /// One installed class: per slot, the member it binds.
 struct ClassBinding {
     targets: Vec<Target>,
@@ -124,6 +150,8 @@ pub(crate) struct Imports {
     classes: AddressMap<Rc<ClassBinding>>,
     /// `(lang, type name)` to the class that stands for it.
     by_type: HashMap<(LangId, String), *mut ObjClass>,
+    /// The class last asked for and its binding, one count held.
+    last: LastBinding,
     /// Every live instance and the handle in its field, for the sweep and
     /// for `heap_drop`.
     live: AddressMap<Handle>,
@@ -137,13 +165,33 @@ impl Imports {
         self.classes.contains_key(&(class as usize))
     }
 
-    /// The binding of `class` or of its nearest bound superclass.
-    fn binding_of(&self, mut class: *mut ObjClass) -> Option<Rc<ClassBinding>> {
-        while !class.is_null() {
-            if let Some(b) = self.classes.get(&(class as usize)) {
+    /// Forget the cached binding, giving up its count.
+    fn forget_last(&self) {
+        let (_, last) = self.last.replace((0, ptr::null()));
+        if !last.is_null() {
+            drop(unsafe { Rc::from_raw(last) });
+        }
+    }
+
+    /// The binding of `class` or of its nearest bound superclass. The last
+    /// answer is kept, since a call site mostly sees one class; a binding
+    /// lives as long as its entry in `classes`, which only `release_all`
+    /// clears.
+    fn binding_of(&self, class: *mut ObjClass) -> Option<Rc<ClassBinding>> {
+        let (last_class, last) = self.last.get();
+        if last_class == class as usize && !last.is_null() {
+            // A count for the caller; the cache keeps its own.
+            unsafe { Rc::increment_strong_count(last) };
+            return Some(unsafe { Rc::from_raw(last) });
+        }
+        let mut at = class;
+        while !at.is_null() {
+            if let Some(b) = self.classes.get(&(at as usize)) {
+                self.forget_last();
+                self.last.set((class as usize, Rc::into_raw(b.clone())));
                 return Some(b.clone());
             }
-            class = unsafe { (*class).superclass };
+            at = unsafe { (*at).superclass };
         }
         None
     }
@@ -169,6 +217,7 @@ pub(crate) fn release_all(rec: &WrenHeap, gc: &mut heap::ImmixAllocator) {
     for (_, handle) in imports.live.drain() {
         gc.handle_release(handle);
     }
+    imports.forget_last();
     imports.classes.clear();
     imports.by_type.clear();
 }
@@ -773,7 +822,13 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             return Ok(instance);
         }
         Kind::Static => {
-            let r = bridge::call_named(target.callable, &with_this[1..], wren, &target.name);
+            let r = bridge::call_at(
+                target.callable,
+                &target.site,
+                &with_this[1..],
+                wren,
+                &target.name,
+            );
             release(roots);
             r
         }
@@ -818,7 +873,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             let r = match target.kind {
                 Kind::Method => {
                     with_this[0] = this;
-                    bridge::call_named(target.callable, with_this, wren, &target.name)
+                    bridge::call_at(target.callable, &target.site, with_this, wren, &target.name)
                 }
                 Kind::Getter(name) => bridge::get_at(this, name, &target.site, wren),
                 Kind::Setter(name) => bridge::set_at(this, name, &target.site, with_this[1], wren)

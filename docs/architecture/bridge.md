@@ -124,9 +124,9 @@ from at each call. That is how Ash publishes a function, because its
 
 The bridge does not marshal such a call itself. Each language registers a
 `TypedDispatch` with `set_typed_dispatch`: a C-ABI function that takes the
-function, the signature, the arguments as `Value`s and an out slot, and
-answers a reply code. The dispatcher is read from a table of atomics by
-language id.
+function, the signature, the caller's call site when it has one, the
+arguments as `Value`s and an out slot, and answers a reply code. The
+dispatcher is read from a table of atomics by language id.
 
 Ash's dispatcher calls compiled code directly, under its own id. When the
 pointer is real code rather than one of the interpreter's stub sentinels,
@@ -199,6 +199,19 @@ tier installs a promoted body.
 
 A site is shared. It may be reached from several threads, and a stale
 read costs one lookup.
+
+A callee that can do the whole send for a site in one function leaves it
+in the site as a *direct send*, with two words of its own beside it. The
+bridge calls that function before anything else, with the receiver's
+address or the typed callable's function as the target, and only when it
+answers `Missing` or `Unsupported` forgets it and takes the plain path,
+which fills the site again. Wren leaves the closure it found and the
+class it found it on: the next call checks that the receiver is that
+class or an instance of exactly it, and dispatches. Ash's typed
+dispatcher leaves the signature's kinds, read once and kept per
+signature: the next call places the arguments by them and calls the
+code, unless the cell holds a stub again. A ref forwarding to a Wren
+object keeps no direct send, since it would be called on the ref.
 
 ## Diagnostics
 
