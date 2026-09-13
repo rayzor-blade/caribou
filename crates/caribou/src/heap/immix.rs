@@ -9,7 +9,7 @@
     clippy::not_unsafe_ptr_arg_deref
 )]
 use super::desc::TypeDesc;
-use caribou_abi::hl::{self, hl_type, hl_type_obj, HL_WSIZE};
+use caribou_abi::hl::{self, HL_WSIZE, hl_type, hl_type_obj};
 use std::cell::{Cell, RefCell};
 use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
@@ -23,8 +23,8 @@ use std::{
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Memory::{
-    DiscardVirtualMemory, VirtualAlloc, VirtualFree, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE,
-    PAGE_READWRITE,
+    DiscardVirtualMemory, MEM_COMMIT, MEM_RELEASE, MEM_RESERVE, PAGE_READWRITE, VirtualAlloc,
+    VirtualFree,
 };
 #[cfg(windows)]
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -125,9 +125,7 @@ pub fn handle_release_deferred(h: Handle) {
     if h.is_null() {
         return;
     }
-    let mut queue = DEFERRED_RELEASES
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut queue = DEFERRED_RELEASES.lock().unwrap_or_else(|e| e.into_inner());
     queue.push(h);
     DEFERRED_RELEASE_COUNT.store(queue.len(), Ordering::Relaxed);
 }
@@ -135,9 +133,7 @@ pub fn handle_release_deferred(h: Handle) {
 /// Release the handles a collection queued. The GC lock must NOT be held.
 fn release_deferred_handles() {
     let due = {
-        let mut queue = DEFERRED_RELEASES
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut queue = DEFERRED_RELEASES.lock().unwrap_or_else(|e| e.into_inner());
         DEFERRED_RELEASE_COUNT.store(0, Ordering::Relaxed);
         mem::take(&mut *queue)
     };
@@ -152,15 +148,24 @@ fn release_deferred_handles() {
 
 /// Release one level of the GC lock, and drain the deferred queues if that
 /// freed it. Every release goes through here so the drains cannot be missed.
+/// A finalizer may give up a handle, so the drains repeat until both queues
+/// are empty.
 fn gc_lock_release() {
     if !GC_LOCK.release() {
         return;
     }
-    if DEFERRED_RELEASE_COUNT.load(Ordering::Relaxed) != 0 {
-        release_deferred_handles();
-    }
-    if PENDING_FINALIZER_COUNT.load(Ordering::Relaxed) != 0 {
-        run_pending_finalizers();
+    loop {
+        let releases = DEFERRED_RELEASE_COUNT.load(Ordering::Relaxed) != 0;
+        if releases {
+            release_deferred_handles();
+        }
+        let finalizers = PENDING_FINALIZER_COUNT.load(Ordering::Relaxed) != 0;
+        if finalizers {
+            run_pending_finalizers();
+        }
+        if !releases && !finalizers {
+            break;
+        }
     }
 }
 
@@ -761,7 +766,10 @@ pub const SITE_LOCK_CONDVAR: u64 = 5;
 pub const SITE_TLAB_REFILL: u64 = 6;
 /// Written by the scheduler's worker loop, compiled only where the pool has
 /// OS threads. The name stays in `SITE_NAMES` so numbering matches.
-#[cfg_attr(not(any(not(target_family = "wasm"), target_feature = "atomics")), allow(dead_code))]
+#[cfg_attr(
+    not(any(not(target_family = "wasm"), target_feature = "atomics")),
+    allow(dead_code)
+)]
 pub const SITE_SCHEDULER_IDLE: u64 = 7;
 pub const SITE_RUNNING: u64 = 0;
 
@@ -800,8 +808,7 @@ fn read_polls(at: usize) -> u64 {
 /// zero when none is installed. Fibers running compiled code reach a
 /// safepoint only when their poll epoch moves, and the epoch is the
 /// scheduler's.
-static POLL_REQUEST_HOOK: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
+static POLL_REQUEST_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Install the scheduler's poll request; the collector calls `f` on every
 /// stop request.
@@ -898,7 +905,11 @@ fn stop_mutator_world() -> StoppedWorld {
                             "{} {:#x}{}{}{}",
                             m.role,
                             m.thread,
-                            if m.thread == collector { " collector" } else { "" },
+                            if m.thread == collector {
+                                " collector"
+                            } else {
+                                ""
+                            },
                             if m.parked { " parked" } else { "" },
                             if m.blocking_depth != 0 {
                                 format!(" blocking={}", m.blocking_depth)
@@ -3119,12 +3130,7 @@ impl ImmixAllocator {
 
             // Check the value pointer for certain types
             match unsafe { (*vd.t).kind } {
-                hl::HOBJ
-                | hl::HFUN
-                | hl::HARRAY
-                | hl::HVIRTUAL
-                | hl::HDYNOBJ
-                | hl::HBYTES
+                hl::HOBJ | hl::HFUN | hl::HARRAY | hl::HVIRTUAL | hl::HDYNOBJ | hl::HBYTES
                     if !unsafe { self.is_gc_ptr(vd.v.ptr) } =>
                 {
                     return false;
@@ -4377,7 +4383,12 @@ impl ImmixAllocator {
                  ({:.1}MB, {pct:.1}% full)  by-marked-lines: 1={} 2-4={} 5-16={} 17-64={} 65-192={} 193+={}",
                 (occ_blocks * BLOCK_SIZE) as f64 / 1048576.0,
                 (occ_marked * LINE_SIZE) as f64 / 1048576.0,
-                occ_hist[0], occ_hist[1], occ_hist[2], occ_hist[3], occ_hist[4], occ_hist[5],
+                occ_hist[0],
+                occ_hist[1],
+                occ_hist[2],
+                occ_hist[3],
+                occ_hist[4],
+                occ_hist[5],
             );
         }
 
@@ -4697,10 +4708,7 @@ pub unsafe fn add_scan_root(ptr: *const c_void, size: usize) {
 ///
 /// # Safety
 /// `ranges` and `len` must stay valid while the mutator is registered.
-pub unsafe fn set_scan_roots_live(
-    ranges: *const (usize, usize),
-    len: *const usize,
-) {
+pub unsafe fn set_scan_roots_live(ranges: *const (usize, usize), len: *const usize) {
     // Same signal the copying publish gives, so the deferral branch runs and
     // collections stay batched.
     let mut gc = gc_locked();
@@ -5011,17 +5019,26 @@ pub fn handle_new(ptr: *mut u8) -> Handle {
 /// `Handle::NULL`. The caller must hold the result where a collection can
 /// see it, or keep the handle.
 pub fn handle_get(h: Handle) -> *mut u8 {
+    if h.is_null() {
+        return ptr::null_mut();
+    }
     gc_locked_init().handle_get(h)
 }
 
 /// One more reference to `h`'s slot.
 pub fn handle_retain(h: Handle) {
+    if h.is_null() {
+        return;
+    }
     gc_locked_init().handle_retain(h);
 }
 
 /// One reference fewer; at zero the slot is free and the object no longer
 /// rooted by it.
 pub fn handle_release(h: Handle) {
+    if h.is_null() {
+        return;
+    }
     gc_locked_init().handle_release(h);
 }
 
@@ -5369,17 +5386,15 @@ mod tests {
     }
 
     use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn collector_rendezvous_with_registered_os_mutator() {
         init();
         let main_stack_anchor = 0usize;
         unsafe {
-            set_stack_top(
-                (&main_stack_anchor as *const usize as usize) + mem::size_of::<usize>(),
-            )
+            set_stack_top((&main_stack_anchor as *const usize as usize) + mem::size_of::<usize>())
         };
 
         let ready = Arc::new(AtomicBool::new(false));

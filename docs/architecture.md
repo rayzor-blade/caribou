@@ -391,10 +391,14 @@ the bridge's protected boundary instead of aborting inside the entry.
 
 ### Symbols
 
-`caribou::symbol` is one interner per process behind a lock. `intern`
-gives a `Symbol` for a name, `name` gives the name back, and the strings
-are leaked because a symbol lives as long as the process. Each symbol also
-carries `hash`, HashLink's field hash of its name: the same loop Ash's
+`caribou::symbol` is one interner per process. `intern` gives a `Symbol`
+for a name, `name` gives the name back, and the strings are leaked because
+a symbol lives as long as the process. Interning takes a lock; reading
+does not. The entries live in chunks that are allocated once and never
+move, indexed by id, and an id is handed out only after its entry is
+written and the table's length published past it, so `name` and `hash`
+are two atomic loads and an index, which is what a protocol entry on a
+hot call path can afford. Each symbol also carries `hash`, HashLink's field hash of its name: the same loop Ash's
 `hlp_hash_gen` runs, over UTF-16 code units, `h = 223 * h + unit` in
 wrapping 32-bit arithmetic and then a truncating remainder by
 `0x1FFFFF7B`. So a name hashes here to what `hashed_name` holds for it in
@@ -444,12 +448,20 @@ a small threshold sweeps away.
 ### Typed dispatch
 
 A typed callable is a C function pointer with an `hl_type_fun`-shaped
-signature and the language it belongs to. The bridge does not marshal such a
-call itself: each language registers a `TypedDispatch` with
-`set_typed_dispatch`, a C-ABI function that takes the function, the
-signature, the arguments as `Value`s and an out slot, and answers a reply
-code. Ash registers one that goes through its own `hlp_dyn_call`, under its
-own id. The core registers a default for `LANG_CORE`
+signature and the language it belongs to: `Callable::Typed` holds the
+pointer, `Callable::Cell` holds the address of a cell the pointer is read
+from at each call, which is how Ash publishes a function, since its
+`functions_ptrs` entry is where the tier installs a promoted body. The
+bridge does not marshal such a call itself: each language registers a
+`TypedDispatch` with `set_typed_dispatch`, a C-ABI function that takes the
+function, the signature, the arguments as `Value`s and an out slot, and
+answers a reply code; the dispatcher is read from a table of atomics by
+language id. Ash's dispatcher calls compiled code directly, under its own
+id: when the pointer is code and not one of the interpreter's stub
+sentinels and the arity matches, the arguments are placed by the
+signature's kinds through `ash_native_call`, with no boxing, under a
+HashLink trap; a stub, a mismatch, or a kind the direct path does not take
+goes through `hlp_dyn_call` as a dynamic call in Ash does. The core registers a default for `LANG_CORE`
 that covers what the core's own callables and the tests need: up to four
 arguments of kinds `HI32`, `HBOOL`, `HF64` and `HDYN`, returning `HVOID`,
 `HI32`, `HBOOL`, `HF64` or `HDYN`, by transmuting the function to the C type
@@ -469,6 +481,20 @@ lands in the Wren protocol like any other message. `call_named` does the
 same with the callee's name for the trace; `invoke`, `get` and `set` send
 `invoke`, `get_member` and `set_member` with the same handling. Every
 crossing guarantees three things.
+
+A caller that makes the same send from one place keeps a `CallSite` for
+it and uses `invoke_at`, `get_at`, `set_at` or `call_at`: three words the
+callee's protocol fills with what it derived for the site, under a key
+of its choosing, and reads back when the key matches, so a site that
+sees the same shape again does no lookup. The protocol entries
+`invoke_at`, `get_member_at` and `set_member_at` are optional; the bridge
+falls back to the plain ones. Wren keys a site by its VM and keeps the
+interned signature symbols, after which finding the method is an index
+into the class's method table, as wren_lift's own send does. Haxe keys a
+site by the object's `hl_type` and keeps a field's byte offset and type,
+or a method's slot in the type's method table, read per call because the
+slot is where the tier installs a promoted body. A site is shared: it may
+be reached from several threads, and a stale read costs one lookup.
 
 It is protected: the dispatch runs under `catch_unwind`, and a panic becomes
 an `Internal` error carrying the panic's message. An entry that answered
@@ -638,17 +664,31 @@ HashLink's shape is: an instance type (`game.Player`) carries the fields
 and the instance methods as protos; its companion (`game.$Player`, an
 `hl.Class`) carries the statics as function-typed fields, bound by its
 binding list to their functions, and binds the inherited `__constructor__`
-field to the constructor. Every published callable is `Callable::Typed`
-with the interpreter's own function pointer and function type for the
-bytecode function, read from the module context the interpreter built; the
-pointer is a stub sentinel that `hlp_dyn_call` routes to the closure
-runner, or the compiled entry once the tier has promoted the function. The
-interpreter keeps that context private, so it is read off the type of a
-`String` the program allocates through its own `String.__alloc__`, and that
-type is kept for the strings that cross. A constructor is published as a
-`Callable::Dynamic`: a small core object whose `call` allocates an instance
-of the type with `hlp_alloc_obj`, wraps it and runs `__constructor__` on it
-through the dispatcher, so the registry stays free of anything Haxe. The
+field to the constructor. Every published callable is `Callable::Cell`
+with the address of the function's entry in the module context's
+`functions_ptrs` and its function type, read from the context the
+interpreter built; the entry holds a stub sentinel that `hlp_dyn_call`
+routes to the closure runner, or the compiled entry once the tier has
+promoted the function, and reading it per call is how a caller follows
+the promotion. The interpreter keeps that context private, so it is read
+off the type of a `String` the program allocates through its own
+`String.__alloc__`, and that type is kept for the strings that cross. A
+constructor is published as a `Callable::Dynamic`: a small core object
+whose `call` allocates an instance of the type with `hlp_alloc_obj`, wraps
+it and runs `__constructor__` from its cell on it through the dispatcher,
+so the registry stays free of anything Haxe.
+
+The Haxe protocol answers a field and a method the way compiled Haxe
+reaches them. `get_member` and `set_member` find a declared field in the
+runtime's own lookup tables, `hl_runtime_obj` up the class chain, whose
+entry holds the field's byte offset and type, and read or write it in
+place by kind, boxing nothing; a name that is not a declared field goes
+through `hlp_dyn_getp` and `hlp_dyn_setp` as a dynamic access does.
+`invoke` finds the method's slot in the type's own method table, so an
+override wins and a promoted body is what the slot holds, and calls it
+through the typed dispatcher with the object first. A closure whose
+function is a stub is resolved to its code through the module context
+before the call, when it has one. The
 companion's own unbound fields are the class's static fields, and the
 class's `class_object` is a core object naming the instance type that
 finds the `hl.Class` instance in the type's global at each use, since
@@ -690,6 +730,24 @@ Wren code would make, dispatched by wren_lift itself. The class stays
 valid while its module does, and the VM must be entered on the calling
 thread, as for any message to a Wren object.
 
+The Wren protocol answers a message as wren_lift's compiled code answers a
+send. The signature's symbols, `hit(_)` and its `static:` twin, are
+interned once per VM and kept on the heap record by core symbol and
+shape, and in the caller's call site when it has one; the method is then
+an index into the receiver's class's method table, else the class's own
+when the receiver is a class. What it finds goes to
+`dispatch_method_pub`, the dispatch wren_lift's own `wren_call_N` runtime
+entries use once they have found a method: a compiled body is called
+with its context set, a trivial getter or setter reads or writes the
+field, a native or a constructor takes its own path, and the tier is
+ticked for a body that is not compiled yet, so a method only ever called
+from another language still compiles. A constructor is ticked here for
+the same reason; a `Fn` called through `call` goes through
+`call_closure_jit_or_sync` with no receiver and is ticked the same way.
+Arguments cross into a buffer on the stack with a slot for the receiver
+before them, on the heap only past what a compiled body takes in
+registers.
+
 ### Wren imports
 
 `caribou_wren::import::configure` installs `resolve_module_fn` and
@@ -712,10 +770,13 @@ interface answers is left to the VM, whose import error names it.
 A `NativeFn` is a bare function receiving the receiver and the arguments,
 so the natives are trampolines: a fixed number of distinct functions, the
 `i`th calling the `i`th member bound on the receiver's class. A call costs
-one lookup by class pointer in the table the VM's heap record keeps, then
-the bridge call: `call_named` with the typed callable for a method or a
-static, `get` and `set` by interned symbol for a field, the constructor's
-callable for `new`. Arguments cross as bridge values, a Wren string as a
+one lookup by class pointer in the table the VM's heap record keeps, a
+map hashed by address, then the bridge call: `call_named` with the typed
+callable for a method or a static, `get_at` and `set_at` by interned
+symbol for a field, through the call site the member's target keeps, the
+constructor's callable for `new`. The arguments cross into a buffer on
+the stack sized for Wren's widest signature, with a slot before them for
+the receiver. Arguments cross as bridge values, a Wren string as a
 core `Str` rooted for the call; results come back through `to_wren`, so an
 object of another language becomes an instance of the class installed for
 its type, installing that class's module on first need. A Haxe throw or a
@@ -760,9 +821,11 @@ library named for what it reaches: `game:hud.Hud.add(_)`, the namespace,
 module, class and the member's Wren signature, `static:` before a static's
 and `construct:` before the constructor's. The native is a static taking
 the receiver, since genhl emits nothing for `@:hlNative` on an instance
-method, and an inline method or property wraps it with the declared types;
-the boundary itself is `Dynamic`, so one entry per argument count serves
-every member. The constructor calls its native with the fresh Haxe object,
+method, and an inline method or property wraps it with the declared types.
+The arguments are `Dynamic`, so one entry per argument count serves every
+member; the result is `Float` or `Bool` when the member declares one and
+`Dynamic` otherwise, so a number comes back in a register and only
+anything else in a box the wrapper casts. The constructor calls its native with the fresh Haxe object,
 and the native makes the Wren object and binds the two. A named
 constructor is a static factory; a static getter is a static property. A
 subclass declares what it inherits from a superclass of the same module
@@ -772,13 +835,17 @@ its parent's and a Wren subclass's constructor is its own.
 When the program loads, `caribou_ash::import::bind` reads its natives:
 each `caribou` one is parsed into a slot (namespace, module, class,
 member, kind) and registered with ash's resolver as one of the entries by
-argument count with the slot's address as the native's context word, which
-ash's interpreter, Cranelift tier and LLVM tier pass ahead of the declared
-arguments (`native_lib::HostNative`). Binding is by name alone: nothing
-has to be published before the program starts, ash looks for no library,
-and the call finds the member when it happens, through the registry for a
-static or a constructor and through the object for the rest, so a class
-published again answers the next call. The arguments cross as bridge
+argument count and result register with the slot's address as the
+native's context word, which ash's interpreter, Cranelift tier and LLVM
+tier pass ahead of the declared arguments (`native_lib::HostNative`).
+Binding is by name alone: nothing has to be published before the program
+starts, ash looks for no library, and the call finds the member when it
+happens, through the registry for a static or a constructor and through
+the object for the rest, so a class published again answers the next
+call. A slot keeps what a static or a constructor resolved to under the
+registry generation it resolved in, replaced whole when something
+publishes, and a `CallSite` the callee's protocol fills, so a call after
+the first does no lookup on either side. The arguments cross as bridge
 values, the result comes back through the Haxe conversion, and a bridge
 error is thrown into Haxe as the exception it carries, else its message as
 a `String`. `attach_types` records, once the interpreter has built its
@@ -886,179 +953,6 @@ So `wrap_foreign` on an object that already has a ref returns that ref,
 and a second wrap of one object is the same ref until Haxe lets it go.
 Once it does, the object dies with the next Wren cycle that finds no
 other reference to it.
-
-## Worlds and tasks
-
-A world is one OS thread with one scheduler and one reactor. Every language
-runs its concurrency on the world's scheduler: a Haxe `sys.thread.Thread`,
-a Wren `Fiber`, a Zyntax `fiber def` are all handles to scheduler tasks.
-Cross-language calls are synchronous calls on the current task, so a call
-chain through three languages suspends and resumes as one unit.
-
-The unit of scheduling is krio-core's `Task`, not the fiber. Two kinds
-exist:
-
-- A **stackful task** owns a krio fiber with its own machine stack. It
-  suspends from any call depth by switching stacks. Ash's threads, Wren's
-  fibers, and Zyntax's `fiber def` are stackful.
-- A **stackless task** is a compiled state machine whose `step` runs to its
-  next suspension point and returns. Zyntax's `async` and resumable effects,
-  and WrenLift's action-loop and AOT-transformed fibers, are stackless. On
-  wasm, where the host cannot switch stacks, every task is stackless or is
-  driven by the host's suspension.
-
-The scheduler does not distinguish them: it calls `step` and reads the
-`Suspension` that comes back. `spawn_fiber(stack_size, body)` makes a
-stackful task on the calling world, registering its stack with the heap and
-charging it as external pressure until the task is dropped; `spawn(task)`
-takes any `Task`; `spawn_fiber_on_pool` places a stackful task on the
-least-loaded worker world at spawn time. The default stack is 256 KB.
-
-### The scheduler loop
-
-Per world, the scheduler holds a ready queue of task ids, a timer heap
-keyed by deadline, and the tasks themselves. A turn resumes every task that
-was ready when the turn began; tasks parked on a token or a timer consume no
-switch. The main context, the thread's original stack, drives turns when it
-blocks or when the driver ticks the world; a task never drives a turn, it
-yields.
-
-Host state is a `HostState` object an adapter attaches to a task, or to the
-main context under `TaskId::NONE`, with `attach_host_state`: Ash's trap
-chain and pending exception, Zyntax's effect handler stack. Around each
-resume the scheduler swaps the main context's state out, the task's in,
-steps the task, publishes the task's suspended stack pointer to the heap,
-runs the world's switch hook, then swaps the task's state out and the main
-context's back in. The switch hook (`set_switch_hook`, one per world) runs
-only after the stack pointer is published, because a hook that publishes
-interpreter roots may honour a pending collection. A task's record stays in
-the world while it runs; only its body is taken out, so a running task can
-attach state to itself.
-
-### Parking
-
-`park(waiter, deadline)` is the one blocking primitive. A waiter is a wait
-token; `wake(token)` marks it notified and moves the task to the ready
-queue. On a task, park records the request and yields; on the main context,
-park drives scheduler turns and the reactor until notified or timed out; on
-a thread the runtime did not create, park polls the token with a short
-sleep, because such a thread has no fiber to yield and may not run tasks.
-Locks, semaphores, conditions, deques and sleeps are all built on park and
-wake. A task that parks with a deadline is also on the timer heap; whichever
-fires first wins and the other is cancelled. A stackless task cannot yield
-from inside `park`; it calls `request_park` and returns `Pending`, and reads
-`resume_cause` when next stepped. Whether a thread drives or polls is
-decided by `has_world()`: a thread that has spawned or ticked owns a world.
-
-### The reactor
-
-Not yet built. Today, when no task is ready, the main context blocks in
-`scheduler_idle` on the world's endpoint until a command arrives from
-another world or the next timer is due. The reactor will be the world's
-source of external wakeups beyond that: socket readiness, file watches,
-channels from OS threads. Blocking I/O in any language will register with
-it and park; the reactor wakes the token. The seam is marked in
-`world.rs`.
-
-### Preemption and safepoints
-
-Compiled loops poll one word, `POLL_EPOCH` (exported as the symbol
-`caribou_poll_epoch`; `poll_epoch_address` hands code generators its
-address), on every back-edge. A timer thread bumps it every two
-milliseconds while any task exists; the collector's stop request bumps it
-through the heap's poll hook, which the first world installs. A task that
-observes a changed epoch calls `poll`: a heap safepoint, then a yield on a
-task or one turn on the main context. So no task can starve the others and
-the world can always be stopped. The interpreter and every blocking
-primitive are safepoints as well. `enter_blocking` and `leave_blocking`
-mark a task as outside the heap's reach for the duration of a native call.
-
-### Multiple worlds
-
-A process may run several worlds on several OS threads over the one heap.
-Tasks are pinned to the world that created them; a krio fiber is `!Send`
-and never migrates. Ash's worker pool for compiled thread bodies is the
-first use: it chooses a world at spawn time and never moves the task
-afterwards. Worlds exchange `Wake` and `Spawn` commands through per-world
-endpoints. The pool is sized by `CARIBOU_WORKERS`, or `ASH_WORKERS`, or the
-machine; on wasm there is no pool and no timer thread, and `yield_now`
-routes through krio's host suspender. Collections stop every world at its
-safepoints. `CARIBOU_SCHED_TRACE` prints every switch and park; safe.
-
-### Adapter contract
-
-An adapter provides: a way to build a task from its own callable (a Haxe
-closure, a Wren fiber object, a Zyntax function), rooting that callable
-itself; the per-task host state the scheduler swaps; and a switch hook if it
-keeps interpreter roots to publish. It consumes: `spawn`, `spawn_fiber`,
-`park`, `wake`, `yield_now`, `sleep_until`, `poll`, `current_task`, and
-`tick(deadline)` for a driver that owns the frame loop; `has_worker_pool`,
-`is_pool_worker` and `any_live_tasks` answer the placement and blocking
-questions Ash's primitives ask before they spawn or wait. Ash's rule that a
-new thread runs to its first blocking point before `thread_create` returns
-is the adapter's to keep, with one `schedule_step` after spawning.
-
-### Boundaries of the current implementation
-
-- No reactor: idle blocks on the endpoint and the timer heap only.
-- Heap fiber-stack ids are `u32` and task ids `u64`; the id is truncated.
-- The main stack's published probe sits above the callee-saved registers
-  krio spills at a switch, as in Ash.
-
-## Object protocol and bridge
-
-Not yet built beyond the types. This section is the contract phase 3 is
-written against.
-
-### Values at the boundary
-
-Two ABIs meet at every cross-language call. Typed HashLink code passes raw
-scalars and pointers by signature; every dynamically typed runtime passes
-`caribou_abi::Value`, one NaN-boxed word. The core converts between them
-once, at the edge, and never inside a language.
-
-### The protocol
-
-Every heap object answers a closed set of messages through the `Protocol`
-vtable its `TypeDesc` points at. An adapter implements the vtable once for
-its own types; the core dispatches through it when a value crosses into a
-language that did not make it.
-
-| Message | Meaning |
-|---|---|
-| `get_member`, `set_member` | a named field or property, by interned symbol |
-| `invoke` | call a named member with arguments |
-| `call` | call the object itself, if callable |
-| `index`, `set_index`, `len`, `iterate` | sequence and map access |
-| `to_string`, `hash`, `equals` | identity and display |
-| `unwrap_native` | the native payload of a plugin object |
-| `is_error`, `error_message`, `error_kind`, `error_cause`, `error_trace` | the error protocol |
-
-A message an object does not answer returns `Unsupported`; the calling
-language maps that to its own notion of a missing member.
-
-### Callables
-
-`Callable` is what the bridge invokes: a typed function (a C pointer plus an
-`hl_type_fun`-shaped signature), a dynamic one (a `Value` that answers
-`call`), or a Wren method (a class and a Wren signature, sent as an
-`invoke` through the protocol). `bridge::call(callable, args) ->
-Result<Value, Error>` marshals dynamic values into a typed call by the
-signature, or passes them through to the others, and always returns
-through a protected boundary: an error leaving the callee's language
-becomes an `Error` value here and is re-raised natively by whoever
-receives it.
-
-Ash's typed dispatcher and its reflection trampoline stay Ash's; the Ash
-adapter registers them as the typed half of the bridge through the seam.
-
-### Errors
-
-`Error` is a heap value with a `TypeDesc` of the core's own language: a
-kind from `caribou_abi::ErrorKind`, a message, an optional cause, an
-optional native payload the originating language keeps its own error in,
-and a trace assembled one segment per boundary crossed. A value returning
-to the language that raised it is unwrapped to the original object.
 
 ## World
 

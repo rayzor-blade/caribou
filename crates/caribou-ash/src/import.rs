@@ -25,7 +25,8 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{Arc, RwLock};
 
 #[cfg(feature = "runner")]
 use anyhow::{Result, anyhow, bail};
@@ -38,7 +39,7 @@ use ash_interp::interpreter::HLInterpreter;
 use ash_std::error::hlp_throw;
 use ash_std::obj::{hlp_alloc_obj, hlp_get_obj_rt};
 use caribou::bridge;
-use caribou::protocol::{Callable, Symbol};
+use caribou::protocol::{CallSite, Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
 use caribou::symbol::intern;
 use caribou_abi::hl::{self, hl_type, vdynamic};
@@ -89,7 +90,17 @@ struct Slot {
     kind: Kind,
     /// What a static or a constructor resolved to, under the registry
     /// generation it was resolved in: good until something publishes.
-    resolved: Mutex<Option<(u64, Callable)>>,
+    /// Null until first resolved; replaced whole, and the replaced one
+    /// left for a reader that still holds it.
+    resolved: AtomicPtr<Resolved>,
+    /// What the callee's protocol derived for this slot last time.
+    site: CallSite,
+}
+
+#[derive(Debug)]
+struct Resolved {
+    generation: u64,
+    target: Callable,
 }
 
 // The callable's pointers belong to the publishing language's program,
@@ -105,14 +116,15 @@ impl Slot {
         resolve: impl FnOnce() -> Result<Callable, String>,
     ) -> Result<Callable, String> {
         let generation = registry::generation();
-        let mut cached = self.resolved.lock().unwrap();
-        if let Some((at, target)) = *cached
-            && at == generation
+        let cached = self.resolved.load(Ordering::Acquire);
+        if let Some(r) = unsafe { cached.as_ref() }
+            && r.generation == generation
         {
-            return Ok(target);
+            return Ok(r.target);
         }
         let target = resolve()?;
-        *cached = Some((generation, target));
+        let fresh = Box::into_raw(Box::new(Resolved { generation, target }));
+        self.resolved.store(fresh, Ordering::Release);
         Ok(target)
     }
 }
@@ -174,15 +186,34 @@ fn slot_for(name: &str) -> Result<Slot, String> {
         class,
         member: intern(&member),
         kind,
-        resolved: Mutex::new(None),
+        resolved: AtomicPtr::new(ptr::null_mut()),
+        site: CallSite::new(),
     })
 }
 
-/// Arguments the native declares, from the arity of its type.
+/// What a native declares: how many arguments, and how it returns. The
+/// arguments are `Dynamic`; the result is typed where the Haxe library
+/// could, so a number comes back in a register and not in a box.
 #[cfg(feature = "runner")]
-fn declared_args(bytecode: &DecodedBytecode, type_index: usize) -> Option<usize> {
+fn declared(bytecode: &DecodedBytecode, type_index: usize) -> Option<(usize, Returns)> {
     let fun = bytecode.types.get(type_index)?.fun.as_ref()?;
-    Some(fun.args.len())
+    let ret = match bytecode.types.get(fun.ret.0)?.kind {
+        hl::HF64 => Returns::Float,
+        hl::HBOOL => Returns::Bool,
+        hl::HVOID => Returns::Nothing,
+        _ => Returns::Boxed,
+    };
+    Some((fun.args.len(), ret))
+}
+
+/// The register a native's result comes back in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Returns {
+    /// A pointer: a boxed dynamic, or nothing.
+    Boxed,
+    Nothing,
+    Float,
+    Bool,
 }
 
 /// Give every `caribou` native the program declares its entry and slot:
@@ -199,7 +230,7 @@ pub fn bind(bytecode: &DecodedBytecode) -> Result<HashMap<(String, String), Host
                 table.len() - 1
             }
         };
-        let nargs = declared_args(bytecode, native.type_.0)
+        let (nargs, returns) = declared(bytecode, native.type_.0)
             .ok_or_else(|| anyhow!("`{}` has no function type", native.name))?;
         if nargs > MAX_ARGS {
             bail!(
@@ -217,10 +248,15 @@ pub fn bind(bytecode: &DecodedBytecode) -> Result<HashMap<(String, String), Host
         if s.kind == Kind::Set && nargs != 2 || s.kind == Kind::Get && nargs != 1 {
             bail!("`{}` declares {nargs} arguments", native.name);
         }
+        let entries = match returns {
+            Returns::Boxed | Returns::Nothing => &ENTRIES,
+            Returns::Float => &ENTRIES_F64,
+            Returns::Bool => &ENTRIES_BOOL,
+        };
         natives.insert(
             (LIB.to_owned(), native.name.clone()),
             HostNative {
-                addr: ENTRIES[nargs] as usize,
+                addr: entries[nargs] as usize,
                 context: Arc::as_ptr(&table[slot]) as usize,
             },
         );
@@ -382,9 +418,9 @@ fn static_member(class: &ClassIface, member: Symbol) -> Option<&registry::Method
     })
 }
 
-/// Run the call for the slot: the result as a Haxe value, or what to
-/// throw. Everything owned here is dropped before the throw.
-unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<*mut vdynamic, *mut vdynamic> {
+/// Run the call for the slot: the result, or what to throw. Everything
+/// owned here is dropped before the throw.
+unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<Value, *mut vdynamic> {
     let haxe = lang();
     let (receiver, params) = if s.kind.takes_receiver() {
         (raw[0], &raw[1..])
@@ -401,14 +437,14 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<*mut vdynamic, *mut vdy
     let result = match s.kind {
         Kind::Method => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
-            .and_then(|target| bridge::invoke(target, s.member, args, haxe)),
+            .and_then(|target| bridge::invoke_at(target, s.member, &s.site, args, haxe)),
         Kind::Get => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
-            .and_then(|target| bridge::get(target, s.member, haxe)),
+            .and_then(|target| bridge::get_at(target, s.member, &s.site, haxe)),
         Kind::Set => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| {
-                bridge::set(target, s.member, args[0], haxe).map(|()| Value::null())
+                bridge::set_at(target, s.member, &s.site, args[0], haxe).map(|()| Value::null())
             }),
         Kind::Static => s
             .target(|| {
@@ -426,7 +462,7 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<*mut vdynamic, *mut vdy
                     })
             })
             .map_err(|m| proto::error_value(&s.name, &m))
-            .and_then(|target| bridge::call_named(target, args, haxe, &s.name)),
+            .and_then(|target| bridge::call_at(target, &s.site, args, haxe, &s.name)),
         Kind::Init => s
             .target(|| {
                 let (iface, index) = published(s)?;
@@ -442,50 +478,103 @@ unsafe fn run(s: &Slot, raw: &[*mut vdynamic]) -> Result<*mut vdynamic, *mut vdy
                     })
             })
             .map_err(|m| proto::error_value(&s.name, &m))
-            .and_then(|target| bridge::call_named(target, args, haxe, &s.name))
+            .and_then(|target| bridge::call_at(target, &s.site, args, haxe, &s.name))
             .map(|obj| {
                 unsafe { bind_face(receiver, obj) };
                 Value::null()
             }),
     };
-    match result {
-        Ok(v) => unsafe { proto::value_to_dyn(v, hl::HDYN) }
-            .map_err(|m| proto::throwable(proto::error_value(&s.name, &m))),
-        Err(e) => Err(proto::throwable(e)),
-    }
+    result.map_err(proto::throwable)
 }
 
-/// `slot` is the context word ash passes first: the slot `bind` registered.
-unsafe fn enter(slot: *const Slot, raw: &[*mut vdynamic]) -> *mut vdynamic {
-    match unsafe { run(&*slot, raw) } {
-        Ok(v) => v,
-        Err(thrown) => {
-            unsafe { hlp_throw(thrown.cast()) };
-            std::process::abort()
-        }
-    }
+/// `slot` is the context word ash passes first: the slot `bind`
+/// registered. The result as the native declared it, through `convert`;
+/// a value the declaration cannot take is thrown.
+unsafe fn enter<R>(
+    slot: *const Slot,
+    raw: &[*mut vdynamic],
+    convert: impl FnOnce(Value) -> Result<R, String>,
+) -> R {
+    let s = unsafe { &*slot };
+    let thrown = match unsafe { run(s, raw) } {
+        Ok(v) => match convert(v) {
+            Ok(r) => return r,
+            Err(m) => proto::throwable(proto::error_value(&s.name, &m)),
+        },
+        Err(thrown) => thrown,
+    };
+    unsafe { hlp_throw(thrown.cast()) };
+    std::process::abort()
+}
+
+fn boxed(v: Value) -> Result<*mut vdynamic, String> {
+    unsafe { proto::value_to_dyn(v, hl::HDYN) }
+}
+
+fn float(v: Value) -> Result<f64, String> {
+    v.as_number()
+        .or_else(|| v.as_int().map(f64::from))
+        .or_else(|| v.is_null().then_some(0.0))
+        .ok_or_else(|| format!("{} is not a Float", bridge::describe(v)))
+}
+
+fn boolean(v: Value) -> Result<bool, String> {
+    v.as_bool()
+        .or_else(|| v.is_null().then_some(false))
+        .ok_or_else(|| format!("{} is not a Bool", bridge::describe(v)))
 }
 
 // ---------------------------------------------------------------------------
-// Entries: one per argument count, the slot first
+// Entries: one per argument count and result register, the slot first
 // ---------------------------------------------------------------------------
 
 macro_rules! entry {
-    ($name:ident; $($a:ident),*) => {
-        unsafe extern "C" fn $name(slot: *const Slot, $($a: *mut vdynamic),*) -> *mut vdynamic {
-            unsafe { enter(slot, &[$($a),*]) }
+    ($name:ident, $ret:ty, $convert:expr; $($a:ident),*) => {
+        unsafe extern "C" fn $name(slot: *const Slot, $($a: *mut vdynamic),*) -> $ret {
+            unsafe { enter(slot, &[$($a),*], $convert) }
         }
     };
 }
 
-entry!(entry0;);
-entry!(entry1; a0);
-entry!(entry2; a0, a1);
-entry!(entry3; a0, a1, a2);
-entry!(entry4; a0, a1, a2, a3);
-entry!(entry5; a0, a1, a2, a3, a4);
-entry!(entry6; a0, a1, a2, a3, a4, a5);
-entry!(entry7; a0, a1, a2, a3, a4, a5, a6);
+macro_rules! entries {
+    ($table:ident, $ret:ty, $convert:expr; $($name:ident: $($a:ident),*;)*) => {
+        $(entry!($name, $ret, $convert; $($a),*);)*
+        static $table: Entries = Entries([$($name as *const c_void),*]);
+    };
+}
+
+entries!(ENTRIES, *mut vdynamic, boxed;
+    entry0: ;
+    entry1: a0;
+    entry2: a0, a1;
+    entry3: a0, a1, a2;
+    entry4: a0, a1, a2, a3;
+    entry5: a0, a1, a2, a3, a4;
+    entry6: a0, a1, a2, a3, a4, a5;
+    entry7: a0, a1, a2, a3, a4, a5, a6;
+);
+
+entries!(ENTRIES_F64, f64, float;
+    entry_f0: ;
+    entry_f1: a0;
+    entry_f2: a0, a1;
+    entry_f3: a0, a1, a2;
+    entry_f4: a0, a1, a2, a3;
+    entry_f5: a0, a1, a2, a3, a4;
+    entry_f6: a0, a1, a2, a3, a4, a5;
+    entry_f7: a0, a1, a2, a3, a4, a5, a6;
+);
+
+entries!(ENTRIES_BOOL, bool, boolean;
+    entry_b0: ;
+    entry_b1: a0;
+    entry_b2: a0, a1;
+    entry_b3: a0, a1, a2;
+    entry_b4: a0, a1, a2, a3;
+    entry_b5: a0, a1, a2, a3, a4;
+    entry_b6: a0, a1, a2, a3, a4, a5;
+    entry_b7: a0, a1, a2, a3, a4, a5, a6;
+);
 
 struct Entries([*const c_void; MAX_ARGS + 1]);
 
@@ -498,17 +587,6 @@ impl std::ops::Index<usize> for Entries {
         &self.0[nargs]
     }
 }
-
-static ENTRIES: Entries = Entries([
-    entry0 as *const c_void,
-    entry1 as *const c_void,
-    entry2 as *const c_void,
-    entry3 as *const c_void,
-    entry4 as *const c_void,
-    entry5 as *const c_void,
-    entry6 as *const c_void,
-    entry7 as *const c_void,
-]);
 
 #[cfg(test)]
 mod tests {
@@ -541,8 +619,10 @@ mod tests {
     #[test]
     fn every_entry_is_distinct() {
         let mut seen = std::collections::HashSet::new();
-        for nargs in 0..=MAX_ARGS {
-            assert!(seen.insert(ENTRIES[nargs] as usize));
+        for table in [&ENTRIES, &ENTRIES_F64, &ENTRIES_BOOL] {
+            for nargs in 0..=MAX_ARGS {
+                assert!(seen.insert(table[nargs] as usize));
+            }
         }
     }
 }

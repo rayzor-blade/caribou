@@ -318,6 +318,7 @@ impl Program {
         if m.is_null() {
             bail!("the String type carries no module context");
         }
+        proto::set_module_context(m);
         Ok(m)
     }
 }
@@ -435,9 +436,11 @@ pub fn publish_module(
             type_ref(types, &fun.ret),
         ))
     };
+    // The function's cell in the module context: the interpreter's stub
+    // until a tier promotes the function, then its compiled entry.
     let target = |findex: i32| -> Option<Callable> {
-        functions.contains_key(&findex).then(|| Callable::Typed {
-            func: unsafe { *(*m).functions_ptrs.add(findex as usize) },
+        functions.contains_key(&findex).then(|| Callable::Cell {
+            cell: unsafe { (*m).functions_ptrs.add(findex as usize) }.cast(),
             signature: unsafe { *(*m).functions_types.add(findex as usize) },
             lang,
         })
@@ -526,8 +529,8 @@ pub fn publish_module(
                     else {
                         continue;
                     };
-                    let Callable::Typed {
-                        func, signature, ..
+                    let Callable::Cell {
+                        cell, signature, ..
                     } = target
                     else {
                         continue;
@@ -537,7 +540,7 @@ pub fn publish_module(
                         is_static: true,
                         params,
                         ret: TypeRef::Object(obj.name.clone()),
-                        target: Callable::Dynamic(proto::constructor(t, func, signature)),
+                        target: Callable::Dynamic(proto::constructor(t, cell, signature)),
                     });
                 } else if fid >= inherited {
                     let Some((params, ret)) = signature(findex, false) else {

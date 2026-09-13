@@ -22,19 +22,24 @@
 //! as dispatching.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
+
+use wren_lift::intern::SymbolId;
 
 use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap;
 use caribou::protocol::{
-    Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Send, Symbol, desc_of,
+    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Send, Symbol, desc_of,
 };
 use caribou_abi::{ErrorKind, Value};
 use wren_lift::runtime::core::as_string;
+use wren_lift::runtime::engine::FuncId;
 use wren_lift::runtime::object::{
-    NativeContext, ObjClass, ObjClosure, ObjForeign, ObjHeader, ObjInstance, ObjString, ObjType,
+    Method, NativeContext, ObjClass, ObjClosure, ObjForeign, ObjHeader, ObjInstance, ObjString,
+    ObjType,
 };
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{self, VM};
@@ -217,10 +222,11 @@ fn take_error(vm: &mut VM) -> Option<u8> {
     Some(raise_wren(message))
 }
 
-/// The VM this entry runs on, or the raise to answer with.
-/// The VM entered on this thread, which must be the one `obj` belongs to:
-/// a value of another VM, or of one that is gone, has no VM to run on.
-fn vm_of(obj: *mut u8) -> Result<&'static mut VM, u8> {
+/// The VM this entry runs on, or the raise to answer with: the VM entered
+/// on this thread, which must be the one `obj` belongs to. A value of
+/// another VM, or of one that is gone, has no VM to run on. With it, the
+/// address of its record, which names the VM to a call site.
+fn vm_of(obj: *mut u8) -> Result<(&'static mut VM, usize), u8> {
     let vm = vm_here()?;
     let mine = record_for(vm.object_class as *mut u8) as *const WrenHeap as usize;
     if record_address(obj) != mine {
@@ -229,7 +235,7 @@ fn vm_of(obj: *mut u8) -> Result<&'static mut VM, u8> {
             "the object belongs to another Wren VM, or to one that is gone",
         ));
     }
-    Ok(vm)
+    Ok((vm, mine))
 }
 
 fn vm_here() -> Result<&'static mut VM, u8> {
@@ -293,17 +299,67 @@ fn has_method(vm: &VM, recv: WValue, sig: &str) -> bool {
 }
 
 /// `args` as Wren values, or the raise for the first that cannot cross.
-fn wren_args(vm: &mut VM, args: *const Value, n: usize) -> Result<Vec<WValue>, u8> {
-    let args = if n == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(args, n) }
-    };
-    let mut out = Vec::with_capacity(n);
-    for &arg in args {
-        out.push(cross(vm, arg)?);
+/// Arguments crossed into Wren, with room for a receiver before them. On
+/// the stack for what a compiled body takes in registers, else on the heap.
+struct Args {
+    inline: [WValue; Args::INLINE],
+    spill: Vec<WValue>,
+    len: usize,
+}
+
+impl Args {
+    const INLINE: usize = 10;
+
+    /// `args` crossed, after `lead` empty slots.
+    fn cross(vm: &mut VM, lead: usize, args: *const Value, n: usize) -> Result<Args, u8> {
+        let args = if n == 0 {
+            &[][..]
+        } else {
+            unsafe { std::slice::from_raw_parts(args, n) }
+        };
+        let len = lead + n;
+        let mut out = Args {
+            inline: [WValue::null(); Args::INLINE],
+            spill: Vec::new(),
+            len,
+        };
+        if len > Args::INLINE {
+            out.spill = vec![WValue::null(); len];
+        }
+        for (i, &arg) in args.iter().enumerate() {
+            out.slice_mut()[lead + i] = cross(vm, arg)?;
+        }
+        Ok(out)
     }
-    Ok(out)
+
+    /// Room for a receiver and nothing else.
+    fn receiver_only() -> Args {
+        Args {
+            inline: [WValue::null(); Args::INLINE],
+            spill: Vec::new(),
+            len: 1,
+        }
+    }
+
+    fn slice_mut(&mut self) -> &mut [WValue] {
+        if self.len > Args::INLINE {
+            &mut self.spill
+        } else {
+            &mut self.inline[..self.len]
+        }
+    }
+
+    fn as_slice(&self) -> &[WValue] {
+        if self.len > Args::INLINE {
+            &self.spill
+        } else {
+            &self.inline[..self.len]
+        }
+    }
+}
+
+fn wren_args(vm: &mut VM, args: *const Value, n: usize) -> Result<Args, u8> {
+    Args::cross(vm, 0, args, n)
 }
 
 fn cross(vm: &mut VM, v: Value) -> Result<WValue, u8> {
@@ -315,11 +371,140 @@ fn cross(vm: &mut VM, v: Value) -> Result<WValue, u8> {
     })
 }
 
+/// The shape a core symbol is asked in: what its Wren signature is built
+/// from beside the name.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Shape {
+    /// `name(_,_)` by arity, or the symbol as it is when it spells a
+    /// signature.
+    Call(u8),
+    /// `name`.
+    Get,
+    /// `name=(_)`.
+    Set,
+}
+
+/// The VM's symbols for the signatures the bridge asks for, so a call
+/// hashes no name: per core symbol and shape, the instance signature's
+/// symbol and its `static:` twin's.
+#[derive(Default)]
+pub(crate) struct Signatures {
+    known: HashMap<(u32, Shape), (SymbolId, SymbolId)>,
+}
+
+impl Signatures {
+    fn of(&mut self, vm: &mut VM, name: Symbol, shape: Shape) -> (SymbolId, SymbolId) {
+        *self.known.entry((name.0, shape)).or_insert_with(|| {
+            let text = name.name();
+            let sig = match shape {
+                Shape::Call(_) if text.contains('(') => text.to_owned(),
+                Shape::Call(n) => signature(text, usize::from(n)),
+                Shape::Get => text.to_owned(),
+                Shape::Set => format!("{text}=(_)"),
+            };
+            let instance = vm.interner.intern(&sig);
+            let statics = vm.interner.intern(&format!("static:{sig}"));
+            (instance, statics)
+        })
+    }
+}
+
+/// A method found for a receiver, and the class it was found on.
+#[derive(Clone, Copy)]
+struct Found {
+    method: Method,
+    class: *mut ObjClass,
+}
+
+/// The method `recv` answers `sig` with: on its class, or as a static
+/// when `recv` is itself a class.
+fn find(vm: &VM, recv: WValue, sig: SymbolId, statics: SymbolId) -> Option<Found> {
+    let class = vm.class_of(recv);
+    if !class.is_null()
+        && let Some(&method) = unsafe { (*class).find_method(sig) }
+    {
+        return Some(Found { method, class });
+    }
+    let p = recv.as_object()?;
+    if unsafe { (*(p as *const ObjHeader)).obj_type } != ObjType::Class {
+        return None;
+    }
+    let class = p as *mut ObjClass;
+    let method = *unsafe { (*class).find_method(statics) }?;
+    Some(Found { method, class })
+}
+
+/// The method `recv` answers the signature of `name` in `shape` with.
+/// The signature's symbols come from `site` when it was filled for this
+/// VM (`key`), else from the VM's signature cache, and are left in `site`.
+fn find_by(
+    vm: &mut VM,
+    key: usize,
+    recv: WValue,
+    name: Symbol,
+    shape: Shape,
+    site: Option<&CallSite>,
+) -> Option<Found> {
+    let (sig, statics) = match site.and_then(|s| s.get(key)) {
+        Some((sig, statics)) => (
+            SymbolId::from_raw(sig as u32),
+            SymbolId::from_raw(statics as u32),
+        ),
+        None => {
+            let rec = record_for(vm.object_class as *mut u8);
+            let syms = rec.signatures().borrow_mut().of(vm, name, shape);
+            if let Some(site) = site {
+                site.set(key, syms.0.index() as usize, syms.1.index() as usize);
+            }
+            syms
+        }
+    };
+    find(vm, recv, sig, statics)
+}
+
+/// Count a call the VM's dispatch does not: a body only ever entered from
+/// another language still compiles.
+fn tick(vm: &mut VM, closure: *mut ObjClosure) {
+    let id = FuncId(unsafe { (*(*closure).function).fn_id });
+    let compiled = vm
+        .engine
+        .jit_code
+        .get(id.0 as usize)
+        .is_some_and(|p| !p.is_null());
+    if !compiled && vm.engine.record_call(id) {
+        vm.engine.request_tier_up(id, &vm.interner);
+    }
+}
+
+/// Run `found` on `recv` with `args`, whose slot 0 is free for the
+/// receiver, through the VM's own method dispatch: what its compiled code
+/// calls once it has found a method.
+fn run(vm: &mut VM, recv: WValue, found: Found, args: &mut Args, out: *mut Value) -> u8 {
+    if let Method::Constructor(closure) = found.method {
+        tick(vm, closure);
+    }
+    args.slice_mut()[0] = recv;
+    let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
+        vm,
+        found.method,
+        args.as_slice(),
+        Some(found.class),
+    );
+    finish(vm, Some(WValue::from_bits(bits)), "", out)
+}
+
 /// Send `sig` to `recv` and write the result. The caller has checked that
 /// the method exists; `None` from the VM is then a failure of its own.
-fn send(vm: &mut VM, recv: WValue, sig: &str, args: &[WValue], out: *mut Value) -> u8 {
-    let result = vm.call_method_on(recv, sig, args);
-    finish(vm, result, sig, out)
+fn send(vm: &mut VM, recv: WValue, sig: &str, args: &mut Args, out: *mut Value) -> u8 {
+    let instance = vm.interner.intern(sig);
+    let statics = vm.interner.intern(&format!("static:{sig}"));
+    match find(vm, recv, instance, statics) {
+        Some(found) => run(vm, recv, found, args, out),
+        None => {
+            let result = vm.call_method_on(recv, sig, &args.as_slice()[1..]);
+            finish(vm, result, sig, out)
+        }
+    }
 }
 
 fn finish(vm: &mut VM, result: Option<WValue>, sig: &str, out: *mut Value) -> u8 {
@@ -354,15 +539,29 @@ fn field_slot(vm: &VM, recv: WValue, name: &str) -> Option<usize> {
 
 /// A getter, else a field of an instance by name.
 unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
-    let vm = match vm_of(obj) {
+    get_at(obj, name, None, out)
+}
+
+unsafe extern "C-unwind" fn get_member_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    out: *mut Value,
+) -> u8 {
+    get_at(obj, name, unsafe { site.as_ref() }, out)
+}
+
+fn get_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, out: *mut Value) -> u8 {
+    let (vm, key) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
     let recv = unsafe { receiver(obj) };
-    let name = name.name();
-    if has_method(vm, recv, name) {
-        return send(vm, recv, name, &[], out);
+    if let Some(found) = find_by(vm, key, recv, name, Shape::Get, site) {
+        let mut args = Args::receiver_only();
+        return run(vm, recv, found, &mut args, out);
     }
+    let name = name.name();
     if unsafe { obj_type(obj) } == ObjType::Instance
         && let Some(slot) = field_slot(vm, recv, name)
         && let Some(v) = unsafe { &*(wren_ptr(obj) as *const ObjInstance) }.get_field(slot)
@@ -375,25 +574,37 @@ unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Val
 
 /// A setter `name=(_)`, else a field of an instance by name.
 unsafe extern "C-unwind" fn set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
-    let vm = match vm_of(obj) {
+    set_at(obj, name, None, value)
+}
+
+unsafe extern "C-unwind" fn set_member_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    value: Value,
+) -> u8 {
+    set_at(obj, name, unsafe { site.as_ref() }, value)
+}
+
+fn set_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, value: Value) -> u8 {
+    let (vm, key) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
     let recv = unsafe { receiver(obj) };
-    let name = name.name();
-    let value = match cross(vm, value) {
-        Ok(v) => v,
+    let mut args = match Args::cross(vm, 1, &value, 1) {
+        Ok(args) => args,
         Err(code) => return code,
     };
-    let sig = format!("{name}=(_)");
-    if has_method(vm, recv, &sig) {
+    if let Some(found) = find_by(vm, key, recv, name, Shape::Set, site) {
         let mut ignored = Value::null();
-        return send(vm, recv, &sig, &[value], &mut ignored);
+        return run(vm, recv, found, &mut args, &mut ignored);
     }
+    let name = name.name();
     if unsafe { obj_type(obj) } == ObjType::Instance
         && let Some(slot) = field_slot(vm, recv, name)
     {
-        unsafe { &mut *(wren_ptr(obj) as *mut ObjInstance) }.set_field(slot, value);
+        unsafe { &mut *(wren_ptr(obj) as *mut ObjInstance) }.set_field(slot, args.as_slice()[1]);
         return REPLY_OK;
     }
     REPLY_MISSING
@@ -411,37 +622,72 @@ unsafe extern "C-unwind" fn invoke(
     n: usize,
     out: *mut Value,
 ) -> u8 {
-    let vm = match vm_of(obj) {
+    invoke_at_opt(obj, name, None, args, n, out)
+}
+
+unsafe extern "C-unwind" fn invoke_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    invoke_at_opt(obj, name, unsafe { site.as_ref() }, args, n, out)
+}
+
+fn invoke_at_opt(
+    obj: *mut u8,
+    name: Symbol,
+    site: Option<&CallSite>,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let (vm, key) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
     let recv = unsafe { receiver(obj) };
-    let name = name.name();
-    let mut sig = if name.contains('(') {
-        let arity = arity_of(name);
+    let text = name.name();
+    // A site is one name and arity: what it was filled under has passed.
+    if site.is_none_or(|s| s.get(key).is_none()) && text.contains('(') {
+        let arity = arity_of(text);
         if arity != n {
             return raise_core(
                 ErrorKind::Type,
-                &format!("`{name}` takes {arity} arguments, not {n}"),
+                &format!("`{text}` takes {arity} arguments, not {n}"),
             );
         }
-        name.to_owned()
-    } else {
-        signature(name, n)
-    };
-    if !has_method(vm, recv, &sig) {
-        if n == 0 && has_method(vm, recv, name) {
-            sig = name.to_owned();
-        } else {
-            let class = vm.class_name_of(recv);
-            return raise_wren(format!("{class} does not implement '{sig}'"));
-        }
     }
-    let args = match wren_args(vm, args, n) {
+    if n > u8::MAX as usize {
+        return raise_core(ErrorKind::Type, "too many arguments");
+    }
+    // The method by arity, else the getter of that name for a call with
+    // no arguments; the site remembers the method's signature only.
+    let found = match find_by(vm, key, recv, name, Shape::Call(n as u8), site) {
+        Some(found) => found,
+        None => match (n == 0)
+            .then(|| find_by(vm, key, recv, name, Shape::Get, None))
+            .flatten()
+        {
+            Some(found) => found,
+            None => {
+                let class = vm.class_name_of(recv);
+                let sig = if text.contains('(') {
+                    text.to_owned()
+                } else {
+                    signature(text, n)
+                };
+                return raise_wren(format!("{class} does not implement '{sig}'"));
+            }
+        },
+    };
+    let mut args = match Args::cross(vm, 1, args, n) {
         Ok(args) => args,
         Err(code) => return code,
     };
-    send(vm, recv, &sig, &args, out)
+    run(vm, recv, found, &mut args, out)
 }
 
 /// A closure, called with the arguments as its parameters.
@@ -454,7 +700,7 @@ unsafe extern "C-unwind" fn call(
     if unsafe { obj_type(obj) } != ObjType::Closure {
         return REPLY_UNSUPPORTED;
     }
-    let vm = match vm_of(obj) {
+    let (vm, _) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -463,13 +709,20 @@ unsafe extern "C-unwind" fn call(
         Err(code) => return code,
     };
     let closure = unsafe { wren_ptr(obj) } as *mut ObjClosure;
-    let result = vm.call_closure_sync(closure, &args, None);
-    finish(vm, result, "call", out)
+    // A closure's compiled body when it has one; a `Fn` takes no receiver.
+    tick(vm, closure);
+    let bits = wren_lift::codegen::runtime_fns::call_closure_jit_or_sync(
+        vm,
+        closure,
+        args.as_slice(),
+        None,
+    );
+    finish(vm, Some(WValue::from_bits(bits)), "call", out)
 }
 
 /// Send `sig` with `args` if the class has it, else `Unsupported`.
 fn send_if_present(obj: *mut u8, sig: &str, args: &[Value], out: *mut Value) -> u8 {
-    let vm = match vm_of(obj) {
+    let (vm, _) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -477,11 +730,11 @@ fn send_if_present(obj: *mut u8, sig: &str, args: &[Value], out: *mut Value) -> 
     if !has_method(vm, recv, sig) {
         return REPLY_UNSUPPORTED;
     }
-    let args = match wren_args(vm, args.as_ptr(), args.len()) {
+    let mut args = match Args::cross(vm, 1, args.as_ptr(), args.len()) {
         Ok(args) => args,
         Err(code) => return code,
     };
-    send(vm, recv, sig, &args, out)
+    send(vm, recv, sig, &mut args, out)
 }
 
 unsafe extern "C-unwind" fn index(obj: *mut u8, key: Value, out: *mut Value) -> u8 {
@@ -535,15 +788,16 @@ unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut V
         return REPLY_MISSING;
     }
     unsafe { *state = next };
-    let vm = match vm_of(obj) {
+    let (vm, _) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
     let recv = unsafe { receiver(obj) };
-    let Some(state) = to_wren(vm, next) else {
-        return REPLY_UNSUPPORTED;
+    let mut args = match Args::cross(vm, 1, &next, 1) {
+        Ok(args) => args,
+        Err(_) => return REPLY_UNSUPPORTED,
     };
-    send(vm, recv, "iteratorValue(_)", &[state], out)
+    send(vm, recv, "iteratorValue(_)", &mut args, out)
 }
 
 /// `toString`, as a core string: what it answered, having crossed as one,
@@ -619,7 +873,7 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
 /// The name the receiver's class was published under (`hud.Hud`), else
 /// its bare name.
 unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
-    let vm = match vm_of(obj) {
+    let (vm, _) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
@@ -643,6 +897,9 @@ pub static WREN_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
     invoke: Some(invoke),
+    get_member_at: Some(get_member_at),
+    set_member_at: Some(set_member_at),
+    invoke_at: Some(invoke_at),
     call: Some(call),
     index: Some(index),
     set_index: Some(set_index),

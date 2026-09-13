@@ -29,16 +29,16 @@
 //! Whatever is not Haxe's is wrapped the same way: a core `Str` or
 //! `Error`, an object of a language registered later.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use caribou::bridge;
+use caribou::hash::AddressMap;
 use caribou::heap::{self, Handle, Tracer, TypeDesc};
 use caribou::protocol::{
-    Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Reply, Send, Symbol,
-    desc_of,
+    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Reply,
+    Send, Symbol, desc_of,
 };
 use caribou_abi::hl::{hl_type, vdynamic};
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
@@ -100,9 +100,10 @@ pub(crate) fn set_lang(lang: LangId) {
 /// Object address to ref address; see the module doc for what an entry
 /// means. Never held across an allocation: a collection's drop hooks
 /// take it.
-static REFS: LazyLock<Mutex<HashMap<usize, usize>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static REFS: LazyLock<Mutex<AddressMap<usize>>> =
+    LazyLock::new(|| Mutex::new(AddressMap::default()));
 
-fn refs() -> MutexGuard<'static, HashMap<usize, usize>> {
+fn refs() -> MutexGuard<'static, AddressMap<usize>> {
     REFS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -257,6 +258,50 @@ unsafe extern "C-unwind" fn invoke(
     code(unsafe { Send::invoke(inner(obj), name, args) }, out)
 }
 
+// The site is the caller's; the Wren object's protocol fills it.
+unsafe extern "C-unwind" fn get_member_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    out: *mut Value,
+) -> u8 {
+    code(
+        unsafe { Send::get_member_at(inner(obj), name, &*site) },
+        out,
+    )
+}
+
+unsafe extern "C-unwind" fn set_member_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    value: Value,
+) -> u8 {
+    match unsafe { Send::set_member_at(inner(obj), name, &*site, value) } {
+        Ok(()) => REPLY_OK,
+        Err(fault) => code_of(fault),
+    }
+}
+
+unsafe extern "C-unwind" fn invoke_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let args = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, n) }
+    };
+    code(
+        unsafe { Send::invoke_at(inner(obj), name, &*site, args) },
+        out,
+    )
+}
+
 unsafe extern "C-unwind" fn call(
     obj: *mut u8,
     args: *const Value,
@@ -366,6 +411,9 @@ static WRENREF_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
     invoke: Some(invoke),
+    get_member_at: Some(get_member_at),
+    set_member_at: Some(set_member_at),
+    invoke_at: Some(invoke_at),
     call: Some(call),
     index: Some(index),
     set_index: Some(set_index),

@@ -37,8 +37,9 @@ use std::rc::Rc;
 
 use caribou::bridge;
 use caribou::error::{Error, Str};
+use caribou::hash::AddressMap;
 use caribou::heap::{self, Handle};
-use caribou::protocol::Callable;
+use caribou::protocol::{CallSite, Callable};
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
 use caribou::symbol::{self, Symbol};
 use caribou::world::language_name;
@@ -87,12 +88,24 @@ enum Kind {
     Arity,
 }
 
-#[derive(Clone)]
 struct Target {
     kind: Kind,
     /// For the trace frame.
     name: String,
     callable: Callable,
+    /// What the callee's protocol derived for this slot last time.
+    site: CallSite,
+}
+
+impl Target {
+    fn new(kind: Kind, name: String, callable: Callable) -> Target {
+        Target {
+            kind,
+            name,
+            callable,
+            site: CallSite::new(),
+        }
+    }
 }
 
 /// One installed class: per slot, the member it binds.
@@ -104,12 +117,12 @@ struct ClassBinding {
 /// with it. Touched only by the VM's own thread.
 #[derive(Default)]
 pub(crate) struct Imports {
-    classes: HashMap<usize, Rc<ClassBinding>>,
+    classes: AddressMap<Rc<ClassBinding>>,
     /// `(lang, type name)` to the class that stands for it.
     by_type: HashMap<(LangId, String), *mut ObjClass>,
     /// Every live instance and the handle in its field, for the sweep and
     /// for `heap_drop`.
-    live: HashMap<usize, Handle>,
+    live: AddressMap<Handle>,
     /// The class a foreign function is an instance of, once installed.
     function: Option<*mut ObjClass>,
 }
@@ -348,11 +361,7 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
     if let Some(ctor) = &class.ctor {
         members.push((
             format!("static:{}", signature("new", ctor.params.len())),
-            Target {
-                kind: Kind::Ctor,
-                name: qualify("new"),
-                callable: ctor.target,
-            },
+            Target::new(Kind::Ctor, qualify("new"), ctor.target),
         ));
     }
     for method in &class.methods {
@@ -370,34 +379,34 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
             } else {
                 sig
             },
-            Target {
-                kind: if *is_static {
+            Target::new(
+                if *is_static {
                     Kind::Static
                 } else {
                     Kind::Method
                 },
-                name: qualify(name),
-                callable: *target,
-            },
+                qualify(name),
+                *target,
+            ),
         ));
     }
     for field in &class.fields {
         let sym = symbol::intern(&field.name);
         members.push((
             field.name.clone(),
-            Target {
-                kind: Kind::Getter(sym),
-                name: qualify(&field.name),
-                callable: Callable::Dynamic(Value::null()),
-            },
+            Target::new(
+                Kind::Getter(sym),
+                qualify(&field.name),
+                Callable::Dynamic(Value::null()),
+            ),
         ));
         members.push((
             format!("{}=(_)", field.name),
-            Target {
-                kind: Kind::Setter(sym),
-                name: qualify(&field.name),
-                callable: Callable::Dynamic(Value::null()),
-            },
+            Target::new(
+                Kind::Setter(sym),
+                qualify(&field.name),
+                Callable::Dynamic(Value::null()),
+            ),
         ));
     }
     // A static field is a static getter and setter on the class object.
@@ -405,19 +414,19 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
         let sym = symbol::intern(&field.name);
         members.push((
             format!("static:{}", field.name),
-            Target {
-                kind: Kind::ClassGetter(sym),
-                name: qualify(&field.name),
-                callable: Callable::Dynamic(class.class_object),
-            },
+            Target::new(
+                Kind::ClassGetter(sym),
+                qualify(&field.name),
+                Callable::Dynamic(class.class_object),
+            ),
         ));
         members.push((
             format!("static:{}=(_)", field.name),
-            Target {
-                kind: Kind::ClassSetter(sym),
-                name: qualify(&field.name),
-                callable: Callable::Dynamic(class.class_object),
-            },
+            Target::new(
+                Kind::ClassSetter(sym),
+                qualify(&field.name),
+                Callable::Dynamic(class.class_object),
+            ),
         ));
     }
     members
@@ -498,6 +507,9 @@ pub const FUNCTION_CLASS: &str = "Function";
 const FUNCTION_MODULE: &str = "caribou:Function";
 const MAX_CALL_ARITY: usize = 8;
 
+/// The most parameters a Wren signature takes.
+const WIDEST: usize = 16;
+
 fn function_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
     let rec = record_for(vm.object_class as *mut u8);
     if let Some(class) = rec.imports().borrow().function {
@@ -529,20 +541,20 @@ fn function_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
     for arity in 0..=MAX_CALL_ARITY {
         members.push((
             signature("call", arity),
-            Target {
-                kind: Kind::Call,
-                name: format!("{FUNCTION_CLASS}.call"),
-                callable: Callable::Dynamic(Value::null()),
-            },
+            Target::new(
+                Kind::Call,
+                format!("{FUNCTION_CLASS}.call"),
+                Callable::Dynamic(Value::null()),
+            ),
         ));
     }
     members.push((
         "arity".to_owned(),
-        Target {
-            kind: Kind::Arity,
-            name: format!("{FUNCTION_CLASS}.arity"),
-            callable: Callable::Dynamic(Value::null()),
-        },
+        Target::new(
+            Kind::Arity,
+            format!("{FUNCTION_CLASS}.arity"),
+            Callable::Dynamic(Value::null()),
+        ),
     ));
     let binding = bind_members(vm, ptr, FUNCTION_CLASS, members)?;
     let mut imports = rec.imports().borrow_mut();
@@ -698,21 +710,28 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
     let target = &binding.targets[slot];
     let wren = wren_lang();
 
-    // Arguments cross first, rooted for the call.
-    let mut roots: Vec<Handle> = Vec::new();
-    let mut crossed: Vec<Value> = Vec::with_capacity(args.len());
+    // Arguments cross first, rooted for the call. On the stack: Wren's
+    // widest signature, with a slot before them for `this`.
+    let n = args.len() - 1;
+    let mut roots = [Handle::NULL; WIDEST];
+    let mut buf = [Value::null(); WIDEST + 1];
+    if n > WIDEST {
+        return Err(format!("{} takes too many arguments", target.name));
+    }
     let release = |roots: &[Handle]| {
         for &h in roots {
-            heap::handle_release(h);
+            if !h.is_null() {
+                heap::handle_release(h);
+            }
         }
     };
-    for &arg in &args[1..] {
+    for (i, &arg) in args[1..].iter().enumerate() {
         let (v, root) = cross_in(arg);
-        crossed.push(v);
-        if !root.is_null() {
-            roots.push(root);
-        }
+        buf[1 + i] = v;
+        roots[i] = root;
     }
+    let roots = &roots[..n];
+    let crossed = &buf[1..=n];
 
     let result = match target.kind {
         Kind::Ctor => {
@@ -724,8 +743,8 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
                 recv
             };
             let ptr = instance.as_object().unwrap() as *mut ObjInstance;
-            let made = bridge::call_named(target.callable, &crossed, wren, &target.name);
-            release(&roots);
+            let made = bridge::call_named(target.callable, crossed, wren, &target.name);
+            release(roots);
             let made = made.map_err(message_of)?;
             let Some(haxe) = made.as_object().filter(|p| !p.is_null()) else {
                 return Err(format!(
@@ -738,18 +757,18 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
             return Ok(instance);
         }
         Kind::Static => {
-            let r = bridge::call_named(target.callable, &crossed, wren, &target.name);
-            release(&roots);
+            let r = bridge::call_named(target.callable, crossed, wren, &target.name);
+            release(roots);
             r
         }
         Kind::Call | Kind::Arity => {
             let this = foreign_of(recv).ok_or_else(|| {
-                release(&roots);
+                release(roots);
                 format!("{} has no function behind it", vm.class_name_of(recv))
             })?;
             let r = match target.kind {
                 Kind::Call => {
-                    bridge::call_named(Callable::Dynamic(this), &crossed, wren, &target.name)
+                    bridge::call_named(Callable::Dynamic(this), crossed, wren, &target.name)
                 }
                 _ => match bridge::arity(this) {
                     Some(n) => Ok(Value::number(n as f64)),
@@ -760,7 +779,7 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
                     ))),
                 },
             };
-            release(&roots);
+            release(roots);
             r
         }
         Kind::ClassGetter(name) | Kind::ClassSetter(name) => {
@@ -768,31 +787,31 @@ fn run(vm: &mut VM, slot: usize, args: &[WValue]) -> Result<WValue, String> {
                 unreachable!("a static field's target is its class object");
             };
             let r = match target.kind {
-                Kind::ClassGetter(_) => bridge::get(class_object, name, wren),
-                _ => bridge::set(class_object, name, crossed[0], wren).map(|()| crossed[0]),
+                Kind::ClassGetter(_) => bridge::get_at(class_object, name, &target.site, wren),
+                _ => bridge::set_at(class_object, name, &target.site, crossed[0], wren)
+                    .map(|()| crossed[0]),
             };
-            release(&roots);
+            release(roots);
             r
         }
         Kind::Method | Kind::Getter(_) | Kind::Setter(_) => {
             let this = foreign_of(recv).ok_or_else(|| {
-                release(&roots);
+                release(roots);
                 format!("{} has no object behind it", vm.class_name_of(recv))
             })?;
             let r = match target.kind {
                 Kind::Method => {
-                    let mut with_this = Vec::with_capacity(crossed.len() + 1);
-                    with_this.push(this);
-                    with_this.extend_from_slice(&crossed);
-                    bridge::call_named(target.callable, &with_this, wren, &target.name)
+                    let mut with_this = buf;
+                    with_this[0] = this;
+                    bridge::call_named(target.callable, &with_this[..=n], wren, &target.name)
                 }
-                Kind::Getter(name) => bridge::get(this, name, wren),
+                Kind::Getter(name) => bridge::get_at(this, name, &target.site, wren),
                 Kind::Setter(name) => {
-                    bridge::set(this, name, crossed[0], wren).map(|()| crossed[0])
+                    bridge::set_at(this, name, &target.site, crossed[0], wren).map(|()| crossed[0])
                 }
                 _ => unreachable!(),
             };
-            release(&roots);
+            release(roots);
             r
         }
     };

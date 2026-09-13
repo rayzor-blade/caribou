@@ -437,6 +437,7 @@ dependencies = [
  "anyhow",
  "ash_core",
  "ash_interp",
+ "ash_native_call",
  "ash_std",
  "caribou",
  "caribou_abi",

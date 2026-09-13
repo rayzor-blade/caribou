@@ -5,6 +5,8 @@
 
 use core::ffi::c_void;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use caribou_abi::{ErrorKind, LangId, Value};
 
 use crate::heap::TypeDesc;
@@ -42,6 +44,36 @@ pub struct Protocol {
         unsafe extern "C-unwind" fn(
             obj: *mut u8,
             name: Symbol,
+            args: *const Value,
+            n: usize,
+            out: *mut Value,
+        ) -> u8,
+    >,
+    /// `get_member`, `set_member` and `invoke` with a [`CallSite`] the
+    /// caller keeps: what the entry derived last time, keyed as it chose,
+    /// so a site that sees the same shape again does no lookup. Optional;
+    /// the bridge falls back to the plain entries.
+    pub get_member_at: Option<
+        unsafe extern "C-unwind" fn(
+            obj: *mut u8,
+            name: Symbol,
+            site: *mut CallSite,
+            out: *mut Value,
+        ) -> u8,
+    >,
+    pub set_member_at: Option<
+        unsafe extern "C-unwind" fn(
+            obj: *mut u8,
+            name: Symbol,
+            site: *mut CallSite,
+            value: Value,
+        ) -> u8,
+    >,
+    pub invoke_at: Option<
+        unsafe extern "C-unwind" fn(
+            obj: *mut u8,
+            name: Symbol,
+            site: *mut CallSite,
             args: *const Value,
             n: usize,
             out: *mut Value,
@@ -94,6 +126,9 @@ impl Protocol {
         get_member: None,
         set_member: None,
         invoke: None,
+        get_member_at: None,
+        set_member_at: None,
+        invoke_at: None,
         call: None,
         index: None,
         set_index: None,
@@ -111,6 +146,48 @@ impl Protocol {
         error_trace: None,
         type_name: None,
     };
+}
+
+/// A foreign call site's cache: three words the callee's protocol fills
+/// with what it derived for the site, `key` naming what the rest is good
+/// for (a class, a type, a VM), and reads back when `key` matches. Zero is
+/// empty. Owned by the caller for the life of the site; shared, since a
+/// site may be reached from several threads, and a stale read costs one
+/// lookup.
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct CallSite {
+    pub key: AtomicUsize,
+    pub a: AtomicUsize,
+    pub b: AtomicUsize,
+}
+
+impl CallSite {
+    pub const fn new() -> CallSite {
+        CallSite {
+            key: AtomicUsize::new(0),
+            a: AtomicUsize::new(0),
+            b: AtomicUsize::new(0),
+        }
+    }
+
+    /// `(a, b)` when the site was filled under `key`.
+    #[inline]
+    pub fn get(&self, key: usize) -> Option<(usize, usize)> {
+        (key != 0 && self.key.load(Ordering::Acquire) == key).then(|| {
+            (
+                self.a.load(Ordering::Relaxed),
+                self.b.load(Ordering::Relaxed),
+            )
+        })
+    }
+
+    #[inline]
+    pub fn set(&self, key: usize, a: usize, b: usize) {
+        self.a.store(a, Ordering::Relaxed);
+        self.b.store(b, Ordering::Relaxed);
+        self.key.store(key, Ordering::Release);
+    }
 }
 
 /// A reply code and an out-value into a `Reply`.
@@ -158,6 +235,63 @@ impl Send {
             return Err(Fault::Unsupported);
         };
         reply(unsafe { f(obj, name, value) }, Value::null()).map(|_| ())
+    }
+
+    /// [`Self::get_member`] through `site`, when the protocol caches.
+    pub unsafe fn get_member_at(obj: *mut u8, name: Symbol, site: &CallSite) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.get_member_at) else {
+            return unsafe { Self::get_member(obj, name) };
+        };
+        let mut out = Value::null();
+        reply(
+            unsafe {
+                f(
+                    obj,
+                    name,
+                    site as *const CallSite as *mut CallSite,
+                    &mut out,
+                )
+            },
+            out,
+        )
+    }
+
+    /// [`Self::set_member`] through `site`, when the protocol caches.
+    pub unsafe fn set_member_at(
+        obj: *mut u8,
+        name: Symbol,
+        site: &CallSite,
+        value: Value,
+    ) -> Result<(), Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.set_member_at) else {
+            return unsafe { Self::set_member(obj, name, value) };
+        };
+        reply(
+            unsafe { f(obj, name, site as *const CallSite as *mut CallSite, value) },
+            Value::null(),
+        )
+        .map(|_| ())
+    }
+
+    /// [`Self::invoke`] through `site`, when the protocol caches.
+    pub unsafe fn invoke_at(obj: *mut u8, name: Symbol, site: &CallSite, args: &[Value]) -> Reply {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.invoke_at) else {
+            return unsafe { Self::invoke(obj, name, args) };
+        };
+        let mut out = Value::null();
+        reply(
+            unsafe {
+                f(
+                    obj,
+                    name,
+                    site as *const CallSite as *mut CallSite,
+                    args.as_ptr(),
+                    args.len(),
+                    &mut out,
+                )
+            },
+            out,
+        )
     }
 
     pub unsafe fn invoke(obj: *mut u8, name: Symbol, args: &[Value]) -> Reply {
@@ -305,6 +439,15 @@ pub enum Callable {
     /// `Value`s in and out by it; `lang` also names the segment in the trace.
     Typed {
         func: *const c_void,
+        signature: *const caribou_abi::hl::hl_type,
+        lang: LangId,
+    },
+    /// A typed function reached through a cell holding its current code
+    /// pointer, read at each call: a function a runtime may replace, by
+    /// promoting it to a tier or by reloading it. Dispatched as `Typed`
+    /// with what the cell holds.
+    Cell {
+        cell: *const *const c_void,
         signature: *const caribou_abi::hl::hl_type,
         lang: LangId,
     },

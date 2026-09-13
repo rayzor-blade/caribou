@@ -3,6 +3,8 @@
 //! name resolves to the same `hashed_name` here and in Ash.
 
 use std::collections::HashMap;
+use std::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 /// An interned name. One table per process; the core assigns ids in
@@ -27,14 +29,34 @@ impl Symbol {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Entry {
     name: &'static str,
     hash: i32,
 }
 
+/// The entries by id, in chunks that are allocated once and never moved,
+/// so a read takes no lock: an id is handed out only after its entry is
+/// written and `LEN` published past it.
+const CHUNK: usize = 1024;
+const CHUNKS: usize = 4096;
+static CHUNKS_BY_ID: [AtomicPtr<Entry>; CHUNKS] =
+    [const { AtomicPtr::new(ptr::null_mut()) }; CHUNKS];
+static LEN: AtomicUsize = AtomicUsize::new(0);
+
+fn entry(id: u32) -> Option<Entry> {
+    let id = id as usize;
+    if id >= LEN.load(Ordering::Acquire) {
+        return None;
+    }
+    let chunk = CHUNKS_BY_ID[id / CHUNK].load(Ordering::Acquire);
+    Some(unsafe { *chunk.add(id % CHUNK) })
+}
+
+/// Writers: the names interned so far. Every write to the chunks happens
+/// under this lock, before `LEN` is advanced.
 struct Interner {
     by_name: HashMap<&'static str, u32>,
-    entries: Vec<Entry>,
 }
 
 fn table() -> &'static Mutex<Interner> {
@@ -42,7 +64,6 @@ fn table() -> &'static Mutex<Interner> {
     TABLE.get_or_init(|| {
         let mut interner = Interner {
             by_name: HashMap::new(),
-            entries: Vec::new(),
         };
         interner.insert("");
         Mutex::new(interner)
@@ -54,15 +75,26 @@ impl Interner {
         if let Some(&id) = self.by_name.get(name) {
             return Symbol(id);
         }
+        let id = LEN.load(Ordering::Relaxed);
+        assert!(id < CHUNK * CHUNKS, "the symbol table is full");
         // Symbols live for the process, so the name is leaked once.
         let name: &'static str = Box::leak(name.to_owned().into_boxed_str());
-        let id = self.entries.len() as u32;
-        self.entries.push(Entry {
-            name,
-            hash: hl_hash(name),
-        });
-        self.by_name.insert(name, id);
-        Symbol(id)
+        let slot = &CHUNKS_BY_ID[id / CHUNK];
+        let mut chunk = slot.load(Ordering::Acquire);
+        if chunk.is_null() {
+            let fresh: Box<[Entry; CHUNK]> = Box::new([Entry { name: "", hash: 0 }; CHUNK]);
+            chunk = Box::leak(fresh).as_mut_ptr();
+            slot.store(chunk, Ordering::Release);
+        }
+        unsafe {
+            chunk.add(id % CHUNK).write(Entry {
+                name,
+                hash: hl_hash(name),
+            });
+        }
+        LEN.store(id + 1, Ordering::Release);
+        self.by_name.insert(name, id as u32);
+        Symbol(id as u32)
     }
 }
 
@@ -83,23 +115,13 @@ pub fn lookup(name: &str) -> Option<Symbol> {
 
 /// The name behind `sym`; empty for an id the table never issued.
 pub fn name(sym: Symbol) -> &'static str {
-    table()
-        .lock()
-        .unwrap()
-        .entries
-        .get(sym.0 as usize)
-        .map_or("", |e| e.name)
+    entry(sym.0).map_or("", |e| e.name)
 }
 
 /// HashLink's field hash of the symbol's name: what `hl_obj_field::
 /// hashed_name` holds for it in Ash.
 pub fn hash(sym: Symbol) -> i32 {
-    table()
-        .lock()
-        .unwrap()
-        .entries
-        .get(sym.0 as usize)
-        .map_or(0, |e| e.hash)
+    entry(sym.0).map_or(0, |e| e.hash)
 }
 
 /// HashLink's `hl_hash_gen` over the UTF-16 encoding of `name`, stopping at

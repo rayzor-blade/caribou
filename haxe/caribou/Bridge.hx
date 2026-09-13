@@ -224,7 +224,12 @@ class Bridge {
 
 		function native(symbol:String, args:Array<FunctionArg>, ret:ComplexType, name:String):String {
 			// The body is never run: genhl emits the native in its place.
-			var body = haxe.macro.ComplexTypeTools.toString(ret) == "Void" ? macro {} : macro return null;
+			var body = switch (haxe.macro.ComplexTypeTools.toString(ret)) {
+				case "Void": macro {};
+				case "Float": macro return 0.0;
+				case "Bool": macro return false;
+				default: macro return null;
+			}
 			fields.push({
 				name: name,
 				pos: pos,
@@ -260,6 +265,12 @@ class Bridge {
 			var arity = m.params.length;
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
+			// A number or a bool comes back from the native in a register;
+			// anything else as a boxed dynamic the wrapper casts.
+			var nativeRet = switch (haxe.macro.ComplexTypeTools.toString(ret)) {
+				case "Float", "Bool": ret;
+				default: macro :Dynamic;
+			}
 			// The native's Haxe name: distinct per kind, name and arity.
 			var nativeName = "__" + m.kind + "_" + m.name + arity;
 			switch (m.kind) {
@@ -301,7 +312,7 @@ class Bridge {
 						});
 					} else if (isGetter) {
 						// A static getter: the property's `get`.
-						var target = native(prefix + "static:" + m.signature, [], macro :Dynamic, nativeName);
+						var target = native(prefix + "static:" + m.signature, [], nativeRet, nativeName);
 						var p = staticProperties.get(m.name);
 						if (p == null) {
 							staticProperties.set(m.name, p = {get: false, set: false, type: ret});
@@ -315,7 +326,7 @@ class Bridge {
 							kind: FFun({args: [], ret: ret, expr: macro return $i{target}()})
 						});
 					} else {
-						var target = native(prefix + "static:" + m.signature, dynamicArgs(m), macro :Dynamic, nativeName);
+						var target = native(prefix + "static:" + m.signature, dynamicArgs(m), nativeRet, nativeName);
 						var name = unique(m.name, arity);
 						fields.push({
 							name: name,
@@ -325,7 +336,7 @@ class Bridge {
 						});
 					}
 				case "method":
-					var target = native(prefix + m.signature, [{name: "self", type: self}].concat(dynamicArgs(m)), macro :Dynamic, nativeName);
+					var target = native(prefix + m.signature, [{name: "self", type: self}].concat(dynamicArgs(m)), nativeRet, nativeName);
 					var name = unique(m.name, arity);
 					var call = [macro this].concat(callArgs);
 					fields.push({
@@ -335,7 +346,7 @@ class Bridge {
 						kind: FFun({args: typedArgs(m), ret: ret, expr: macro return $i{target}($a{call})})
 					});
 				case "getter":
-					var target = native(prefix + m.signature, [{name: "self", type: self}], macro :Dynamic, nativeName);
+					var target = native(prefix + m.signature, [{name: "self", type: self}], nativeRet, nativeName);
 					var p = properties.get(m.name);
 					if (p == null) {
 						properties.set(m.name, p = {get: false, set: false, type: ret});

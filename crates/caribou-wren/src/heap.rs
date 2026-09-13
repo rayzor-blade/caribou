@@ -103,11 +103,18 @@ pub struct WrenHeap {
     /// The other languages' classes installed in this heap's VM, and the
     /// handles its instances of them hold.
     imports: RefCell<Imports>,
+    /// The VM's symbols for the signatures the bridge asks for, by the core
+    /// symbol and shape asked (`proto::Signatures`).
+    signatures: RefCell<crate::proto::Signatures>,
     /// This heap's classes published to the registry.
     exports: RefCell<Exports>,
 }
 
 impl WrenHeap {
+    pub(crate) fn signatures(&self) -> &RefCell<crate::proto::Signatures> {
+        &self.signatures
+    }
+
     pub(crate) fn imports(&self) -> &RefCell<Imports> {
         &self.imports
     }
@@ -291,6 +298,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         freed_bytes: 0,
         freed_objects: 0,
         imports: RefCell::new(Imports::default()),
+        signatures: RefCell::new(crate::proto::Signatures::default()),
         exports: RefCell::new(Exports::default()),
     }));
     let anchor = unsafe {

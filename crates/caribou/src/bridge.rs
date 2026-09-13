@@ -15,14 +15,16 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr;
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicPtr, Ordering};
 
 use caribou_abi::hl::{self, hl_type, hl_type_fun, hl_type_kind};
 use caribou_abi::{ErrorKind, LangId, Value};
 
 use crate::error::{Error, Rooted};
 use crate::heap::{self, Handle};
-use crate::protocol::{self, Callable, Fault, Reply, Symbol, desc_of};
+use crate::protocol::{self, CallSite, Callable, Fault, Reply, Symbol, desc_of};
 use crate::sched::{self, TaskId};
 use crate::world::LANG_CORE;
 
@@ -114,11 +116,20 @@ pub type TypedDispatch = unsafe extern "C-unwind" fn(
     out: *mut Value,
 ) -> u8;
 
+/// The dispatchers by language id, read on every typed call: a table of
+/// atomics for the ids a process has, the lock only past it.
+const DISPATCH_TABLE: usize = 64;
+static DISPATCH_BY_LANG: [AtomicPtr<()>; DISPATCH_TABLE] =
+    [const { AtomicPtr::new(ptr::null_mut()) }; DISPATCH_TABLE];
 static DISPATCHERS: RwLock<Vec<(LangId, TypedDispatch)>> = RwLock::new(Vec::new());
 
 /// Register the dispatcher for typed callables of `lang`, replacing any
 /// earlier one. The core's own language has a default.
 pub fn set_typed_dispatch(lang: LangId, f: TypedDispatch) {
+    if let Some(slot) = DISPATCH_BY_LANG.get(lang as usize) {
+        slot.store(f as *mut (), Ordering::Release);
+        return;
+    }
     let mut table = DISPATCHERS.write().unwrap();
     match table.iter_mut().find(|(l, _)| *l == lang) {
         Some(entry) => entry.1 = f,
@@ -128,12 +139,18 @@ pub fn set_typed_dispatch(lang: LangId, f: TypedDispatch) {
 
 /// The dispatcher for `lang`, if one is registered.
 pub fn typed_dispatch(lang: LangId) -> Option<TypedDispatch> {
-    let registered = DISPATCHERS
-        .read()
-        .unwrap()
-        .iter()
-        .find(|(l, _)| *l == lang)
-        .map(|(_, f)| *f);
+    let registered = match DISPATCH_BY_LANG.get(lang as usize) {
+        Some(slot) => {
+            let f = slot.load(Ordering::Acquire);
+            (!f.is_null()).then(|| unsafe { std::mem::transmute::<*mut (), TypedDispatch>(f) })
+        }
+        None => DISPATCHERS
+            .read()
+            .unwrap()
+            .iter()
+            .find(|(l, _)| *l == lang)
+            .map(|(_, f)| *f),
+    };
     registered.or((lang == LANG_CORE).then_some(core_dispatch as TypedDispatch))
 }
 
@@ -530,6 +547,29 @@ pub fn call_named(
     caller: LangId,
     name: &str,
 ) -> Result<Value, Value> {
+    call_at_opt(callable, args, caller, name, None)
+}
+
+/// [`call_named`] through a call site the caller keeps, for a callable
+/// that is a member send: the callee's protocol may cache what it derived
+/// there.
+pub fn call_at(
+    callable: Callable,
+    site: &CallSite,
+    args: &[Value],
+    caller: LangId,
+    name: &str,
+) -> Result<Value, Value> {
+    call_at_opt(callable, args, caller, name, Some(site))
+}
+
+fn call_at_opt(
+    callable: Callable,
+    args: &[Value],
+    caller: LangId,
+    name: &str,
+    site: Option<&CallSite>,
+) -> Result<Value, Value> {
     match callable {
         Callable::Dynamic(v) => {
             let Some(obj) = object_of(v) else {
@@ -562,6 +602,14 @@ pub fn call_named(
             let outcome = typed_call(func, signature, lang, args);
             settle(outcome, lang, name, caller)
         }
+        Callable::Cell {
+            cell,
+            signature,
+            lang,
+        } => {
+            let outcome = typed_call(unsafe { *cell }, signature, lang, args);
+            settle(outcome, lang, name, caller)
+        }
         Callable::WrenMethod {
             class,
             signature,
@@ -583,7 +631,7 @@ pub fn call_named(
                     }
                 }
             };
-            invoke_named(receiver, signature, args, caller, name)
+            invoke_named(receiver, signature, args, caller, name, site)
         }
     }
 }
@@ -631,7 +679,19 @@ fn typed_call(
 
 /// Call the member `name` of `obj`.
 pub fn invoke(obj: Value, name: Symbol, args: &[Value], caller: LangId) -> Result<Value, Value> {
-    invoke_named(obj, name, args, caller, name.name())
+    invoke_named(obj, name, args, caller, name.name(), None)
+}
+
+/// [`invoke`] through a call site the caller keeps: the callee's protocol
+/// may cache what it derived there.
+pub fn invoke_at(
+    obj: Value,
+    name: Symbol,
+    site: &CallSite,
+    args: &[Value],
+    caller: LangId,
+) -> Result<Value, Value> {
+    invoke_named(obj, name, args, caller, name.name(), Some(site))
 }
 
 /// `invoke` with `frame` as the trace frame's name.
@@ -641,6 +701,7 @@ fn invoke_named(
     args: &[Value],
     caller: LangId,
     frame: &str,
+    site: Option<&CallSite>,
 ) -> Result<Value, Value> {
     let Some(target) = object_of(obj) else {
         let message = format!("cannot invoke `{}` on {}", name.name(), describe(obj));
@@ -653,7 +714,10 @@ fn invoke_named(
     };
     let segment = unsafe { lang_of(target) };
     let outcome = protected(
-        || unsafe { protocol::Send::invoke(target, name, args) },
+        || match site {
+            Some(site) => unsafe { protocol::Send::invoke_at(target, name, site, args) },
+            None => unsafe { protocol::Send::invoke(target, name, args) },
+        },
         |fault| member_fault(fault, obj, name, "invoke"),
     );
     settle(outcome, segment, frame, caller)
@@ -661,6 +725,20 @@ fn invoke_named(
 
 /// Read the member `name` of `obj`.
 pub fn get(obj: Value, name: Symbol, caller: LangId) -> Result<Value, Value> {
+    get_at_opt(obj, name, None, caller)
+}
+
+/// [`get`] through a call site the caller keeps.
+pub fn get_at(obj: Value, name: Symbol, site: &CallSite, caller: LangId) -> Result<Value, Value> {
+    get_at_opt(obj, name, Some(site), caller)
+}
+
+fn get_at_opt(
+    obj: Value,
+    name: Symbol,
+    site: Option<&CallSite>,
+    caller: LangId,
+) -> Result<Value, Value> {
     let Some(target) = object_of(obj) else {
         let message = format!("cannot read `{}` of {}", name.name(), describe(obj));
         return settle(
@@ -672,7 +750,10 @@ pub fn get(obj: Value, name: Symbol, caller: LangId) -> Result<Value, Value> {
     };
     let segment = unsafe { lang_of(target) };
     let outcome = protected(
-        || unsafe { protocol::Send::get_member(target, name) },
+        || match site {
+            Some(site) => unsafe { protocol::Send::get_member_at(target, name, site) },
+            None => unsafe { protocol::Send::get_member(target, name) },
+        },
         |fault| member_fault(fault, obj, name, "read"),
     );
     settle(outcome, segment, name.name(), caller)
@@ -680,6 +761,27 @@ pub fn get(obj: Value, name: Symbol, caller: LangId) -> Result<Value, Value> {
 
 /// Write the member `name` of `obj`.
 pub fn set(obj: Value, name: Symbol, value: Value, caller: LangId) -> Result<(), Value> {
+    set_at_opt(obj, name, None, value, caller)
+}
+
+/// [`set`] through a call site the caller keeps.
+pub fn set_at(
+    obj: Value,
+    name: Symbol,
+    site: &CallSite,
+    value: Value,
+    caller: LangId,
+) -> Result<(), Value> {
+    set_at_opt(obj, name, Some(site), value, caller)
+}
+
+fn set_at_opt(
+    obj: Value,
+    name: Symbol,
+    site: Option<&CallSite>,
+    value: Value,
+    caller: LangId,
+) -> Result<(), Value> {
     let Some(target) = object_of(obj) else {
         let message = format!("cannot write `{}` of {}", name.name(), describe(obj));
         return settle(
@@ -692,7 +794,13 @@ pub fn set(obj: Value, name: Symbol, value: Value, caller: LangId) -> Result<(),
     };
     let segment = unsafe { lang_of(target) };
     let outcome = protected(
-        || unsafe { protocol::Send::set_member(target, name, value) }.map(|()| Value::null()),
+        || {
+            match site {
+                Some(site) => unsafe { protocol::Send::set_member_at(target, name, site, value) },
+                None => unsafe { protocol::Send::set_member(target, name, value) },
+            }
+            .map(|()| Value::null())
+        },
         |fault| member_fault(fault, obj, name, "write"),
     );
     settle(outcome, segment, name.name(), caller).map(|_| ())

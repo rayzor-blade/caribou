@@ -22,11 +22,10 @@
 //! unwinding through Rust; the thrown value becomes a core `Error` with the
 //! exception as its native payload, and the entry answers `Raised`.
 
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
+use std::sync::RwLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{LazyLock, Mutex};
 
 use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
@@ -43,12 +42,12 @@ use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap::{self, Handle, Tracer, TypeDesc};
 use caribou::protocol::{
-    Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Symbol, desc_of,
+    CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Symbol, desc_of,
 };
 use caribou::registry::ClassIface;
 use caribou_abi::hl::{
-    self, hl_field_lookup, hl_runtime_obj, hl_type, hl_type_detail, hl_type_fun, hl_type_kind,
-    uchar, vclosure, vdynamic,
+    self, hl_field_lookup, hl_module_context, hl_runtime_obj, hl_type, hl_type_detail, hl_type_fun,
+    hl_type_kind, uchar, vclosure, vdynamic,
 };
 use caribou_abi::mem::{KIND_DYNAMIC, KIND_NOPTR, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
@@ -524,6 +523,18 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
             &format!("a call takes at most {MAX_ARGS} arguments, not {arity}"),
         );
     }
+    // Compiled code with at most a bound value is called by its signature.
+    let has_value = unsafe { (*closure).hasValue };
+    if has_value <= 1
+        && let Some(code) = unsafe { code_of((*closure).fun as usize) }
+    {
+        let bound = (has_value == 1).then(|| unsafe { (*closure).value });
+        match unsafe { direct_call(code, fun, bound, args, out) } {
+            Some(Ok(())) => return REPLY_OK,
+            Some(Err(exception)) => return unsafe { raise_exception(exception) },
+            None => {}
+        }
+    }
     // Boxed before the trap: a throw abandons whatever the trap's frames
     // hold, and the boxes are on this frame's stack for the scanner.
     let mut boxed: [*mut vdynamic; MAX_ARGS] = [ptr::null_mut(); MAX_ARGS];
@@ -550,10 +561,158 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
     }
 }
 
-/// The typed dispatcher for Haxe: `func` under `sig`, as a closure without
-/// a bound value, through `hlp_dyn_call`. A code pointer that is one of the
-/// interpreter's stubs takes the closure runner ash registered, as every
-/// dynamic call in ash does.
+/// Pointers below this are the interpreter's stubs, `findex + 1`, not
+/// code: what ash's own compiled callers test before a direct call.
+const STUB_SENTINEL_LIMIT: usize = 0x100000;
+
+/// The loaded program's module context, for the function cells a stub
+/// sentinel names. One program per process.
+static MODULE_CONTEXT: AtomicPtr<hl_module_context> = AtomicPtr::new(ptr::null_mut());
+
+pub(crate) fn set_module_context(m: *mut hl_module_context) {
+    MODULE_CONTEXT.store(m, Ordering::Release);
+}
+
+/// The code behind a closure's `fun`: itself when it is code, else what
+/// the function's cell holds now, when that is code; a closure made
+/// before its function promoted still names the stub.
+unsafe fn code_of(fun: usize) -> Option<*const c_void> {
+    if fun >= STUB_SENTINEL_LIMIT {
+        return Some(fun as *const c_void);
+    }
+    let m = MODULE_CONTEXT.load(Ordering::Acquire);
+    if fun == 0 || m.is_null() {
+        return None;
+    }
+    let entry = unsafe { *(*m).functions_ptrs.add(fun - 1) } as usize;
+    (entry >= STUB_SENTINEL_LIMIT).then_some(entry as *const c_void)
+}
+
+/// Call compiled code directly by its signature: each argument placed as
+/// its kind wants, integers, pointers, `f32` or `f64`, and the result
+/// read back the same way, with no box on either side. `None` when the
+/// signature is one the table does not cover, or an argument cannot take
+/// its kind; the caller then goes through `hlp_dyn_call`.
+unsafe fn direct_call(
+    func: *const c_void,
+    fun: *const hl_type_fun,
+    bound: Option<*mut c_void>,
+    args: &[Value],
+    out: *mut Value,
+) -> Option<Result<(), *mut vdynamic>> {
+    // A bound value goes first, as a pointer.
+    let lead = usize::from(bound.is_some());
+    let n = args.len() + lead;
+    if n > MAX_ARGS {
+        return None;
+    }
+    let mut ints = [0i64; MAX_ARGS];
+    let mut f32s = [0f32; MAX_ARGS];
+    let mut f64s = [0f64; MAX_ARGS];
+    let mut kinds = [0u8; MAX_ARGS];
+    if let Some(value) = bound {
+        ints[0] = value as i64;
+    }
+    for (a, &arg) in args.iter().enumerate() {
+        let i = a + lead;
+        let t = unsafe { *(*fun).args.add(a) };
+        let kind = unsafe { (*t).kind };
+        match kind {
+            hl::HF64 => {
+                f64s[i] = arg.as_number().or_else(|| arg.as_int().map(f64::from))?;
+                kinds[i] = 2;
+            }
+            hl::HF32 => {
+                f32s[i] = arg.as_number().or_else(|| arg.as_int().map(f64::from))? as f32;
+                kinds[i] = 1;
+            }
+            hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HBOOL => {
+                let v = arg
+                    .as_int()
+                    .or_else(|| arg.as_number().map(|n| n as i32))
+                    .or_else(|| arg.as_bool().map(i32::from))?;
+                ints[i] = i64::from(v);
+            }
+            hl::HI64 => {
+                let v = arg
+                    .as_int()
+                    .map(i64::from)
+                    .or_else(|| arg.as_number().map(|n| n as i64))?;
+                ints[i] = v;
+            }
+            // Pointers: what the boxed path would pass, checked against the
+            // declared kind, since nothing casts on a direct call.
+            hl::HOBJ
+            | hl::HSTRUCT
+            | hl::HFUN
+            | hl::HDYN
+            | hl::HBYTES
+            | hl::HARRAY
+            | hl::HVIRTUAL
+            | hl::HDYNOBJ
+            | hl::HABSTRACT
+            | hl::HENUM
+            | hl::HREF
+            | hl::HNULL
+            | hl::HTYPE => {
+                let p = unsafe { value_to_dyn(arg, kind) }.ok()?;
+                if !p.is_null()
+                    && kind != hl::HDYN
+                    && kind != hl::HNULL
+                    && unsafe { kind_of(p) } != kind
+                {
+                    return None;
+                }
+                ints[i] = p as i64;
+            }
+            _ => return None,
+        }
+    }
+    let ret_t = unsafe { (*fun).ret };
+    let ret_kind = unsafe { (*ret_t).kind };
+    let ret_code = match ret_kind {
+        hl::HF64 => 2,
+        hl::HF32 => 1,
+        _ => 0,
+    };
+    let mut raw: Option<i64> = None;
+    let call = trapped(|| {
+        raw = unsafe {
+            ash_native_call::dispatch(
+                func as *mut c_void,
+                &ints[..n],
+                &f32s[..n],
+                &f64s[..n],
+                &kinds[..n],
+                ret_code,
+            )
+        };
+    });
+    match call {
+        Err(exception) => Some(Err(exception)),
+        Ok(()) => {
+            let raw = raw?;
+            let v = match ret_kind {
+                hl::HVOID => Value::null(),
+                hl::HF64 => Value::number(f64::from_bits(raw as u64)),
+                hl::HF32 => Value::number(f64::from(f32::from_bits(raw as u32))),
+                hl::HBOOL => Value::bool(raw & 1 != 0),
+                hl::HUI8 => Value::int(i32::from(raw as u8)),
+                hl::HUI16 => Value::int(i32::from(raw as u16)),
+                hl::HI32 => Value::int(raw as i32),
+                hl::HI64 => Value::number(raw as f64),
+                _ => unsafe { dyn_to_value(raw as *mut vdynamic) },
+            };
+            unsafe { *out = v };
+            Some(Ok(()))
+        }
+    }
+}
+
+/// The typed dispatcher for Haxe: `func` under `sig`. Compiled code is
+/// called directly by its signature; one of the interpreter's stubs takes
+/// `hlp_dyn_call` and the closure runner ash registered, as every dynamic
+/// call in ash does.
 pub(crate) unsafe extern "C-unwind" fn dispatch(
     func: *const c_void,
     sig: *const hl_type,
@@ -566,6 +725,16 @@ pub(crate) unsafe extern "C-unwind" fn dispatch(
     } else {
         unsafe { std::slice::from_raw_parts(args, nargs) }
     };
+    if func as usize >= STUB_SENTINEL_LIMIT
+        && let Some(fun) = (unsafe { fun_of(sig) })
+        && unsafe { (*fun).nargs }.max(0) as usize == nargs
+    {
+        match unsafe { direct_call(func, fun, None, args, out) } {
+            Some(Ok(())) => return REPLY_OK,
+            Some(Err(exception)) => return unsafe { raise_exception(exception) },
+            None => {}
+        }
+    }
     let mut closure = vclosure {
         t: sig as *mut hl_type,
         fun: func as *mut c_void,
@@ -587,7 +756,8 @@ pub(crate) unsafe extern "C-unwind" fn dispatch(
 struct HaxeCtor {
     desc: *const TypeDesc,
     t: *mut hl_type,
-    func: *const c_void,
+    /// `__constructor__`'s cell in the module context.
+    cell: *const *const c_void,
     sig: *const hl_type,
 }
 
@@ -600,9 +770,13 @@ static mut CTOR_DESC: TypeDesc = {
 };
 
 /// The constructor of the class whose instance type is `t`, as a value
-/// the registry can hold: `func` and `sig` are `__constructor__`'s code
-/// pointer and full type, `this` first.
-pub(crate) fn constructor(t: *mut hl_type, func: *const c_void, sig: *const hl_type) -> Value {
+/// the registry can hold: `cell` and `sig` are `__constructor__`'s cell in
+/// the module context and its full type, `this` first.
+pub(crate) fn constructor(
+    t: *mut hl_type,
+    cell: *const *const c_void,
+    sig: *const hl_type,
+) -> Value {
     unsafe { CTOR_DESC.lang = lang() };
     let _lock = heap::gc_guard();
     let p = unsafe {
@@ -618,7 +792,7 @@ pub(crate) fn constructor(t: *mut hl_type, func: *const c_void, sig: *const hl_t
     unsafe {
         (*p).desc = &raw const CTOR_DESC;
         (*p).t = t;
-        (*p).func = func;
+        (*p).cell = cell;
         (*p).sig = sig;
     }
     // Kept for the process, as the interface that names it is.
@@ -647,7 +821,7 @@ unsafe extern "C-unwind" fn ctor_call(
     let mut ignored = Value::null();
     let code = unsafe {
         dispatch(
-            ctor.func,
+            *ctor.cell,
             ctor.sig,
             with_this.as_ptr(),
             with_this.len(),
@@ -801,17 +975,104 @@ pub fn is_constructor(callable: Callable) -> bool {
 
 /// HashLink's hash of a symbol's name, through ash's own table so a
 /// collision resolves as the loader resolved it. Computed once per symbol.
+/// The field hash of a symbol's name, kept per symbol: a symbol is an
+/// index, so the cache is a table.
 fn field_hash(name: Symbol) -> i32 {
-    static HASHES: LazyLock<Mutex<HashMap<Symbol, i32>>> =
-        LazyLock::new(|| Mutex::new(HashMap::new()));
-    if let Some(&h) = HASHES.lock().unwrap().get(&name) {
-        return h;
+    static HASHES: RwLock<Vec<Option<i32>>> = RwLock::new(Vec::new());
+    let index = name.0 as usize;
+    if let Some(Some(h)) = HASHES.read().unwrap().get(index) {
+        return *h;
     }
     let mut units: Vec<uchar> = name.name().encode_utf16().collect();
     units.push(0);
     let h = unsafe { hlp_hash_gen(units.as_ptr(), true) };
-    HASHES.lock().unwrap().insert(name, h);
+    let mut hashes = HASHES.write().unwrap();
+    if hashes.len() <= index {
+        hashes.resize(index + 1, None);
+    }
+    hashes[index] = Some(h);
     h
+}
+
+/// A declared field of an object type: its byte offset and type, found
+/// up the class chain in the runtime's lookup tables.
+unsafe fn field_of(t: *mut hl_type, hfield: i32) -> Option<(usize, *mut hl_type)> {
+    if !matches!(unsafe { (*t).kind }, hl::HOBJ | hl::HSTRUCT) {
+        return None;
+    }
+    let mut rt = unsafe { hl_get_obj_proto(t.cast()) } as *mut hl_runtime_obj;
+    while !rt.is_null() {
+        let f = unsafe { hlp_lookup_find((*rt).lookup.cast(), (*rt).nlookup, hfield) }
+            as *mut hl_field_lookup;
+        if !f.is_null() {
+            // A field's entry holds its byte offset; a method's is negative.
+            let offset = unsafe { (*f).field_index };
+            if offset < 0 {
+                return None;
+            }
+            return Some((offset as usize, unsafe { (*f).t }));
+        }
+        rt = unsafe { (*rt).parent };
+    }
+    None
+}
+
+/// Read the field at `offset` of `d` as a value, by its type's kind.
+unsafe fn read_field(d: *mut vdynamic, offset: usize, t: *mut hl_type) -> Option<Value> {
+    let at = unsafe { (d as *mut u8).add(offset) };
+    Some(match unsafe { (*t).kind } {
+        hl::HUI8 => Value::int(i32::from(unsafe { *at })),
+        hl::HUI16 => Value::int(i32::from(unsafe { *(at as *const u16) })),
+        hl::HI32 => Value::int(unsafe { *(at as *const i32) }),
+        hl::HI64 => Value::number(unsafe { *(at as *const i64) } as f64),
+        hl::HF32 => Value::number(f64::from(unsafe { *(at as *const f32) })),
+        hl::HF64 => Value::number(unsafe { *(at as *const f64) }),
+        hl::HBOOL => Value::bool(unsafe { *at } != 0),
+        hl::HVOID => return None,
+        _ => unsafe { dyn_to_value(*(at as *const *mut vdynamic)) },
+    })
+}
+
+/// Write `value` into the field at `offset` of `d`, by its type's kind.
+/// `None` when the value cannot take the kind.
+unsafe fn write_field(
+    d: *mut vdynamic,
+    offset: usize,
+    t: *mut hl_type,
+    value: Value,
+) -> Option<Result<(), String>> {
+    let at = unsafe { (d as *mut u8).add(offset) };
+    let kind = unsafe { (*t).kind };
+    let int = || {
+        value
+            .as_int()
+            .or_else(|| value.as_number().map(|n| n as i32))
+            .or_else(|| value.as_bool().map(i32::from))
+    };
+    let float = || value.as_number().or_else(|| value.as_int().map(f64::from));
+    unsafe {
+        match kind {
+            hl::HUI8 => *at = int()? as u8,
+            hl::HUI16 => *(at as *mut u16) = int()? as u16,
+            hl::HI32 => *(at as *mut i32) = int()?,
+            hl::HI64 => *(at as *mut i64) = int().map(i64::from)?,
+            hl::HF32 => *(at as *mut f32) = float()? as f32,
+            hl::HF64 => *(at as *mut f64) = float()?,
+            hl::HBOOL => *at = u8::from(value.as_bool()?),
+            hl::HVOID => return None,
+            _ => {
+                let p = match value_to_dyn(value, kind) {
+                    Ok(p) => p,
+                    Err(message) => return Some(Err(message)),
+                };
+                if !p.is_null() && kind != hl::HDYN && kind != hl::HNULL && kind_of(p) != kind {
+                    return None;
+                }
+                *(at as *mut *mut vdynamic) = p;
+            }
+        }
+    }
+    Some(Ok(()))
 }
 
 unsafe fn kind_of(d: *mut vdynamic) -> hl_type_kind {
@@ -830,10 +1091,13 @@ fn has_members(kind: hl_type_kind) -> bool {
 }
 
 /// The method `hfield` of a class instance, by the runtime's lookup chain:
-/// its code pointer, from the instance's own method table so an override
-/// wins, and its full type with `this` first. `None` for a field or an
-/// unknown name.
-unsafe fn find_method(d: *mut vdynamic, hfield: i32) -> Option<(*const c_void, *const hl_type)> {
+/// its slot in the instance's own method table, so an override wins and a
+/// promoted body is what the slot holds, and its full type with `this`
+/// first. `None` for a field or an unknown name.
+unsafe fn find_method(
+    d: *mut vdynamic,
+    hfield: i32,
+) -> Option<(*const *const c_void, *const hl_type)> {
     let t = unsafe { (*d).t };
     if !matches!(unsafe { (*t).kind }, hl::HOBJ | hl::HSTRUCT) {
         return None;
@@ -855,8 +1119,8 @@ unsafe fn find_method(d: *mut vdynamic, hfield: i32) -> Option<(*const c_void, *
             if index >= unsafe { (*leaf).nmethods } as usize {
                 return None;
             }
-            let func = unsafe { *(*leaf).methods.add(index) };
-            return Some((func, unsafe { (*f).t }));
+            let slot = unsafe { (*leaf).methods.add(index) } as *const *const c_void;
+            return Some((slot, unsafe { (*f).t }));
         }
         rt = unsafe { (*rt).parent };
     }
@@ -877,9 +1141,46 @@ unsafe fn get_dyn(d: *mut vdynamic, hfield: i32) -> Result<*mut vdynamic, *mut v
 /// closure; `Missing` for a name the object's type does not declare and a
 /// dynamic object does not hold.
 unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    get_at(obj, name, None, out)
+}
+
+unsafe extern "C-unwind" fn get_member_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    out: *mut Value,
+) -> u8 {
+    get_at(obj, name, unsafe { site.as_ref() }, out)
+}
+
+/// A declared field's place in an object of type `t`, from `site` when it
+/// was filled for `t`, else from the runtime's lookup, left in `site`.
+unsafe fn field_at(
+    t: *mut hl_type,
+    name: Symbol,
+    site: Option<&CallSite>,
+) -> Option<(usize, *mut hl_type)> {
+    if let Some((offset, ft)) = site.and_then(|s| s.get(t as usize)) {
+        return Some((offset, ft as *mut hl_type));
+    }
+    let found = unsafe { field_of(t, field_hash(name)) };
+    if let (Some(site), Some((offset, ft))) = (site, found) {
+        site.set(t as usize, offset, ft as usize);
+    }
+    found
+}
+
+fn get_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, out: *mut Value) -> u8 {
     let d = unsafe { inner(obj) };
     if !has_members(unsafe { kind_of(d) }) {
         return REPLY_UNSUPPORTED;
+    }
+    // A declared field is read where it lies.
+    if let Some((offset, t)) = unsafe { field_at((*d).t, name, site) }
+        && let Some(v) = unsafe { read_field(d, offset, t) }
+    {
+        unsafe { *out = v };
+        return REPLY_OK;
     }
     let hfield = field_hash(name);
     let declared = unsafe { hlp_obj_has_field(d.cast(), hfield) }
@@ -896,10 +1197,32 @@ unsafe extern "C-unwind" fn get_member(obj: *mut u8, name: Symbol, out: *mut Val
 
 /// A declared field, or any field of a dynamic object.
 unsafe extern "C-unwind" fn set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
+    set_at(obj, name, None, value)
+}
+
+unsafe extern "C-unwind" fn set_member_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    value: Value,
+) -> u8 {
+    set_at(obj, name, unsafe { site.as_ref() }, value)
+}
+
+fn set_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, value: Value) -> u8 {
     let d = unsafe { inner(obj) };
     let kind = unsafe { kind_of(d) };
     if !has_members(kind) {
         return REPLY_UNSUPPORTED;
+    }
+    // A declared field is written where it lies, when the value takes its
+    // kind; else the runtime's own conversion.
+    if let Some((offset, t)) = unsafe { field_at((*d).t, name, site) } {
+        match unsafe { write_field(d, offset, t, value) } {
+            Some(Ok(())) => return REPLY_OK,
+            Some(Err(message)) => return raise_core(ErrorKind::Type, &message),
+            None => {}
+        }
     }
     let hfield = field_hash(name);
     if kind != hl::HDYNOBJ && !unsafe { hlp_obj_has_field(d.cast(), hfield) } {
@@ -924,6 +1247,51 @@ unsafe extern "C-unwind" fn invoke(
     n: usize,
     out: *mut Value,
 ) -> u8 {
+    invoke_at_opt(obj, name, None, args, n, out)
+}
+
+unsafe extern "C-unwind" fn invoke_at(
+    obj: *mut u8,
+    name: Symbol,
+    site: *mut CallSite,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    invoke_at_opt(obj, name, unsafe { site.as_ref() }, args, n, out)
+}
+
+/// The method `name` of an object of type `t`: its slot in the type's
+/// method table and its signature, from `site` when it was filled for
+/// `t`, else from the runtime's lookup, left in `site`. The slot is read
+/// per call: it is where the runtime installs a promoted body.
+unsafe fn method_at(
+    d: *mut vdynamic,
+    name: Symbol,
+    site: Option<&CallSite>,
+) -> Option<(*const c_void, *const hl_type)> {
+    let t = unsafe { (*d).t };
+    if let Some((slot, sig)) = site.and_then(|s| s.get(t as usize)) {
+        return Some((
+            unsafe { *(slot as *const *const c_void) },
+            sig as *const hl_type,
+        ));
+    }
+    let (slot, sig) = unsafe { find_method(d, field_hash(name)) }?;
+    if let Some(site) = site {
+        site.set(t as usize, slot as usize, sig as usize);
+    }
+    Some((unsafe { *slot }, sig))
+}
+
+fn invoke_at_opt(
+    obj: *mut u8,
+    name: Symbol,
+    site: Option<&CallSite>,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
     let d = unsafe { inner(obj) };
     if !has_members(unsafe { kind_of(d) }) {
         return REPLY_UNSUPPORTED;
@@ -933,13 +1301,21 @@ unsafe extern "C-unwind" fn invoke(
     } else {
         unsafe { std::slice::from_raw_parts(args, n) }
     };
-    let hfield = field_hash(name);
-    if let Some((func, sig)) = unsafe { find_method(d, hfield) } {
+    if let Some((func, sig)) = unsafe { method_at(d, name, site) } {
+        // `this` first; on the stack for what a compiled body takes.
+        let this = Value::object(obj as *const c_void);
+        if n < 10 {
+            let mut with_this = [Value::null(); 10];
+            with_this[0] = this;
+            with_this[1..=n].copy_from_slice(args);
+            return unsafe { dispatch(func, sig, with_this.as_ptr(), n + 1, out) };
+        }
         let mut with_this = Vec::with_capacity(n + 1);
-        with_this.push(Value::object(obj as *const c_void));
+        with_this.push(this);
         with_this.extend_from_slice(args);
         return unsafe { dispatch(func, sig, with_this.as_ptr(), with_this.len(), out) };
     }
+    let hfield = field_hash(name);
     if !unsafe { hlp_obj_has_field(d.cast(), hfield) } {
         return REPLY_MISSING;
     }
@@ -1046,6 +1422,9 @@ static HAXE_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
     invoke: Some(invoke),
+    get_member_at: Some(get_member_at),
+    set_member_at: Some(set_member_at),
+    invoke_at: Some(invoke_at),
     call: Some(call),
     arity: Some(arity),
     to_string: Some(to_string),

@@ -64,11 +64,13 @@ fn scrub_stack() {
 }
 
 /// The ref Haxe holds for the object at `hidden` inverted, as its address
-/// inverted; see `wren_has` for the frame.
+/// inverted, or 0 for none; see `wren_has` for the frame. A word, not an
+/// `Option`: the payload register of a `None` is whatever the callee left
+/// there, the raw address included, and the caller spills it.
 #[inline(never)]
-fn ref_for(hidden: usize) -> Option<usize> {
+fn ref_for(hidden: usize) -> usize {
     let obj = Value::object(!hidden as *const c_void);
-    caribou_ash::foreign_ref(obj).map(|r| !(r.as_object().unwrap() as usize))
+    caribou_ash::foreign_ref(obj).map_or(0, |r| !(r.as_object().unwrap() as usize))
 }
 
 /// Make a `Hud` nothing in Wren refers to, wrap it for Haxe twice, root
@@ -169,7 +171,7 @@ fn haxe_holds_a_wren_object_through_a_ref() {
     );
     assert_eq!(
         ref_for(obj_hidden),
-        Some(ref_hidden),
+        ref_hidden,
         "the same ref is still the one for the object"
     );
 
@@ -177,7 +179,7 @@ fn haxe_holds_a_wren_object_through_a_ref() {
     // its handle; the object goes with the next Wren cycle.
     heap::handle_release(root);
     heap::major();
-    assert_eq!(ref_for(obj_hidden), None, "the map entry is gone");
+    assert_eq!(ref_for(obj_hidden), 0, "the map entry is gone");
     scrub_stack();
     vm.collect_garbage();
     assert!(

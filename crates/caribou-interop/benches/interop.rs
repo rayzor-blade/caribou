@@ -10,6 +10,9 @@
 //!
 //!     cargo bench -p caribou-interop -- [--mode interp|hybrid]
 //!         [--wren interpreter|tiered] [--n 200000] [--runs 5]
+//!         [--only <operation>] [--column <0-3>]
+//!
+//! `--only` and `--column` run one cell, for a profiler to sample.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -42,6 +45,8 @@ struct Args {
     wren_mode: ExecutionMode,
     n: usize,
     runs: usize,
+    only: Option<String>,
+    column: Option<usize>,
 }
 
 fn args() -> Args {
@@ -50,6 +55,8 @@ fn args() -> Args {
         wren_mode: ExecutionMode::Tiered,
         n: 200_000,
         runs: 5,
+        only: None,
+        column: None,
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -68,6 +75,8 @@ fn args() -> Args {
             }
             "--n" => out.n = argv.next().and_then(|v| v.parse().ok()).unwrap_or(out.n),
             "--runs" => out.runs = argv.next().and_then(|v| v.parse().ok()).unwrap_or(out.runs),
+            "--only" => out.only = argv.next(),
+            "--column" => out.column = argv.next().and_then(|v| v.parse().ok()),
             // cargo bench passes its own flags through.
             _ => {}
         }
@@ -108,8 +117,19 @@ fn main() {
     println!();
 
     for (label, suffix) in OPERATIONS {
+        if args
+            .only
+            .as_deref()
+            .is_some_and(|only| !label.starts_with(only))
+        {
+            continue;
+        }
         print!("{label:<14}");
-        for (_, namespace, module, class, prefix, int) in COLUMNS {
+        for (i, (_, namespace, module, class, prefix, int)) in COLUMNS.into_iter().enumerate() {
+            if args.column.is_some_and(|c| c != i) {
+                print!("{:>12}", "");
+                continue;
+            }
             let member = format!("{prefix}{suffix}");
             let arg = if int {
                 Value::int(args.n as i32)
@@ -141,5 +161,11 @@ fn main() {
             print!("{median:>12.1}");
         }
         println!();
+    }
+    // `WLIFT_TIER_STATS=1` and `ASH_TIER_LOG=1` say which tier ran what.
+    if std::env::var_os("WLIFT_TIER_STATS").is_some() {
+        let vm = session.wren();
+        let interner = &vm.interner;
+        vm.engine.dump_tier_stats(interner);
     }
 }

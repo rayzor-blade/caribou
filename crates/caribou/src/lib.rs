@@ -10,6 +10,7 @@ pub mod bridge;
 pub mod describe;
 pub mod diag;
 pub mod error;
+pub mod hash;
 pub mod heap;
 pub mod protocol;
 pub mod registry;

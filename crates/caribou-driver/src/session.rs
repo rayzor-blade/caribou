@@ -110,6 +110,11 @@ impl Session {
         &self.program
     }
 
+    /// The Wren VM the session's modules load into.
+    pub fn wren(&mut self) -> &mut VM {
+        &mut self.vm
+    }
+
     /// Run the program's entry point and its event loop, and keep the
     /// session: what it published stays callable through [`Self::call`].
     pub fn start(&mut self) -> Result<()> {

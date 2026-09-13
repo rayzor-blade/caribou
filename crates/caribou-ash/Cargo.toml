@@ -20,6 +20,8 @@ caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
 # Path dependencies until ash is published; then git dependencies at one rev.
 ash_std = { path = "../../../ash/std" }
+# Calls a compiled Haxe function by its signature, with no boxing.
+ash_native_call = { path = "../../../ash/crates/ash_native_call" }
 ash_core = { path = "../../../ash/crates/ash", default-features = false, optional = true }
 ash_interp = { path = "../../../ash/crates/ash_interp", default-features = false, optional = true }
 anyhow = { version = "1", optional = true }

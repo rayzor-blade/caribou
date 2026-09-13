@@ -26,10 +26,10 @@
 //! and `hud.Hud` is what an instance reports through `type_name`, kept on
 //! the heap record for the protocol to answer.
 
-use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
+use caribou::hash::AddressMap;
 use caribou::protocol::Callable;
 use caribou::registry::{self, ClassIface, FieldIface, Interface, MethodIface, TypeRef};
 use caribou::symbol;
@@ -48,7 +48,7 @@ use crate::types::Export;
 /// its instances report.
 #[derive(Default)]
 pub(crate) struct Exports {
-    types: HashMap<usize, String>,
+    types: AddressMap<String>,
 }
 
 impl Exports {
