@@ -426,6 +426,7 @@ dependencies = [
  "krio-core",
  "krio-fiber",
  "libc",
+ "serde",
  "windows-sys 0.59.0",
 ]
 
@@ -452,6 +453,7 @@ dependencies = [
  "caribou-ash",
  "caribou-wren",
  "caribou_abi",
+ "libc",
  "wren_lift",
 ]
 
@@ -461,6 +463,7 @@ version = "0.1.0"
 dependencies = [
  "caribou",
  "caribou_abi",
+ "serde_json",
  "wren_lift",
 ]
 

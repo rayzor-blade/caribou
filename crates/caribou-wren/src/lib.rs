@@ -16,10 +16,12 @@
 //! program's `import "game:Player"` with the class the registry publishes;
 //! `publish` puts a Wren module's own classes there for another language.
 
+pub mod describe;
 mod heap;
 pub mod import;
 mod proto;
 pub mod publish;
+pub mod types;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -727,6 +727,93 @@ drops every dead wren_lift object, releases the handle first; `heap_drop`
 releases whatever a VM leaves behind. No identity cache is kept: two
 instances made for one Haxe object are distinct Wren objects.
 
+### Haxe imports
+
+Haxe types every call at compile time and the HL target refuses `extern
+class`, so a Wren class Haxe code uses has to be declared before genhl
+runs. The declaration is the build macro's whole job:
+`--macro caribou.Bridge.use()` (`haxe/caribou/Bridge.hx`) walks the
+program's classpath for `.wren` files and emits a class for each class they
+define, under the package the file's path spells, as for a Haxe module:
+`src/game/hud.wren` gives `game.hud.Hud`, with `game` the namespace the
+runtime resolves the module through and `hud` the module's name. A file at
+a classpath root is under the language's own namespace. What the macro
+knows about a module it asks the runtime: `caribou-wren --describe`
+prints the module's interface as JSON, a `caribou::describe::ModuleDesc`,
+which is the registry `Interface` without its callables plus the parameter
+names a source has, produced from the parse tree by the rules the
+publisher applies to the running VM. The runner is found on the path or
+named by `-D caribou.runner`.
+
+Every emitted class extends `caribou.Ref`, whose one field holds the
+object's ref (below), and every member of it is a native of the `caribou`
+library named for what it reaches: `game:hud.Hud.add(_)`, the namespace,
+module, class and the member's Wren signature, `static:` before a static's
+and `construct:` before the constructor's. The native is a static taking
+the receiver, since genhl emits nothing for `@:hlNative` on an instance
+method, and an inline method or property wraps it with the declared types;
+the boundary itself is `Dynamic`, so one entry per argument count serves
+every member. The constructor calls its native with the fresh Haxe object,
+and the native makes the Wren object and binds the two. A named
+constructor is a static factory; a static getter is a static property. A
+subclass declares what it inherits from a superclass of the same module
+and stands alone under `caribou.Ref`, because a Haxe constructor must call
+its parent's and a Wren subclass's constructor is its own.
+
+When the program loads, `caribou_ash::import::bind` reads its natives:
+each `caribou` one is parsed into a slot (namespace, module, class,
+member, kind) and registered with ash's resolver as one of the entries by
+argument count with the slot's address as the native's context word, which
+ash's interpreter, Cranelift tier and LLVM tier pass ahead of the declared
+arguments (`native_lib::HostNative`). Binding is by name alone: nothing
+has to be published before the program starts, ash looks for no library,
+and the call finds the member when it happens, through the registry for a
+static or a constructor and through the object for the rest, so a class
+published again answers the next call. The arguments cross as bridge
+values, the result comes back through the Haxe conversion, and a bridge
+error is thrown into Haxe as the exception it carries, else its message as
+a `String`. `attach_types` records, once the interpreter has built its
+types, the class each slot's Haxe class is and `caribou.Ref`, for the
+faces below, and the program's `String` for the strings that cross.
+
+### Faces
+
+A Haxe object of an emitted class is the face of one foreign object: its
+first field holds the object's ref and the ref knows its face, so the same
+Wren object reaching Haxe twice is the same Haxe object, and a face going
+back to Wren is the object it stands for. A foreign object crossing into a
+`Dynamic` gets a face under the class the program declares for its
+published type, found through the registry by the object's `type_name`,
+else under `caribou.Ref` when the program has that class. The ref and its
+face hold each other, and both die when Haxe lets go.
+
+### Declaring types
+
+Wren declares no types, so a member says what it exposes in one of
+wren_lift's attributes, which reach the MIR and the class at run time:
+
+```wren
+#export = "add(n: Num) -> Num"
+add(n) { _score = _score + n }
+```
+
+The value is the member's exported signature: the name other languages
+see, which may differ from Wren's; one parameter per Wren parameter, each
+`name`, `name: Type` or `_: Type`, `_` keeping the source's name; and
+`-> Type` for the result. A getter is `name -> Type`, a setter
+`name=(v: Type)`. Types are Wren's own names or a class of the module
+(`caribou_wren::types`). Parameters match by position, so the publisher
+reads the attribute off the running class, which has no parameter names,
+the way `--describe` reads it from source, and the published interface is
+typed and named as the description is. The attribute is optional and
+checked against its member from source: the wrong shape or arity refuses
+the description. A member without one is exported under Wren's name with
+the source's parameter names, its parameters `Dyn`, and the result
+wren_lift's own inference gives: `describe_source` runs the three-pass
+inference the LSP hover runs and takes the result of a literal, an
+interpolation, a constructor call, a field or another method from it.
+Parameters are only ever declared: they are where the inference starts.
+
 ### How a Wren object is held by Haxe
 
 A Wren object reaching Haxe must be something Haxe can keep, that Haxe's

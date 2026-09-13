@@ -12,6 +12,11 @@ ariadne = "0.5.1"
 caribou_abi = { workspace = true }
 krio-core = { workspace = true }
 krio-fiber = { workspace = true }
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+# `describe::ModuleDesc` and `registry::TypeRef` as serde data.
+serde = ["dep:serde"]
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

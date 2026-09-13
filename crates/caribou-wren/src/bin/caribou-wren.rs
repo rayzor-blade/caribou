@@ -5,9 +5,16 @@
 //! bytecode caches, no packages.
 //!
 //!     caribou-wren [--mode interpreter|tiered] [--no-install] [--gc-stats] <file.wren>
+//!     caribou-wren --describe <file.wren>...
 //!
 //! `--no-install` runs the same program on wren_lift's own heap. Exit codes
 //! are `wlift`'s: 65 for a compile error, 70 for a runtime error.
+//!
+//! `--describe` prints each module's interface (`caribou::describe`) as a
+//! JSON array, one entry per file, without running anything: what a build
+//! step reads to declare the classes in another language. The module's
+//! name is the file's stem; a build step knowing better substitutes its
+//! own.
 
 use std::process;
 
@@ -16,21 +23,22 @@ use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::rt::wlift_rt_installed;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
-const USAGE: &str =
-    "usage: caribou-wren [--mode interpreter|tiered] [--no-install] [--gc-stats] <file.wren>";
+const USAGE: &str = "usage: caribou-wren [--mode interpreter|tiered] [--no-install] [--gc-stats] <file.wren>\n       caribou-wren --describe <file.wren>...";
 
 struct Args {
     mode: ExecutionMode,
     install: bool,
     gc_stats: bool,
-    file: String,
+    describe: bool,
+    files: Vec<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut mode = ExecutionMode::Tiered;
     let mut install = true;
     let mut gc_stats = false;
-    let mut file = None;
+    let mut describe = false;
+    let mut files = Vec::new();
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
         match arg.as_str() {
@@ -45,24 +53,51 @@ fn parse_args() -> Result<Args, String> {
             }
             "--no-install" => install = false,
             "--gc-stats" => gc_stats = true,
+            "--describe" => describe = true,
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}")),
-            _ if file.is_some() => return Err(USAGE.to_string()),
-            _ => file = Some(arg),
+            _ if !files.is_empty() && !describe => return Err(USAGE.to_string()),
+            _ => files.push(arg),
         }
     }
-    let file = file.ok_or_else(|| USAGE.to_string())?;
+    if files.is_empty() {
+        return Err(USAGE.to_string());
+    }
     Ok(Args {
         mode,
         install,
         gc_stats,
-        file,
+        describe,
+        files,
     })
+}
+
+/// Each file's interface, as one JSON array.
+fn describe(files: &[String]) -> Result<(), String> {
+    let mut modules = Vec::with_capacity(files.len());
+    for file in files {
+        let source =
+            std::fs::read_to_string(file).map_err(|e| format!("cannot read '{file}': {e}"))?;
+        let name = std::path::Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module");
+        modules.push(
+            caribou_wren::describe::describe_source(name, &source)
+                .map_err(|e| format!("{file}: {e}"))?,
+        );
+    }
+    let json = serde_json::to_string_pretty(&modules).map_err(|e| e.to_string())?;
+    println!("{json}");
+    Ok(())
 }
 
 fn run() -> Result<(), String> {
     let args = parse_args()?;
-    let source = std::fs::read_to_string(&args.file)
-        .map_err(|e| format!("cannot read '{}': {e}", args.file))?;
+    if args.describe {
+        return describe(&args.files);
+    }
+    let file = &args.files[0];
+    let source = std::fs::read_to_string(file).map_err(|e| format!("cannot read '{file}': {e}"))?;
 
     // Before the VM: its collector mints the heap that seals the table.
     if args.install {
@@ -91,7 +126,7 @@ fn run() -> Result<(), String> {
         gc_strategy: GcStrategy::Immix,
         ..VMConfig::default()
     });
-    let module_name = args.file.strip_suffix(".wren").unwrap_or(&args.file);
+    let module_name = file.strip_suffix(".wren").unwrap_or(file);
     // The VM the bridge's Wren entries run on, for the life of the run.
     let previous = unsafe { caribou_wren::enter_vm(&mut vm) };
     // On failure wlift exits from here, VM and all.

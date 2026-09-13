@@ -1,0 +1,7 @@
+# The Haxe program that imports a Wren class: what a Caribou project
+# writes. Rebuild with `haxe hud.hxml` (Haxe 4.3.6) from this directory;
+# hud.hl is checked in.
+-cp src
+-lib caribou
+-main UseHud
+-hl hud.hl

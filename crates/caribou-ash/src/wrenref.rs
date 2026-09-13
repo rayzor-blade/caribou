@@ -40,7 +40,7 @@ use caribou::protocol::{
     Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Reply, Send, Symbol,
     desc_of,
 };
-use caribou_abi::hl::hl_type;
+use caribou_abi::hl::{hl_type, vdynamic};
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
 
@@ -51,11 +51,18 @@ struct WrenRef {
     desc: *const TypeDesc,
     obj: Value,
     handle: Handle,
+    /// The Haxe object standing for the foreign one (`import.rs`), or
+    /// null: it holds the ref, and the ref holds it, so the two die
+    /// together when Haxe lets go.
+    face: *mut vdynamic,
 }
 
 unsafe extern "C" fn trace_ref(obj: *mut u8, tracer: *mut Tracer) {
     let r = unsafe { &*(obj as *const WrenRef) };
     unsafe { (*tracer).mark_value(r.obj.to_bits()) };
+    if !r.face.is_null() {
+        unsafe { (*tracer).mark(r.face as *const u8) };
+    }
 }
 
 /// The ref is dead: its entry goes, and so does its hold on the object.
@@ -142,6 +149,7 @@ pub fn wrap_foreign(v: Value) -> Value {
         unsafe {
             (*p).obj = v;
             (*p).handle = handle;
+            (*p).face = ptr::null_mut();
         }
         p
     };
@@ -161,6 +169,19 @@ pub fn unwrap_foreign(v: Value) -> Value {
 pub fn foreign_ref(v: Value) -> Option<Value> {
     let obj = address_of(v)?;
     refs().get(&obj).map(|&r| Value::object(r as *const c_void))
+}
+
+/// The Haxe object standing for the ref's object, if one was bound.
+pub(crate) fn face(r: Value) -> Option<*mut vdynamic> {
+    let face = unsafe { (*as_ref(r)?).face };
+    (!face.is_null()).then_some(face)
+}
+
+/// Bind `face` as the Haxe object standing for the ref's object.
+pub(crate) fn set_face(r: Value, face: *mut vdynamic) {
+    if let Some(r) = as_ref(r) {
+        unsafe { (*r).face = face };
+    }
 }
 
 /// The pointer Haxe keeps in its `hl.Abstract<"caribou_obj">` field: the

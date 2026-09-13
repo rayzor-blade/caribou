@@ -183,10 +183,14 @@ pub fn load(path: &Path, options: Options) -> Result<Program> {
     sys_init(path, &options.args)?;
 
     let bytecode = Arc::new(BytecodeDecoder::decode(path)?);
-    let mut resolver = Box::new(NativeFunctionResolver::new());
+    // The bridge's own natives bind first, by name, so no library is
+    // looked for under them.
+    let bridged = crate::import::bind(&bytecode)?;
+    let mut resolver = Box::new(NativeFunctionResolver::new().with_host_natives(&bridged));
     let search_dir = path.parent().unwrap_or_else(|| Path::new("."));
     resolver.discover_and_load_libraries(search_dir, &bytecode.natives, true)?;
     let mut interpreter = Box::new(HLInterpreter::new(&bytecode, &resolver));
+    crate::import::attach_types(&bytecode, &interpreter)?;
     if options.mode == Mode::Hybrid {
         // ash's CLI defaults: the Application preset, tier from ASH_TIER.
         let tier_mode = match std::env::var("ASH_TIER") {

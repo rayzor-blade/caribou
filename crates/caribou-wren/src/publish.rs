@@ -42,6 +42,7 @@ use wren_lift::runtime::vm::VM;
 
 use crate::heap::{record_for, wren_lang};
 use crate::proto::from_wren;
+use crate::types::Export;
 
 /// The classes of one heap in the registry: each class to the type name
 /// its instances report.
@@ -85,7 +86,6 @@ pub fn publish_module(vm: &VM, module: &str) -> Result<Arc<Interface>, PublishEr
         .ok_or_else(|| PublishError::NoModule(module.to_owned()))?;
     let rec = record_for(vm.object_class as *mut u8);
     let mut seen: Vec<*mut ObjClass> = Vec::new();
-    let mut classes = Vec::new();
     for &value in &entry.vars {
         let Some(class) = class_of_module(vm, value, module) else {
             continue;
@@ -94,8 +94,16 @@ pub fn publish_module(vm: &VM, module: &str) -> Result<Arc<Interface>, PublishEr
             continue;
         }
         seen.push(class);
-        classes.push(describe(vm, class, module));
     }
+    // Every class's name first: a declared type may name any of them.
+    let names: Vec<String> = seen
+        .iter()
+        .map(|&c| vm.interner.resolve(unsafe { (*c).name }).to_owned())
+        .collect();
+    let classes = seen
+        .iter()
+        .map(|&class| describe(vm, class, module, &names))
+        .collect();
     let iface = Interface {
         lang: wren_lang(),
         module: module.to_owned(),
@@ -197,7 +205,7 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn describe(vm: &VM, class: *mut ObjClass, module: &str) -> ClassIface {
+fn describe(vm: &VM, class: *mut ObjClass, module: &str, names: &[String]) -> ClassIface {
     let name = vm.interner.resolve(unsafe { (*class).name }).to_owned();
     let type_name = format!("{module}.{name}");
     let superclass = unsafe { (*class).superclass };
@@ -233,14 +241,32 @@ fn describe(vm: &VM, class: *mut ObjClass, module: &str) -> ClassIface {
             continue;
         };
         let is_constructor = matches!(method, Method::Constructor(_));
+        // What its `#export` attribute says, read off the running class; an
+        // attribute that does not fit leaves the member as Wren spells it.
+        let export = unsafe {
+            (*class)
+                .method_attributes
+                .get(&SymbolId::from_raw(slot as u32))
+        }
+        .and_then(|entries| Export::from_entries(entries).ok().flatten())
+        .filter(|e| e.params.len() == arity);
         let member = MethodIface {
-            name: base.to_owned(),
+            name: export.as_ref().map_or(base, |e| e.name.as_str()).to_owned(),
             is_static,
-            params: vec![TypeRef::Dyn; arity],
+            params: (0..arity)
+                .map(|i| {
+                    export
+                        .as_ref()
+                        .map_or(TypeRef::Dyn, |e| e.param(i, module, names))
+                })
+                .collect(),
             ret: if is_constructor {
                 TypeRef::Object(type_name.clone())
             } else {
-                TypeRef::Dyn
+                export
+                    .as_ref()
+                    .and_then(|e| e.ret(module, names))
+                    .unwrap_or(TypeRef::Dyn)
             },
             target: Callable::WrenMethod {
                 class: class_value,
@@ -290,6 +316,7 @@ class Hud {
   draw() { }
   score { 3 }
   score=(v) { _p = v }
+  #export = "spawn(p: Num) -> Hud"
   static make(p) { return Hud.new(p) }
   +(other) { this }
 }
@@ -369,16 +396,31 @@ var Alias = Hud
             members,
             [
                 ("draw".to_owned(), "method", false, 0),
-                ("make".to_owned(), "method", true, 1),
                 ("score".to_owned(), "getter", false, 0),
                 ("score".to_owned(), "setter", false, 1),
+                ("spawn".to_owned(), "method", true, 1),
             ],
-            "operators are left out; everything else is `Dyn`"
+            "operators are left out"
         );
-        assert!(hud.methods.iter().all(|m| m.ret == TypeRef::Dyn));
+        // The name and types come from the `#export` the VM kept for the
+        // method; the target is still Wren's own signature.
+        let make = hud.methods.iter().find(|m| m.name == "spawn").unwrap();
+        assert_eq!(make.params, [TypeRef::Float]);
+        assert_eq!(make.ret, TypeRef::Object("hud.Hud".to_owned()));
+        assert!(matches!(
+            make.target,
+            Callable::WrenMethod { signature, .. } if signature.name() == "make(_)"
+        ));
         assert!(
             hud.methods
                 .iter()
+                .filter(|m| m.name != "spawn")
+                .all(|m| m.ret == TypeRef::Dyn)
+        );
+        assert!(
+            hud.methods
+                .iter()
+                .filter(|m| m.name != "spawn")
                 .all(|m| m.params.iter().all(|p| *p == TypeRef::Dyn))
         );
 
@@ -449,7 +491,7 @@ var Alias = Hud
                 Ok(Value::null())
             );
             let made = bridge::call(
-                member(hud, "make", MethodKind::Method),
+                member(hud, "spawn", MethodKind::Method),
                 &[Value::number(1.0)],
                 LANG_CORE,
             )

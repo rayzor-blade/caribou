@@ -16,6 +16,7 @@ caribou-ash = { path = "../caribou-ash", features = ["runner"] }
 caribou-wren = { path = "../caribou-wren" }
 ash_std = { path = "../../../ash/std" }
 wren_lift = { path = "../../../wren_lift" }
+libc = { workspace = true }
 
 [lib]
 crate-type = ["rlib"]

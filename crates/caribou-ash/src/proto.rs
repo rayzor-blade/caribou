@@ -38,7 +38,7 @@ use ash_std::obj::{
     hlp_dyn_setp, hlp_hash_gen, hlp_lookup_find, hlp_obj_has_field,
 };
 use ash_std::strings::hlp_value_to_string;
-use ash_std::types::{hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
+use ash_std::types::{hlt_bytes, hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
 use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap::{self, Handle, Tracer, TypeDesc};
@@ -52,6 +52,8 @@ use caribou_abi::hl::{
 };
 use caribou_abi::mem::{KIND_DYNAMIC, KIND_NOPTR, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
+
+use crate::import;
 
 /// `HL_MAX_ARGS`: what `hlp_dyn_call` takes.
 const MAX_ARGS: usize = 9;
@@ -274,6 +276,42 @@ fn raise_core(kind: ErrorKind, message: &str) -> u8 {
     bridge::raise(Error::new(kind, message, lang()))
 }
 
+/// A core `Error` of Haxe's language for a failure at `name`, as a value.
+pub(crate) fn error_value(name: &str, message: &str) -> Value {
+    let e = Error::new(ErrorKind::Runtime, message, lang());
+    unsafe { Error::push_segment(e, lang(), name) };
+    Error::value(e)
+}
+
+/// What Haxe catches for a bridge error: the exception itself when the
+/// error carries one, else its message as a `String`, or as bytes before
+/// a program has published its `String` type, as the runtime's own errors
+/// are thrown.
+pub(crate) fn throwable(e: Value) -> *mut vdynamic {
+    if let Some(exc) = unwrap(e) {
+        return exc;
+    }
+    let native = unsafe { Error::from_value(e) }.map(|err| unsafe { Error::native(err) });
+    if let Some(exc) = native.and_then(unwrap) {
+        return exc;
+    }
+    let message = match unsafe { Error::from_value(e) } {
+        Some(err) => unsafe { Error::message_str(err) }.to_owned(),
+        None => unsafe { Str::text(e) }
+            .map(str::to_owned)
+            .unwrap_or_else(|| bridge::describe(e)),
+    };
+    if let Some(s) = unsafe { alloc_string(&message) } {
+        return s;
+    }
+    let units: Vec<uchar> = message.encode_utf16().chain([0]).collect();
+    let bytes = unsafe { hlp_alloc_bytes((units.len() * 2) as i32) } as *mut uchar;
+    unsafe { ptr::copy_nonoverlapping(units.as_ptr(), bytes, units.len()) };
+    let d = unsafe { hlp_alloc_dynamic(hlt_bytes()) };
+    unsafe { (*d).v.bytes = bytes.cast() };
+    d.cast()
+}
+
 // ---------------------------------------------------------------------------
 // Strings
 // ---------------------------------------------------------------------------
@@ -344,8 +382,9 @@ unsafe fn alloc_string(text: &str) -> Option<*mut vdynamic> {
 // ---------------------------------------------------------------------------
 
 /// A boxed dynamic as a bridge value: a scalar unboxed by its type, a
-/// `String` copied into a core `Str`, any other object wrapped.
-unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
+/// `String` copied into a core `Str`, a face the foreign object it stands
+/// for, any other object wrapped.
+pub(crate) unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
     if d.is_null() {
         return Value::null();
     }
@@ -367,6 +406,10 @@ unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
             let text = unsafe { string_text(d) };
             Str::value(Str::new(&text))
         }
+        hl::HOBJ => match unsafe { import::behind_face(d) } {
+            Some(obj) => obj,
+            None => wrap(d),
+        },
         _ => wrap(d),
     }
 }
@@ -391,9 +434,9 @@ unsafe fn box_f64(n: f64) -> *mut vdynamic {
 
 /// A bridge value as the boxed dynamic `hlp_dyn_call` and `hlp_dyn_setp`
 /// take for a slot of kind `kind`; the runtime casts the box to the slot's
-/// exact type. A core `Str` becomes a `String`. An object of another
-/// language cannot cross yet.
-unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, String> {
+/// exact type. A core `Str` becomes a `String`; an object of another
+/// language becomes its face (`import.rs`).
+pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, String> {
     let int = || {
         v.as_int()
             .or_else(|| v.as_number().map(|n| n as i32))
@@ -422,8 +465,12 @@ unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, St
                 Some(unsafe { box_int(n) })
             } else if let Some(n) = v.as_number() {
                 Some(unsafe { box_f64(n) })
+            } else if let Some(b) = v.as_bool() {
+                Some(unsafe { hlp_alloc_dynbool(b) }.cast())
+            } else if v.as_object().is_some() {
+                return import::face_for(v);
             } else {
-                v.as_bool().map(|b| unsafe { hlp_alloc_dynbool(b) }.cast())
+                None
             }
         }
     };

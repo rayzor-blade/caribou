@@ -30,6 +30,7 @@ use crate::world::{self, RegisterError};
 
 /// A type at a module's boundary, in terms every language can map to.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TypeRef {
     Void,
     Bool,

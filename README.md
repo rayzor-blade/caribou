@@ -58,9 +58,12 @@ identical through `caribou-wren`, including under collector stress, and a
 collection costs the same as it does under WrenLift's own collector.
 
 The bridge lets one language call another, and the module registry lets
-a Wren program import a Haxe class with an ordinary `import`. What is not
-there yet: the other direction, hot reload, the plugin loader, and the
-Zyntax adapter.
+each import the other's classes the ordinary way. A Wren program writes
+`import "game:Player" for Player`. A Haxe program built with `-lib caribou`
+writes `import game.hud.Hud` for a Wren module at `src/game/hud.wren`, and
+a Wren method says what it exposes with `#export = "add(n: Num) -> Num"`,
+or nothing when the runtime can tell. What is not there yet: hot reload,
+the plugin loader, and the Zyntax adapter.
 
 ## Building
 
@@ -85,6 +88,11 @@ comparing the two:
 target/debug/caribou-ash --mode hybrid game.hl
 target/debug/caribou-wren --mode tiered script.wren
 ```
+
+The Haxe library lives in `haxe/`. Until it is published, register the
+checkout once with `haxelib dev caribou haxe`; a program then builds with
+`-lib caribou`, and the library finds the runner on the path or in this
+checkout's target directory.
 
 ## Documentation
 

@@ -9,12 +9,14 @@ description = "Hosts WrenLift on the caribou core by filling wren_lift's runtime
 
 [features]
 # The `caribou-wren` binary: WrenLift's interpreter and tiered JIT over the
-# core. It needs nothing beyond the library's own dependencies.
-runner = []
+# core, and `--describe`, which prints a module's interface as JSON.
+runner = ["caribou/serde", "dep:serde_json"]
 
 [dependencies]
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
+# The version wren_lift uses.
+serde_json = { version = "1", optional = true }
 # A path dependency until wren_lift is published; then a git dependency at
 # one rev.
 wren_lift = { path = "../../../wren_lift" }
