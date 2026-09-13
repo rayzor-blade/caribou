@@ -102,6 +102,12 @@ target/debug/caribou-wren --mode tiered script.wren
 `cargo bench -p caribou-interop` times a call across the bridge in each
 direction beside the same call inside each language, per operation.
 
+WrenLift's LLVM top tier is off by default, as it is in WrenLift, so a
+Wren body runs on its Cranelift baseline. `--features llvm` on
+`caribou-wren`, `caribou-driver` or `caribou-interop` turns it on; it
+needs LLVM 21 on the build machine, and the whole build then links LLVM
+dynamically, Ash's tier included.
+
 The Haxe library lives in `haxe/`. Until it is published, register the
 checkout once with `haxelib dev caribou haxe`; a program then builds with
 `-lib caribou`, and the library finds the `caribou` command on the path or

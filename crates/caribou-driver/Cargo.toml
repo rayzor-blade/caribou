@@ -7,6 +7,10 @@ description = "Runs a Caribou program: one world with every resident language, f
 
 # Nightly, through caribou-ash: ash_std needs it.
 
+[features]
+# WrenLift's LLVM top tier; see caribou-wren.
+llvm = ["caribou-wren/llvm"]
+
 [dependencies]
 anyhow = "1"
 caribou = { path = "../caribou", features = ["serde"] }

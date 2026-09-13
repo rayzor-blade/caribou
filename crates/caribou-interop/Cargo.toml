@@ -7,6 +7,10 @@ description = "Cross-language proofs: both adapters in one process, values cross
 
 # Tests only. Nightly, like caribou-ash: ash_std needs it.
 
+[features]
+# WrenLift's LLVM top tier; see caribou-wren.
+llvm = ["caribou-wren/llvm"]
+
 [dependencies]
 libc = { workspace = true }
 
