@@ -1271,6 +1271,13 @@ fn trace_freed() -> bool {
     static V: OnceLock<bool> = OnceLock::new();
     *V.get_or_init(|| std::env::var("ASH_GC_TRACE_FREED").is_ok())
 }
+
+/// `ASH_GC_DEBUG_ROOTS`: name every root a collection marks from. Safe;
+/// verbose. Read once.
+fn debug_roots() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| std::env::var("ASH_GC_DEBUG_ROOTS").is_ok())
+}
 /// `ASH_GC_POISON=1`: fill every freed block with 0xA5, so a read of a
 /// prematurely freed object is unmistakable. Diagnostic.
 fn poison_freed() -> bool {
@@ -3502,7 +3509,7 @@ impl ImmixAllocator {
         if !stopped_world.stopped {
             return;
         }
-        if trace_freed() || std::env::var("ASH_GC_DEBUG_ROOTS").is_ok() {
+        if trace_freed() || debug_roots() {
             let seq = GC_STATS.collections.load(Ordering::Relaxed) + 1;
             let origin = ORIGIN_NAMES[COLLECT_ORIGIN.load(Ordering::Relaxed).min(6) as usize];
             let base = self.heap.memory.as_ptr() as usize;
@@ -3668,7 +3675,7 @@ impl ImmixAllocator {
         }
 
         // Conservative scan of globals_data
-        let dbg = std::env::var("ASH_GC_DEBUG_ROOTS").is_ok();
+        let dbg = debug_roots();
         if let Some((globals_ptr, count)) = self.globals_range {
             let start = globals_ptr as usize;
             let end = start + count * std::mem::size_of::<usize>();
