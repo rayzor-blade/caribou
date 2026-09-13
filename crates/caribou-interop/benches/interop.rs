@@ -162,10 +162,13 @@ fn main() {
         }
         println!();
     }
-    // `WLIFT_TIER_STATS=1` and `ASH_TIER_LOG=1` say which tier ran what.
+    // `WLIFT_TIER_STATS=1` and `ASH_TIER_LOG=1` say which tier ran what;
+    // `ASH_PROFILE=sample` says where the time went, Ash's compiled code
+    // named.
     if std::env::var_os("WLIFT_TIER_STATS").is_some() {
         let vm = session.wren();
         let interner = &vm.interner;
         vm.engine.dump_tier_stats(interner);
     }
+    caribou_ash::program::profile_report();
 }

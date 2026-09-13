@@ -150,11 +150,23 @@ fn sys_init(file: &Path, program_args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// Print Ash's profile, when `ASH_PROFILE` asked for one: what `finish`
+/// does, for a host that keeps its program and ends some other way.
+pub fn profile_report() {
+    ash_core::profile::report();
+}
+
 /// Load `path`. Before ash's heap exists: `init_std_library` creates it.
+/// Ash's profiler starts here too, on this thread, as the CLI starts it:
+/// `ASH_PROFILE=phases|sample|all` times the phases below and samples
+/// the program, naming the code every tier installs, and reports on
+/// termination. Nothing runs without it set.
 pub fn load(path: &Path, options: Options) -> Result<Program> {
     if !path.exists() {
         bail!("Bytecode file not found: {}", path.display());
     }
+    ash_core::profile::init();
+    ash_core::profile::report_on_termination();
     let static_std = native_lib::choose_std_linkage(path);
     if options.install {
         if static_std {
@@ -163,7 +175,10 @@ pub fn load(path: &Path, options: Options) -> Result<Program> {
             install_into_sibling_runtime()?;
         }
     }
-    native_lib::init_std_library()?;
+    {
+        let _phase = ash_core::profile::scope("init stdlib");
+        native_lib::init_std_library()?;
+    }
 
     // The image ash will run through is the one that had to take the table.
     let installed_addr = native_lib::std_symbol_addr("hlp_rt_installed")
@@ -182,7 +197,10 @@ pub fn load(path: &Path, options: Options) -> Result<Program> {
 
     sys_init(path, &options.args)?;
 
-    let bytecode = Arc::new(BytecodeDecoder::decode(path)?);
+    let bytecode = {
+        let _phase = ash_core::profile::scope("decode bytecode");
+        Arc::new(BytecodeDecoder::decode(path)?)
+    };
     // The bridge's own natives bind first, by name, so no library is
     // looked for under them.
     let bridged = crate::import::bind(&bytecode)?;
@@ -254,6 +272,7 @@ impl Program {
     /// event loop if the program installed one.
     pub fn start(&mut self) -> Result<()> {
         self.started = true;
+        let _phase = ash_core::profile::scope("run");
         self.interpreter
             .execute_entrypoint(&self.bytecode, &self.resolver)?;
         Ok(())
@@ -275,6 +294,8 @@ impl Program {
         if self.mode == Mode::Hybrid {
             self.interpreter.quiesce_promotions();
         }
+        // Nothing when `ASH_PROFILE` is unset.
+        ash_core::profile::report();
     }
 
     /// The interpreter's module context: its function pointer and function
