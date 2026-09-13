@@ -6,32 +6,36 @@
 
 <p align="center">A shared runtime core for game and multimedia scripting.</p>
 
-Caribou is the runtime core under a family of language runtimes. It
-provides one heap, one scheduler, one module registry and one native plugin
-boundary. Three runtimes share it: [Ash](https://github.com/rayzor-blade/ash)
-runs Haxe through HashLink bytecode, [WrenLift](https://github.com/wrenlift/WrenLift)
-runs Wren, and Zyntax runs DSLs, with Lua and Python built on it.
+Caribou is the shared core under three language runtimes:
+[Ash](https://github.com/rayzor-blade/ash), which runs Haxe through
+HashLink bytecode; [WrenLift](https://github.com/wrenlift/WrenLift), which
+runs Wren; and Zyntax, which runs DSLs and will carry Lua and Python. It
+gives them one heap, one scheduler, one module registry and one way to
+load native plugins.
 
-A game written in one of these languages can load code written in the
-others. It can pass objects between them and call across the boundary. It
-can reload any of that code while the program runs.
+The point is mixing them. A game can be written mostly in Haxe with its
+gameplay scripted in Wren, hand objects back and forth between the two,
+and reload the scripts while it is running.
 
-## How it fits
+## How it works
 
-No runtime depends on Caribou. Each runtime keeps its own collector, its
-own scheduler, its own build and its own test suite. Each one exposes a
-**seam**: a table of function pointers for the operations its code performs
-on its runtime. By default the table holds the runtime's own functions.
+Caribou never becomes a dependency of the runtimes it serves. Ash and
+WrenLift keep their own collectors, schedulers, builds and test suites,
+and nothing in their manifests mentions Caribou at all.
 
-Caribou fills that table. An adapter crate depends on the runtime, and
-installs the core's heap and scheduler into the table before the first
-allocation. The runtime's manifest never names Caribou. With nothing
-installed, the runtime still passes its own suite.
+Instead, each runtime exposes a seam. The seam is a table of function
+pointers covering everything the runtime does to its heap and its
+scheduler, and by default every entry points at the runtime's own code.
+When Caribou hosts a runtime, a small adapter crate fills that table with
+the core's heap and scheduler before anything is allocated. Run the
+runtime on its own and the table is never touched, so its existing test
+suite keeps passing exactly as before.
 
-The application language drives. By default that is a Haxe program. It owns
-the entry point, the frame loop and publishing. The other languages are
-spokes it loads. A spoke reloads without a Rust build, even inside a
-shipped binary.
+In a Caribou program, one language is in charge. Usually that is Haxe: the
+Haxe application owns the entry point, the frame loop and the shipped
+binary, and it loads the other languages as scripts. Those scripts can be
+edited and reloaded while the game runs, without rebuilding anything in
+Rust, and that stays true after the game has shipped.
 
 ## Crates
 
@@ -47,14 +51,15 @@ The core builds on stable Rust and depends on `caribou_abi`, `krio` and
 
 ## Status
 
-Ash and WrenLift both run on the core. Each is verified against its own
-binary. Ash's parity corpus and the Haxe conformance suite give identical
-results through `caribou-ash`. WrenLift's benchmark corpus gives identical
-results through `caribou-wren`, including under collector stress, and a
-collection cycle costs the same as under its own collector.
+Ash and WrenLift both run on the core today, and each has been checked
+against its own binary. Ash's parity corpus and the Haxe conformance suite
+come out identical through `caribou-ash`. WrenLift's benchmarks come out
+identical through `caribou-wren`, including under collector stress, and a
+collection costs the same as it does under WrenLift's own collector.
 
-Still in progress: the cross-language bridge, the module registry with hot
-reload, the plugin loader and the Zyntax adapter.
+What is not there yet: the bridge that lets one language call another,
+the module registry with hot reload, the plugin loader, and the Zyntax
+adapter.
 
 ## Building
 
@@ -66,13 +71,14 @@ cargo +nightly build -p caribou-ash --features runner    # ash on the core
 cargo build -p caribou-wren --features runner            # wren_lift on the core
 ```
 
-The adapters depend on their runtimes by path for now. They move to git
-dependencies once the runtimes are published. `caribou-ash` needs
-`LLVM_SYS_211_PREFIX` set, because Ash's build script asks for it, even
+For now the adapters find their runtimes by path; they will become git
+dependencies once the runtimes are published. Building `caribou-ash` needs
+`LLVM_SYS_211_PREFIX` set, because Ash's build script asks for it even
 though the runner links no LLVM.
 
-Each runner takes a program and an execution mode. The `--no-install` flag
-runs the runtime on its own implementation instead, for comparison:
+Each runner takes a program and an execution mode. Pass `--no-install` to
+run the runtime on its own implementation instead, which is handy for
+comparing the two:
 
 ```sh
 target/debug/caribou-ash --mode hybrid game.hl
@@ -81,12 +87,11 @@ target/debug/caribou-wren --mode tiered script.wren
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) describes each system as
-  built. For systems not yet built, it states the contract they are written
-  against.
-- Issues live in the repository, tracked with
-  [git-bug](https://github.com/git-bug/git-bug). Run `git-bug bug` to list
-  them.
+- [docs/architecture.md](docs/architecture.md) describes each system as it
+  is built, and for the ones not built yet, the contract they will be
+  written against.
+- Issues are tracked inside the repository with
+  [git-bug](https://github.com/git-bug/git-bug); `git-bug bug` lists them.
 
 ## License
 
