@@ -197,7 +197,13 @@ mod tests {
         assert!(e.is_setter && e.params[0].ty.as_deref() == Some("Num"));
         let e = Export::parse("f(_: Num, b)").unwrap();
         assert_eq!(e.params[0].name, None);
-        assert_eq!(e.params[1], ExportParam { name: Some("b".into()), ty: None });
+        assert_eq!(
+            e.params[1],
+            ExportParam {
+                name: Some("b".into()),
+                ty: None
+            }
+        );
         assert_eq!(Export::parse("count()").unwrap().params.len(), 0);
 
         for bad in ["", "1abc()", "f(a:)", "f(a", "s=(a, b)", "f() ->"] {

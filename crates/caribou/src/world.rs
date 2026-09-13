@@ -2,8 +2,9 @@
 //! table. Module loading, call and events arrive with the reload pipeline.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 use caribou_abi::LangId;
 
@@ -37,6 +38,10 @@ pub struct Config {
     /// The namespaces imports are addressed through, beside the one every
     /// registered language gets under its own name. See `caribou::registry`.
     pub namespaces: Vec<Namespace>,
+    /// Where a language that loads from source looks for a module: a
+    /// module `game:hud` of such a language is `<root>/game/hud.<ext>`
+    /// under the first root that has it. A project's class paths.
+    pub roots: Vec<PathBuf>,
 }
 
 /// The driver's handle. One per OS thread; `new` initialises that thread's
@@ -51,6 +56,13 @@ static NEXT_LANG: AtomicU32 = AtomicU32::new(1);
 
 /// `LangId` 0 is reserved: the core's own types.
 pub const LANG_CORE: LangId = 0;
+
+static ROOTS: RwLock<Vec<PathBuf>> = RwLock::new(Vec::new());
+
+/// The source roots of the world most recently created: `Config::roots`.
+pub fn source_roots() -> Vec<PathBuf> {
+    ROOTS.read().unwrap().clone()
+}
 
 /// Ids are process-wide, so their names are too: what an error trace or a
 /// diagnostic prints for a language, whichever world registered it.
@@ -89,6 +101,7 @@ impl World {
         // Materialise this thread's scheduler and install the heap's poll hook.
         let _ = sched::world_id();
         registry::set_namespaces(config.namespaces);
+        *ROOTS.write().unwrap() = config.roots;
         World {
             adapters: Vec::new(),
             languages: Vec::new(),

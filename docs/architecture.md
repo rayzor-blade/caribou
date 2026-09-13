@@ -731,19 +731,21 @@ instances made for one Haxe object are distinct Wren objects.
 
 Haxe types every call at compile time and the HL target refuses `extern
 class`, so a Wren class Haxe code uses has to be declared before genhl
-runs. The declaration is the build macro's whole job:
-`--macro caribou.Bridge.use()` (`haxe/caribou/Bridge.hx`) walks the
-program's classpath for `.wren` files and emits a class for each class they
-define, under the package the file's path spells, as for a Haxe module:
+runs. The declaration is the build macro's whole job. `haxe/` is the
+`caribou` haxelib, and `-lib caribou` is all a program adds: the
+library's extra params run `caribou.Bridge.use()` (`haxe/caribou/
+Bridge.hx`), which walks the program's classpath for `.wren` files and
+emits a class for each class they define, under the package the file's
+path spells, as for a Haxe module:
 `src/game/hud.wren` gives `game.hud.Hud`, with `game` the namespace the
 runtime resolves the module through and `hud` the module's name. A file at
 a classpath root is under the language's own namespace. What the macro
-knows about a module it asks the runtime: `caribou-wren --describe`
+knows about a module it asks the runtime: `caribou describe`
 prints the module's interface as JSON, a `caribou::describe::ModuleDesc`,
 which is the registry `Interface` without its callables plus the parameter
 names a source has, produced from the parse tree by the rules the
-publisher applies to the running VM. The runner is found on the path or
-named by `-D caribou.runner`.
+publisher applies to the running VM. The command is found on the path,
+else in the target directory of the checkout the library sits in.
 
 Every emitted class extends `caribou.Ref`, whose one field holds the
 object's ref (below), and every member of it is a native of the `caribou`
@@ -1065,6 +1067,40 @@ loop. `tick` runs scheduler turns, drains reload checks and delivers events
 until the deadline. Ash's frame pump is the first driver: the world ticks
 inside it, between the Haxe application's frames.
 
+### The driver
+
+`caribou-driver` is what runs a program, for an embedder and for the
+`caribou` command alike: `Session::open(program)` then `Session::run`, or
+`run` for both. A session is one world with every resident language
+around one Haxe program. Opening it installs both seams, loads the
+program, and reads its `caribou` natives for the namespaces it imports
+(`Program::imports`). The project's layout is the configuration: the
+source roots are the class paths of the `.hxml` files in the working
+directory and beside the program, else `src` under them when it exists,
+else the directories themselves (`project::roots`); every directory under
+a root is a namespace, as is every namespace the program imports, and
+each covers every resident language, Haxe first (`project::namespaces`).
+The world is made from those, the two adapters register, the program's
+classes are published, and a Wren VM is made with the import callbacks
+installed. `run` enters the VM and starts the program.
+
+Nothing else is loaded up front. A module of another language loads on
+first use: the registry's `resolve_or_load` asks the namespace's
+languages' loaders in turn when nothing has published a module, and the
+Wren adapter's loader (`caribou_wren::project`) finds `game/hud.wren`
+under the first root that has it, loads it into the entered VM under the
+path spelling `game/hud`, which the registry resolves for `game:hud`, and
+publishes it. A Haxe call through a bound native reaches that path
+through `lookup_class_or_load`; a Wren `import "game:hud"` reaches it
+through the resolve callback, which answers the module's own name for a
+Wren module and installs the class for another language's. Loading runs
+the module's top level, so it happens once the program is running and
+has published, which is why the program publishes before it starts: the
+interpreter registers its closure runner as it starts, before its entry
+function, so a call from a Wren module's top level lands in a running
+program. A Wren module's plain imports are served from the same roots,
+beside the importer first.
+
 ### Events
 
 `World::on(kind, handler)` subscribes a handler to `Reload`, `TaskError`
@@ -1073,7 +1109,7 @@ from inside a collection or a switch.
 
 ### Boundaries of the current implementation
 
-Built so far: the adapter registry, the language table and the namespace
-table. Module loading, call and events through the world arrive with the
-reload pipeline; today an adapter loads its own modules and publishes them
-to the registry itself.
+Built so far: the adapter registry, the language table, the namespace
+table, the source roots, the loaders, and the driver above. Reload, call
+and events through the world arrive with the reload pipeline; the world
+does not tick yet, and a session runs the program's own loop.

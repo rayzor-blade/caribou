@@ -181,34 +181,53 @@ fn canonical(lang: LangId, module: &str) -> String {
 
 /// Install the import callbacks, ahead of any the host set: a name
 /// `ns:module` under a namespace the registry knows resolves to the
-/// installed module, installing it on first use; other names go to the
-/// host's callbacks. The VM must be entered on the thread that runs it.
+/// module, loading it on first use through the registry's loaders, and
+/// installing it when it is another language's; a plain name is served
+/// from the project's roots (`project.rs`), beside the importer first;
+/// what is neither goes to the host's callbacks. The VM must be entered
+/// on the thread that runs it.
 pub fn configure(config: &mut VMConfig) {
     let previous_resolve = config.resolve_module_fn.take();
     config.resolve_module_fn = Some(Box::new(move |name: &str, from: &str| {
-        if let Some((ns, module)) = namespaced(name)
-            && let Some((lang, module)) = registry::resolve(ns, module)
-        {
-            let vm = current_vm();
-            if vm.is_null() {
-                return None;
-            }
-            return match install(unsafe { &mut *vm }, lang, &module) {
-                Ok(name) => Some(name),
+        if let Some((ns, module)) = namespaced(name) {
+            let found = match registry::resolve_or_load(ns, module) {
+                Ok(found) => found,
                 Err(e) => {
                     eprintln!("caribou: {e}");
-                    None
+                    return None;
                 }
             };
+            if let Some((lang, module)) = found {
+                if lang == wren_lang() {
+                    return Some(module);
+                }
+                let vm = current_vm();
+                if vm.is_null() {
+                    return None;
+                }
+                return match install(unsafe { &mut *vm }, lang, &module) {
+                    Ok(name) => Some(name),
+                    Err(e) => {
+                        eprintln!("caribou: {e}");
+                        None
+                    }
+                };
+            }
         }
-        previous_resolve.as_ref().and_then(|f| f(name, from))
+        match previous_resolve.as_ref().and_then(|f| f(name, from)) {
+            Some(resolved) => Some(resolved),
+            None => Some(crate::project::relative(name, from)),
+        }
     }));
     let previous_load = config.load_module_fn.take();
     config.load_module_fn = Some(Box::new(move |name: &str, from: &str| {
         if namespaced(name).is_some() {
             return None;
         }
-        previous_load.as_ref().and_then(|f| f(name, from))
+        previous_load
+            .as_ref()
+            .and_then(|f| f(name, from))
+            .or_else(|| crate::project::source(name))
     }));
 }
 

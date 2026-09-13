@@ -4,4 +4,5 @@
 -cp src
 -lib caribou
 -main UseHud
+game.Player
 -hl hud.hl

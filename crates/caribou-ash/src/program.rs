@@ -224,6 +224,32 @@ impl Program {
         &self.bytecode
     }
 
+    /// The modules the program imports from other languages, as
+    /// `(namespace, module)` pairs, read from its natives: what a driver
+    /// configures its world from.
+    pub fn imports(&self) -> Result<Vec<(String, String)>> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for native in self
+            .bytecode
+            .natives
+            .iter()
+            .filter(|n| n.lib == crate::import::LIB)
+        {
+            let (namespace, module, _, _) =
+                crate::import::parse(&native.name).ok_or_else(|| {
+                    anyhow!(
+                        "`{}` does not name a member of a published class",
+                        native.name
+                    )
+                })?;
+            let pair = (namespace, module);
+            if !out.contains(&pair) {
+                out.push(pair);
+            }
+        }
+        Ok(out)
+    }
+
     /// Run the entry point: the static initialisers, then `main`, then the
     /// event loop if the program installed one.
     pub fn start(&mut self) -> Result<()> {
@@ -233,13 +259,12 @@ impl Program {
         Ok(())
     }
 
-    /// Publish every class of the program. After `start`: what is published
-    /// can be called only once the interpreter has registered its closure
-    /// runner, which it does when the program starts.
+    /// Publish every class of the program. What is published can be called
+    /// only once the interpreter has registered its closure runner, which
+    /// it does as the program starts, before its entry function runs; so a
+    /// program may publish before `start`, and another language reaches
+    /// its classes from the moment `main` runs.
     pub fn publish(&mut self) -> Result<Vec<Arc<Interface>>> {
-        if !self.started {
-            bail!("the program has not started: nothing published could be called");
-        }
         let bytecode: Arc<DecodedBytecode> = Arc::clone(&self.bytecode);
         publish_module(&bytecode, self)
     }

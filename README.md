@@ -45,6 +45,7 @@ Rust, and that stays true after the game has shipped.
 | `caribou` | The core. It holds the heap, the scheduler, the object protocol and the `World` a driver uses. The heap is Immix: non-moving, conservative by default, precise where a type descriptor asks for it. The scheduler runs stackful fibers and stackless state machines on one queue. |
 | `caribou-ash` | Hosts Ash: fills `ash_std`'s seam with the core's heap and scheduler. Nightly, because `ash_std` needs it. |
 | `caribou-wren` | Hosts WrenLift: fills `wren_lift`'s seam with the core heap under its Immix strategy. |
+| `caribou-driver` | Runs a program: one world with every resident language, from the project's own layout. The `caribou` command is its front. |
 
 The core builds on stable Rust and depends on `caribou_abi`, `krio` and
 `libc`. Neither Cranelift nor LLVM is in its graph.
@@ -73,6 +74,7 @@ cargo test -p caribou
 
 cargo +nightly build -p caribou-ash --features runner    # ash on the core
 cargo build -p caribou-wren --features runner            # wren_lift on the core
+cargo +nightly build -p caribou-driver                   # the caribou command
 ```
 
 For now the adapters find their runtimes by path; they will become git
@@ -80,9 +82,17 @@ dependencies once the runtimes are published. Building `caribou-ash` needs
 `LLVM_SYS_211_PREFIX` set, because Ash's build script asks for it even
 though the runner links no LLVM.
 
-Each runner takes a program and an execution mode. Pass `--no-install` to
-run the runtime on its own implementation instead, which is handy for
-comparing the two:
+A program runs from its project directory, and the other languages'
+modules are found under the project's class paths and loaded on first
+use:
+
+```sh
+caribou run bin/game.hl
+```
+
+Each per-runtime runner takes a program and an execution mode, and
+`--no-install` runs the runtime on its own implementation instead, which
+is handy for comparing the two:
 
 ```sh
 target/debug/caribou-ash --mode hybrid game.hl
@@ -91,8 +101,8 @@ target/debug/caribou-wren --mode tiered script.wren
 
 The Haxe library lives in `haxe/`. Until it is published, register the
 checkout once with `haxelib dev caribou haxe`; a program then builds with
-`-lib caribou`, and the library finds the runner on the path or in this
-checkout's target directory.
+`-lib caribou`, and the library finds the `caribou` command on the path or
+in this checkout's target directory.
 
 ## Documentation
 

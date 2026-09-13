@@ -1,5 +1,8 @@
 // The Wren side of the Haxe-imports-Wren test: on the classpath at
-// game/hud.wren, so Haxe code reaches it as `game.hud.Hud`.
+// game/hud.wren, so Haxe code reaches it as `game.hud.Hud`. It imports a
+// class of the Haxe program the same way.
+import "game:Player" for Player
+
 class Hud {
   construct new(score) { _score = score }
 
@@ -25,4 +28,7 @@ class Hud {
 
   #export = "best(a: Hud, b: Hud) -> Hud"
   static best(a, b) { a.score > b.score ? a : b }
+
+  // A Haxe object made and read here: its name, a Haxe String.
+  owner() { Player.new("ada").name }
 }

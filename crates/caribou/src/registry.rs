@@ -19,6 +19,11 @@
 //! is how a Haxe package becomes a namespace. Every registered language is
 //! also a namespace under its own name, so `haxe:game.Player` resolves with
 //! or without configuration.
+//!
+//! A module nothing has published yet may still be loadable: a language
+//! that loads from source registers a loader, and `resolve_or_load` asks
+//! the namespace's languages in turn to load and publish the module before
+//! answering. That is how a program's first use of a module loads it.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -164,7 +169,8 @@ pub fn namespaces() -> Vec<Namespace> {
 }
 
 /// The names a module of `lang` answers to inside the namespace `ns`, or
-/// none when the namespace hides it.
+/// none when the namespace hides it: its own, and the remainder after the
+/// namespace's name and a `.` (a Haxe package) or a `/` (a source path).
 fn import_names(ns: &Namespace, module: &str) -> Vec<String> {
     if let Some(allowed) = &ns.modules
         && !allowed.iter().any(|m| m == module)
@@ -174,12 +180,53 @@ fn import_names(ns: &Namespace, module: &str) -> Vec<String> {
     let mut names = vec![module.to_owned()];
     if let Some(rest) = module
         .strip_prefix(&ns.name)
-        .and_then(|r| r.strip_prefix('.'))
+        .and_then(|r| r.strip_prefix(['.', '/']))
         && !rest.is_empty()
     {
         names.push(rest.to_owned());
     }
     names
+}
+
+/// The spellings a module named `module` in namespace `namespace` may
+/// have been published under.
+fn candidates(namespace: &str, module: &str) -> [String; 3] {
+    [
+        module.to_owned(),
+        format!("{namespace}.{module}"),
+        format!("{namespace}/{module}"),
+    ]
+}
+
+/// A language's loader: asked for `(namespace, module)` when nothing has
+/// published it. It loads and publishes the module when it has a source
+/// for it, and answers whether it did.
+pub type Loader = Arc<dyn Fn(&str, &str) -> Result<bool, String> + Send + Sync>;
+
+static LOADERS: LazyLock<RwLock<HashMap<LangId, Loader>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Give `lang` its loader, replacing any earlier one.
+pub fn set_loader(lang: LangId, loader: Loader) {
+    LOADERS.write().unwrap().insert(lang, loader);
+}
+
+fn loader_of(lang: LangId) -> Option<Loader> {
+    LOADERS.read().unwrap().get(&lang).cloned()
+}
+
+/// The languages `namespace` covers, in order: the configured ones, or
+/// the language itself when the name is a language's.
+fn languages_of(namespace: &str) -> Vec<LangId> {
+    let namespaces = NAMESPACES.read().unwrap();
+    match namespaces.iter().find(|ns| ns.name == namespace) {
+        Some(ns) => ns
+            .langs
+            .iter()
+            .filter_map(|l| world::language_id(l))
+            .collect(),
+        None => world::language_id(namespace).into_iter().collect(),
+    }
 }
 
 /// Publish `iface`, replacing any interface of the same `(lang, module)`.
@@ -260,17 +307,16 @@ pub fn resolve(namespace: &str, module: &str) -> Option<(LangId, String)> {
             let Some(id) = world::language_id(lang) else {
                 continue;
             };
-            let prefixed = format!("{namespace}.{module}");
-            for candidate in [module, prefixed.as_str()] {
+            for candidate in candidates(namespace, module) {
                 if ns
                     .modules
                     .as_ref()
-                    .is_some_and(|allowed| !allowed.iter().any(|m| m == candidate))
+                    .is_some_and(|allowed| !allowed.contains(&candidate))
                 {
                     continue;
                 }
-                if table.interfaces.contains_key(&(id, candidate.to_owned())) {
-                    return Some((id, candidate.to_owned()));
+                if table.interfaces.contains_key(&(id, candidate.clone())) {
+                    return Some((id, candidate));
                 }
             }
         }
@@ -283,10 +329,35 @@ pub fn resolve(namespace: &str, module: &str) -> Option<(LangId, String)> {
         .then(|| (id, module.to_owned()))
 }
 
+/// [`resolve`], and when nothing answers, the namespace's languages are
+/// asked in turn to load the module; the first that does answers. A
+/// loader's failure is the error.
+pub fn resolve_or_load(namespace: &str, module: &str) -> Result<Option<(LangId, String)>, String> {
+    if let Some(found) = resolve(namespace, module) {
+        return Ok(Some(found));
+    }
+    for lang in languages_of(namespace) {
+        let Some(loader) = loader_of(lang) else {
+            continue;
+        };
+        if loader(namespace, module)?
+            && let Some(found) = resolve(namespace, module)
+        {
+            return Ok(Some(found));
+        }
+    }
+    Ok(None)
+}
+
 /// The interface `namespace:module` names.
 pub fn lookup(namespace: &str, module: &str) -> Option<Arc<Interface>> {
     let (lang, module) = resolve(namespace, module)?;
     interface(lang, &module)
+}
+
+/// [`lookup`], loading the module on first need.
+pub fn lookup_or_load(namespace: &str, module: &str) -> Result<Option<Arc<Interface>>, String> {
+    Ok(resolve_or_load(namespace, module)?.and_then(|(lang, module)| interface(lang, &module)))
 }
 
 /// One class of `namespace:module`, with its interface.
@@ -294,6 +365,22 @@ pub fn lookup_class(namespace: &str, module: &str, class: &str) -> Option<(Arc<I
     let iface = lookup(namespace, module)?;
     let index = iface.classes.iter().position(|c| c.name == class)?;
     Some((iface, index))
+}
+
+/// [`lookup_class`], loading the module on first need.
+pub fn lookup_class_or_load(
+    namespace: &str,
+    module: &str,
+    class: &str,
+) -> Result<Option<(Arc<Interface>, usize)>, String> {
+    let Some(iface) = lookup_or_load(namespace, module)? else {
+        return Ok(None);
+    };
+    Ok(iface
+        .classes
+        .iter()
+        .position(|c| c.name == class)
+        .map(|index| (iface, index)))
 }
 
 /// The class whose instances `lang` names `type_name`, with its interface.
@@ -338,6 +425,50 @@ mod tests {
                 ctor: None,
             }],
         }
+    }
+
+    #[test]
+    fn a_missing_module_is_asked_of_the_namespaces_loaders_in_order() {
+        let _serial = world::SERIAL.lock().unwrap();
+        let mut world = World::new(Config {
+            namespaces: vec![Namespace {
+                name: "lgame".to_owned(),
+                langs: vec!["llang_a".to_owned(), "llang_b".to_owned()],
+                modules: None,
+            }],
+            ..Config::default()
+        });
+        let a = world.register(Box::new(Fake("llang_a"))).unwrap()[0];
+        let b = world.register(Box::new(Fake("llang_b"))).unwrap()[0];
+        // A has no source for `hud`; B publishes it under the path spelling.
+        set_loader(a, Arc::new(|_, _| Ok(false)));
+        set_loader(
+            b,
+            Arc::new(move |ns, module| {
+                if module == "hud" {
+                    publish(iface(b, &format!("{ns}/{module}"), "Hud")).unwrap();
+                    return Ok(true);
+                }
+                Err(format!("no source for {ns}:{module}"))
+            }),
+        );
+        assert_eq!(resolve("lgame", "hud"), None);
+        assert_eq!(
+            resolve_or_load("lgame", "hud"),
+            Ok(Some((b, "lgame/hud".to_owned())))
+        );
+        // Published now: the plain lookup finds the path spelling too.
+        assert_eq!(resolve("lgame", "hud"), Some((b, "lgame/hud".to_owned())));
+        assert!(
+            lookup_class_or_load("lgame", "hud", "Hud")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            resolve_or_load("lgame", "other"),
+            Err("no source for lgame:other".to_owned())
+        );
+        assert_eq!(resolve_or_load("nowhere", "hud"), Ok(None));
     }
 
     #[test]

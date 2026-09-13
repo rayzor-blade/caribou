@@ -19,6 +19,7 @@
 pub mod describe;
 mod heap;
 pub mod import;
+pub mod project;
 mod proto;
 pub mod publish;
 pub mod types;
@@ -61,6 +62,8 @@ impl Adapter for Runtime {
         self.lang = ids.first().copied();
         if let Some(&id) = ids.first() {
             heap::set_wren_lang(id);
+            // A module first used loads from the project's sources.
+            caribou::registry::set_loader(id, std::sync::Arc::new(project::load));
         }
     }
 }

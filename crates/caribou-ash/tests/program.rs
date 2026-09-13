@@ -84,10 +84,11 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
         "the constructor and one static: {:?}",
         companion.bindings
     );
-    assert!(
-        program.publish().is_err(),
-        "nothing to publish before the start"
-    );
+    // Publishing before the start is allowed: the interpreter registers
+    // its closure runner as the program starts, before main, so a caller
+    // that waits for main reaches every published class.
+    let early = program.publish().expect("publishes before the start");
+    assert!(early.iter().any(|i| i.module == "game.Player"));
 
     program.start().expect("main runs");
     let published = program.publish().expect("the program publishes");

@@ -8,15 +8,16 @@ description = "Cross-language proofs: both adapters in one process, values cross
 # Tests only. Nightly, like caribou-ash: ash_std needs it.
 
 [dependencies]
+libc = { workspace = true }
 
 [dev-dependencies]
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash", features = ["runner"] }
+caribou-driver = { path = "../caribou-driver" }
 caribou-wren = { path = "../caribou-wren" }
 ash_std = { path = "../../../ash/std" }
 wren_lift = { path = "../../../wren_lift" }
-libc = { workspace = true }
 
 [lib]
 crate-type = ["rlib"]

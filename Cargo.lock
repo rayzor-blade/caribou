@@ -445,12 +445,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "caribou-driver"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "caribou",
+ "caribou-ash",
+ "caribou-wren",
+ "serde_json",
+ "wren_lift",
+]
+
+[[package]]
 name = "caribou-interop"
 version = "0.1.0"
 dependencies = [
  "ash_std",
  "caribou",
  "caribou-ash",
+ "caribou-driver",
  "caribou-wren",
  "caribou_abi",
  "libc",

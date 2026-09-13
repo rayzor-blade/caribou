@@ -4,9 +4,26 @@ How the languages of a Caribou program see each other. This is the
 reference for what a program writes and what it can expect; the
 mechanism behind each rule is in [architecture.md](architecture.md).
 
+## Running a program
+
+From the project directory:
+
+```sh
+caribou run bin/game.hl
+```
+
+The project's layout is the configuration. The source roots are the
+class paths of the `.hxml` files in the directory and beside the
+program, or `src` when there is no `.hxml`. Every directory under a root
+is a namespace, and so is every namespace the program imports. A module
+of another language loads the first time the program uses it. An
+embedder does the same through `caribou_driver::Session`.
+
 ## Namespaces and modules
 
-A program reaches another language's module through a namespace. Namespaces are configured on the world, defined in Rust as:
+A program reaches another language's module through a namespace. The
+driver derives the namespaces from the project; an embedder building its
+own world configures them:
 
 ```rust
 World::new(Config {
@@ -226,7 +243,7 @@ program starts, and a module published again answers the next call.
 
 ## Describing a module
 
-`caribou-wren --describe src/game/hud.wren` prints the module's
+`caribou describe src/game/hud.wren` prints the module's
 interface as JSON: the classes, their members with kind, Wren signature,
 parameter names and types, and result type. It is what the Haxe library
 reads, and it is the same shape the runtime publishes to the registry

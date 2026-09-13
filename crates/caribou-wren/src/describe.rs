@@ -69,10 +69,9 @@ fn inferred(ty: &InferredType, module: &str, names: &[String], interner: &Intern
         InferredType::List => TypeRef::Array(Box::new(TypeRef::Dyn)),
         InferredType::Fn => TypeRef::Fun,
         InferredType::Class(sym) => crate::types::type_ref(interner.resolve(*sym), module, names),
-        InferredType::Null
-        | InferredType::Map
-        | InferredType::Range
-        | InferredType::Any => TypeRef::Dyn,
+        InferredType::Null | InferredType::Map | InferredType::Range | InferredType::Any => {
+            TypeRef::Dyn
+        }
     }
 }
 

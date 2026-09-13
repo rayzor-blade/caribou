@@ -53,9 +53,9 @@ private typedef Found = {
 	`#export = "add(n: Num) -> Num"` attribute on a member, and wren_lift's
 	inference for a result it can tell.
 
-	The runtime describes its own modules. `caribou-wren` is found on the
-	path, or in the target directory of the checkout this library is part
-	of.
+	The runtime describes its own modules: the `caribou` command, found on
+	the path or in the target directory of the checkout this library is
+	part of.
 **/
 class Bridge {
 	#if macro
@@ -111,10 +111,10 @@ class Bridge {
 		}
 	}
 
-	/** The runner: on the path, else the latest built in the checkout
-		this library sits in. */
-	static function runner():String {
-		var name = Sys.systemName() == "Windows" ? "caribou-wren.exe" : "caribou-wren";
+	/** The `caribou` command: on the path, else the latest built in the
+		checkout this library sits in. */
+	static function command():String {
+		var name = Sys.systemName() == "Windows" ? "caribou.exe" : "caribou";
 		for (dir in Sys.getEnv("PATH").split(Sys.systemName() == "Windows" ? ";" : ":")) {
 			if (dir != "" && FileSystem.exists(haxe.io.Path.join([dir, name]))) {
 				return name;
@@ -134,15 +134,15 @@ class Bridge {
 			}
 		}
 		if (latest == null) {
-			Context.fatalError("caribou-wren is not on the path", Context.currentPos());
+			Context.fatalError("the caribou command is not on the path", Context.currentPos());
 		}
 		return latest;
 	}
 
 	/** Ask the runtime to describe the modules. */
 	static function describe(paths:Array<String>):String {
-		var exe = runner();
-		var p = new Process(exe, ["--describe"].concat(paths));
+		var exe = command();
+		var p = new Process(exe, ["describe"].concat(paths));
 		var out = p.stdout.readAll().toString();
 		var err = p.stderr.readAll().toString();
 		var code = p.exitCode();

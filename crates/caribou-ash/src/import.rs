@@ -106,7 +106,7 @@ struct Faces {
 
 /// Parse `game:hud.Hud.draw(_)`: namespace, module, class, and the
 /// member's Wren signature with its `static:` or `construct:` prefix.
-fn parse(name: &str) -> Option<(String, String, String, String)> {
+pub(crate) fn parse(name: &str) -> Option<(String, String, String, String)> {
     let (namespace, rest) = name.split_once(':')?;
     // The signature is the last dot-separated piece up to its parameters;
     // the class is the piece before it, and the module is what remains.
@@ -340,8 +340,9 @@ pub(crate) fn face_for(v: Value) -> Result<*mut vdynamic, String> {
 // The call
 // ---------------------------------------------------------------------------
 
+/// The published class the slot names, loading its module on first use.
 fn published(s: &Slot) -> Result<(Arc<Interface>, usize), String> {
-    registry::lookup_class(&s.namespace, &s.module, &s.class)
+    registry::lookup_class_or_load(&s.namespace, &s.module, &s.class)?
         .ok_or_else(|| format!("{}:{}.{} is not published", s.namespace, s.module, s.class))
 }
 

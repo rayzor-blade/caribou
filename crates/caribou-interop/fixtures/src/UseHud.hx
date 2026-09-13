@@ -22,6 +22,7 @@ class UseHud {
 		} catch (e:String) {
 			Sys.println("caught " + e);
 		}
+		Sys.println(h.owner());
 	}
 
 	@:keep static function after() {

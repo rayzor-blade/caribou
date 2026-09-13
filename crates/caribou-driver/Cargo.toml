@@ -1,0 +1,23 @@
+[package]
+name = "caribou-driver"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Runs a Caribou program: one world with every resident language, from a project's own layout. The caribou command is its thin front."
+
+# Nightly, through caribou-ash: ash_std needs it.
+
+[dependencies]
+anyhow = "1"
+caribou = { path = "../caribou", features = ["serde"] }
+caribou-ash = { path = "../caribou-ash", features = ["runner"] }
+caribou-wren = { path = "../caribou-wren", features = ["runner"] }
+serde_json = "1"
+wren_lift = { path = "../../../wren_lift" }
+
+[lib]
+crate-type = ["rlib"]
+
+[[bin]]
+name = "caribou"
+path = "src/bin/caribou.rs"
