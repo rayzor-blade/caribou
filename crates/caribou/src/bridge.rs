@@ -148,14 +148,14 @@ pub fn guarded() -> bool {
 }
 
 /// Run `body(ctx)` as a run entered from `site`, when the caller keeps
-/// one. The run is under the guard when the thread is under one
-/// already, so a throw cannot land above this run, or when a send from
-/// the site has called back before; `prepare` runs first then, for
-/// whatever the caller wants to put back after a throw. Otherwise the
-/// run goes without, each crossing inside catching for itself, and the
-/// first crossing marks the site (`note_reentry`) so the next run from
-/// it is guarded. False when a throw landed in the guard, the error
-/// pending.
+/// one. The run is under the guard when a send from the site has called
+/// back before; `prepare` runs first then, for whatever the caller wants
+/// to put back after a throw. Otherwise the run goes without: the
+/// guards the thread is under are set aside for its duration, so each
+/// crossing inside catches for itself rather than throw past this run
+/// to an outer guard, and the first crossing marks the site
+/// (`note_reentry`) so the next run from it is guarded. False when a
+/// throw landed in the guard, the error pending.
 ///
 /// # Safety
 /// `ctx` is whatever `body` takes.
@@ -167,7 +167,7 @@ pub unsafe fn enter(
 ) -> bool {
     RUNS.with(|r| {
         let site = match site {
-            Some(site) if !site.reentrant() && r.guarded.get() == 0 => site,
+            Some(site) if !site.reentrant() => site,
             _ => {
                 let f = GUARD.load(Ordering::Acquire);
                 if f.is_null() {
@@ -183,7 +183,9 @@ pub unsafe fn enter(
             }
         };
         let previous = r.entry.replace(site);
+        let outer = r.guarded.replace(0);
         unsafe { body(ctx) };
+        r.guarded.set(outer);
         r.entry.set(previous);
         true
     })

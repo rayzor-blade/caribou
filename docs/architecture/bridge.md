@@ -232,12 +232,13 @@ a throw lands at the guard, and every frame between owns nothing that
 a drop would have to release.
 
 A throw must land below the run it came from and above the frames of
-the language that entered it, so a run entered from a guarded thread
-is always guarded itself. A run entered otherwise may go without: its
-crossings back into Haxe catch for themselves, as before, and the first
-one marks the run's entry site (`CallSite::reentrant`), so the next run
-from that site is guarded. `enter` makes that choice for a site. A body
-that never calls back pays nothing; one that does pays one trap per
+the language that entered it. A run may go without a guard when its
+site has not seen a call back: the guards the thread is under are set
+aside for its duration, so its crossings back into Haxe catch for
+themselves, as before, and the first one marks the run's entry site
+(`CallSite::reentrant`), so the next run from that site is guarded.
+`enter` makes that choice for a site. A body that never calls back pays
+nothing, whatever runs it is nested in; one that does pays one trap per
 entry instead of one per crossing.
 
 The frames a throw abandons are the other language's: what its adapter

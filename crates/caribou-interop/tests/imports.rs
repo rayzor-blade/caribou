@@ -82,6 +82,13 @@ var scores = Player.scores()
 System.print("%(scores.count) %(scores[2]) %(scores.toList)")
 scores[0] = 10
 System.print(Player.total(scores))
+// A Haxe throw two runs deep, under a function Haxe calls back: it is
+// the abort of the run it came from, twice, as the second run from the
+// site is guarded.
+for (i in 0...2) {
+  System.print(Fiber.new { Player.apply(Fn.new {|v| v.explode() }, p) }.try())
+  System.print(Fiber.new { Player.twice(Fn.new {|x| p.burst() }, 1) }.try())
+}
 "#;
 
 fn fixture() -> PathBuf {
@@ -135,7 +142,7 @@ fn drive(mode: ExecutionMode) {
     assert_eq!(result, InterpretResult::Success, "{errors:?}");
     assert_eq!(
         output,
-        "kaboom\nbang\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\n"
+        "kaboom\nbang\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\nkaboom\nbang\nkaboom\nbang\n"
     );
 
     // A module no namespace holds is an import error naming it.
