@@ -61,7 +61,7 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
             .iter()
             .map(|p| p.name.as_str())
             .collect::<Vec<_>>(),
-        ["hit", "explode"]
+        ["hit", "explode", "burst"]
     );
     assert!(player.global_value != 0, "the class object has a global");
     let companion = types
