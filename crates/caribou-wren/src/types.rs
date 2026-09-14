@@ -193,17 +193,38 @@ impl Export {
         Ok(None)
     }
 
-    /// The type of the parameter at `index`, in `module`, whose classes
-    /// are `classes`.
-    pub fn param(&self, index: usize, module: &str, classes: &[String]) -> TypeRef {
+    /// The type of the parameter at `index`, among `classes`.
+    pub fn param(&self, index: usize, classes: &Classes<'_>) -> TypeRef {
         self.params
             .get(index)
             .and_then(|p| p.ty.as_deref())
-            .map_or(TypeRef::Dyn, |t| type_ref(t, module, classes))
+            .map_or(TypeRef::Dyn, |t| type_ref(t, classes))
     }
 
-    pub fn ret(&self, module: &str, classes: &[String]) -> Option<TypeRef> {
-        self.ret.as_deref().map(|t| type_ref(t, module, classes))
+    pub fn ret(&self, classes: &Classes<'_>) -> Option<TypeRef> {
+        self.ret.as_deref().map(|t| type_ref(t, classes))
+    }
+}
+
+/// The classes a type name in an export may name: the module's own, by
+/// name, and the ones the module imports, by the name it imports them
+/// as, each with the type name the registry knows the class by.
+pub struct Classes<'a> {
+    pub module: &'a str,
+    pub own: &'a [String],
+    pub imported: &'a [(String, String)],
+}
+
+impl Classes<'_> {
+    /// The registry's name for the class `name` names here.
+    pub fn type_name(&self, name: &str) -> Option<String> {
+        if self.own.iter().any(|c| c == name) {
+            return Some(format!("{}.{name}", self.module));
+        }
+        self.imported
+            .iter()
+            .find(|(local, _)| local == name)
+            .map(|(_, type_name)| type_name.clone())
     }
 }
 
@@ -217,7 +238,7 @@ fn is_identifier(name: &str) -> bool {
 
 /// A Wren type name as a registry type. `Fn(T, U) -> R` is a function of
 /// that shape; `Fn` alone one of any.
-pub fn type_ref(name: &str, module: &str, classes: &[String]) -> TypeRef {
+pub fn type_ref(name: &str, classes: &Classes<'_>) -> TypeRef {
     let name = name.trim();
     if name.starts_with("Fn(")
         && let Some(close) = close_of(name, 2)
@@ -228,11 +249,11 @@ pub fn type_ref(name: &str, module: &str, classes: &[String]) -> TypeRef {
         } else {
             split_top(inner)
                 .into_iter()
-                .map(|p| type_ref(p, module, classes))
+                .map(|p| type_ref(p, classes))
                 .collect()
         };
         let ret = match name[close..].trim().strip_prefix("->") {
-            Some(r) => type_ref(r, module, classes),
+            Some(r) => type_ref(r, classes),
             None => TypeRef::Dyn,
         };
         return TypeRef::Function {
@@ -247,7 +268,7 @@ pub fn type_ref(name: &str, module: &str, classes: &[String]) -> TypeRef {
         "Null" => TypeRef::Void,
         "List" => TypeRef::Array(Box::new(TypeRef::Dyn)),
         "Fn" => TypeRef::Fun,
-        _ if classes.iter().any(|c| c == name) => TypeRef::Object(format!("{module}.{name}")),
+        _ if let Some(type_name) = classes.type_name(name) => TypeRef::Object(type_name),
         _ => TypeRef::Dyn,
     }
 }
@@ -265,14 +286,23 @@ mod tests {
         assert_eq!(e.params[1].ty.as_deref(), Some("Hud"));
         assert_eq!(e.ret.as_deref(), Some("Bool"));
         assert!(e.has_params && !e.is_setter);
-        let classes = vec!["Hud".to_owned()];
-        assert_eq!(e.param(0, "hud", &classes), TypeRef::Float);
+        let own = vec!["Hud".to_owned()];
+        let imported = vec![("Entity".to_owned(), "swarm:Entity.Entity".to_owned())];
+        let classes = Classes {
+            module: "hud",
+            own: &own,
+            imported: &imported,
+        };
+        assert_eq!(e.param(0, &classes), TypeRef::Float);
+        assert_eq!(e.param(1, &classes), TypeRef::Object("hud.Hud".to_owned()));
+        assert_eq!(e.param(2, &classes), TypeRef::Dyn);
+        assert_eq!(e.ret(&classes), Some(TypeRef::Bool));
+        // An imported class, by the name it is imported as.
+        let e = Export::parse("new(e: Entity, i: Num)").unwrap();
         assert_eq!(
-            e.param(1, "hud", &classes),
-            TypeRef::Object("hud.Hud".to_owned())
+            e.param(0, &classes),
+            TypeRef::Object("swarm:Entity.Entity".to_owned())
         );
-        assert_eq!(e.param(2, "hud", &classes), TypeRef::Dyn);
-        assert_eq!(e.ret("hud", &classes), Some(TypeRef::Bool));
 
         let e = Export::parse("score -> Num").unwrap();
         assert!(!e.has_params && e.params.is_empty());
@@ -280,7 +310,7 @@ mod tests {
         assert!(e.has_params && e.params.is_empty());
         assert_eq!(e.ret.as_deref(), Some("Fn(Num) -> Num"));
         assert_eq!(
-            e.ret("hud", &classes),
+            e.ret(&classes),
             Some(TypeRef::Function {
                 params: vec![TypeRef::Float],
                 ret: Box::new(TypeRef::Float)
@@ -289,16 +319,16 @@ mod tests {
         let e = Export::parse("each(f: Fn(Hud, Num), n: Num)").unwrap();
         assert_eq!(e.params.len(), 2);
         assert_eq!(
-            e.param(0, "hud", &classes),
+            e.param(0, &classes),
             TypeRef::Function {
                 params: vec![TypeRef::Object("hud.Hud".to_owned()), TypeRef::Float],
                 ret: Box::new(TypeRef::Dyn)
             }
         );
-        assert_eq!(e.param(1, "hud", &classes), TypeRef::Float);
+        assert_eq!(e.param(1, &classes), TypeRef::Float);
         let e = Export::parse("done -> Fn()").unwrap();
         assert_eq!(
-            e.ret("hud", &classes),
+            e.ret(&classes),
             Some(TypeRef::Function {
                 params: vec![],
                 ret: Box::new(TypeRef::Dyn)

@@ -42,7 +42,7 @@ use wren_lift::runtime::vm::VM;
 
 use crate::heap::{record_for, wren_lang};
 use crate::proto::from_wren;
-use crate::types::Export;
+use crate::types::{Classes, Export};
 
 /// The classes of one heap in the registry: each class to the type name
 /// its instances report.
@@ -95,14 +95,21 @@ pub fn publish_module(vm: &VM, module: &str) -> Result<Arc<Interface>, PublishEr
         }
         seen.push(class);
     }
-    // Every class's name first: a declared type may name any of them.
+    // Every class's name first: a declared type may name any of them,
+    // and any class the module imports, by the name it is imported as.
     let names: Vec<String> = seen
         .iter()
         .map(|&c| vm.interner.resolve(unsafe { (*c).name }).to_owned())
         .collect();
+    let imported = imported_classes(vm, entry, module, &seen);
+    let classes_here = Classes {
+        module,
+        own: &names,
+        imported: &imported,
+    };
     let classes = seen
         .iter()
-        .map(|&class| describe(vm, class, module, &names))
+        .map(|&class| describe(vm, class, module, &classes_here))
         .collect();
     let iface = Interface {
         lang: wren_lang(),
@@ -205,7 +212,51 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-fn describe(vm: &VM, class: *mut ObjClass, module: &str, names: &[String]) -> ClassIface {
+/// The classes the module's variables hold that are not its own, by
+/// variable name, each with the registry's name for it: a class installed
+/// for another language's by the type it stands for, a Wren class by the
+/// module its methods were compiled in.
+fn imported_classes(
+    vm: &VM,
+    entry: &wren_lift::runtime::engine::ModuleEntry,
+    module: &str,
+    own: &[*mut ObjClass],
+) -> Vec<(String, String)> {
+    let rec = record_for(vm.object_class as *mut u8);
+    let mut out = Vec::new();
+    for (name, &value) in entry.var_names.iter().zip(&entry.vars) {
+        let Some(p) = value.as_object() else {
+            continue;
+        };
+        if unsafe { (*(p as *const ObjHeader)).obj_type } != ObjType::Class {
+            continue;
+        }
+        let class = p as *mut ObjClass;
+        if own.contains(&class) {
+            continue;
+        }
+        let type_name = match rec.imports().borrow().type_name_of(class) {
+            Some(type_name) => type_name,
+            None => {
+                let home = own_methods(class).find_map(|(_, m)| match m {
+                    Method::Closure(closure) | Method::Constructor(closure) => {
+                        let id = FuncId(unsafe { (*(*closure).function).fn_id });
+                        vm.engine.func_module(id).map(|m| m.to_string())
+                    }
+                    _ => None,
+                });
+                let Some(home) = home.filter(|h| h != module) else {
+                    continue;
+                };
+                format!("{home}.{}", vm.interner.resolve(unsafe { (*class).name }))
+            }
+        };
+        out.push((name.clone(), type_name));
+    }
+    out
+}
+
+fn describe(vm: &VM, class: *mut ObjClass, module: &str, classes: &Classes<'_>) -> ClassIface {
     let name = vm.interner.resolve(unsafe { (*class).name }).to_owned();
     let type_name = format!("{module}.{name}");
     let superclass = unsafe { (*class).superclass };
@@ -257,7 +308,7 @@ fn describe(vm: &VM, class: *mut ObjClass, module: &str, names: &[String]) -> Cl
                 .map(|i| {
                     export
                         .as_ref()
-                        .map_or(TypeRef::Dyn, |e| e.param(i, module, names))
+                        .map_or(TypeRef::Dyn, |e| e.param(i, classes))
                 })
                 .collect(),
             ret: if is_constructor {
@@ -265,7 +316,7 @@ fn describe(vm: &VM, class: *mut ObjClass, module: &str, names: &[String]) -> Cl
             } else {
                 export
                     .as_ref()
-                    .and_then(|e| e.ret(module, names))
+                    .and_then(|e| e.ret(classes))
                     .unwrap_or(TypeRef::Dyn)
             },
             target: Callable::WrenMethod {

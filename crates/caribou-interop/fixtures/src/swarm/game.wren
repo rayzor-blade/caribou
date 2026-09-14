@@ -5,9 +5,10 @@
 // own fields. The same behaviour is written in Haxe (Swarm.hx) and in
 // Wren over a Wren world (arena.wren), for the baselines.
 import "swarm:World" for World
+import "swarm:Entity" for Entity
 
 class Boid {
-  #export = "new(e, i: Num)"
+  #export = "new(e: Entity, i: Num)"
   construct new(e, i) {
     _e = e
     _i = i

@@ -190,6 +190,7 @@ Type names are Wren's own, or a class of the same module:
 | `Fn(Num, Hud) -> Bool` | `Function` | `(Float, Hud) -> Bool` |
 | `Null`, as a result | `Void` | `Void` |
 | a class of the module | `Object("module.Class")` | that class |
+| a class a namespaced import brings in, `import "swarm:Entity" for Entity` | `Object` of that class | that class: the Haxe class, or the class emitted for the Wren module |
 | anything else, or nothing | `Dyn` | `Dynamic` |
 
 A function type spells its parameters' types and its result's, each any

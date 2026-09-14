@@ -65,6 +65,9 @@ class Bridge {
 	/** The namespace of a module at a classpath root: the language's own. */
 	static inline var DEFAULT_NAMESPACE = "wren";
 
+	/** Every Wren module found, for a type that names a class of another. */
+	static var modules:Array<Found> = [];
+
 	public static function use():Void {
 		var found = [];
 		for (cp in Context.getClassPath()) {
@@ -78,6 +81,7 @@ class Bridge {
 		if (found.length == 0) {
 			return;
 		}
+		modules = found;
 		var described:Array<ModuleDesc> = haxe.Json.parse(describe(found.map(f -> f.path)));
 		for (i in 0...found.length) {
 			var f = found[i];
@@ -154,7 +158,10 @@ class Bridge {
 	}
 
 	/** A registry type as a Haxe type. An object type is the class of the
-		same module that reports it, else `Dynamic`. */
+		same module that reports it, or one the module imports by a
+		namespaced import, written `ns:module.Class`: the class emitted for
+		that Wren module, else the Haxe class the import names. Anything
+		else is `Dynamic`. */
 	static function haxeType(ty:Dynamic, pack:Array<String>, classes:Array<ClassDesc>):ComplexType {
 		if (Std.isOfType(ty, String)) {
 			return switch ((ty : String)) {
@@ -172,6 +179,21 @@ class Bridge {
 				if (c.type_name == typeName) {
 					return TPath({pack: pack, name: c.name});
 				}
+			}
+			var colon = typeName.indexOf(":");
+			var dot = typeName.lastIndexOf(".");
+			if (colon > 0 && dot > colon) {
+				var namespace = typeName.substr(0, colon);
+				var module = typeName.substring(colon + 1, dot);
+				var name = typeName.substr(dot + 1);
+				for (f in modules) {
+					if (f.namespace == namespace && f.module == module) {
+						return TPath({pack: f.pack, name: name});
+					}
+				}
+				var parts = module.split("/");
+				parts.pop();
+				return TPath({pack: [namespace].concat(parts), name: name});
 			}
 			return macro :Dynamic;
 		}

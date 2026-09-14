@@ -43,8 +43,13 @@ languages see, and it may differ from Wren's. There is one parameter per
 Wren parameter, each `name`, `name: Type` or `_: Type`, where `_` keeps
 the source's name. `-> Type` gives the result. A getter is `name ->
 Type`; a setter is `name=(v: Type)`. Types are Wren's own names, a
-class of the module, or a function's shape, `Fn(Num) -> Num`
-(`caribou_wren::types`).
+class of the module, a class a namespaced import brings in by the name
+it is imported as, or a function's shape, `Fn(Num) -> Num`
+(`caribou_wren::types`). An imported class's registry name is not known
+from the source, so `describe` writes it as the import and the class,
+`swarm:Entity.Entity`, which the macro resolves to the Haxe class or the
+class it emitted for that Wren module; the publisher resolves the same
+name on the running VM, where the import is a class object it knows.
 
 Parameters match by position. So the publisher can read the attribute
 off the running class, which has no parameter names, the way `describe`

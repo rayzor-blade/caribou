@@ -22,7 +22,7 @@ use wren_lift::diagnostics::Severity;
 use wren_lift::intern::{Interner, SymbolId};
 use wren_lift::sema::types::{InferredType, TypeEnv, infer_types_with_classes};
 
-use crate::types::Export;
+use crate::types::{Classes, Export};
 
 /// The language name the description carries.
 pub const LANG: &str = "wren";
@@ -47,6 +47,33 @@ pub fn describe_source(module: &str, source: &str) -> Result<ModuleDesc, String>
         .iter()
         .map(|c| interner.resolve(c.name.0).to_owned())
         .collect();
+    // A class a namespaced import brings in, by the name it is imported
+    // as: its registry name is not known from here, so it is written as
+    // the import and the class, `swarm:Entity.Entity`, for the build
+    // macro to resolve; the publisher resolves it on the running VM.
+    let mut imported: Vec<(String, String)> = Vec::new();
+    for (stmt, _) in &parsed.module {
+        let Stmt::Import { module, names } = stmt else {
+            continue;
+        };
+        let (path, _) = module;
+        if !path.contains(':') {
+            continue;
+        }
+        for n in names {
+            let name = interner.resolve(n.name.0);
+            let local = n
+                .alias
+                .as_ref()
+                .map_or(name, |(alias, _)| interner.resolve(*alias));
+            imported.push((local.to_owned(), format!("{path}.{name}")));
+        }
+    }
+    let classes_here = Classes {
+        module,
+        own: &names,
+        imported: &imported,
+    };
     // What wren_lift can tell about results, seeded as its hover is.
     let known: HashSet<SymbolId> = classes.iter().map(|c| c.name.0).collect();
     let env = infer_types_with_classes(&parsed.module, known, interner.lookup("new"));
@@ -55,20 +82,20 @@ pub fn describe_source(module: &str, source: &str) -> Result<ModuleDesc, String>
         module: module.to_owned(),
         classes: classes
             .iter()
-            .map(|c| describe_class(c, module, &names, interner, &env))
+            .map(|c| describe_class(c, module, &classes_here, interner, &env))
             .collect::<Result<_, _>>()?,
     })
 }
 
 /// An inferred type as a registry type; `Any` is `Dyn`.
-fn inferred(ty: &InferredType, module: &str, names: &[String], interner: &Interner) -> TypeRef {
+fn inferred(ty: &InferredType, classes: &Classes<'_>, interner: &Interner) -> TypeRef {
     match ty {
         InferredType::Num => TypeRef::Float,
         InferredType::Bool => TypeRef::Bool,
         InferredType::String => TypeRef::Str,
         InferredType::List => TypeRef::Array(Box::new(TypeRef::Dyn)),
         InferredType::Fn => TypeRef::Fun,
-        InferredType::Class(sym) => crate::types::type_ref(interner.resolve(*sym), module, names),
+        InferredType::Class(sym) => crate::types::type_ref(interner.resolve(*sym), classes),
         InferredType::Null | InferredType::Map | InferredType::Range | InferredType::Any => {
             TypeRef::Dyn
         }
@@ -78,7 +105,7 @@ fn inferred(ty: &InferredType, module: &str, names: &[String], interner: &Intern
 fn describe_class(
     c: &ClassDecl,
     module: &str,
-    names: &[String],
+    classes: &Classes<'_>,
     interner: &Interner,
     env: &TypeEnv,
 ) -> Result<ClassDesc, String> {
@@ -128,7 +155,7 @@ fn describe_class(
                 format!("{base}({})", blanks.join(","))
             }
         };
-        let exported_ret = export.as_ref().and_then(|e| e.ret(module, names));
+        let exported_ret = export.as_ref().and_then(|e| e.ret(classes));
         let ret = match kind {
             MemberKind::Constructor | MemberKind::Factory => TypeRef::Object(type_name.clone()),
             _ if exported_ret.is_some() => exported_ret.unwrap_or(TypeRef::Dyn),
@@ -139,7 +166,7 @@ fn describe_class(
                     Some((Stmt::Expr(e), _)) => env.get_expr_type(e.1.start),
                     _ => env.get_method_return_type(c.name.0, base_sym),
                 };
-                inferred(ty, module, names, interner)
+                inferred(ty, classes, interner)
             }
         };
         let exported_name = |i: usize| {
@@ -159,7 +186,7 @@ fn describe_class(
                     name: exported_name(i).unwrap_or_else(|| (*pname).to_owned()),
                     ty: export
                         .as_ref()
-                        .map_or(TypeRef::Dyn, |e| e.param(i, module, names)),
+                        .map_or(TypeRef::Dyn, |e| e.param(i, classes)),
                 })
                 .collect(),
             ret,
@@ -289,6 +316,23 @@ class Panel is Hud {
     #[test]
     fn a_parse_error_is_the_answer() {
         assert!(describe_source("bad", "class {").is_err());
+    }
+
+    #[test]
+    fn an_export_may_name_a_class_a_namespaced_import_brings_in() {
+        let source = "import \"swarm:Entity\" for Entity\nimport \"swarm:World\" for World as W\nimport \"lib\" for Plain\n\
+            class Boid {\n  #export = \"new(e: Entity, w: W, p: Plain)\"\n  construct new(e, w, p) {}\n}\n";
+        let d = describe_source("game", source).unwrap();
+        let ctor = &d.classes[0].members[0];
+        assert_eq!(
+            ctor.params.iter().map(|p| p.ty.clone()).collect::<Vec<_>>(),
+            vec![
+                TypeRef::Object("swarm:Entity.Entity".to_owned()),
+                TypeRef::Object("swarm:World.World".to_owned()),
+                // A plain import's home is not known from here.
+                TypeRef::Dyn,
+            ]
+        );
     }
 
     #[test]

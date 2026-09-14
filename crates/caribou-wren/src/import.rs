@@ -158,6 +158,14 @@ impl Imports {
     pub(crate) fn targets(&self) -> impl Iterator<Item = &Target> {
         self.classes.values().flat_map(|c| c.targets.iter())
     }
+
+    /// The type name an installed class stands for.
+    pub(crate) fn type_name_of(&self, class: *mut ObjClass) -> Option<String> {
+        self.by_type
+            .iter()
+            .find(|(_, c)| **c == class)
+            .map(|((_, type_name), _)| type_name.clone())
+    }
 }
 
 /// The heap is going away with its VM: forget its classes.
