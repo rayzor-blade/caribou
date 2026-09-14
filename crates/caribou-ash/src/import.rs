@@ -168,9 +168,52 @@ pub fn sites() -> Vec<report::Site> {
             plain: s.site.plain(),
             boxed_in: s.boxed_in.load(Ordering::Relaxed),
             boxed_out: s.boxed_out.load(Ordering::Relaxed),
+            links: links(s),
         })
         .filter(|site| site.direct || site.plain > 0)
         .collect()
+}
+
+/// Whether the member behind `s` links at AOT: by the types its class
+/// published, when it is published; a member not published yet is
+/// judged by the kinds the program declared, where a `Dynamic` is what
+/// an untyped export becomes.
+fn links(s: &Slot) -> bool {
+    let published = registry::lookup_class(&s.namespace, &s.module, &s.class);
+    if let Some((iface, index)) = published {
+        let class = &iface.classes[index];
+        let member = match s.kind {
+            Kind::Init => class.ctor.as_ref(),
+            Kind::Static => static_member(class, s.member),
+            Kind::Method => class.methods.iter().find(|m| {
+                !m.is_static
+                    && matches!(m.target, Callable::WrenMethod { signature, .. } if signature == s.member)
+            }),
+            Kind::Get | Kind::Set => {
+                let name = s.member.name();
+                return class
+                    .fields
+                    .iter()
+                    .chain(class.statics.iter())
+                    .find(|f| f.name == name)
+                    .is_some_and(|f| caribou::link::CType::of(&f.ty).is_some());
+            }
+        };
+        if let Some(m) = member {
+            let ret = if s.kind == Kind::Init {
+                &registry::TypeRef::Void
+            } else {
+                &m.ret
+            };
+            return m
+                .params
+                .iter()
+                .chain(std::iter::once(ret))
+                .all(|t| caribou::link::CType::of(t).is_some());
+        }
+    }
+    let kinds = unsafe { s.kinds.load(Ordering::Acquire).as_ref() };
+    kinds.is_some_and(|k| k.ret != hl::HDYN && k.args.iter().all(|&kind| kind != hl::HDYN))
 }
 
 /// The `hl_type` of the face class per `(namespace, module, class)`, and

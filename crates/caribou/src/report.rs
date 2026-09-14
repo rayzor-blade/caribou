@@ -40,7 +40,9 @@ pub struct Function {
 /// send now, `plain` how many sends took the plain path, and `boxed_in`
 /// and `boxed_out` how many scalars arrived and left boxed, through a
 /// parameter or result the program declared `Dynamic`: a box is an
-/// allocation per call, whatever the tier.
+/// allocation per call, whatever the tier. `links` says whether the
+/// member's types give it a C signature, so an AOT build links the send
+/// as a call (`caribou::link`); one that does not stays on the bridge.
 #[derive(Clone, Debug)]
 pub struct Site {
     pub name: String,
@@ -48,6 +50,7 @@ pub struct Site {
     pub plain: usize,
     pub boxed_in: usize,
     pub boxed_out: usize,
+    pub links: bool,
 }
 
 /// The functions that crossed as closures: typed ones the other language
@@ -130,7 +133,8 @@ impl fmt::Display for Report {
                     }
                     for r in rows {
                         let send = if r.direct { "direct" } else { "plain" };
-                        write!(f, "  {:<width$}  {:<11}", r.name, send)?;
+                        let aot = if r.links { "links" } else { "dynamic" };
+                        write!(f, "  {:<width$}  {:<8}  {:<8}", r.name, send, aot)?;
                         if r.plain > 0 {
                             write!(f, "  {} plain", r.plain)?;
                         }
@@ -192,6 +196,7 @@ mod tests {
                     plain: 1,
                     boxed_in: 0,
                     boxed_out: 0,
+                    links: true,
                 },
                 Site {
                     name: "Tally.new(_)".into(),
@@ -199,6 +204,7 @@ mod tests {
                     plain: 3,
                     boxed_in: 3,
                     boxed_out: 0,
+                    links: false,
                 },
             ],
         );
@@ -207,7 +213,8 @@ mod tests {
         assert!(text.starts_with("Wren\n  Boid.update(_)"));
         assert!(text.contains("baseline     12\n"));
         assert!(text.contains("World.x(_)"));
-        assert!(text.contains("direct       1 plain"));
+        assert!(text.contains("direct    links     1 plain"));
+        assert!(text.contains("plain     dynamic   3 plain"));
         let boxed = text.split("Boxed:").nth(1).expect("a boxed section");
         assert!(boxed.contains("Tally.new(_)") && boxed.contains("  3 in\n"));
         assert!(!boxed.contains("World.x(_)"));

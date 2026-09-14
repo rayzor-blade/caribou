@@ -12,6 +12,7 @@ pub mod diag;
 pub mod error;
 pub mod hash;
 pub mod heap;
+pub mod link;
 pub mod protocol;
 pub mod registry;
 pub mod report;

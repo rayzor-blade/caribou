@@ -92,6 +92,9 @@ pub(crate) struct Target {
     name: String,
     /// The class and the signature it was bound under, for the report.
     pub(crate) label: String,
+    /// Whether the member's types give it a C signature, so an AOT build
+    /// links the send (`caribou::link`); for the report.
+    pub(crate) links: bool,
     callable: Callable,
     /// What the callee's protocol derived for this slot last time.
     pub(crate) site: CallSite,
@@ -103,10 +106,24 @@ impl Target {
             kind,
             name,
             label: String::new(),
+            links: false,
             callable,
             site: CallSite::new(),
         }
     }
+
+    fn linking(mut self, links: bool) -> Target {
+        self.links = links;
+        self
+    }
+}
+
+/// Whether every one of `params` and `ret` has a C form.
+fn all_link(params: &[registry::TypeRef], ret: &registry::TypeRef) -> bool {
+    params
+        .iter()
+        .chain(std::iter::once(ret))
+        .all(|t| caribou::link::CType::of(t).is_some())
 }
 
 /// One installed class: the members it binds, kept for the words its host
@@ -370,7 +387,8 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
     if let Some(ctor) = &class.ctor {
         members.push((
             format!("static:{}", signature("new", ctor.params.len())),
-            Target::new(Kind::Ctor, qualify("new"), ctor.target),
+            Target::new(Kind::Ctor, qualify("new"), ctor.target)
+                .linking(all_link(&ctor.params, &registry::TypeRef::Void)),
         ));
     }
     for method in &class.methods {
@@ -378,8 +396,8 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
             name,
             is_static,
             params,
+            ret,
             target,
-            ..
         } = method;
         let sig = signature(name, params.len());
         members.push((
@@ -396,18 +414,21 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
                 },
                 qualify(name),
                 *target,
-            ),
+            )
+            .linking(all_link(params, ret)),
         ));
     }
     for field in &class.fields {
         let sym = symbol::intern(&field.name);
+        let links = all_link(&[], &field.ty);
         members.push((
             field.name.clone(),
             Target::new(
                 Kind::Getter(sym),
                 qualify(&field.name),
                 Callable::Dynamic(Value::null()),
-            ),
+            )
+            .linking(links),
         ));
         members.push((
             format!("{}=(_)", field.name),
@@ -415,19 +436,22 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
                 Kind::Setter(sym),
                 qualify(&field.name),
                 Callable::Dynamic(Value::null()),
-            ),
+            )
+            .linking(links),
         ));
     }
     // A static field is a static getter and setter on the class object.
     for field in &class.statics {
         let sym = symbol::intern(&field.name);
+        let links = all_link(&[], &field.ty);
         members.push((
             format!("static:{}", field.name),
             Target::new(
                 Kind::ClassGetter(sym),
                 qualify(&field.name),
                 Callable::Dynamic(class.class_object),
-            ),
+            )
+            .linking(links),
         ));
         members.push((
             format!("static:{}=(_)", field.name),
@@ -435,7 +459,8 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
                 Kind::ClassSetter(sym),
                 qualify(&field.name),
                 Callable::Dynamic(class.class_object),
-            ),
+            )
+            .linking(links),
         ));
     }
     members

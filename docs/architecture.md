@@ -22,7 +22,8 @@ design proposal, and work in progress lives in git-bug.
 | [Registry](architecture/registry.md) | Interfaces and namespaces, and what Ash and WrenLift publish. |
 | [Wren imports a Haxe class](architecture/wren-imports.md) | Resolving and installing, a call, lifetime. |
 | [Haxe imports a Wren class](architecture/haxe-imports.md) | The build macro, declaring types, the emitted class, binding the natives, faces, how a Wren object is held by Haxe. |
-| [World and driver](architecture/world.md) | Adapters and languages, startup, the driver and its project layout, events. |
+| [World and driver](architecture/world.md) | Adapters and languages, startup, the driver and its project layout, the run report, events. |
+| [Linking](architecture/linking.md) | A member at link time: the symbol, the C signature, each AOT's half, what stays at run time. |
 
 [interop.md](interop.md) is the companion for a program's author: what a
 program writes and what it can expect.

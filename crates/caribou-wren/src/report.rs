@@ -108,6 +108,7 @@ pub fn sites(vm: &VM) -> Vec<Site> {
             plain: t.site.plain(),
             boxed_in: 0,
             boxed_out: 0,
+            links: t.links,
         })
         .filter(|site| site.direct || site.plain > 0)
         .collect()

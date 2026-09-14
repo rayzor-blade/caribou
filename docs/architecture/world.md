@@ -86,9 +86,10 @@ roots, beside the importer first.
 tier it reached and, when the session was opened to count, how often it
 was entered; each Haxe method a tier compiled; each site the program
 sends across the bridge from, whether it holds a direct send and how many
-sends took the plain path; how many scalars crossed boxed through a
-`Dynamic` parameter or result; and how many closures crossed typed or
-boxed. Each adapter answers for its language (`caribou_ash::report`,
+sends took the plain path, and whether the member links at AOT or stays
+dynamic (see [linking](linking.md)); how many scalars crossed boxed
+through a `Dynamic` parameter or result; and how many closures crossed
+typed or boxed. Each adapter answers for its language (`caribou_ash::report`,
 `caribou_wren::report`), and the session gathers the answers. `caribou
 run --report` prints it when the program ends.
 
