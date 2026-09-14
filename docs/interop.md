@@ -189,7 +189,7 @@ Type names are Wren's own, or a class of the same module:
 | `Num` | `Float` | `Float` |
 | `Bool` | `Bool` | `Bool` |
 | `String` | `Str` | `String` |
-| `List` | `Array(Dyn)` | `Array<Dynamic>` |
+| `List` | `Array(Dyn)` | `caribou.Sequence<Dynamic>` |
 | `Fn` | `Fun` | `Dynamic` |
 | `Fn(Num, Hud) -> Bool` | `Function` | `(Float, Hud) -> Bool` |
 | `Null`, as a result | `Void` | `Void` |
@@ -228,11 +228,18 @@ built on it.
 | `String` | by value, copied | `String` |
 | `null` | | `null` |
 | an object | by reference | the class emitted for it, else `caribou.Ref` |
+| a `List` | by reference | `caribou.Sequence<Dynamic>` over it |
 | a Haxe object coming back | by reference | the same Haxe object |
 
 - A Wren object reaching Haxe twice is the same Haxe object, and a Haxe
   object of an emitted class going into Wren is the Wren object it
   stands for. Haxe `==` works.
+- A Wren list reaches Haxe as a `caribou.Sequence`: `xs.length`, `xs[i]`,
+  `xs[i] = v` and `for (x in xs)` reach the list where Wren keeps it, so
+  both sides see one list, and it goes back as itself. `toArray()` copies
+  it when a Haxe array is wanted. A Haxe `Array<T>` is a `Sequence<T>` as
+  it is, so a Haxe array goes where a `List` is declared, and Wren walks
+  it where Haxe keeps it.
 - The Haxe object keeps the Wren object alive. Wren's collector sees
   what Haxe holds.
 - A Wren abort inside a call is thrown into Haxe as a `String` with the

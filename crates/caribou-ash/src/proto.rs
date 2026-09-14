@@ -1713,10 +1713,13 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
 // Sequences: HashLink's arrays
 // ---------------------------------------------------------------------------
 
-/// The names an array answers through: `length`, and `getDyn` and
-/// `setDyn` of `hl.types.ArrayAccess`, which every array kind overrides.
+/// The names an array answers through: `getDyn` and `setDyn` of
+/// `hl.types.ArrayAccess`, which every array kind overrides, and its
+/// length, a declared field on `ArrayBase` and a `get_length` method on
+/// `ArrayDyn`.
 struct ArrayNames {
     length: Symbol,
+    get_length: Symbol,
     get_dyn: Symbol,
     set_dyn: Symbol,
 }
@@ -1725,18 +1728,20 @@ fn array_names() -> &'static ArrayNames {
     static NAMES: OnceLock<ArrayNames> = OnceLock::new();
     NAMES.get_or_init(|| ArrayNames {
         length: caribou::symbol::intern("length"),
+        get_length: caribou::symbol::intern("get_length"),
         get_dyn: caribou::symbol::intern("getDyn"),
         set_dyn: caribou::symbol::intern("setDyn"),
     })
 }
 
-/// Whether the object is a HashLink array: a declared `length` and a
-/// `getDyn` method.
+/// Whether the object is a HashLink array: a `getDyn` method, and a
+/// length to read.
 fn is_array(d: *mut vdynamic) -> bool {
     let names = array_names();
     has_members(unsafe { kind_of(d) })
-        && unsafe { field_of((*d).t, field_hash(names.length)) }.is_some()
         && unsafe { find_method(d, field_hash(names.get_dyn)) }.is_some()
+        && (unsafe { field_of((*d).t, field_hash(names.length)) }.is_some()
+            || unsafe { find_method(d, field_hash(names.get_length)) }.is_some())
 }
 
 unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
@@ -1744,8 +1749,13 @@ unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
     if !is_array(d) {
         return REPLY_UNSUPPORTED;
     }
+    let names = array_names();
     let mut length = Value::null();
-    let code = get_at(obj, array_names().length, None, &mut length);
+    let code = if unsafe { field_of((*d).t, field_hash(names.length)) }.is_some() {
+        get_at(obj, names.length, None, &mut length)
+    } else {
+        invoke_at_opt(obj, names.get_length, None, ptr::null(), 0, &mut length)
+    };
     if code != REPLY_OK {
         return code;
     }

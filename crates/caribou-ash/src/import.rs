@@ -72,11 +72,28 @@ enum Kind {
     /// `construct:new(_)`: the fresh Haxe object, then the parameters; the
     /// call makes the foreign object and binds it to the face.
     Init,
+    /// `len`, `index` and `set_index`: a sequence's count and elements
+    /// through the bridge, for `caribou.Sequence`. The receiver is a
+    /// face, or a Haxe object the bridge wraps.
+    Len,
+    Index,
+    SetIndex,
 }
 
 impl Kind {
     fn takes_receiver(self) -> bool {
         !matches!(self, Kind::Static)
+    }
+
+    /// The bridge's own operations: natives named for what they do, not
+    /// for a member of a published class.
+    fn operation(name: &str) -> Option<Kind> {
+        Some(match name {
+            "len" => Kind::Len,
+            "index" => Kind::Index,
+            "set_index" => Kind::SetIndex,
+            _ => return None,
+        })
     }
 }
 
@@ -155,6 +172,12 @@ impl Slot {
 /// the life of the process.
 static SLOT_TABLE: RwLock<Vec<Arc<Slot>>> = RwLock::new(Vec::new());
 
+/// Whether a `caribou` native names one of the bridge's own operations
+/// rather than a member of a published class.
+pub fn is_operation(name: &str) -> bool {
+    Kind::operation(name).is_some()
+}
+
 /// Every bound native the program has called, as a site of the run
 /// report: whether it holds a direct send, how many calls took the plain
 /// path, and how many scalars crossed boxed.
@@ -163,7 +186,12 @@ pub fn sites() -> Vec<report::Site> {
     table
         .iter()
         .map(|s| report::Site {
-            name: s.name.clone(),
+            name: match s.kind {
+                Kind::Len => "caribou.Sequence.length".to_owned(),
+                Kind::Index => "caribou.Sequence.[]".to_owned(),
+                Kind::SetIndex => "caribou.Sequence.[]=".to_owned(),
+                _ => s.name.clone(),
+            },
             direct: s.site.direct().is_some(),
             plain: s.site.plain(),
             boxed_in: s.boxed_in.load(Ordering::Relaxed),
@@ -179,11 +207,15 @@ pub fn sites() -> Vec<report::Site> {
 /// judged by the kinds the program declared, where a `Dynamic` is what
 /// an untyped export becomes.
 fn links(s: &Slot) -> bool {
+    if Kind::operation(&s.name).is_some() {
+        return false;
+    }
     let published = registry::lookup_class(&s.namespace, &s.module, &s.class);
     if let Some((iface, index)) = published {
         let class = &iface.classes[index];
         let member = match s.kind {
             Kind::Init => class.ctor.as_ref(),
+            Kind::Len | Kind::Index | Kind::SetIndex => None,
             Kind::Static => static_member(class, s.member),
             Kind::Method => class.methods.iter().find(|m| {
                 !m.is_static
@@ -249,6 +281,21 @@ pub(crate) fn parse(name: &str) -> Option<(String, String, String, String)> {
 }
 
 fn slot_for(name: &str) -> Result<Slot, String> {
+    if let Some(kind) = Kind::operation(name) {
+        return Ok(Slot {
+            name: name.to_owned(),
+            namespace: String::new(),
+            module: String::new(),
+            class: String::new(),
+            member: intern(name),
+            kind,
+            resolved: AtomicPtr::new(ptr::null_mut()),
+            site: CallSite::new(),
+            kinds: AtomicPtr::new(ptr::null_mut()),
+            boxed_in: AtomicUsize::new(0),
+            boxed_out: AtomicUsize::new(0),
+        });
+    }
     let (namespace, module, class, member) = parse(name)
         .ok_or_else(|| format!("`{name}` does not name a member of a published class"))?;
     let (kind, member) = if let Some(sig) = member.strip_prefix("static:") {
@@ -347,6 +394,10 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
     let table = SLOT_TABLE.read().unwrap();
     let mut by_class = HashMap::new();
     for s in table.iter() {
+        // An operation of the bridge's own names no class.
+        if Kind::operation(&s.name).is_some() {
+            continue;
+        }
         let key = (s.namespace.clone(), s.module.clone(), s.class.clone());
         if by_class.contains_key(&key) {
             continue;
@@ -599,6 +650,16 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
     let args = unsafe { args[..params.len()].assume_init_ref() };
 
     let result = match s.kind {
+        Kind::Len | Kind::Index | Kind::SetIndex => {
+            // A face's object, else the Haxe object itself, wrapped: a
+            // Haxe array is a sequence to the bridge as it is.
+            let target = unsafe { behind_face(receiver) }.unwrap_or_else(|| proto::wrap(receiver));
+            match s.kind {
+                Kind::Len => bridge::len(target, haxe).map(|n| Value::int(n as i32)),
+                Kind::Index => bridge::index(target, args[0], haxe),
+                _ => bridge::set_index(target, args[0], args[1], haxe).map(|()| Value::null()),
+            }
+        }
         Kind::Method => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| bridge::invoke_at(target, s.member, &s.site, args, haxe)),

@@ -76,6 +76,11 @@ The native is a static taking the receiver, since genhl emits nothing for
 `@:hlNative` on an instance method, and an inline method or property
 wraps it with the declared types. The parameters carry the declared
 types, so a number crosses as itself and nothing is boxed on the way in.
+A `List` is `caribou.Sequence<Dynamic>`, an abstract over either a Haxe
+array or a foreign sequence behind its ref, whose `length`, `[]` and
+`[]=` reach the sequence through three natives of the library's own,
+`len`, `index` and `set_index`, which the binder recognises by name; a
+Haxe array is answered in Haxe, without a crossing.
 The result is `Float` or `Bool` when the member declares one and
 `Dynamic` otherwise: a number comes back in a register, and an object
 comes back boxed and is cast by the wrapper, since the cast is what

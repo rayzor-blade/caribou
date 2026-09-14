@@ -322,7 +322,7 @@ impl Program {
             .bytecode
             .natives
             .iter()
-            .filter(|n| n.lib == crate::import::LIB)
+            .filter(|n| n.lib == crate::import::LIB && !crate::import::is_operation(&n.name))
         {
             let (namespace, module, _, _) =
                 crate::import::parse(&native.name).ok_or_else(|| {

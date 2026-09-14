@@ -13,4 +13,17 @@ class Ref {
 	var __ref:hl.Abstract<"caribou_obj">;
 
 	function new() {}
+
+	// A sequence's elements and count, through the bridge, for
+	// `caribou.Sequence`: the receiver is a ref, or a Haxe object the
+	// bridge wraps.
+	@:hlNative("caribou", "len") @:allow(caribou.Sequence) static function __len(seq:Dynamic):Int {
+		return 0;
+	}
+
+	@:hlNative("caribou", "index") @:allow(caribou.Sequence) static function __index(seq:Dynamic, i:Int):Dynamic {
+		return null;
+	}
+
+	@:hlNative("caribou", "set_index") @:allow(caribou.Sequence) static function __setIndex(seq:Dynamic, i:Int, v:Dynamic):Void {}
 }

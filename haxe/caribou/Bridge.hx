@@ -198,7 +198,8 @@ class Bridge {
 			return macro :Dynamic;
 		}
 		if (Reflect.hasField(ty, "Array")) {
-			return macro :Array<Dynamic>;
+			// A foreign sequence behind its ref, or a Haxe array as it is.
+			return macro :caribou.Sequence<Dynamic>;
 		}
 		if (Reflect.hasField(ty, "Function")) {
 			// A function of a shape is a typed function value: Haxe calls it

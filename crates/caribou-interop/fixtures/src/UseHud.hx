@@ -33,6 +33,16 @@ class UseHud {
 		// A Wren function Haxe keeps, typed, and calls after both collectors.
 		keptFn = Hud.scaler(3);
 		Sys.println(keptFn(2));
+		// A Wren list, read and written where Wren keeps it; a Haxe array
+		// handed to Wren as it is.
+		var labels = Hud.labels();
+		Sys.println(labels.length + " " + labels[0]);
+		labels[2] = 4;
+		var seen = [for (x in labels) Std.string(x)].join(",");
+		Sys.println(seen);
+		Sys.println(Hud.sum([1, 2, 3.5]));
+		labels[0] = 10;
+		Sys.println(Hud.labelCount() + " " + Hud.sum(labels.toArray().slice(0, 1)));
 	}
 
 	@:keep static function after() {

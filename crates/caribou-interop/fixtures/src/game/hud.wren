@@ -47,4 +47,20 @@ class Hud {
   // A Wren function Haxe keeps, typed, and calls after both collectors.
   #export = "scaler(k: Num) -> Fn(Num) -> Num"
   static scaler(k) { Fn.new {|x| x * k } }
+
+  // A list Haxe reads and writes where Wren keeps it, and a sequence
+  // of either language summed here.
+  #export = "labels() -> List"
+  static labels() {
+    __labels = ["hp", "mp", 3]
+    return __labels
+  }
+  #export = "sum(xs: List) -> Num"
+  static sum(xs) {
+    var t = 0
+    for (x in xs) t = t + x
+    return t
+  }
+  #export = "labelCount() -> Num"
+  static labelCount() { __labels.count }
 }
