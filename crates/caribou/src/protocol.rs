@@ -176,7 +176,8 @@ impl Protocol {
 /// leaves that function in `direct`, with `a` and `b` as its own data:
 /// the bridge then calls it before anything else, and takes the plain
 /// path again when it answers `Missing` or `Unsupported`. `key`, `a` and
-/// `b` belong to whichever the callee filled last.
+/// `b` belong to whichever the callee filled last. `plain` counts the
+/// sends that took the plain path, for the run report.
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct CallSite {
@@ -184,6 +185,7 @@ pub struct CallSite {
     pub a: AtomicUsize,
     pub b: AtomicUsize,
     pub direct: AtomicUsize,
+    pub plain: AtomicUsize,
 }
 
 /// The whole send for one site: `target` is what the bridge would have
@@ -206,6 +208,7 @@ impl CallSite {
             a: AtomicUsize::new(0),
             b: AtomicUsize::new(0),
             direct: AtomicUsize::new(0),
+            plain: AtomicUsize::new(0),
         }
     }
 
@@ -252,6 +255,20 @@ impl CallSite {
     #[inline]
     pub fn clear_direct(&self) {
         self.direct.store(0, Ordering::Release);
+    }
+
+    /// One more send took the plain path. A load and a store, not a
+    /// read-modify-write: a count two threads race on may lose one, and
+    /// the report can bear that.
+    #[inline]
+    pub fn note_plain(&self) {
+        let n = self.plain.load(Ordering::Relaxed);
+        self.plain.store(n.wrapping_add(1), Ordering::Relaxed);
+    }
+
+    /// How many sends took the plain path.
+    pub fn plain(&self) -> usize {
+        self.plain.load(Ordering::Relaxed)
     }
 
     /// `key`, `a` and `b` as the direct send left them.

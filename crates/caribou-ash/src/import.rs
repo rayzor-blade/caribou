@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
 #[cfg(feature = "runner")]
@@ -42,6 +42,7 @@ use ash_std::obj::{hlp_alloc_obj, hlp_get_obj_rt};
 use caribou::bridge;
 use caribou::protocol::{CallSite, Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
+use caribou::report;
 use caribou::symbol::intern;
 use caribou_abi::hl::{self, hl_type, hl_type_kind, vdynamic};
 use caribou_abi::{LangId, Value};
@@ -100,6 +101,10 @@ struct Slot {
     /// what the record's words are read by. Null until bound; replaced
     /// whole by a program that declares the name again.
     kinds: AtomicPtr<Kinds>,
+    /// Scalars that crossed boxed, through a `Dynamic` parameter or
+    /// result, for the run report.
+    boxed_in: AtomicUsize,
+    boxed_out: AtomicUsize,
 }
 
 #[derive(Debug)]
@@ -149,6 +154,24 @@ impl Slot {
 /// Every slot ever bound: a slot's address is a native's context word for
 /// the life of the process.
 static SLOT_TABLE: RwLock<Vec<Arc<Slot>>> = RwLock::new(Vec::new());
+
+/// Every bound native the program has called, as a site of the run
+/// report: whether it holds a direct send, how many calls took the plain
+/// path, and how many scalars crossed boxed.
+pub fn sites() -> Vec<report::Site> {
+    let table = SLOT_TABLE.read().unwrap_or_else(|e| e.into_inner());
+    table
+        .iter()
+        .map(|s| report::Site {
+            name: s.name.clone(),
+            direct: s.site.direct().is_some(),
+            plain: s.site.plain(),
+            boxed_in: s.boxed_in.load(Ordering::Relaxed),
+            boxed_out: s.boxed_out.load(Ordering::Relaxed),
+        })
+        .filter(|site| site.direct || site.plain > 0)
+        .collect()
+}
 
 /// The `hl_type` of the face class per `(namespace, module, class)`, and
 /// of `caribou.Ref`, recorded once the interpreter has built its types.
@@ -206,6 +229,8 @@ fn slot_for(name: &str) -> Result<Slot, String> {
         resolved: AtomicPtr::new(ptr::null_mut()),
         site: CallSite::new(),
         kinds: AtomicPtr::new(ptr::null_mut()),
+        boxed_in: AtomicUsize::new(0),
+        boxed_out: AtomicUsize::new(0),
     })
 }
 
@@ -503,6 +528,11 @@ fn kind_name(kind: hl_type_kind) -> &'static str {
     }
 }
 
+/// A number or a bool: what a `Dynamic` boxes.
+fn is_scalar(v: Value) -> bool {
+    v.is_number() || v.is_int() || v.as_bool().is_some()
+}
+
 /// Run the call for the slot on the record `words`: the result, or what
 /// to throw. Everything owned here is dropped before the throw.
 unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut vdynamic> {
@@ -517,7 +547,11 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
     // only the slots in use are written.
     let mut args = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
     for (slot, (&w, &k)) in args.iter_mut().zip(params.iter().zip(kinds_of)) {
-        slot.write(unsafe { word_to_value(w, k) });
+        let v = unsafe { word_to_value(w, k) };
+        if k == hl::HDYN && is_scalar(v) {
+            s.boxed_in.fetch_add(1, Ordering::Relaxed);
+        }
+        slot.write(v);
     }
     let args = unsafe { args[..params.len()].assume_init_ref() };
 
@@ -584,10 +618,15 @@ unsafe extern "C" fn entry(slot: *const Slot, words: *const i64) -> i64 {
     let kinds =
         unsafe { s.kinds.load(Ordering::Acquire).as_ref() }.expect("a bound slot has its kinds");
     let thrown = match unsafe { run(s, kinds, words) } {
-        Ok(v) => match unsafe { value_to_word(v, kinds.ret, kinds.ret_type) } {
-            Ok(word) => return word,
-            Err(m) => proto::throwable(proto::error_value(&s.name, &m)),
-        },
+        Ok(v) => {
+            if kinds.ret == hl::HDYN && is_scalar(v) {
+                s.boxed_out.fetch_add(1, Ordering::Relaxed);
+            }
+            match unsafe { value_to_word(v, kinds.ret, kinds.ret_type) } {
+                Ok(word) => return word,
+                Err(m) => proto::throwable(proto::error_value(&s.name, &m)),
+            }
+        }
         Err(thrown) => thrown,
     };
     unsafe { hlp_throw(thrown.cast()) };

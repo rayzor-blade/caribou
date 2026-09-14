@@ -14,6 +14,7 @@ pub mod hash;
 pub mod heap;
 pub mod protocol;
 pub mod registry;
+pub mod report;
 pub mod sched;
 pub mod symbol;
 pub mod world;

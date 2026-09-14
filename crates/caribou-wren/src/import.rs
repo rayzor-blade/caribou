@@ -84,13 +84,15 @@ enum Kind {
     Arity,
 }
 
-struct Target {
+pub(crate) struct Target {
     kind: Kind,
     /// For the trace frame.
     name: String,
+    /// The class and the signature it was bound under, for the report.
+    pub(crate) label: String,
     callable: Callable,
     /// What the callee's protocol derived for this slot last time.
-    site: CallSite,
+    pub(crate) site: CallSite,
 }
 
 impl Target {
@@ -98,6 +100,7 @@ impl Target {
         Target {
             kind,
             name,
+            label: String::new(),
             callable,
             site: CallSite::new(),
         }
@@ -107,7 +110,6 @@ impl Target {
 /// One installed class: the members it binds, kept for the words its host
 /// methods were told, which point into this box.
 struct ClassBinding {
-    #[allow(dead_code)]
     targets: Box<[Target]>,
 }
 
@@ -127,6 +129,11 @@ impl Imports {
     /// Whether `class` was installed here for another language's.
     pub(crate) fn installed(&self, class: *mut ObjClass) -> bool {
         self.classes.contains_key(&(class as usize))
+    }
+
+    /// Every member bound on an installed class.
+    pub(crate) fn targets(&self) -> impl Iterator<Item = &Target> {
+        self.classes.values().flat_map(|c| c.targets.iter())
     }
 }
 
@@ -414,10 +421,13 @@ fn bind(vm: &mut VM, ptr: *mut ObjClass, class: &ClassIface) -> Result<ClassBind
 fn bind_members(
     vm: &mut VM,
     ptr: *mut ObjClass,
-    _name: &str,
+    name: &str,
     members: Vec<(String, Target)>,
 ) -> Result<ClassBinding, ImportError> {
-    let (sigs, targets): (Vec<String>, Vec<Target>) = members.into_iter().unzip();
+    let (sigs, mut targets): (Vec<String>, Vec<Target>) = members.into_iter().unzip();
+    for (sig, target) in sigs.iter().zip(targets.iter_mut()) {
+        target.label = format!("{name}.{sig}");
+    }
     let targets: Box<[Target]> = targets.into_boxed_slice();
     for (sig, target) in sigs.iter().zip(targets.iter()) {
         let sym = vm.interner.intern(sig);
@@ -660,6 +670,7 @@ fn message_of(err: Value) -> String {
     }
 }
 
+#[inline(always)]
 fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> {
     let recv = args[0];
     let Some(obj) = recv.as_object() else {
@@ -792,7 +803,9 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
     finish(vm, target, args, result)
 }
 
-/// A call's result as Wren's.
+/// A call's result as Wren's. One body with `host_entry`, as `run` is:
+/// a frame between them costs more than the work.
+#[inline(always)]
 fn finish(
     vm: &mut VM,
     target: &Target,

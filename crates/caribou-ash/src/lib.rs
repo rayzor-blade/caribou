@@ -22,6 +22,7 @@ mod import;
 #[cfg(feature = "runner")]
 pub mod program;
 mod proto;
+pub mod report;
 mod sched;
 mod wrenref;
 

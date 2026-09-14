@@ -17,7 +17,7 @@
 //! promoted it) and the interpreter's own `hl_type` for it, both read from
 //! the module context the interpreter built.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::mem::ManuallyDrop;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -31,6 +31,7 @@ use ash_interp::values::NanBoxedValue;
 use ash_std::bytes::hlp_alloc_bytes;
 use caribou::protocol::Callable;
 use caribou::registry::{self, ClassIface, FieldIface, Interface, MethodIface, TypeRef};
+use caribou::report;
 use caribou_abi::hl::{self, hl_module_context, hl_type, vdynamic};
 
 use crate::proto;
@@ -154,6 +155,76 @@ fn sys_init(file: &Path, program_args: &[String]) -> Result<()> {
 /// does, for a host that keeps its program and ends some other way.
 pub fn profile_report() {
     ash_core::profile::report();
+}
+
+/// The program's methods a tier has compiled, by the code the tiers
+/// registered: what the run report lists for Haxe. A method the tiers
+/// left alone is interpreted, and is not listed; nor is a closure or a
+/// function of the standard library, which the names below do not cover.
+pub fn compiled(program: &Program) -> Vec<report::Function> {
+    let names = method_names(&program.bytecode);
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    for range in ash_core::jit_map::snapshot() {
+        if range.kind != ash_core::jit_map::CodeKind::Entry || !seen.insert(range.findex) {
+            continue;
+        }
+        let Some(name) = names.get(&(range.findex as i32)) else {
+            continue;
+        };
+        out.push(report::Function {
+            name: name.clone(),
+            tier: match range.tier {
+                ash_core::profile::Tier::Cranelift => report::Tier::Baseline,
+                ash_core::profile::Tier::Llvm => report::Tier::Optimized,
+            },
+            entries: None,
+        });
+    }
+    out
+}
+
+/// `Class.method` per function index, for every method and static of the
+/// program's own classes, the way `publish_module` finds them.
+fn method_names(bytecode: &DecodedBytecode) -> HashMap<i32, String> {
+    let types = &bytecode.types;
+    let by_name: HashMap<&str, usize> = types
+        .iter()
+        .enumerate()
+        .filter_map(|(i, t)| Some((t.obj.as_ref()?.name.as_str(), i)))
+        .collect();
+    let mut names = HashMap::new();
+    for (index, ty) in types.iter().enumerate() {
+        let Some(obj) = ty.obj.as_ref().filter(|o| publishable(&o.name)) else {
+            continue;
+        };
+        if let Some(own) = chain(types, index).first() {
+            for p in &own.proto {
+                names
+                    .entry(p.findex)
+                    .or_insert_with(|| format!("{}.{}", obj.name, p.name));
+            }
+        }
+        if let Some(&ci) = by_name.get(companion_name(&obj.name).as_str())
+            && let Some(companion) = types[ci].obj.as_ref()
+        {
+            let flat = flat_fields(types, ci);
+            for (fid, findex) in bindings(companion) {
+                let Some(&field) = flat.get(fid) else {
+                    continue;
+                };
+                let member = if field == "__constructor__" {
+                    "new"
+                } else {
+                    field
+                };
+                names
+                    .entry(findex)
+                    .or_insert_with(|| format!("{}.{member}", obj.name));
+            }
+        }
+    }
+    names
 }
 
 /// Load `path`. Before ash's heap exists: `init_std_library` creates it.

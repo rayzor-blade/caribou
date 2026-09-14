@@ -188,12 +188,17 @@ Type names are Wren's own, or a class of the same module:
 | `List` | `Array(Dyn)` | `Array<Dynamic>` |
 | `Fn` | `Fun` | `Dynamic` |
 | `Fn(Num, Hud) -> Bool` | `Function` | `(Float, Hud) -> Bool` |
+| `Null`, as a result | `Void` | `Void` |
 | a class of the module | `Object("module.Class")` | that class |
 | anything else, or nothing | `Dyn` | `Dynamic` |
 
 A function type spells its parameters' types and its result's, each any
 type of this table; `Fn()` takes nothing, and a missing `-> Type` gives
 `Dynamic`.
+
+A result declared `Null` is dropped at the crossing. A method called for
+its effect wants one: a Wren body answers with its last expression's
+value, and a `Dynamic` result boxes a number on every call.
 
 ### Inference
 

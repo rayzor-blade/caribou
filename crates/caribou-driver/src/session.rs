@@ -6,6 +6,7 @@ use anyhow::{Result, anyhow};
 use caribou::bridge;
 use caribou::error::Error;
 use caribou::registry;
+use caribou::report::Report;
 use caribou::world::{Config, LANG_CORE, World};
 use caribou_abi::{ErrorKind, Value};
 use caribou_ash::{Mode, Options as AshOptions, Program};
@@ -25,6 +26,9 @@ pub struct Options {
     pub roots: Vec<PathBuf>,
     /// The program's arguments.
     pub args: Vec<String>,
+    /// Count what the run does, for [`Session::report`]: how often each
+    /// Wren function is entered, per tier.
+    pub report: bool,
 }
 
 impl Default for Options {
@@ -34,6 +38,7 @@ impl Default for Options {
             wren_mode: ExecutionMode::Tiered,
             roots: Vec::new(),
             args: Vec::new(),
+            report: false,
         }
     }
 }
@@ -44,6 +49,7 @@ pub struct Session {
     world: World,
     program: Program,
     vm: VM,
+    report_wanted: bool,
 }
 
 impl Session {
@@ -98,8 +104,16 @@ impl Session {
             ..VMConfig::default()
         };
         caribou_wren::import::configure(&mut config);
-        let vm = VM::new(config);
-        Ok(Session { world, program, vm })
+        let mut vm = VM::new(config);
+        if options.report {
+            caribou_wren::report::count_entries(&mut vm);
+        }
+        Ok(Session {
+            world,
+            program,
+            vm,
+            report_wanted: options.report,
+        })
     }
 
     pub fn world(&self) -> &World {
@@ -151,9 +165,29 @@ impl Session {
         })
     }
 
+    /// What the run did so far, in the program's terms: the tier each
+    /// function reached, how each send across the bridge went, and what
+    /// crossed boxed. Entry counts need `Options::report`.
+    pub fn report(&self) -> Report {
+        let mut report = Report::default();
+        report.functions("Wren", caribou_wren::report::functions(&self.vm));
+        report.functions(
+            "Haxe, compiled",
+            caribou_ash::report::compiled(&self.program),
+        );
+        report.sites("Haxe → Wren", caribou_ash::report::sites());
+        report.sites("Wren → Haxe", caribou_wren::report::sites(&self.vm));
+        report.callbacks = caribou_ash::report::callbacks();
+        report
+    }
+
     /// Run the program to the end of its entry point and its event loop.
+    /// With `Options::report`, print the report after.
     pub fn run(mut self) -> Result<()> {
         let result = self.start();
+        if self.report_wanted {
+            eprint!("{}", self.report());
+        }
         self.program.finish();
         result
     }

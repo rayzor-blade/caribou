@@ -22,6 +22,7 @@ pub mod import;
 pub mod project;
 mod proto;
 pub mod publish;
+pub mod report;
 pub mod types;
 
 use std::fmt;

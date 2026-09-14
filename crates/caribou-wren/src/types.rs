@@ -244,6 +244,7 @@ pub fn type_ref(name: &str, module: &str, classes: &[String]) -> TypeRef {
         "Num" => TypeRef::Float,
         "Bool" => TypeRef::Bool,
         "String" => TypeRef::Str,
+        "Null" => TypeRef::Void,
         "List" => TypeRef::Array(Box::new(TypeRef::Dyn)),
         "Fn" => TypeRef::Fun,
         _ if classes.iter().any(|c| c == name) => TypeRef::Object(format!("{module}.{name}")),

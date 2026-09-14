@@ -31,6 +31,7 @@ use std::sync::OnceLock;
 
 use std::mem::MaybeUninit;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use ash_std::error::hlp_throw;
 use ash_std::fun::{
@@ -41,6 +42,7 @@ use ash_std::types::{hlt_array, hlt_dyn};
 use caribou::bridge;
 use caribou::heap::{self, Tracer, TypeDesc};
 use caribou::protocol::{Callable, desc_of};
+use caribou::report;
 use caribou_abi::Value;
 use caribou_abi::hl::{
     self, hl_type, hl_type_detail, hl_type_fun, hl_type_fun_closure, hl_type_fun_closure_type,
@@ -147,6 +149,17 @@ unsafe impl Send for Shape {}
 unsafe impl Sync for Shape {}
 
 static SHAPES: Mutex<Vec<(usize, &'static Shape)>> = Mutex::new(Vec::new());
+
+/// How many closures were made of each form, for the run report.
+static TYPED: AtomicU64 = AtomicU64::new(0);
+static BOXED: AtomicU64 = AtomicU64::new(0);
+
+pub fn counts() -> report::Callbacks {
+    report::Callbacks {
+        typed: TYPED.load(Ordering::Relaxed),
+        boxed: BOXED.load(Ordering::Relaxed),
+    }
+}
 
 /// The shape of the function type `t`, when a record closure takes it.
 fn shape_for(t: *const hl_type) -> Option<&'static Shape> {
@@ -278,6 +291,7 @@ pub(crate) fn function_for_typed(v: Value, t: *const hl_type) -> *mut vdynamic {
     if closure.is_null() {
         return function_for(v);
     }
+    TYPED.fetch_add(1, Ordering::Relaxed);
     closure.cast()
 }
 
@@ -330,6 +344,7 @@ pub(crate) fn function_for(v: Value) -> *mut vdynamic {
     };
     let function = unsafe { hlp_make_var_args(inner) };
     heap::handle_release(root);
+    BOXED.fetch_add(1, Ordering::Relaxed);
     function.cast()
 }
 

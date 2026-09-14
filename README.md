@@ -90,6 +90,11 @@ use:
 caribou run bin/game.hl
 ```
 
+`caribou run --report` prints, when the program ends, what the run did:
+the tier each function reached, whether each send across the bridge is
+direct or takes the plain path, and what crossed boxed. It is how to see
+whether something was optimized without waiting for a build.
+
 Each per-runtime runner takes a program and an execution mode, and
 `--no-install` runs the runtime on its own implementation instead, which
 is handy for comparing the two:

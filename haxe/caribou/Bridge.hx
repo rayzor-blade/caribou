@@ -271,13 +271,19 @@ class Bridge {
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
 			// A number, a bool or a function comes back from the native in a
-			// register; anything else as a boxed dynamic the wrapper casts.
+			// register, and nothing comes back from a `Null` result; anything
+			// else as a boxed dynamic the wrapper casts.
 			var nativeRet = switch (ret) {
 				case TFunction(_, _): ret;
 				default: switch (haxe.macro.ComplexTypeTools.toString(ret)) {
-					case "Float", "Bool": ret;
+					case "Float", "Bool", "Void": ret;
 					default: macro :Dynamic;
 				}
+			}
+			var isVoid = haxe.macro.ComplexTypeTools.toString(ret) == "Void";
+			// The wrapper's body: the native's result, or the call alone.
+			function answer(call:Expr):Expr {
+				return isVoid ? call : macro return $call;
 			}
 			// The native's Haxe name: distinct per kind, name and arity.
 			var nativeName = "__" + m.kind + "_" + m.name + arity;
@@ -331,7 +337,7 @@ class Bridge {
 							name: "get_" + m.name,
 							pos: pos,
 							access: [AStatic, AInline],
-							kind: FFun({args: [], ret: ret, expr: macro return $i{target}()})
+							kind: FFun({args: [], ret: ret, expr: answer(macro $i{target}())})
 						});
 					} else {
 						var target = native(prefix + "static:" + m.signature, typedArgs(m), nativeRet, nativeName);
@@ -340,7 +346,7 @@ class Bridge {
 							name: name,
 							pos: pos,
 							access: [APublic, AStatic, AInline],
-							kind: FFun({args: typedArgs(m), ret: ret, expr: macro return $i{target}($a{callArgs})})
+							kind: FFun({args: typedArgs(m), ret: ret, expr: answer(macro $i{target}($a{callArgs}))})
 						});
 					}
 				case "method":
@@ -351,7 +357,7 @@ class Bridge {
 						name: name,
 						pos: pos,
 						access: [APublic, AInline],
-						kind: FFun({args: typedArgs(m), ret: ret, expr: macro return $i{target}($a{call})})
+						kind: FFun({args: typedArgs(m), ret: ret, expr: answer(macro $i{target}($a{call}))})
 					});
 				case "getter":
 					var target = native(prefix + m.signature, [{name: "self", type: self}], nativeRet, nativeName);
@@ -365,7 +371,7 @@ class Bridge {
 						name: "get_" + m.name,
 						pos: pos,
 						access: [AInline],
-						kind: FFun({args: [], ret: ret, expr: macro return $i{target}(this)})
+						kind: FFun({args: [], ret: ret, expr: answer(macro $i{target}(this))})
 					});
 				case "setter":
 					var valueType = typedArgs(m)[0].type;

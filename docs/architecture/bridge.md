@@ -208,7 +208,8 @@ address or the typed callable's function as the target, and only when it
 answers `Missing` or `Unsupported` forgets it and takes the plain path,
 which fills the site again. A caller with nothing to convert asks for
 the direct send alone, `call_direct_at`, and takes the plain path itself
-when there is none. Wren leaves the closure it found and the
+when there is none. The site counts the sends that took the plain path,
+for the run report. Wren leaves the closure it found and the
 class it found it on: the next call checks that the receiver is that
 class or an instance of exactly it, and dispatches. Ash's typed
 dispatcher leaves the signature's kinds, read once and kept per

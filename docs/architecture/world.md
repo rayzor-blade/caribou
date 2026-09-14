@@ -79,6 +79,19 @@ its entry function, so a call from a Wren module's top level lands in a
 running program. A Wren module's plain imports are served from the same
 roots, beside the importer first.
 
+## The run report
+
+`Session::report` says what the run did, in the program's own terms
+(`caribou::report`): each Wren function of the project's modules with the
+tier it reached and, when the session was opened to count, how often it
+was entered; each Haxe method a tier compiled; each site the program
+sends across the bridge from, whether it holds a direct send and how many
+sends took the plain path; how many scalars crossed boxed through a
+`Dynamic` parameter or result; and how many closures crossed typed or
+boxed. Each adapter answers for its language (`caribou_ash::report`,
+`caribou_wren::report`), and the session gathers the answers. `caribou
+run --report` prints it when the program ends.
+
 ## Events
 
 `World::on(kind, handler)` subscribes a handler to `Reload`, `TaskError`

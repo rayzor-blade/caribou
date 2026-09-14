@@ -798,7 +798,10 @@ fn settle_lazy<'f>(
 /// answered that it no longer fits, which also forgets it.
 #[inline]
 fn direct(site: &CallSite, target: usize, args: &[Value]) -> Option<Result<Value, ()>> {
-    let f = site.direct()?;
+    let Some(f) = site.direct() else {
+        site.note_plain();
+        return None;
+    };
     let mut out = Value::null();
     let code = unsafe { f(site, target, args.as_ptr(), args.len(), &mut out) };
     match code {
@@ -806,6 +809,7 @@ fn direct(site: &CallSite, target: usize, args: &[Value]) -> Option<Result<Value
         protocol::REPLY_RAISED => Some(Err(())),
         _ => {
             site.clear_direct();
+            site.note_plain();
             None
         }
     }

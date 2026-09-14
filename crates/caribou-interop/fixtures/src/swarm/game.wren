@@ -62,7 +62,7 @@ class Boid {
 }
 
 class Game {
-  #export = "reset()"
+  #export = "reset() -> Null"
   static reset() {
     __score = 0
   }
@@ -70,7 +70,7 @@ class Game {
   #export = "score() -> Num"
   static score() { __score }
 
-  #export = "onCollide(a: Num, b: Num)"
+  #export = "onCollide(a: Num, b: Num) -> Null"
   static onCollide(a, b) {
     World.bounce(a, b)
     __score = __score + 1

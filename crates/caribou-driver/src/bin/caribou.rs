@@ -1,11 +1,13 @@
 //! The caribou command.
 //!
-//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] <program.hl> [args...]
+//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program.hl> [args...]
 //!     caribou describe <module.wren>...
 //!
 //! `run` runs a program with every resident language, from the project
 //! directory: the other languages' modules are found under the project's
-//! class paths and load on first use. `describe` prints the modules'
+//! class paths and load on first use. `--report` prints, when the program
+//! ends, what the run did: the tier each function reached and how each
+//! send across the bridge went. `describe` prints the modules'
 //! interfaces as JSON, for a build step.
 
 use std::path::PathBuf;
@@ -14,7 +16,7 @@ use std::process;
 use caribou_ash::Mode;
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] <program.hl> [args...]\n       caribou describe <module.wren>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program.hl> [args...]\n       caribou describe <module.wren>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -42,6 +44,7 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                     }
                 };
             }
+            "--report" => options.report = true,
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}")),
             _ => program = Some(PathBuf::from(arg)),
         }

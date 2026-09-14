@@ -10,10 +10,11 @@
 //! `fixtures/src/swarm/`) end on the same checksum, which is checked.
 //!
 //!     cargo bench -p caribou-interop --bench swarm -- [--entities 1000]
-//!         [--frames 600] [--runs 3] [--mode haxe|wren|mixed]
+//!         [--frames 600] [--runs 3] [--mode haxe|wren|mixed] [--report]
 //!
 //! Reported per run: milliseconds per frame, the median of the runs, and
-//! the mixed run's cost over each baseline.
+//! the mixed run's cost over each baseline. `--report` adds the session's
+//! run report: the tier each function reached and how each crossing went.
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -35,6 +36,7 @@ struct Args {
     frames: i32,
     runs: usize,
     mode: Option<String>,
+    report: bool,
 }
 
 fn args() -> Args {
@@ -43,6 +45,7 @@ fn args() -> Args {
         frames: 600,
         runs: 3,
         mode: None,
+        report: false,
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -51,6 +54,7 @@ fn args() -> Args {
             "--frames" => out.frames = argv.next().and_then(|v| v.parse().ok()).unwrap_or(600),
             "--runs" => out.runs = argv.next().and_then(|v| v.parse().ok()).unwrap_or(3),
             "--mode" => out.mode = argv.next(),
+            "--report" => out.report = true,
             "--bench" => {}
             _ => {}
         }
@@ -66,6 +70,7 @@ fn main() {
         Options {
             mode: Mode::Hybrid,
             wren_mode: ExecutionMode::Tiered,
+            report: args.report,
             ..Options::default()
         },
     )
@@ -121,6 +126,9 @@ fn main() {
         if mixed.2 != haxe.2 || mixed.2 != wren.2 {
             println!("checksums differ: the three runs are not the same arena");
         }
+    }
+    if args.report {
+        println!("\n{}", session.report());
     }
     // `ASH_PROFILE=sample` says where a run's time went, both languages'
     // compiled code named.
