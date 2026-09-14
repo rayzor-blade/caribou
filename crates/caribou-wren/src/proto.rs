@@ -1225,17 +1225,24 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
 /// The name the receiver's class was published under (`hud.Hud`), else
 /// its bare name.
 unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
-    let (vm, _) = match vm_of(obj) {
-        Ok(vm) => vm,
-        Err(code) => return code,
-    };
-    let recv = unsafe { receiver(obj) };
-    let class = vm.class_of(recv);
+    // The class is in the object's header; the VM is needed only to name
+    // one that was never published.
+    let class = unsafe { (*(wren_ptr(obj) as *const ObjHeader)).class };
     let exported = record_for(unsafe { wren_ptr(obj) })
         .exports()
         .borrow()
         .type_name(class);
-    unsafe { *out = exported.unwrap_or_else(|| caribou::symbol::intern(&vm.class_name_of(recv))) };
+    let name = match exported {
+        Some(sym) => sym,
+        None => {
+            let (vm, _) = match vm_of(obj) {
+                Ok(vm) => vm,
+                Err(code) => return code,
+            };
+            caribou::symbol::intern(&vm.class_name_of(unsafe { receiver(obj) }))
+        }
+    };
+    unsafe { *out = name };
     REPLY_OK
 }
 

@@ -968,14 +968,17 @@ pub(crate) unsafe extern "C-unwind" fn dispatch(
     } else {
         unsafe { std::slice::from_raw_parts(args, nargs) }
     };
-    if func as usize >= STUB_SENTINEL_LIMIT
+    // A stub whose function has promoted since is called as the code it
+    // names now; the site keeps a direct send only for code it was handed.
+    if let Some(code) = unsafe { code_of(func as usize) }
         && let Some(kinds) = kinds_for(sig)
         && kinds.n == nargs
     {
-        match unsafe { call_by_kinds(func, kinds, None, args, out) } {
+        match unsafe { call_by_kinds(code, kinds, None, args, out) } {
             Some(Ok(())) => {
-                // The next call from this site goes straight to the code.
-                if let Some(site) = unsafe { site.as_ref() } {
+                if let Some(site) = unsafe { site.as_ref() }
+                    && func as usize >= STUB_SENTINEL_LIMIT
+                {
                     site.set_direct(
                         direct_typed,
                         sig as usize,
@@ -1608,7 +1611,7 @@ unsafe extern "C-unwind" fn invoke_at(
 /// The method `name` of an object of type `t`: its slot in the type's
 /// method table and its signature, from `site` when it was filled for
 /// `t`, else from the runtime's lookup, left in `site`. The slot is read
-/// per call: it is where the runtime installs a promoted body.
+/// per call; a stub in it is resolved to its promoted body by `code_of`.
 unsafe fn method_at(
     d: *mut vdynamic,
     name: Symbol,
@@ -1802,8 +1805,8 @@ fn array_names() -> &'static ArrayNames {
     })
 }
 
-/// A method of an array type: its slot, read per call since a promoted
-/// body lands there, and its signature with the kinds read.
+/// A method of an array type: its slot, read per call and resolved
+/// through `code_of`, and its signature with the kinds read.
 #[derive(Clone, Copy)]
 struct Slot {
     at: *const *const c_void,
@@ -1874,8 +1877,8 @@ unsafe fn send_array(slot: Slot, obj: *mut u8, args: &[Value], out: *mut Value) 
     with_this[1..=args.len()].copy_from_slice(args);
     let with_this = &with_this[..=args.len()];
     let func = unsafe { *slot.at };
-    if func as usize >= STUB_SENTINEL_LIMIT
-        && let Some(sent) = unsafe { call_by_kinds(func, slot.kinds, None, with_this, out) }
+    if let Some(code) = unsafe { code_of(func as usize) }
+        && let Some(sent) = unsafe { call_by_kinds(code, slot.kinds, None, with_this, out) }
     {
         return match sent {
             Ok(()) => REPLY_OK,

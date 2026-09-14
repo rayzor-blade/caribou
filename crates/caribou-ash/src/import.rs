@@ -498,9 +498,8 @@ unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
     }))
 }
 
-/// Make `face` the face of `obj`.
-unsafe fn bind_face(face: *mut vdynamic, obj: Value) {
-    let r = wrenref::wrap_foreign(obj);
+/// Make `face` the face of the object `r` is the ref of.
+unsafe fn bind_face(face: *mut vdynamic, r: Value) {
     unsafe { *ref_field(face) = wrenref::wrenref_as_abstract(r) };
     wrenref::set_face(r, face);
 }
@@ -546,16 +545,18 @@ fn face_type(v: Value) -> Result<*mut hl_type, String> {
     Ok(t as *mut hl_type)
 }
 
-/// The Haxe object for a foreign one: its face, made on first need.
+/// The Haxe object for a foreign one: its face, made on first need. A
+/// ref found before the face is allocated is still there after: its
+/// object's heap keeps it.
 pub(crate) fn face_for(v: Value) -> Result<*mut vdynamic, String> {
-    if let Some(r) = wrenref::foreign_ref(v)
-        && let Some(face) = wrenref::face(r)
-    {
+    let r = wrenref::foreign_ref(v);
+    if let Some(face) = r.and_then(wrenref::face) {
         return Ok(face);
     }
     let t = face_type(v)?;
     let face = unsafe { hlp_alloc_obj(t.cast()) } as *mut vdynamic;
-    unsafe { bind_face(face, v) };
+    let r = r.unwrap_or_else(|| wrenref::wrap_foreign(v));
+    unsafe { bind_face(face, r) };
     Ok(face)
 }
 
@@ -719,7 +720,7 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| bridge::call_at(target, &s.site, args, haxe, &s.name))
             .map(|obj| {
-                unsafe { bind_face(receiver, obj) };
+                unsafe { bind_face(receiver, wrenref::wrap_foreign(obj)) };
                 Value::null()
             }),
     };

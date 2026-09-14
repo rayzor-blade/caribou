@@ -39,7 +39,6 @@ use std::rc::Rc;
 use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::hash::{AddressMap, BuildAddressHasher};
-use caribou::heap::{self, Handle};
 use caribou::protocol::{CallSite, Callable, Send};
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
 use caribou::symbol::{self, Symbol};
@@ -720,9 +719,8 @@ pub(crate) fn proxy(vm: &mut VM, v: Value, native: *mut u8) -> Option<WValue> {
     if let Some(&instance) = rec.imports().borrow().stand_ins.get(&key) {
         return Some(WValue::object(instance as *mut u8));
     }
-    // `v` is unrooted on the caller's frame, and installing and allocating
-    // the instance both allocate.
-    let root = heap::handle_new(obj);
+    // Installing and allocating the instance both allocate; `obj` stays
+    // live on this frame past them, where the conservative scan sees it.
     let class = if bridge::arity(v).is_some() {
         function_class(vm).ok()
     } else {
@@ -755,7 +753,7 @@ pub(crate) fn proxy(vm: &mut VM, v: Value, native: *mut u8) -> Option<WValue> {
         adopt(vm, ptr, obj, key);
         crate::proto::made(vm, instance)
     });
-    heap::handle_release(root);
+    std::hint::black_box(obj);
     instance
 }
 
@@ -814,9 +812,35 @@ fn direct(vm: &mut VM, target: &Target, args: &[WValue]) -> Option<Result<WValue
             let this = foreign_of(args[0])?;
             bridge::set_at(this, name, &target.site, scalars[0], wren).map(|()| scalars[0])
         }
+        Kind::Index | Kind::SetIndex | Kind::Count | Kind::Iterate | Kind::IteratorValue => {
+            let this = foreign_of(args[0])?;
+            sequence_send(&target.kind, this, scalars, wren)
+        }
         _ => return None,
     };
     Some(finish(vm, target, args, result))
+}
+
+/// A sequence signature sent to the sequence `this` stands for. Wren's
+/// iterator here is the position: null starts, false ends.
+fn sequence_send(kind: &Kind, this: Value, args: &[Value], wren: LangId) -> Result<Value, Value> {
+    match kind {
+        Kind::Index => bridge::index(this, args[0], wren),
+        Kind::SetIndex => bridge::set_index(this, args[0], args[1], wren).map(|()| args[1]),
+        Kind::Count => bridge::len(this, wren).map(|n| Value::number(n as f64)),
+        Kind::Iterate => bridge::len(this, wren).map(|n| {
+            let next = match args[0].as_number() {
+                Some(i) => i + 1.0,
+                None => 0.0,
+            };
+            if (next as usize) < n {
+                Value::number(next)
+            } else {
+                Value::bool(false)
+            }
+        }),
+        _ => bridge::index(this, args[0], wren),
+    }
 }
 
 /// A Wren argument as a bridge value, with the object the caller keeps
@@ -944,26 +968,7 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 release(roots);
                 format!("{} has no sequence behind it", vm.class_name_of(recv))
             })?;
-            let args = &with_this[1..];
-            let r = match target.kind {
-                Kind::Index => bridge::index(this, args[0], wren),
-                Kind::SetIndex => bridge::set_index(this, args[0], args[1], wren).map(|()| args[1]),
-                Kind::Count => bridge::len(this, wren).map(|n| Value::number(n as f64)),
-                // Wren's iterator here is the position: null starts, false
-                // ends.
-                Kind::Iterate => bridge::len(this, wren).map(|n| {
-                    let next = match args[0].as_number() {
-                        Some(i) => i + 1.0,
-                        None => 0.0,
-                    };
-                    if (next as usize) < n {
-                        Value::number(next)
-                    } else {
-                        Value::bool(false)
-                    }
-                }),
-                _ => bridge::index(this, args[0], wren),
-            };
+            let r = sequence_send(&target.kind, this, &with_this[1..], wren);
             release(roots);
             r
         }
@@ -1036,19 +1041,10 @@ fn finish(
         // The assigned value, as Wren's own setters evaluate to.
         return Ok(args[1]);
     }
-    // A number, which most results are, crosses as itself. An object is
-    // rooted before anything can allocate, since the result is not.
-    if value.as_object().is_none() {
-        return cross_out(vm, value);
-    }
-    let root = match value.as_object() {
-        Some(p) if !p.is_null() => heap::handle_new(p as *mut u8),
-        _ => Handle::NULL,
-    };
+    // The result is not rooted; it stays live on this frame across the
+    // crossing, which may allocate, where the conservative scan sees it.
     let out = cross_out(vm, value);
-    if !root.is_null() {
-        heap::handle_release(root);
-    }
+    std::hint::black_box(value);
     out
 }
 
