@@ -213,8 +213,10 @@ class it found it on: the next call checks that the receiver is that
 class or an instance of exactly it, and dispatches. Ash's typed
 dispatcher leaves the signature's kinds, read once and kept per
 signature: the next call places the arguments by them and calls the
-code, unless the cell holds a stub again. A ref forwarding to a Wren
-object keeps no direct send, since it would be called on the ref.
+code, unless the cell holds a stub again. A Haxe field read or write
+leaves the field's offset and type under the object's `hl_type`: the next
+send checks the type and reads or writes in place. A ref forwarding to a
+Wren object keeps no direct send, since it would be called on the ref.
 
 ## Shadows
 

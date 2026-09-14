@@ -1337,6 +1337,50 @@ unsafe extern "C-unwind" fn get_member_at(
     get_at(obj, name, unsafe { site.as_ref() }, out)
 }
 
+/// The direct send of a field read: the object's type must be the one
+/// the site was filled for, and then the field is read where it lies.
+unsafe extern "C-unwind" fn direct_get(
+    site: *const CallSite,
+    obj: usize,
+    _args: *const Value,
+    _n: usize,
+    out: *mut Value,
+) -> u8 {
+    let d = unsafe { inner(obj as *mut u8) };
+    let (key, offset, t) = unsafe { &*site }.words();
+    if unsafe { (*d).t } as usize != key {
+        return REPLY_MISSING;
+    }
+    match unsafe { read_field(d, offset, t as *mut hl_type) } {
+        Some(v) => {
+            unsafe { *out = v };
+            REPLY_OK
+        }
+        None => REPLY_MISSING,
+    }
+}
+
+/// The direct send of a field write, as [`direct_get`]; a value the
+/// field's kind cannot take is left to the plain path.
+unsafe extern "C-unwind" fn direct_set(
+    site: *const CallSite,
+    obj: usize,
+    args: *const Value,
+    n: usize,
+    _out: *mut Value,
+) -> u8 {
+    let d = unsafe { inner(obj as *mut u8) };
+    let (key, offset, t) = unsafe { &*site }.words();
+    if n != 1 || unsafe { (*d).t } as usize != key {
+        return REPLY_MISSING;
+    }
+    match unsafe { write_field(d, offset, t as *mut hl_type, *args) } {
+        Some(Ok(())) => REPLY_OK,
+        Some(Err(message)) => raise_core(ErrorKind::Type, &message),
+        None => REPLY_MISSING,
+    }
+}
+
 /// A declared field's place in an object of type `t`, from `site` when it
 /// was filled for `t`, else from the runtime's lookup, left in `site`.
 unsafe fn field_at(
@@ -1359,10 +1403,14 @@ fn get_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, out: *mut Value) 
     if !has_members(unsafe { kind_of(d) }) {
         return REPLY_UNSUPPORTED;
     }
-    // A declared field is read where it lies.
+    // A declared field is read where it lies, and the site keeps that as
+    // its direct send.
     if let Some((offset, t)) = unsafe { field_at((*d).t, name, site) }
         && let Some(v) = unsafe { read_field(d, offset, t) }
     {
+        if let Some(site) = site {
+            site.set_direct(direct_get, unsafe { (*d).t } as usize, offset, t as usize);
+        }
         unsafe { *out = v };
         return REPLY_OK;
     }
@@ -1400,10 +1448,16 @@ fn set_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, value: Value) -> 
         return REPLY_UNSUPPORTED;
     }
     // A declared field is written where it lies, when the value takes its
-    // kind; else the runtime's own conversion.
+    // kind, and the site keeps that as its direct send; else the runtime's
+    // own conversion.
     if let Some((offset, t)) = unsafe { field_at((*d).t, name, site) } {
         match unsafe { write_field(d, offset, t, value) } {
-            Some(Ok(())) => return REPLY_OK,
+            Some(Ok(())) => {
+                if let Some(site) = site {
+                    site.set_direct(direct_set, unsafe { (*d).t } as usize, offset, t as usize);
+                }
+                return REPLY_OK;
+            }
             Some(Err(message)) => return raise_core(ErrorKind::Type, &message),
             None => {}
         }
