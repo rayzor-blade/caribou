@@ -153,7 +153,10 @@ collector sees, and that stays alive in Wren for as long as Haxe keeps it.
 
 `caribou_ash::wrap_foreign` answers with the cell under the plain view:
 a traced core object of Haxe's language holding the object's bridge
-value. The name is the common case; whatever is not Haxe's is held the
+value. Going the other way, a Haxe object crossing out is its cell too,
+under Ash's own protocol, made on first need and found by the object's
+address (`proto::wrap`); the languages that hold it read it through the
+views the cell keeps (see [wren-imports.md](wren-imports.md#lifetime)). The name is the common case; whatever is not Haxe's is held the
 same way, a core `Str` or `Error` included, and a Haxe value or a scalar
 passes through. `wrenref_as_abstract` gives the cell as the raw pointer
 a constructed instance's field holds, `wrenref_from_abstract` turns it

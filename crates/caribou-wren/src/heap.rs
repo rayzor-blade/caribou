@@ -47,6 +47,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
+use caribou::cell;
 use caribou::heap::{self, Handle, ImmixAllocator, TraceFn, Tracer, TypeDesc};
 use caribou::protocol::CallSite;
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
@@ -72,6 +73,9 @@ const ADOPTED: usize = 4;
 const PENDING: usize = 8;
 /// A shadow is a core object, 16-aligned, so the flags fit under it.
 const FLAGS: usize = MARKED | PLAIN | ADOPTED | PENDING;
+/// In a cell's bridge word, which holds no shadow: the cell is in the
+/// record's `views`, retained by the anchor like a pin.
+const VIEW_HELD: usize = 16;
 
 /// The bridge word of the core allocation at `start`. A cycle writes its
 /// flags plainly, under the GC lock it holds throughout; a shadow is kept
@@ -109,6 +113,10 @@ pub struct WrenHeap {
     /// What the claimed adopted instances hold, for the anchor to mark in
     /// the collection a cycle ends with: a claimed object is not traced.
     held: Vec<*const u8>,
+    /// The cells Wren holds through their views: no pins, so the anchor
+    /// retains them by this list outside a cycle, and `collect_end` claims
+    /// the ones the cycle marked and lets the rest go.
+    views: Vec<usize>,
     /// The thread the heap was minted on, which its VM runs on.
     thread: u64,
     /// The VM entered on that thread for this heap (`proto::enter_vm`),
@@ -408,6 +416,9 @@ unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
     for pin in &rec.pins {
         tracer.mark(pin.start as *const u8);
     }
+    for &view in &rec.views {
+        tracer.mark(view as *const u8);
+    }
 }
 
 /// The record behind a handle, to read. The trace hooks read the record
@@ -446,6 +457,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         desc: unsafe { ptr::read(&raw const WREN_DESC) },
         pins: Vec::new(),
         held: Vec::new(),
+        views: Vec::new(),
         thread: heap::thread_token(),
         entered: AtomicPtr::new(ptr::null_mut()),
         anchor: Handle::NULL,
@@ -553,6 +565,7 @@ pub unsafe extern "C" fn is_heap_ptr(heap: *mut c_void, addr: usize) -> bool {
 
 /// The mark is a bit in the object's own prefix, as cheap as a header byte;
 /// the core's side table hears of it in `collect_end`, in address order.
+/// A cell Wren holds through its view is marked in the same word.
 pub unsafe extern "C" fn mark_allocation(_heap: *mut c_void, ptr: *mut u8) -> bool {
     let word = bridge_word(ptr.wrapping_sub(PREFIX));
     let w = unsafe { *word };
@@ -561,6 +574,30 @@ pub unsafe extern "C" fn mark_allocation(_heap: *mut c_void, ptr: *mut u8) -> bo
     }
     unsafe { *word = w | MARKED };
     true
+}
+
+/// Wren holds the cell at `start` through its view from now on: the
+/// anchor retains it until a cycle finds Wren no longer does. What Wren
+/// holds this way is pressure its cycle answers, counted as the cell.
+pub(crate) fn hold_view(heap: &WrenHeap, start: *mut u8) {
+    let atom = bridge_atom(start);
+    if atom.fetch_or(VIEW_HELD, Ordering::AcqRel) & VIEW_HELD == 0 {
+        // The list is the VM thread's, as `pins` is.
+        let rec = heap as *const WrenHeap as *mut WrenHeap;
+        unsafe { (*rec).views.push(start as usize) };
+        heap.bytes_since_cycle
+            .fetch_add(size_of::<cell::Cell>(), Ordering::Relaxed);
+    }
+}
+
+/// The core start of the viewed cell `addr` is in, if it is in one:
+/// what a scan of a native range finds Wren holding beside its own
+/// objects.
+unsafe fn viewed_cell(gc: &ImmixAllocator, addr: usize) -> Option<(usize, usize)> {
+    let (start, size) = gc.allocation_containing(addr)?;
+    let held = unsafe { cell::is_cell(start as *const u8) }
+        && unsafe { *bridge_word(start as *mut u8) } & VIEW_HELD != 0;
+    held.then_some((start, size))
 }
 
 pub unsafe extern "C" fn is_marked(_heap: *mut c_void, ptr: *mut u8) -> bool {
@@ -582,13 +619,14 @@ pub unsafe extern "C" fn scan_range(
     let mut p = lo.next_multiple_of(WORD);
     while p + WORD <= hi {
         let w = unsafe { ptr::read_volatile(p as *const usize) };
-        let mut found = unsafe { resolve(&gc, rec, w) };
+        let mut found = unsafe { resolve(&gc, rec, w).or_else(|| viewed_cell(&gc, w)) };
         #[cfg(target_pointer_width = "64")]
         {
             const TAG_OBJ: usize = 0xFFFC_0000_0000_0000;
             const PAYLOAD: usize = 0x0000_FFFF_FFFF_FFFF;
             if found.is_none() && w & TAG_OBJ == TAG_OBJ {
-                found = unsafe { resolve(&gc, rec, w & PAYLOAD) };
+                let addr = w & PAYLOAD;
+                found = unsafe { resolve(&gc, rec, addr).or_else(|| viewed_cell(&gc, addr)) };
             }
         }
         if let Some((start, _)) = found {
@@ -739,10 +777,9 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let mut dead = 0usize;
     // A dead object: wren_lift drops what it owns unless it is plain, and
     // its start is forgotten.
-    let imports = &rec.imports;
     let mut die = |gc: &mut ImmixAllocator, pin: &Pin, w: usize| {
         if w & ADOPTED != 0 {
-            import::forget_stand_in(imports, (pin.start + PREFIX) as *mut u8);
+            import::forget_front((pin.start + PREFIX) as *mut u8);
         }
         if w & PLAIN == 0 {
             unsafe { drop_object((pin.start + PREFIX) as *mut u8) };
@@ -751,6 +788,20 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
         freed += pin.size as usize;
         dead += 1;
     };
+    // A viewed cell the cycle marked is the core's claim too, its trace
+    // keeping what it holds; one the cycle did not reach leaves the list,
+    // for the core to decide.
+    rec.views.retain(|&start| {
+        let word = bridge_word(start as *mut u8);
+        let w = unsafe { *word };
+        if w & MARKED != 0 {
+            unsafe { *word = w & !MARKED };
+            live += gc.claim_start(start as *const u8).unwrap_or(0);
+            return true;
+        }
+        unsafe { *word = w & !VIEW_HELD };
+        false
+    });
     // Marked pins become the core's claims, in address order, and what a
     // marked adopted instance holds is for the anchor to mark; pending pins
     // stand for the core to decide; the rest die here.

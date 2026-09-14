@@ -54,9 +54,9 @@ call, and the first one, before the site is filled, crosses its
 arguments into a buffer on the stack, sized for Wren's widest signature,
 with a slot before them for the receiver. They cross as bridge values; a
 Wren string becomes a core `Str`, rooted for the call. Results come back
-through `to_wren`, so an object of another language becomes an instance
-of the class installed for its type, installing that class's module on
-first need.
+through `to_wren`, so an object of another language is held as an
+instance of the class installed for its type, installing that class's
+module on first need.
 
 A Haxe throw, or an argument Haxe refuses, arrives as the error's message
 and aborts the fiber, which `Fiber.try` sees. A Wren class may extend an
@@ -65,19 +65,35 @@ the instance already made.
 
 ## Lifetime
 
-An instance of an installed class is an ordinary `ObjInstance` with two
-hidden fields, held as numbers. The first is the address of the object
-it stands for: the `HaxeRef` the bridge wraps a Haxe object in. The
-instance is marked adopted in its bridge word, and the heap's trace
-marks what an adopted instance holds, so that object lives for as long
-as the Wren instance does.
+A Haxe object entering Wren is its cell (`caribou::cell`, see
+[bridge.md](bridge.md#cells-and-shadows)): the one core object Ash
+keeps for it, found by the object's address. The cell keeps a view for
+Wren 16 bytes in, where wren_lift's prefix puts an object's header: an
+`ObjInstance` of the class installed for the object's type, with no
+fields, which `proxy` writes on the first crossing. Wren holds the cell
+through that view, so a send on it is wren_lift's own dispatch, its
+receiver the cell, which `foreign_of` reads back as the object 16 bytes
+up. The same object crossing twice is the same Wren value, `==`
+included, and a Haxe function or array is held the same way, under the
+`Function` or `Sequence` class.
 
-The instance is the object's stand-in, and there is one per object: the
-VM's imports keep a map from the object to its instance, keyed by the
-native object behind the ref (a Haxe object wrapped twice is one key),
-and a crossing finds the instance there before making one. The second
-field is that key, so the cycle can remove the entry when the instance
-dies without reading the object, which may be dead too. The map does
-not root the instance, so an entry means a live instance. Going the
-other way, an instance leaving Wren, as an argument or a result, is the
-object it stands for (`from_wren`).
+A cell is no allocation of this heap, so the heap keeps a list of the
+cells Wren holds through their views (`hold_view`), flagged in the
+cell's bridge word, and the anchor retains them outside a cycle as it
+retains every pin. wren_lift's marking marks a cell in that word as it
+marks its own objects; a cycle claims the marked ones for the core, whose
+trace keeps the object each holds, and drops the rest from the list, for
+the core's collection to decide. A held cell counts as pressure toward
+the next cycle, and handing a view out is a safepoint, as an allocation
+is, so a Wren program that allocates nothing of its own still collects
+what it drops. A scan of a native range finds a held cell beside the
+heap's own objects.
+
+A Wren class may extend an installed one. Its instances are the heap's
+own, with one hidden field, `__caribou_object`, holding the address of
+the object the constructor adopted, and the instance is marked adopted
+in its bridge word, so the heap's trace marks what it holds. The cell
+keeps such an instance in front, and the object comes back as it; when
+the instance dies, the cell has no front. An object of another language
+that is no cell, a core object of the bridge's own, gets an instance of
+the class holding it the same way.

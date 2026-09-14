@@ -26,7 +26,7 @@ use crate::proto::{haxe_type, lang};
 /// The plain view, for a cell Haxe holds but never reads.
 pub(crate) fn plain() -> &'static TypeDesc {
     static PLAIN: OnceLock<&'static TypeDesc> = OnceLock::new();
-    PLAIN.get_or_init(|| cell::descriptor(haxe_type(), lang(), "foreign object"))
+    PLAIN.get_or_init(|| cell::descriptor(haxe_type(), lang(), "foreign object", None))
 }
 
 /// `v` as something Haxe can hold: `v` itself when it is Haxe's or not an

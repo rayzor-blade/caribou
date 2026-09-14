@@ -2,13 +2,14 @@
 //! the object protocol for Haxe objects.
 //!
 //! A Haxe object's word zero is a bare `hl_type`, which has no protocol
-//! slot, so a Haxe object crosses wrapped: a `HaxeRef`, a core object under
-//! [`HAXE_DESC`] whose one field is the `vdynamic` it stands for. `wrap`
-//! makes one; nothing caches them, so two wrappers of one object are equal
-//! and hash alike but are distinct objects. Every entry here reads the
-//! wrapper's field and works on the Haxe object through ash's own dynamic
-//! access: `hlp_dyn_getp`, `hlp_dyn_setp`, `hlp_dyn_call`, by the field
-//! hash a symbol carries for its name.
+//! slot, so a Haxe object crosses as its cell (`caribou::cell`): the one
+//! core object standing for it, under a descriptor of Haxe's language
+//! whose protocol is the one here, found by the object's address. `wrap`
+//! gives it, making it on first need. Every entry here reads the cell's
+//! object and works on it through ash's own dynamic access:
+//! `hlp_dyn_getp`, `hlp_dyn_setp`, `hlp_dyn_call`, by the field hash a
+//! symbol carries for its name. Another language holds the cell as its
+//! own object, through the view the cell keeps for it.
 //!
 //! A Haxe `String` crosses as a value, not wrapped: it becomes a core `Str`
 //! on the way out, and a core `Str` becomes a fresh `String` on the way in,
@@ -40,8 +41,9 @@ use ash_std::obj::{
 use ash_std::strings::hlp_value_to_string;
 use ash_std::types::{hlt_bytes, hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
 use caribou::bridge;
+use caribou::cell;
 use caribou::error::{Error, Str};
-use caribou::heap::{self, Handle, Tracer, TypeDesc};
+use caribou::heap::{self, Handle, TypeDesc};
 use caribou::protocol::{
     CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
     desc_of,
@@ -51,7 +53,7 @@ use caribou_abi::hl::{
     self, aptr, hl_field_lookup, hl_module_context, hl_runtime_obj, hl_type, hl_type_detail,
     hl_type_fun, hl_type_kind, uchar, varray, vclosure, vdynamic,
 };
-use caribou_abi::mem::{KIND_DYNAMIC, KIND_NOPTR, TRACED};
+use caribou_abi::mem::KIND_NOPTR;
 use caribou_abi::{ErrorKind, LangId, Value};
 
 use crate::callback;
@@ -61,20 +63,8 @@ use crate::import;
 const MAX_ARGS: usize = 9;
 
 // ---------------------------------------------------------------------------
-// The wrapper
+// The cell
 // ---------------------------------------------------------------------------
-
-/// A Haxe object as a core object: the descriptor, then the object.
-#[repr(C)]
-struct HaxeRef {
-    desc: *const TypeDesc,
-    obj: *mut vdynamic,
-}
-
-unsafe extern "C" fn trace_ref(obj: *mut u8, tracer: *mut Tracer) {
-    let r = unsafe { &*(obj as *const HaxeRef) };
-    unsafe { (*tracer).mark(r.obj as *const u8) };
-}
 
 pub(crate) const fn haxe_type() -> hl_type {
     hl_type {
@@ -87,78 +77,60 @@ pub(crate) const fn haxe_type() -> hl_type {
     }
 }
 
-/// Word zero of every wrapper. Mutable for one field: `lang` is the id the
-/// world assigns, written by `set_lang` at registration and read from then
-/// on.
-static mut HAXE_DESC: TypeDesc = {
-    let mut d = TypeDesc::new(haxe_type());
-    d.trace = Some(trace_ref);
-    d.protocol = &HAXE_PROTO;
-    d.name = "haxe object".as_ptr();
-    d.name_len = "haxe object".len();
-    d
-};
-
-fn haxe_desc() -> *const TypeDesc {
-    &raw const HAXE_DESC
+/// Word zero of every Haxe object's cell: the language is the id the
+/// world assigns, written by `set_lang` at registration and read from
+/// then on.
+fn haxe_desc() -> &'static TypeDesc {
+    static DESC: OnceLock<&'static TypeDesc> = OnceLock::new();
+    DESC.get_or_init(|| cell::descriptor(haxe_type(), 0, "haxe object", Some(&HAXE_PROTO)))
 }
 
 /// The language id Haxe objects carry: what the world assigned through
 /// [`Runtime`](crate::Runtime), or the core's id before any registration.
 pub fn lang() -> LangId {
-    unsafe { (*haxe_desc()).lang }
+    haxe_desc().lang
 }
 
 pub(crate) fn set_lang(lang: LangId) {
-    unsafe { HAXE_DESC.lang = lang };
+    unsafe { cell::set_lang(haxe_desc(), lang) };
 }
 
-/// `obj` as a bridge value: a fresh wrapper, or `null` for null. The result
-/// is not rooted; store it or root it before allocating.
+/// `obj` as a bridge value: its cell, made on first need, or `null` for
+/// null. A fresh cell is not rooted; store it or root it before
+/// allocating.
 pub fn wrap(obj: *mut vdynamic) -> Value {
     if obj.is_null() {
         return Value::null();
     }
-    Value::object(alloc_wrapper(obj) as *const c_void)
-}
-
-/// A fresh wrapper of `obj`, unrooted. `obj` itself is a raw address on
-/// the caller's stack, which the conservative scan sees.
-fn alloc_wrapper(obj: *mut vdynamic) -> *mut HaxeRef {
-    let p = unsafe {
-        heap::alloc_gen(
-            haxe_desc() as *mut hl_type,
-            size_of::<HaxeRef>(),
-            KIND_DYNAMIC | TRACED,
-        )
-    } as *mut HaxeRef;
-    if p.is_null() {
-        heap::out_of_memory("a haxe object wrapper");
-    }
-    unsafe { (*p).obj = obj };
-    p
+    cell::wrap_at(
+        obj as usize,
+        Value::object(obj as *const c_void),
+        haxe_desc(),
+    )
 }
 
 /// [`wrap`], with a handle the caller releases.
 fn wrap_rooted(obj: *mut vdynamic) -> (Value, Handle) {
-    let p = alloc_wrapper(obj);
-    (
-        Value::object(p as *const c_void),
-        heap::handle_new(p as *mut u8),
-    )
+    let v = wrap(obj);
+    let root = v
+        .as_object()
+        .map_or(Handle::NULL, |p| heap::handle_new(p as *mut u8));
+    (v, root)
 }
 
-/// The Haxe object behind `v`, if `v` is a wrapper.
+/// The Haxe object behind `v`, if `v` is a Haxe object's cell.
 pub fn unwrap(v: Value) -> Option<*mut vdynamic> {
     let p = v.as_object()? as *mut u8;
     if p.is_null() || !ptr::eq(unsafe { desc_of(p) }, haxe_desc()) {
         return None;
     }
-    Some(unsafe { (*(p as *const HaxeRef)).obj })
+    Some(unsafe { inner(p) })
 }
 
 unsafe fn inner(obj: *mut u8) -> *mut vdynamic {
-    unsafe { (*(obj as *const HaxeRef)).obj }
+    unsafe { cell::object_at(obj) }
+        .as_object()
+        .map_or(ptr::null_mut(), |p| p as *mut vdynamic)
 }
 
 // ---------------------------------------------------------------------------
@@ -1077,15 +1049,12 @@ unsafe extern "C-unwind" fn ctor_call(
         unsafe { std::slice::from_raw_parts(args, n) }
     };
     // The instance is a raw address on this frame, which the conservative
-    // scan sees through the constructor. Its `this` is a wrapper on this
+    // scan sees through the constructor. Its `this` is a cell on this
     // frame too: the dispatcher unwraps it and nothing keeps it.
     let instance = unsafe { hlp_alloc_obj(ctor.t.cast()) } as *mut vdynamic;
-    let this = HaxeRef {
-        desc: haxe_desc(),
-        obj: instance,
-    };
+    let this = cell::Cell::transient(haxe_desc(), Value::object(instance as *const c_void));
     let mut with_this = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
-    with_this[0].write(Value::object(&this as *const HaxeRef as *const c_void));
+    with_this[0].write(Value::object(&this as *const cell::Cell as *const c_void));
     for (slot, &arg) in with_this[1..].iter_mut().zip(args) {
         slot.write(arg);
     }
@@ -2145,13 +2114,6 @@ static HAXE_PROTO: Protocol = Protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_wrapper_is_two_words_with_the_descriptor_first() {
-        assert_eq!(size_of::<HaxeRef>(), 16);
-        assert_eq!(std::mem::offset_of!(HaxeRef, desc), 0);
-        assert_eq!(std::mem::offset_of!(HaxeRef, obj), 8);
-    }
 
     #[test]
     fn runtime_messages_map_to_kinds() {

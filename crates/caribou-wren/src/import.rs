@@ -28,7 +28,6 @@
 //! `VMConfig` callback carries no VM handle the adapter could use to
 //! install a module.
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
@@ -37,9 +36,10 @@ use std::ptr;
 use std::rc::Rc;
 
 use caribou::bridge;
+use caribou::cell;
 use caribou::error::{Error, Str};
 use caribou::hash::{AddressMap, BuildAddressHasher};
-use caribou::protocol::{CallSite, Callable, Send};
+use caribou::protocol::{CallSite, Callable};
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
 use caribou::symbol::{self, Symbol};
 use caribou::world::language_name;
@@ -56,15 +56,14 @@ use wren_lift::serialize;
 use crate::heap::{WrenHeap, record_for, wren_lang};
 use crate::proto::{current_vm, from_wren, to_wren};
 
-/// The fields of every instance, as numbers: the address of the object it
-/// stands for, which the heap's trace marks while the instance lives, and
-/// the key it stands in under (`stand_in_key`), so a dying instance need
-/// not read its object to be forgotten.
+/// The field of every instance a Wren subclass constructs: the address,
+/// as a number, of the object it stands for, which the heap's trace
+/// marks while the instance lives. An object entering Wren on its own is
+/// its cell, which needs no instance.
 const OBJECT_FIELD: usize = 0;
-const KEY_FIELD: usize = 1;
-/// Their names in the class's field layout: not names Wren source can
-/// spell, so a subclass's own fields never alias them.
-const FIELD_NAMES: [&str; 2] = ["__caribou_object", "__caribou_key"];
+/// Its name in the class's field layout: not a name Wren source can
+/// spell, so a subclass's own fields never alias it.
+const FIELD_NAMES: [&str; 1] = ["__caribou_object"];
 
 // ---------------------------------------------------------------------------
 // The per-heap table
@@ -148,11 +147,6 @@ pub(crate) struct Imports {
     /// `(lang, type name)` to the class that stands for it, the name as
     /// the symbol the protocol answers.
     by_type: HashMap<(LangId, Symbol), *mut ObjClass, BuildAddressHasher>,
-    /// The instance standing for each foreign object, by the object:
-    /// the same object crossing twice is the same instance. An entry is
-    /// removed when its instance dies, so presence means alive.
-    stand_ins: AddressMap<*mut ObjInstance>,
-
     /// The class a foreign function is an instance of, once installed.
     function: Option<*mut ObjClass>,
     /// The class a foreign sequence is an instance of, once installed.
@@ -184,48 +178,26 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
     let mut imports = rec.imports().borrow_mut();
     imports.classes.clear();
     imports.by_type.clear();
-    imports.stand_ins.clear();
 }
 
-/// The native object behind a wrapper, null when `obj` has none.
-pub(crate) fn native_of(obj: *mut u8) -> *mut u8 {
-    match unsafe { Send::unwrap_native(obj) } {
-        Ok(native) => native as *mut u8,
-        Err(_) => ptr::null_mut(),
-    }
-}
-
-/// The object an instance stands for is known by, for the stand-ins:
-/// the native object behind a wrapper, so a Haxe object wrapped twice is
-/// one key; the object itself when it has no native.
-fn stand_in_key(obj: *mut u8, native: *mut u8) -> usize {
-    (if native.is_null() { obj } else { native }) as usize
-}
-
-/// The instance already standing for the native object `native` in
-/// `vm`, when there is one.
-pub(crate) fn stand_in_for(vm: &VM, native: *mut u8) -> Option<WValue> {
-    let rec = record_for(vm.object_class as *mut u8);
-    let instance = rec
-        .imports()
-        .borrow()
-        .stand_ins
-        .get(&(native as usize))
-        .copied()?;
-    Some(WValue::object(instance as *mut u8))
-}
-
-/// The adopted instance at `instance` is dying: its object may have a
-/// new stand-in.
-pub(crate) fn forget_stand_in(imports: &RefCell<Imports>, instance: *mut u8) {
-    let key = unsafe { number_field(instance, KEY_FIELD) };
-    if key == 0 {
+/// The adopted instance at `instance` is dying: the cell it stood in
+/// front of, if any, has no front now.
+pub(crate) fn forget_front(instance: *mut u8) {
+    let obj = unsafe { held(instance) };
+    if obj.is_null() || !unsafe { cell::is_cell(obj) } {
         return;
     }
-    let mut imports = imports.borrow_mut();
-    if imports.stand_ins.get(&key).copied() == Some(instance as *mut ObjInstance) {
-        imports.stand_ins.remove(&key);
+    let c = Value::object(obj as *const c_void);
+    if cell::front(c) == Some(instance as *mut c_void) {
+        cell::set_front(c, ptr::null_mut());
     }
+}
+
+/// Whether the cell at `p` has its Wren view: the instance header the
+/// cell keeps for Wren, filled by `proxy`.
+pub(crate) unsafe fn viewed(p: *mut u8) -> bool {
+    let view = unsafe { cell::view_at(p) } as *const ObjHeader;
+    !unsafe { (*view).class }.is_null()
 }
 
 // ---------------------------------------------------------------------------
@@ -541,33 +513,33 @@ fn bind_members(
 
 /// The object an adopted instance holds in its field.
 pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
-    unsafe { number_field(instance, OBJECT_FIELD) as *const u8 }
+    let v = unsafe { (*(instance as *mut ObjInstance)).get_field(OBJECT_FIELD) };
+    v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize as *const u8
 }
 
-unsafe fn number_field(instance: *mut u8, field: usize) -> usize {
-    let v = unsafe { (*(instance as *mut ObjInstance)).get_field(field) };
-    v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize
-}
-
-/// Hold `obj` from `instance`'s field, mark the instance adopted, so the
-/// heap's trace marks what it holds, and make it the object's stand-in
-/// in `vm`.
-fn adopt(vm: &VM, instance: *mut ObjInstance, obj: *mut u8, key: usize) {
-    unsafe {
-        (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64));
-        (*instance).set_field(KEY_FIELD, WValue::num(key as f64));
-    }
+/// Hold `obj` from `instance`'s field and mark the instance adopted, so
+/// the heap's trace marks what it holds; a cell gets the instance in
+/// front, so the object comes back as it.
+fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
+    unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64)) };
     crate::heap::set_adopted(instance as *mut u8);
-    let rec = record_for(vm.object_class as *mut u8);
-    rec.imports().borrow_mut().stand_ins.insert(key, instance);
+    if unsafe { cell::is_cell(obj) } {
+        cell::set_front(Value::object(obj as *const c_void), instance as *mut c_void);
+    }
 }
 
-/// The object an instance of an installed class stands for, as the bridge
-/// value it crossed as; `None` for an instance of any other class, or one
-/// whose constructor never reached the installed class's. Only `adopt`
-/// writes the field and the bit, so no lock or lookup is needed.
+/// The object a Wren value stands for, as the bridge value it crossed
+/// as: a cell, which Wren holds through the view `VIEW` bytes in, is
+/// its own; an adopted instance's is the one it holds. `None` for an
+/// object of this heap that is neither, or an instance whose constructor
+/// never reached the installed class's. Only `adopt` writes the field
+/// and the bit, so no lock or lookup is needed.
 pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
     let ptr = v.as_object()?;
+    let start = ptr.wrapping_sub(cell::VIEW);
+    if unsafe { cell::is_cell(start) } {
+        return Some(Value::object(start as *const c_void));
+    }
     if unsafe { (*(ptr as *const ObjHeader)).obj_type } != ObjType::Instance
         || !crate::heap::is_adopted(ptr)
     {
@@ -704,21 +676,18 @@ fn sequence_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
     Ok(ptr)
 }
 
-/// The instance of an installed class that stands for `v`: of the class
+/// `v` as an instance of the class installed for it: of the class
 /// installed for its type, of `Function` when `v` is a function, else of
-/// `Sequence` when `v` answers `len`.
-pub(crate) fn proxy(vm: &mut VM, v: Value, native: *mut u8) -> Option<WValue> {
+/// `Sequence` when `v` answers `len`. A cell gets the instance header
+/// written into the view it keeps for Wren and is held through it; any
+/// other object gets an instance of the class holding it.
+pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
         return None;
     }
     let lang = bridge::language_of(v)?;
     let rec = record_for(vm.object_class as *mut u8);
-    // The instance already standing for the object, when it has one.
-    let key = stand_in_key(obj, native);
-    if let Some(&instance) = rec.imports().borrow().stand_ins.get(&key) {
-        return Some(WValue::object(instance as *mut u8));
-    }
     // Installing and allocating the instance both allocate; `obj` stays
     // live on this frame past them, where the conservative scan sees it.
     let class = if bridge::arity(v).is_some() {
@@ -747,14 +716,34 @@ pub(crate) fn proxy(vm: &mut VM, v: Value, native: *mut u8) -> Option<WValue> {
                 .flatten()
         })
     };
-    let instance = class.map(|class| {
-        let instance = vm.alloc_instance(class);
-        let ptr = instance.as_object().unwrap() as *mut ObjInstance;
-        adopt(vm, ptr, obj, key);
-        crate::proto::made(vm, instance)
-    });
+    let class = class?;
+    if unsafe { cell::is_cell(obj) } {
+        let view = unsafe { cell::view_at(obj) } as *mut ObjInstance;
+        unsafe {
+            view.write(ObjInstance {
+                header: ObjHeader {
+                    obj_type: ObjType::Instance,
+                    gc_mark: 0,
+                    generation: 0,
+                    flags: 0,
+                    next: ptr::null_mut(),
+                    class,
+                },
+                num_fields: 0,
+                fields_owned: false,
+                fields: ptr::null_mut(),
+            });
+        }
+        crate::heap::hold_view(rec, obj);
+        // A view handed out is a safepoint, as an allocation is.
+        return Some(crate::proto::made(vm, WValue::object(view as *mut u8)));
+    }
+    let instance = vm.alloc_instance(class);
+    let ptr = instance.as_object().unwrap() as *mut ObjInstance;
+    adopt(ptr, obj);
+    let instance = crate::proto::made(vm, instance);
     std::hint::black_box(obj);
-    instance
+    Some(instance)
 }
 
 // ---------------------------------------------------------------------------
@@ -923,15 +912,9 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
     let result = match target.kind {
         Kind::Ctor => {
             // A subclass's constructor arrives with its instance already
-            // made; a call on the class makes one.
+            // made, which adopts the object; a call on the class answers
+            // the object as itself, its cell.
             let is_class = unsafe { (*(obj as *const ObjHeader)).obj_type } == ObjType::Class;
-            let instance = if is_class {
-                let made = vm.alloc_instance(obj as *mut ObjClass);
-                crate::proto::made(vm, made)
-            } else {
-                recv
-            };
-            let ptr = instance.as_object().unwrap() as *mut ObjInstance;
             let made = bridge::call_at(
                 target.callable,
                 &target.site,
@@ -948,9 +931,11 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                     bridge::describe(made)
                 ));
             };
-            let haxe = haxe as *mut u8;
-            adopt(vm, ptr, haxe, stand_in_key(haxe, native_of(haxe)));
-            return Ok(instance);
+            if is_class {
+                return cross_out(vm, made);
+            }
+            adopt(obj as *mut ObjInstance, haxe as *mut u8);
+            return Ok(recv);
         }
         Kind::Static => {
             let r = bridge::call_at(

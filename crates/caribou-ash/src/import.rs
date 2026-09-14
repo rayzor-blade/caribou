@@ -284,7 +284,7 @@ impl Faces {
                 "`{name}` declares fields, so a foreign object cannot be one"
             ));
         }
-        let d = cell::descriptor(unsafe { ptr::read(t) }, lang(), &name);
+        let d = cell::descriptor(unsafe { ptr::read(t) }, lang(), &name, None);
         self.views.insert(t as usize, d);
         Ok(d)
     }

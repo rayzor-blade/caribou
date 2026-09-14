@@ -13,10 +13,12 @@ every collection from then on.
 
 ## Haxe objects
 
-A Haxe object crosses wrapped. Its word zero is a bare `hl_type`, which
-has no protocol slot, so `caribou_ash::wrap` makes a `HaxeRef`: a two-word
-core object under a static descriptor. Its trace hook marks the object.
-Its protocol reaches the object the way compiled Haxe does.
+A Haxe object crosses as its cell. Its word zero is a bare `hl_type`,
+which has no protocol slot, so `caribou_ash::wrap` gives the one cell
+standing for it (`caribou::cell`), made on first need under a
+descriptor of Haxe's language and found by the object's address from
+then on. Its trace hook marks the object. Its protocol reaches the
+object the way compiled Haxe does.
 
 - `get_member` and `set_member` find a declared field in the runtime's
   own lookup tables, `hl_runtime_obj` up the class chain. The entry there
@@ -35,8 +37,7 @@ Its protocol reaches the object the way compiled Haxe does.
   first. Otherwise it goes through `hlp_dyn_call`.
 - `to_string` is `hlp_value_to_string`. `type_name` is the class's name,
   which is what the registry publishes it under. `equals` and `hash` are
-  the wrapped object's identity, so two wrappers of one object compare
-  equal, and no cache is kept. `unwrap` gives the object back.
+  the object's identity. `unwrap` gives the object back.
 
 A Haxe `String` is not wrapped. It crosses as a core `Str`, and a core
 `Str` entering Haxe becomes a fresh `String` under the type the loaded
@@ -101,12 +102,14 @@ other. A core int becomes a Wren number on the way in, Wren having no
 other.
 
 An object of another language entering Wren is one of two things. If it
-stands for one of this VM's own objects (a cell, see
-[haxe-imports.md](haxe-imports.md), answers `unwrap_native` with the
-object it holds), it becomes that object again, so identity survives a
-round trip. Otherwise it becomes an instance of the class installed for
-its type, when its language has published one (see
-[registry.md](registry.md)). It cannot enter Wren any other way.
+is a cell holding one of this VM's own objects (see
+[haxe-imports.md](haxe-imports.md#cells)), it becomes that object again,
+so identity survives a round trip. Otherwise Wren holds it as an
+instance of the class installed for its type, when its language has
+published one (see [registry.md](registry.md)): through the view a cell
+keeps for Wren, or an instance of the heap's own for any other object
+(see [wren-imports.md](wren-imports.md#lifetime)). It cannot enter Wren
+any other way.
 
 The protocol answers through the runtime's own methods, by Wren's
 signature convention:

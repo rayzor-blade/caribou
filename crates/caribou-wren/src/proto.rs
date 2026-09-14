@@ -30,6 +30,7 @@ use std::ptr;
 use wren_lift::intern::SymbolId;
 
 use caribou::bridge;
+use caribou::cell;
 use caribou::error::{Error, Str};
 use caribou::heap;
 use caribou::protocol::{
@@ -144,22 +145,28 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         let s = vm.alloc_string(text.to_owned());
         return Some(made(vm, s));
     }
-    // What the object stands for, when it stands for one: the object of
-    // this VM a ref holds, or the native a wrapper holds, which the
-    // instance already made for it is found by.
-    let native = crate::import::native_of(p);
-    if !native.is_null() {
-        if let Some(instance) = crate::import::stand_in_for(vm, native) {
-            return Some(instance);
+    if unsafe { cell::is_cell(p) } {
+        // A cell holding one of this VM's own objects, whose start has
+        // the record at word zero where any other object has its type:
+        // the object comes home. Any other cell is held through the
+        // instance a subclass constructed in front of it, else the view
+        // the cell keeps for Wren, filled on first need.
+        if let Some(native) = unsafe { cell::object_at(p) }.as_object()
+            && !native.is_null()
+            && unsafe { *(native as *const usize) }
+                == record_for(vm.object_class as *mut u8) as *const WrenHeap as usize
+        {
+            return Some(WValue::object((native as *mut u8).wrapping_add(PREFIX)));
         }
-        // A native is an object's start; one of this VM's has the record
-        // at word zero, where any other object has its own type.
-        let rec = record_for(vm.object_class as *mut u8);
-        if unsafe { *(native as *const usize) } == rec as *const WrenHeap as usize {
-            return Some(WValue::object(native.wrapping_add(PREFIX)));
+        if let Some(front) = cell::front(v) {
+            return Some(WValue::object(front as *mut u8));
+        }
+        if unsafe { crate::import::viewed(p) } {
+            crate::heap::hold_view(record_for(vm.object_class as *mut u8), p);
+            return Some(WValue::object(unsafe { cell::view_at(p) }));
         }
     }
-    crate::import::proxy(vm, v, native)
+    crate::import::proxy(vm, v)
 }
 
 /// [`from_wren`], for a host handing a Wren value to the bridge.
@@ -1337,8 +1344,18 @@ mod tests {
     /// address is what crosses, less the prefix.
     #[test]
     fn an_object_crosses_by_its_core_address() {
-        let header = Box::new(ObjHeader::new(ObjType::Range));
-        let wren_side = &*header as *const ObjHeader as *mut u8;
+        // A prefix of zeros before the header, as the heap lays one out:
+        // word zero is read to tell a cell from an object of this heap.
+        #[repr(C, align(16))]
+        struct Prefixed {
+            prefix: [usize; 2],
+            header: ObjHeader,
+        }
+        let block = Box::new(Prefixed {
+            prefix: [0; 2],
+            header: ObjHeader::new(ObjType::Range),
+        });
+        let wren_side = &block.header as *const ObjHeader as *mut u8;
         let v = from_wren(WValue::object(wren_side));
         assert_eq!(
             v.as_object(),
