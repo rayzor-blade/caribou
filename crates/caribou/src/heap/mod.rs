@@ -34,7 +34,7 @@ pub use immix::{
     // A hosted collector's claims, reclamation and trigger.
     claim_for_cycle, collect_pending, collections, containing_allocation, free_allocation,
     heartbeat_interval, is_claimed, set_deferred_collection, should_collect, stop_requested,
-    thread_registered,
+    thread_registered, thread_token,
     // Collection control, statistics and diagnostics.
     dump_memory, enable, get_flags, get_live_objects, init, major, print_stats,
     print_stats_if_enabled, profile, set_flags, stats, track_external, walk_heap,

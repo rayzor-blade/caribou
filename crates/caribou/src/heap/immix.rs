@@ -126,17 +126,24 @@ pub fn handle_release_deferred(h: Handle) {
     if h.is_null() {
         return;
     }
+    DEFERRED_ANY.fetch_add(1, Ordering::Relaxed);
     DEFERRED_RELEASES.with(|queue| queue.borrow_mut().push(h));
 }
 
+/// Handles queued on any thread, so a lock release with nothing queued
+/// reads one word and no thread-local.
+static DEFERRED_ANY: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Whether this thread has handles queued.
 fn deferred_releases_pending() -> bool {
-    DEFERRED_RELEASES.with(|queue| !queue.borrow().is_empty())
+    DEFERRED_ANY.load(Ordering::Relaxed) != 0
+        && DEFERRED_RELEASES.with(|queue| !queue.borrow().is_empty())
 }
 
 /// Release the handles a collection queued. The GC lock must NOT be held.
 fn release_deferred_handles() {
     let due = DEFERRED_RELEASES.with(|queue| mem::take(&mut *queue.borrow_mut()));
+    DEFERRED_ANY.fetch_sub(due.len(), Ordering::Relaxed);
     if due.is_empty() {
         return;
     }
@@ -327,6 +334,7 @@ thread_local! {
             block: Cell::new(usize::MAX),
             objects: Cell::new(std::ptr::null()),
             heap_base: Cell::new(0),
+            blocks: Cell::new(std::ptr::null()),
             registered: Cell::new(false),
             deferred: Cell::new(false),
             polls: AtomicU64::new(0),
@@ -347,6 +355,9 @@ struct Tlab {
     /// A bump publishes its boundary before returning the new allocation.
     objects: Cell<*const std::sync::atomic::AtomicU8>,
     heap_base: Cell<usize>,
+    /// The block table, as stable as the side table, for a drop-hooked
+    /// allocation to flag its block.
+    blocks: Cell<*const Block>,
     /// How many times this thread has entered `gc_safepoint` with a stop
     /// pending. Atomic because the collector reads it, by address, to say
     /// whether a straggler is running safepoint code at all.
@@ -366,6 +377,14 @@ struct Tlab {
 /// Largest object the bump region serves. At one line, nothing in the
 /// region ever needs an `alloc_sizes` span entry.
 const TLAB_MAX_OBJ: usize = LINE_SIZE;
+
+/// The current thread's identity as the heap keys on it: a thread-pointer
+/// register read where the platform has one, never zero, stable for the
+/// thread's life.
+#[inline(always)]
+pub fn thread_token() -> u64 {
+    thread_self_fast()
+}
 
 /// The current thread's identity, cheap enough for a per-allocation check:
 /// a thread-pointer register read where the platform has one, never zero.
@@ -1069,6 +1088,14 @@ fn tlab_enabled() -> bool {
 /// The allocation entry point: zeroed memory from the mutator's bump region
 /// when it can, the locked path when it cannot.
 pub fn gc_alloc(size: usize) -> Option<NonNull<u8>> {
+    gc_alloc_kind(size, 0, false)
+}
+
+/// [`gc_alloc`] with the allocation's kind bits written beside its size in
+/// the same side-table access, and its block flagged when the object has
+/// a drop hook. Through the bump region this is one thread-local lookup;
+/// the locked path records the kind under the lock.
+fn gc_alloc_kind(size: usize, kind: u8, has_drop: bool) -> Option<NonNull<u8>> {
     let aligned = (size.max(8) + 15) & !15;
     if aligned <= TLAB_MAX_OBJ && tlab_enabled() {
         // One TLS lookup for the whole sequence -- see `TLAB`.
@@ -1089,9 +1116,15 @@ pub fn gc_alloc(size: usize) -> Option<NonNull<u8>> {
                 }
                 let np = p + aligned;
                 if np <= t.limit.get() {
+                    let offset = p - t.heap_base.get();
                     unsafe {
-                        (*t.objects.get().add((p - t.heap_base.get()) / ALLOC_QUANTUM))
-                            .store((aligned / ALLOC_QUANTUM) as u8, Ordering::Relaxed);
+                        (*t.objects.get().add(offset / ALLOC_QUANTUM))
+                            .store((aligned / ALLOC_QUANTUM) as u8 | kind, Ordering::Relaxed);
+                        if has_drop {
+                            (*t.blocks.get().add(offset / BLOCK_SIZE))
+                                .has_drop
+                                .store(true, Ordering::Relaxed);
+                        }
                     }
                     t.cur.set(np);
                     return Step::Bumped(p);
@@ -1102,11 +1135,25 @@ pub fn gc_alloc(size: usize) -> Option<NonNull<u8>> {
         match step {
             // Pre-zeroed at refill.
             Step::Bumped(p) => return Some(unsafe { NonNull::new_unchecked(p as *mut u8) }),
-            Step::Refill => return tlab_refill_then_alloc(aligned),
+            Step::Refill => {
+                let p = tlab_refill_then_alloc(aligned)?;
+                if kind != 0 {
+                    let mut gc = gc_locked_init();
+                    let offset = p.as_ptr() as usize - gc.heap.memory.as_ptr() as usize;
+                    gc.set_allocation_kind_with(offset, kind, has_drop);
+                }
+                return Some(p);
+            }
             Step::Unregistered => {}
         }
     }
-    gc_locked_init().allocate(size)
+    let mut gc = gc_locked_init();
+    let p = gc.allocate(size)?;
+    if kind != 0 {
+        let offset = p.as_ptr() as usize - gc.heap.memory.as_ptr() as usize;
+        gc.set_allocation_kind_with(offset, kind, has_drop);
+    }
+    Some(p)
 }
 
 /// Install `block` as this thread's bump region, releasing the previous one.
@@ -1117,6 +1164,7 @@ fn adopt_tlab_region(gc: &mut ImmixAllocator, block: usize, cur: usize, limit: u
     TLAB.with(|t| {
         t.objects.set(gc.heap.objects.as_ptr());
         t.heap_base.set(gc.heap.memory.as_ptr() as usize);
+        t.blocks.set(gc.blocks.as_ptr());
         t.block.set(block);
         t.cur.set(cur);
         t.limit.set(limit);
@@ -2113,8 +2161,9 @@ struct Block {
     /// in this block, cleared by the drop pass once no traced object survives
     /// in it: only such a block needs that pass. A dead traced object without
     /// a drop hook keeps its start until its lines are reused, as a raw object
-    /// does, and a stale pointer resolving to it only retains.
-    has_drop: bool,
+    /// does, and a stale pointer resolving to it only retains. Atomic because
+    /// a mutator sets it through its bump region, without the lock.
+    has_drop: AtomicBool,
 }
 
 /// Claim a line for the marker. Returns true for the thread that set it, so a
@@ -2855,7 +2904,9 @@ impl ImmixAllocator {
         let addr = self.heap.free_blocks.pop()?;
         self.clear_allocation_metadata(addr, BLOCK_SIZE);
         self.blocks[addr / BLOCK_SIZE].has_span = false;
-        self.blocks[addr / BLOCK_SIZE].has_drop = false;
+        self.blocks[addr / BLOCK_SIZE]
+            .has_drop
+            .store(false, Ordering::Relaxed);
         self.heap.used_blocks.insert(addr);
         self.reclaim_block_pages(addr);
         clear_marks(&self.blocks[addr / BLOCK_SIZE]);
@@ -2917,14 +2968,23 @@ impl ImmixAllocator {
     /// out: no collection can have seen it yet. A traced object's word zero
     /// already holds its descriptor.
     fn set_allocation_kind(&mut self, offset: usize, kind: u8) {
-        debug_assert_eq!(kind & !OBJECT_KIND_MASK, 0);
-        self.heap.objects[offset / ALLOC_QUANTUM].fetch_or(kind, Ordering::Relaxed);
-        if kind == OBJECT_KIND_TRACED {
+        let has_drop = kind == OBJECT_KIND_TRACED && {
             let obj = unsafe { self.heap.memory.as_ptr().add(offset) };
             let desc = unsafe { *(obj as *const *const TypeDesc) };
-            if unsafe { desc.as_ref() }.is_some_and(|d| d.drop.is_some()) {
-                self.blocks[offset / BLOCK_SIZE].has_drop = true;
-            }
+            unsafe { desc.as_ref() }.is_some_and(|d| d.drop.is_some())
+        };
+        self.set_allocation_kind_with(offset, kind, has_drop);
+    }
+
+    /// [`Self::set_allocation_kind`] told whether the object has a drop
+    /// hook, for a caller that has not written its descriptor yet.
+    fn set_allocation_kind_with(&mut self, offset: usize, kind: u8, has_drop: bool) {
+        debug_assert_eq!(kind & !OBJECT_KIND_MASK, 0);
+        self.heap.objects[offset / ALLOC_QUANTUM].fetch_or(kind, Ordering::Relaxed);
+        if has_drop {
+            self.blocks[offset / BLOCK_SIZE]
+                .has_drop
+                .store(true, Ordering::Relaxed);
         }
     }
 
@@ -3096,7 +3156,9 @@ impl ImmixAllocator {
                 for block in removed {
                     self.clear_allocation_metadata(block, BLOCK_SIZE);
                     self.blocks[block / BLOCK_SIZE].has_span = false;
-                    self.blocks[block / BLOCK_SIZE].has_drop = false;
+                    self.blocks[block / BLOCK_SIZE]
+                        .has_drop
+                        .store(false, Ordering::Relaxed);
                     self.heap.used_blocks.insert(block);
                     self.reclaim_block_pages(block);
                     clear_marks(&self.blocks[block / BLOCK_SIZE]);
@@ -3283,6 +3345,15 @@ impl ImmixAllocator {
             }
         }
         true
+    }
+
+    /// [`Self::is_claimed`] for a host that knows `start` is an allocation
+    /// start: one side-table read.
+    #[inline]
+    pub fn is_claimed_start(&self, start: *const u8) -> bool {
+        self.offset_of(start as usize).is_some_and(|offset| {
+            self.heap.objects[offset / ALLOC_QUANTUM].load(Ordering::Relaxed) & OBJECT_MARK != 0
+        })
     }
 
     /// Whether the allocation containing `ptr` is claimed in the open cycle.
@@ -3501,6 +3572,15 @@ impl ImmixAllocator {
     }
 
     pub fn collect_garbage(&mut self) {
+        self.collect_garbage_then(|_| {});
+    }
+
+    /// [`Self::collect_garbage`] with `between` run after the mark and
+    /// before the sweep, the world stopped and the marks standing: a
+    /// hosted collector reads which of its objects the mark reached, and
+    /// forgets the rest before their lines return. It does not run when
+    /// the collection is abandoned.
+    pub fn collect_garbage_then(&mut self, between: impl FnOnce(&mut Self)) {
         let t0 = Instant::now();
         let stopped_world = stop_mutator_world();
         // Nothing may be scanned while a mutator is still running: its stack
@@ -3528,8 +3608,9 @@ impl ImmixAllocator {
         let t_stop = t0.elapsed();
         let t_mark0 = Instant::now();
         self.mark_roots(&stopped_world.snapshots);
-        // Between the two phases: this reads the mark bits, and sweep clears them.
+        // Between the two phases: these read the mark bits, and sweep clears them.
         self.take_dead_finalizers();
+        between(self);
         let t_mark = t_mark0.elapsed();
         let t_sweep0 = Instant::now();
         let freed_blocks = self.sweep(&stopped_world.snapshots);
@@ -4022,31 +4103,43 @@ impl ImmixAllocator {
         let base = self.heap.memory.as_ptr() as usize;
         for &block_addr in used {
             let block = &mut self.blocks[block_addr / BLOCK_SIZE];
-            if !block.has_drop {
+            if !block.has_drop.load(Ordering::Relaxed) {
                 continue;
             }
             let mut any_live = false;
-            for q in block_addr / ALLOC_QUANTUM..(block_addr + BLOCK_SIZE) / ALLOC_QUANTUM {
+            // Start to start: an allocation's size says where the next can
+            // begin, and a free quantum is stepped over.
+            let mut q = block_addr / ALLOC_QUANTUM;
+            let end = (block_addr + BLOCK_SIZE) / ALLOC_QUANTUM;
+            while q < end {
                 let slot = self.heap.objects[q].get_mut();
                 let code = *slot;
-                if code & OBJECT_KIND_MASK != OBJECT_KIND_TRACED {
-                    continue;
+                let quanta = match code & OBJECT_SIZE_MASK {
+                    0 => 1,
+                    SPAN_OBJECT => (self.heap.alloc_sizes[q * ALLOC_QUANTUM / LINE_SIZE] as usize
+                        * LINE_SIZE
+                        / ALLOC_QUANTUM)
+                        .max(1),
+                    n => n as usize,
+                };
+                if code & OBJECT_KIND_MASK == OBJECT_KIND_TRACED {
+                    if code & OBJECT_MARK != 0 {
+                        any_live = true;
+                    } else {
+                        let obj = (base + q * ALLOC_QUANTUM) as *mut u8;
+                        let desc = unsafe { *(obj as *const *const TypeDesc) };
+                        if let Some(drop) = unsafe { desc.as_ref() }.and_then(|d| d.drop) {
+                            unsafe { drop(obj) };
+                        }
+                        if code & OBJECT_SIZE_MASK == SPAN_OBJECT {
+                            self.heap.alloc_sizes[q * ALLOC_QUANTUM / LINE_SIZE] = 0;
+                        }
+                        *self.heap.objects[q].get_mut() = 0;
+                    }
                 }
-                if code & OBJECT_MARK != 0 {
-                    any_live = true;
-                    continue;
-                }
-                let obj = (base + q * ALLOC_QUANTUM) as *mut u8;
-                let desc = unsafe { *(obj as *const *const TypeDesc) };
-                if let Some(drop) = unsafe { desc.as_ref() }.and_then(|d| d.drop) {
-                    unsafe { drop(obj) };
-                }
-                if code & OBJECT_SIZE_MASK == SPAN_OBJECT {
-                    self.heap.alloc_sizes[q * ALLOC_QUANTUM / LINE_SIZE] = 0;
-                }
-                *slot = 0;
+                q += quanta;
             }
-            block.has_drop = any_live;
+            block.has_drop.store(any_live, Ordering::Relaxed);
         }
     }
 
@@ -4301,7 +4394,9 @@ impl ImmixAllocator {
                     *slot.get_mut() = 0;
                 }
                 self.blocks[block_index].has_span = false;
-                self.blocks[block_index].has_drop = false;
+                self.blocks[block_index]
+                    .has_drop
+                    .store(false, Ordering::Relaxed);
                 freed.push(block_addr);
             }
         }
@@ -5185,38 +5280,24 @@ pub fn collections() -> u64 {
 pub unsafe fn alloc_gen(t: *mut hl_type, size: usize, flags: u32) -> *mut c_void {
     use caribou_abi::mem::{AllocKind, TRACED};
     let kind = AllocKind::from_flags(flags);
-    // A typed, raw or pointer-free allocation whose descriptor has no drop
-    // hook needs the lock for nothing: it bumps through the thread's buffer
-    // as `gc_alloc` does, and its kind is one byte in the side table, which
-    // nothing reads until this thread next parks. A drop hook is recorded
-    // per block, under the lock; a finalizer is registered there too.
+    // A typed, raw or pointer-free allocation needs the lock for nothing:
+    // it bumps through the thread's buffer as `gc_alloc` does, with its
+    // kind written beside its size and a drop hook flagging the block. A
+    // finalizer is registered under the lock.
     let traced = kind == AllocKind::Typed && flags & TRACED != 0;
     let has_drop = traced && unsafe { (*(t as *const TypeDesc)).drop.is_some() };
-    if kind != AllocKind::Finalizer && !has_drop {
-        let Some(ptr) = gc_alloc(size) else {
-            return ptr::null_mut();
-        };
-        let p = ptr.as_ptr();
-        if kind == AllocKind::Typed {
-            unsafe { (*(p as *mut hl::vdynamic)).t = t };
-        }
+    if kind != AllocKind::Finalizer {
         let mark = match kind {
             AllocKind::Typed if traced => OBJECT_KIND_TRACED,
             AllocKind::NoPtr => OBJECT_KIND_NOPTR,
             _ => 0,
         };
-        if mark != 0 {
-            // The side table through the buffer's own pointer to it, which a
-            // thread has once it has refilled; else under the lock.
-            let (objects, base) = TLAB.with(|tl| (tl.objects.get(), tl.heap_base.get()));
-            if !objects.is_null() {
-                let index = (p as usize - base) / ALLOC_QUANTUM;
-                unsafe { (*objects.add(index)).fetch_or(mark, Ordering::Relaxed) };
-            } else {
-                let mut gc = gc_locked_init();
-                let offset = p as usize - gc.heap.memory.as_ptr() as usize;
-                gc.set_allocation_kind(offset, mark);
-            }
+        let Some(ptr) = gc_alloc_kind(size, mark, has_drop) else {
+            return ptr::null_mut();
+        };
+        let p = ptr.as_ptr();
+        if kind == AllocKind::Typed {
+            unsafe { (*(p as *mut hl::vdynamic)).t = t };
         }
         return p as *mut c_void;
     }
@@ -6032,7 +6113,9 @@ mod tests {
         );
         assert_eq!(kind_of(&gc, traced - heap_start), OBJECT_KIND_TRACED);
         assert!(
-            !gc.blocks[(traced - heap_start) / BLOCK_SIZE].has_drop,
+            !gc.blocks[(traced - heap_start) / BLOCK_SIZE]
+                .has_drop
+                .load(Ordering::Relaxed),
             "a hookless descriptor gives the sweep nothing to drop"
         );
         assert_eq!(unsafe { *(traced as *const usize) }, desc as usize);
@@ -6175,7 +6258,11 @@ mod tests {
         let _turn = holder_test_turn();
         let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
         let (holder, child, boxed) = traced_holder(&mut gc);
-        assert!(gc.blocks[holder / BLOCK_SIZE].has_drop);
+        assert!(
+            gc.blocks[holder / BLOCK_SIZE]
+                .has_drop
+                .load(Ordering::Relaxed)
+        );
         let sibling = gc.allocate(16).unwrap();
         let sibling = offset(&gc, sibling);
         let before = HOLDER_DROPS.load(Ordering::SeqCst);
@@ -6204,7 +6291,11 @@ mod tests {
         let find = |at| allocation_at(&gc.blocks, &gc.heap.alloc_sizes, &gc.heap.objects, at);
         assert_eq!(find(holder + 8), None, "a dropped object is forgotten");
         assert_eq!(find(sibling), Some((sibling, 16)));
-        assert!(!gc.blocks[holder / BLOCK_SIZE].has_drop);
+        assert!(
+            !gc.blocks[holder / BLOCK_SIZE]
+                .has_drop
+                .load(Ordering::Relaxed)
+        );
 
         // A stale pointer into it resolves to nothing, so no later cycle can
         // trace or drop it again.
@@ -6268,7 +6359,7 @@ mod tests {
         };
         let at = offset(&gc, obj);
         gc.set_allocation_kind(at, OBJECT_KIND_TRACED);
-        assert!(!gc.blocks[at / BLOCK_SIZE].has_drop);
+        assert!(!gc.blocks[at / BLOCK_SIZE].has_drop.load(Ordering::Relaxed));
         let keeper = gc.allocate(16).unwrap();
         let keeper = offset(&gc, keeper);
         let mut work = Vec::new();

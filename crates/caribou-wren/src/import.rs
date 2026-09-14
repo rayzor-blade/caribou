@@ -58,11 +58,10 @@ use crate::proto::{current_vm, from_wren, to_wren};
 /// The fields of every instance: the handle on the object it stands for,
 /// and the object's address, as numbers. The heap does not move, so the
 /// address is good for as long as the handle holds.
-const HANDLE_FIELD: usize = 0;
-const OBJECT_FIELD: usize = 1;
+const OBJECT_FIELD: usize = 0;
 /// Their names in the class's field layout: not names Wren source can
 /// spell, so a subclass's own fields never alias them.
-const FIELD_NAMES: [&str; 2] = ["__caribou_handle", "__caribou_object"];
+const FIELD_NAMES: [&str; 1] = ["__caribou_object"];
 
 // ---------------------------------------------------------------------------
 // The per-heap table
@@ -128,16 +127,6 @@ impl Imports {
     /// Whether `class` was installed here for another language's.
     pub(crate) fn installed(&self, class: *mut ObjClass) -> bool {
         self.classes.contains_key(&(class as usize))
-    }
-}
-
-/// A dead adopted instance, before it is dropped: release the handle in
-/// its field. On the sweeping thread, the VM's, under the GC lock `gc`
-/// holds.
-pub(crate) fn finalize_dead(obj: *mut u8, gc: &mut heap::ImmixAllocator) {
-    let handle = unsafe { handle_of(obj as *mut ObjInstance) };
-    if !handle.is_null() {
-        gc.handle_release(handle);
     }
 }
 
@@ -441,42 +430,32 @@ fn bind_members(
 // Instances
 // ---------------------------------------------------------------------------
 
-/// The handle in an instance's field, or null.
-unsafe fn handle_of(instance: *mut ObjInstance) -> Handle {
-    let v = unsafe { (*instance).get_field(HANDLE_FIELD) }.unwrap_or(WValue::null());
-    match v.as_num() {
-        Some(n) if n > 0.0 => Handle::from_raw(n as u32),
-        _ => Handle::NULL,
-    }
+/// The object an adopted instance holds in its field.
+pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
+    let v = unsafe { (*(instance as *mut ObjInstance)).get_field(OBJECT_FIELD) };
+    v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize as *const u8
 }
 
-/// Root `obj` from `instance`'s fields, and mark the instance adopted so
-/// the sweep releases the handle.
+/// Hold `obj` from `instance`'s field, and mark the instance adopted: the
+/// heap's trace marks what an adopted instance holds.
 fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
-    let handle = heap::handle_new(obj);
-    unsafe {
-        (*instance).set_field(HANDLE_FIELD, WValue::num(f64::from(handle.as_raw())));
-        (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64));
-    }
+    unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64)) };
     crate::heap::set_adopted(instance as *mut u8);
 }
 
 /// The object an instance of an installed class stands for, as the bridge
 /// value it crossed as; `None` for an instance of any other class, or one
 /// whose constructor never reached the installed class's. Only `adopt`
-/// writes the fields, so a handle in the first means the second is the
-/// object, and no lock or lookup is needed.
+/// writes the field and the bit, so no lock or lookup is needed.
 pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
     let ptr = v.as_object()?;
-    if unsafe { (*(ptr as *const ObjHeader)).obj_type } != ObjType::Instance {
+    if unsafe { (*(ptr as *const ObjHeader)).obj_type } != ObjType::Instance
+        || !crate::heap::is_adopted(ptr)
+    {
         return None;
     }
-    let instance = ptr as *mut ObjInstance;
-    if unsafe { handle_of(instance) }.is_null() {
-        return None;
-    }
-    let obj = unsafe { (*instance).get_field(OBJECT_FIELD) }?.as_num()? as usize;
-    (obj != 0).then(|| Value::object(obj as *const c_void))
+    let obj = unsafe { held(ptr) };
+    (!obj.is_null()).then(|| Value::object(obj as *const c_void))
 }
 
 /// A foreign object as an instance of the class installed for its type,
@@ -581,7 +560,7 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let instance = class.map(|class| {
         let instance = vm.alloc_instance(class);
         adopt(instance.as_object().unwrap() as *mut ObjInstance, obj);
-        instance
+        crate::proto::made(vm, instance)
     });
     heap::handle_release(root);
     instance
@@ -688,12 +667,19 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
             // made; a call on the class makes one.
             let is_class = unsafe { (*(obj as *const ObjHeader)).obj_type } == ObjType::Class;
             let instance = if is_class {
-                vm.alloc_instance(obj as *mut ObjClass)
+                let made = vm.alloc_instance(obj as *mut ObjClass);
+                crate::proto::made(vm, made)
             } else {
                 recv
             };
             let ptr = instance.as_object().unwrap() as *mut ObjInstance;
-            let made = bridge::call_named(target.callable, &with_this[1..], wren, &target.name);
+            let made = bridge::call_at(
+                target.callable,
+                &target.site,
+                &with_this[1..],
+                wren,
+                &target.name,
+            );
             release(roots);
             let made = made.map_err(message_of)?;
             let Some(haxe) = made.as_object().filter(|p| !p.is_null()) else {

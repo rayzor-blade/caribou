@@ -142,21 +142,31 @@ regardless.
 
 ## Hosted collectors
 
-A runtime may keep its own collector over this heap; caribou-wren does. It
-runs its cycle on the core's per-cycle claim. `claim_for_cycle` marks what
-its trace reaches. It drops and forgets what was not claimed. It ends with
-a core collection whose sweep clears the claims.
+A runtime may keep its own collector over this heap; caribou-wren does. A
+cycle is the two collectors in turn. The hosted collector marks from its
+own roots, and claims what it marked: `claim_for_cycle` marks an object
+exactly as the core's marker would, so the core collection the cycle ends
+with retains it. What it did not mark is dead, and it drops and forgets it
+before that collection — unless another language may still hold it. An
+object another language keeps a stand-in on (the protocol's shadow, see
+[bridge.md](bridge.md#shadows)), and everything it reaches, is left to the
+core: the stand-in is a core object, and its trace marks the object it
+stands for, which the core then traces through the descriptor's hook. The
+core's mark decides; `collect_garbage_then` runs the hosted collector
+between the mark and the sweep, and `is_claimed_start` tells it which of
+those objects the mark reached. The rest die there, before their lines
+return.
 
-Its objects stay alive across every core collection through an anchor
-object, whose trace hook marks them all, so no core root needs to reach
-them. Wherever the core does reach one, the object is traced precisely
-through the descriptor's hook.
+Its objects stay alive across every other core collection through an
+anchor object, whose trace hook marks them all, so no core root needs to
+reach them. Wherever the core does reach one, the object is traced
+precisely through the descriptor's hook.
 
 The core's handles are roots of the hosted cycle too. `for_each_handle`
 gives the addresses live handles root. The hosted collector marks those of
 its objects among them, and everything they reach, before it decides what
-is dead. That is how another language keeps a hosted object alive: by a
-handle.
+is dead. That is how an embedder holds a hosted object: by a handle. A
+language holds one by its stand-in, which needs none.
 
 The runtime's thread is an ordinary mutator. It registers at the OS's
 stack top and runs in deferred mode, so a collection any other mutator

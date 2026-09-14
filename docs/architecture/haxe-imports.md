@@ -132,13 +132,13 @@ collector sees, and that stays alive in Wren for as long as Haxe keeps it.
 
 `caribou_ash::wrap_foreign` answers with a `WrenRef`: a traced core object
 under a static descriptor of Haxe's language, holding the object's bridge
-value and a core `Handle` on it. The name is the common case; whatever is
-not Haxe's is wrapped the same way, a core `Str` or `Error` included, and
-a Haxe value or a scalar passes through. Haxe keeps the ref as the raw
-pointer `wrenref_as_abstract` gives, in the `hl.Abstract<"caribou_obj">`
-field of the class the build macro emits: a word the conservative scan
-sees and HashLink never reads. `wrenref_from_abstract` turns it back into
-a value, and `unwrap_foreign` into the object.
+value. The name is the common case; whatever is not Haxe's is wrapped the
+same way, a core `Str` or `Error` included, and a Haxe value or a scalar
+passes through. Haxe keeps the ref as the raw pointer
+`wrenref_as_abstract` gives, in the `hl.Abstract<"caribou_obj">` field of
+the class the build macro emits: a word the conservative scan sees and
+HashLink never reads. `wrenref_from_abstract` turns it back into a value,
+and `unwrap_foreign` into the object.
 
 The ref's protocol forwards every message to the object, call sites
 included, so a Haxe caller reaching it through `Dynamic` gets Wren
@@ -146,29 +146,25 @@ semantics, and `equals` sees through a ref on either side. It answers
 `unwrap_native` with the object itself, which is how the Wren adapter
 recognises one of its own objects coming back and restores identity.
 
-The handle is what keeps the object. wren_lift's cycle is the only
-reclaimer of Wren objects, and its roots are its own. So at the end of its
-marking, the adapter marks every object of the heap a core handle
-reaches, and everything reachable from it, before the sweep. A handle
-held by another language is thereby a root of the Wren cycle. The core's
-collection retains every Wren object regardless (see [hosted
-collectors](heap.md#hosted-collectors)), and the ref's trace hook marks
-the object for it too.
+The ref's trace hook is what keeps the object. A Wren cycle ends with a
+core collection, and an object Wren's own marking did not reach lives if
+the core's mark reaches it, which it does through a live ref (see [hosted
+collectors](heap.md#hosted-collectors)). So a ref Haxe still holds keeps
+its object, and one Haxe dropped lets it go, in the same cycle. The core's
+collection retains every Wren object regardless outside a cycle.
 
 There is one ref per object, and the object keeps it: the ref is the
 protocol's *shadow* of the object for Haxe (see
 [bridge.md](bridge.md#shadows)), a word on a Wren object. An object whose
 language keeps no shadow, a core `Error` say, is entered in a map from
-its address to the ref's instead. Neither holds a handle on the ref, so
-a ref is reachable only from Haxe and dies when Haxe drops it. Its drop
-hook, run by the core's sweep before the ref's lines can be reused, drops
-the shadow or the entry and gives up the handle. The release is deferred
-to the end of the collection through `heap::handle_release_deferred`,
-since a drop hook cannot take the GC lock.
+its address to the ref's instead. Neither roots the ref, so a ref is
+reachable only from Haxe and dies when Haxe drops it. Its drop hook, run
+by the core's sweep before the ref's lines can be reused, drops the
+shadow or the entry.
 
 The invariant is that a ref an object keeps, or the map names, is alive.
 Presence means alive, because the only way out is the drop of the ref
-itself, and the object cannot die before its ref, which holds its handle.
+itself, and the object cannot die before its ref, whose trace marks it.
 So `wrap_foreign` on an object that already has a ref returns that ref,
 and a second wrap of one object is the same ref until Haxe lets it go.
 Once it does, the object dies with the next Wren cycle that finds no other

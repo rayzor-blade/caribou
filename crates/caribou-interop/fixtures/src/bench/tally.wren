@@ -4,6 +4,7 @@
 import "bench:Bench" for Bench
 
 class Tally {
+  #export = "new(t: Num)"
   construct new(t) { _t = t }
 
   #export = "add(x: Num) -> Num"

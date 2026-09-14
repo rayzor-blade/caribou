@@ -3,13 +3,13 @@
 //! A Wren object reaching Haxe must be an object Haxe can keep, that
 //! Haxe's collector sees, and that stays alive in Wren for as long as
 //! Haxe keeps it. A `WrenRef` is that: a traced core object under a
-//! static descriptor whose two fields are the foreign object's bridge
-//! value and a core handle on it. The handle is what keeps the object
-//! across its own runtime's cycle (wren_lift's cycle marks what the
-//! core's handles reach); the trace hook marks it for the core. Haxe holds
-//! the ref as a raw pointer in an `hl.Abstract<"caribou_obj">` field of
-//! the class the build macro emits for the Wren class: a word the
-//! conservative scan sees and HashLink never reads.
+//! static descriptor whose field is the foreign object's bridge value.
+//! Its trace hook marks the object, and the core's mark is what a Wren
+//! cycle ends with, so a live ref is what keeps its object across that
+//! cycle. Haxe holds the ref as a raw pointer in an
+//! `hl.Abstract<"caribou_obj">` field of the class the build macro emits
+//! for the Wren class: a word the conservative scan sees and HashLink
+//! never reads.
 //!
 //! The ref's protocol forwards every message to the object it stands for,
 //! so a Haxe caller reaching it through `Dynamic` gets Wren semantics. It
@@ -19,15 +19,13 @@
 //! One ref per object. The object's own language keeps it, as the
 //! protocol's shadow, when it keeps one: a Wren object has a word for it.
 //! For an object whose language keeps none, a map from the object's
-//! address to the ref's. Neither holds a handle on the ref, so a ref is
-//! reachable only from Haxe and dies when Haxe drops it. Its drop hook,
-//! run by the core's sweep before the ref's lines can be reused, forgets
-//! it on the object or in the map and gives up the handle, the release
-//! deferred to the end of the collection since a hook cannot take the GC
-//! lock. The invariant: a ref kept on an object or named in the map is
-//! alive. Presence means alive, because the only way out is the drop of
-//! the ref itself, and the object cannot die before its ref, which holds
-//! its handle.
+//! address to the ref's. Neither roots the ref, so a ref is reachable
+//! only from Haxe and dies when Haxe drops it. Its drop hook, run by the
+//! core's sweep before the ref's lines can be reused, forgets it on the
+//! object or in the map. The invariant: a ref kept on an object or named
+//! in the map is alive. Presence means alive, because the only way out is
+//! the drop of the ref itself, and the object cannot die before its ref,
+//! whose trace marks it.
 //!
 //! Whatever is not Haxe's is wrapped the same way: a core `Str` or
 //! `Error`, an object of a language registered later.
@@ -53,7 +51,6 @@ use crate::proto::{haxe_type, lang};
 struct WrenRef {
     desc: *const TypeDesc,
     obj: Value,
-    handle: Handle,
     /// The Haxe object standing for the foreign one (`import.rs`), or
     /// null: it holds the ref, and the ref holds it, so the two die
     /// together when Haxe lets go.
@@ -68,8 +65,7 @@ unsafe extern "C" fn trace_ref(obj: *mut u8, tracer: *mut Tracer) {
     }
 }
 
-/// The ref is dead: the object forgets it, or its entry goes, and so does
-/// its hold on the object.
+/// The ref is dead: the object forgets it, or its entry goes.
 unsafe extern "C" fn drop_ref(obj: *mut u8) {
     let r = unsafe { &*(obj as *const WrenRef) };
     if let Some(key) = address_of(r.obj)
@@ -80,7 +76,6 @@ unsafe extern "C" fn drop_ref(obj: *mut u8) {
             map.remove(&key);
         }
     }
-    heap::handle_release_deferred(r.handle);
 }
 
 /// Word zero of every ref. Mutable for one field: `lang` is Haxe's id,
@@ -144,30 +139,30 @@ pub fn wrap_foreign(v: Value) -> Value {
     if !kept && let Some(&r) = refs().get(&obj) {
         return Value::object(r as *const c_void);
     }
-    // The handle roots the object through the allocation.
-    let handle = heap::handle_new(obj as *mut u8);
-    let p = {
-        let _lock = heap::gc_guard();
-        let p = unsafe {
-            heap::alloc_gen(
-                wrenref_desc() as *mut hl_type,
-                size_of::<WrenRef>(),
-                KIND_DYNAMIC | TRACED,
-            )
-        } as *mut WrenRef;
-        if p.is_null() {
-            heap::out_of_memory("a foreign object's ref");
-        }
-        unsafe {
-            (*p).obj = v;
-            (*p).handle = handle;
-            (*p).face = ptr::null_mut();
-        }
-        p
+    // An object its language keeps a shadow on is retained through the
+    // allocation by its own heap record; any other is rooted here.
+    let root = if kept {
+        Handle::NULL
+    } else {
+        heap::handle_new(obj as *mut u8)
     };
-    // Another thread may have made one meanwhile. Ours is then garbage:
-    // its drop gives up its handle and forgets nothing, not being the one
-    // kept.
+    let p = unsafe {
+        heap::alloc_gen(
+            wrenref_desc() as *mut hl_type,
+            size_of::<WrenRef>(),
+            KIND_DYNAMIC | TRACED,
+        )
+    } as *mut WrenRef;
+    if p.is_null() {
+        heap::out_of_memory("a foreign object's ref");
+    }
+    unsafe {
+        (*p).obj = v;
+        (*p).face = ptr::null_mut();
+    }
+    heap::handle_release(root);
+    // Another thread may have made one meanwhile. Ours is then garbage,
+    // and its drop forgets nothing, not being the one kept.
     let r = if kept {
         let mut other = ptr::null_mut();
         match unsafe { Send::keep_shadow(obj as *mut u8, p as *mut u8, &mut other) } {
@@ -534,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn one_ref_per_object_and_it_holds_the_object_while_haxe_holds_it() {
+    fn one_ref_per_object_while_haxe_holds_it() {
         heap::init();
         heap::gc_register_current_os_thread();
         // What registration does: Haxe's id, so a core string is foreign.
@@ -542,7 +537,6 @@ mod tests {
         set_lang(41);
         let (root, ref_hidden, obj_hidden) = held();
         let obj = Value::object(!obj_hidden as *const c_void);
-        let ref_handle = |r: usize| unsafe { (*(r as *const WrenRef)).handle };
 
         heap::major();
         assert_eq!(
@@ -550,22 +544,20 @@ mod tests {
             Some(Value::object(!ref_hidden as *const c_void).to_bits()),
             "the ref lives while Haxe's handle does"
         );
-        let h = ref_handle(!ref_hidden);
-        assert_eq!(
-            heap::handle_get(h),
-            !obj_hidden as *mut u8,
-            "and holds the object"
-        );
 
         heap::handle_release(root);
+        scrub_stack();
         heap::major();
         assert_eq!(foreign_ref(obj), None, "dropped, the ref left the map");
-        assert_ne!(
-            heap::handle_get(h),
-            !obj_hidden as *mut u8,
-            "and gave up the object"
-        );
         heap::gc_unregister_current_os_thread();
+    }
+
+    /// Overwrite the stack below this frame, where `foreign_ref` left the
+    /// ref's address for the conservative scan to find.
+    #[inline(never)]
+    fn scrub_stack() {
+        let buf = [0u8; 1 << 14];
+        std::hint::black_box(&buf);
     }
 
     #[test]

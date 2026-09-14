@@ -62,11 +62,9 @@ the instance already made.
 ## Lifetime
 
 An instance of an installed class is an ordinary `ObjInstance` with one
-field. The field holds a core `Handle`, as a number, to the object it
-stands for: the `HaxeRef` the bridge wraps a Haxe object in. The handle
-roots that object for as long as the Wren instance lives.
-
-The adapter's own sweep, which drops every dead wren_lift object, releases
-the handle first. `heap_drop` releases whatever a VM leaves behind. No
-identity cache is kept in this direction: two instances made for one Haxe
-object are distinct Wren objects.
+field. The field holds, as a number, the address of the object it stands
+for: the `HaxeRef` the bridge wraps a Haxe object in. The instance is
+marked adopted in its bridge word, and the heap's trace marks what an
+adopted instance holds, so that object lives for as long as the Wren
+instance does. No identity cache is kept in this direction: two instances
+made for one Haxe object are distinct Wren objects.

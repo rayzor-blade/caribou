@@ -43,7 +43,8 @@ use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap::{self, Handle, Tracer, TypeDesc};
 use caribou::protocol::{
-    CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Symbol, desc_of,
+    CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
+    desc_of,
 };
 use caribou::registry::ClassIface;
 use caribou_abi::hl::{
@@ -118,14 +119,12 @@ pub fn wrap(obj: *mut vdynamic) -> Value {
     if obj.is_null() {
         return Value::null();
     }
-    let (v, root) = wrap_rooted(obj);
-    heap::handle_release(root);
-    v
+    Value::object(alloc_wrapper(obj) as *const c_void)
 }
 
-/// [`wrap`], with a handle the caller releases.
-fn wrap_rooted(obj: *mut vdynamic) -> (Value, Handle) {
-    let _lock = heap::gc_guard();
+/// A fresh wrapper of `obj`, unrooted. `obj` itself is a raw address on
+/// the caller's stack, which the conservative scan sees.
+fn alloc_wrapper(obj: *mut vdynamic) -> *mut HaxeRef {
     let p = unsafe {
         heap::alloc_gen(
             haxe_desc() as *mut hl_type,
@@ -137,6 +136,12 @@ fn wrap_rooted(obj: *mut vdynamic) -> (Value, Handle) {
         heap::out_of_memory("a haxe object wrapper");
     }
     unsafe { (*p).obj = obj };
+    p
+}
+
+/// [`wrap`], with a handle the caller releases.
+fn wrap_rooted(obj: *mut vdynamic) -> (Value, Handle) {
+    let p = alloc_wrapper(obj);
     (
         Value::object(p as *const c_void),
         heap::handle_new(p as *mut u8),
@@ -873,6 +878,8 @@ struct HaxeCtor {
     /// `__constructor__`'s cell in the module context.
     cell: *const *const c_void,
     sig: *const hl_type,
+    /// The dispatcher's site for the constructor's call.
+    site: CallSite,
 }
 
 static mut CTOR_DESC: TypeDesc = {
@@ -908,13 +915,14 @@ pub(crate) fn constructor(
         (*p).t = t;
         (*p).cell = cell;
         (*p).sig = sig;
+        ptr::addr_of_mut!((*p).site).write(CallSite::new());
     }
     // Kept for the process, as the interface that names it is.
     let _keep = heap::handle_new(p as *mut u8);
     Value::object(p as *const c_void)
 }
 
-/// Allocate, wrap, construct; the wrapper is the result.
+/// Allocate, construct, wrap; the wrapper is the result.
 unsafe extern "C-unwind" fn ctor_call(
     obj: *mut u8,
     args: *const Value,
@@ -922,32 +930,72 @@ unsafe extern "C-unwind" fn ctor_call(
     out: *mut Value,
 ) -> u8 {
     let ctor = unsafe { &*(obj as *const HaxeCtor) };
+    if n >= MAX_ARGS {
+        return REPLY_UNSUPPORTED;
+    }
     let args = if n == 0 {
         &[][..]
     } else {
         unsafe { std::slice::from_raw_parts(args, n) }
     };
+    // The instance is a raw address on this frame, which the conservative
+    // scan sees through the constructor. Its `this` is a wrapper on this
+    // frame too: the dispatcher unwraps it and nothing keeps it.
     let instance = unsafe { hlp_alloc_obj(ctor.t.cast()) } as *mut vdynamic;
-    let (this, root) = wrap_rooted(instance);
-    let mut with_this = Vec::with_capacity(n + 1);
-    with_this.push(this);
-    with_this.extend_from_slice(args);
+    let this = HaxeRef {
+        desc: haxe_desc(),
+        obj: instance,
+    };
+    let mut with_this = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
+    with_this[0].write(Value::object(&this as *const HaxeRef as *const c_void));
+    for (slot, &arg) in with_this[1..].iter_mut().zip(args) {
+        slot.write(arg);
+    }
     let mut ignored = Value::null();
     let code = unsafe {
-        dispatch(
+        typed_send(
             *ctor.cell,
             ctor.sig,
-            ptr::null_mut(),
-            with_this.as_ptr(),
-            with_this.len(),
+            &ctor.site,
+            with_this.as_ptr().cast(),
+            n + 1,
             &mut ignored,
         )
     };
-    heap::handle_release(root);
     if code == REPLY_OK {
-        unsafe { *out = this };
+        unsafe { *out = wrap(instance) };
     }
     code
+}
+
+/// `dispatch` through a site of this adapter's own: the direct send it
+/// left there first, as the bridge sends, and the dispatcher when the
+/// site has none or it no longer fits.
+unsafe fn typed_send(
+    func: *const c_void,
+    sig: *const hl_type,
+    site: &CallSite,
+    args: *const Value,
+    nargs: usize,
+    out: *mut Value,
+) -> u8 {
+    if let Some(f) = site.direct() {
+        let code = unsafe { f(site, func as usize, args, nargs, out) };
+        if code == REPLY_OK || code == REPLY_RAISED {
+            return code;
+        }
+        site.clear_direct();
+    }
+    unsafe {
+        dispatch(
+            func,
+            sig,
+            site as *const CallSite as *mut CallSite,
+            args,
+            nargs,
+            out,
+        )
+    }
 }
 
 static CTOR_PROTO: Protocol = Protocol {

@@ -45,7 +45,9 @@ use wren_lift::runtime::object::{
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{self, VM};
 
-use crate::heap::{PREFIX, WrenHeap, is_wren, owns_start, record_address, record_for, wren_lang};
+use crate::heap::{
+    PREFIX, WrenHeap, is_wren, owns_start, record_address, record_at, record_for, wren_lang,
+};
 
 // ---------------------------------------------------------------------------
 // The VM the entries use
@@ -62,12 +64,19 @@ thread_local! {
 /// `vm` must outlive its entry and be used on this thread only; an entry
 /// borrows it mutably for the length of one message.
 pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
-    VM_HERE.with(|cell| cell.replace(vm))
+    let previous = VM_HERE.with(|cell| cell.replace(vm));
+    if !previous.is_null() {
+        record_for(unsafe { (*previous).object_class } as *mut u8).set_entered(ptr::null_mut());
+    }
+    if !vm.is_null() {
+        record_for(unsafe { (*vm).object_class } as *mut u8).set_entered(vm);
+    }
+    previous
 }
 
 /// Restore what [`enter_vm`] replaced.
 pub fn leave_vm(previous: *mut VM) {
-    VM_HERE.with(|cell| cell.set(previous));
+    unsafe { enter_vm(previous) };
 }
 
 /// Run `f` with `vm` entered. Messages the bridge delivers to Wren objects
@@ -127,7 +136,8 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         return Some(WValue::object(p.wrapping_add(PREFIX)));
     }
     if let Some(text) = unsafe { Str::text(v) } {
-        return Some(vm.alloc_string(text.to_owned()));
+        let s = vm.alloc_string(text.to_owned());
+        return Some(made(vm, s));
     }
     if let Some(inner) = proxied(vm, p) {
         return Some(WValue::object(inner.wrapping_add(PREFIX)));
@@ -523,15 +533,14 @@ fn direct_receiver(
     obj: *mut u8,
 ) -> Option<(&'static mut VM, WValue, *mut ObjClass)> {
     let (key, _, class) = site.words();
-    let vm = current_vm();
-    if vm.is_null() || record_address(obj) != key {
+    if record_address(obj) != key {
+        return None;
+    }
+    let vm = unsafe { record_at(key) }.entered_here();
+    if vm.is_null() {
         return None;
     }
     let vm = unsafe { &mut *vm };
-    let mine = record_for(vm.object_class as *mut u8) as *const WrenHeap as usize;
-    if mine != key {
-        return None;
-    }
     let recv = unsafe { receiver(obj) };
     let class = class as *mut ObjClass;
     let fits = recv.as_object() == Some(class as *mut u8) || vm.class_of(recv) == class;
@@ -606,7 +615,16 @@ unsafe extern "C-unwind" fn direct_construct(
         args.as_slice(),
         Some(class),
     );
-    finish(vm, Some(WValue::from_bits(bits)), "", out)
+    let instance = made(vm, WValue::from_bits(bits));
+    finish(vm, Some(instance), "", out)
+}
+
+/// An object made on Wren's behalf. The allocation is a safepoint, as
+/// wren_lift's own are: a cycle that is due runs here, the object pinned,
+/// so a program that makes Wren objects only through the bridge still
+/// collects them.
+pub(crate) fn made(vm: &mut VM, v: WValue) -> WValue {
+    WValue::from_bits(unsafe { wren_lift::codegen::runtime_fns::finish_alloc(vm, v) })
 }
 
 /// Run `found` on `recv` with `args`, whose slot 0 is free for the
@@ -623,12 +641,13 @@ fn run(vm: &mut VM, recv: WValue, found: Found, args: &mut Args, out: *mut Value
         ),
         Method::Constructor(closure) => {
             tick(vm, closure);
-            wren_lift::codegen::runtime_fns::dispatch_method_pub(
+            let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
                 vm,
                 found.method,
                 args.as_slice(),
                 Some(found.class),
-            )
+            );
+            made(vm, WValue::from_bits(bits)).to_bits()
         }
         _ => wren_lift::codegen::runtime_fns::dispatch_method_pub(
             vm,

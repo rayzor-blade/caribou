@@ -10,19 +10,24 @@
 //! protocol's shadow), and three flag bits. Every slot that takes or yields an
 //! address translates.
 //!
-//! wren_lift's cycle is the only reclaimer of wren_lift objects; a core
-//! collection must retain every one of them, and no root of the core's reaches
-//! them. So each record keeps the core starts of its allocations (its pins),
-//! and one core object, the anchor, rooted by a handle, whose trace marks every
-//! pin. A wren_lift cycle marks in a bit of each object's record word; at its
-//! end the objects the core's handles reach are marked too, with everything
-//! reachable from them, since a handle is how another language holds a Wren
-//! object and wren_lift's roots do not include it. Then the marked pins
-//! become the core's per-cycle claims, in address order, the rest are dropped
-//! and forgotten, and a core collection, which the anchor sits out, sweeps: it
-//! clears the claims and returns the lines. `WREN_DESC` has a trace hook and
-//! no drop hook: the core traces wren_lift objects precisely wherever it
-//! reaches them and never runs their drop.
+//! A wren_lift object dies only in a wren_lift cycle; a core collection on
+//! its own must retain every one of them, since wren_lift's roots are not the
+//! core's. So each record keeps the core starts of its allocations (its
+//! pins), and one core object, the anchor, rooted by a handle, whose trace
+//! marks every pin. A cycle is the two collectors in turn. wren_lift marks
+//! from its own roots, in a bit of each object's bridge word; the objects a
+//! core handle reaches are marked too, with everything reachable from them,
+//! since a handle is how an embedder holds a Wren object. The marked pins
+//! become the core's claims: live for the collection that follows, which the
+//! anchor sits out. An unmarked object with a shadow (another language's
+//! stand-in, see the bridge word) is neither claimed nor dropped, nor is
+//! anything it reaches: whether its shadow is alive is the core's to say. The
+//! core's collection marks from its roots, and a live shadow's trace marks the
+//! object it stands for, which the core traces through wren_lift's own
+//! visitor. Between the core's mark and its sweep, the record drops and
+//! forgets the pending objects the mark did not reach. Every other unmarked
+//! object is dead at the end of wren_lift's marking, dropped and forgotten
+//! there. The descriptor has a trace hook and no drop hook.
 //!
 //! The thread a heap is minted on is an ordinary core mutator, in deferred
 //! mode. A collection another mutator starts waits for it to park, which it
@@ -39,13 +44,14 @@ use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use caribou::heap::{self, Handle, ImmixAllocator, TraceFn, Tracer, TypeDesc};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::mem;
 use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_object_trace};
+use wren_lift::runtime::vm::VM;
 
 use crate::import::{self, Imports};
 use crate::publish::Exports;
@@ -58,10 +64,13 @@ pub(crate) const PREFIX: usize = 16;
 const MARKED: usize = 1;
 /// The object owns nothing outside the heap: the sweep skips `object_drop`.
 const PLAIN: usize = 2;
-/// An instance of an installed class holding a handle in its first field.
+/// An instance of an installed class holding another language's object in
+/// its first field, which the trace marks.
 const ADOPTED: usize = 4;
+/// Left to the core's collection to decide, in the cycle that is closing.
+const PENDING: usize = 8;
 /// A shadow is a core object, 16-aligned, so the flags fit under it.
-const FLAGS: usize = MARKED | PLAIN | ADOPTED;
+const FLAGS: usize = MARKED | PLAIN | ADOPTED | PENDING;
 
 /// The bridge word of the core allocation at `start`. A cycle writes its
 /// flags plainly, under the GC lock it holds throughout; a shadow is kept
@@ -96,6 +105,14 @@ pub struct WrenHeap {
     desc: TypeDesc,
     /// Core starts of every allocation wren_lift has not reclaimed.
     pins: Vec<Pin>,
+    /// What the claimed adopted instances hold, for the anchor to mark in
+    /// the collection a cycle ends with: a claimed object is not traced.
+    held: Vec<*const u8>,
+    /// The thread the heap was minted on, which its VM runs on.
+    thread: u64,
+    /// The VM entered on that thread for this heap (`proto::enter_vm`),
+    /// null when none is: what a direct send runs on without a lookup.
+    entered: AtomicPtr<VM>,
     /// Roots the anchor, whose word one points back at this record.
     anchor: Handle,
     /// Bytes handed out since the last cycle, counted as the core counts
@@ -140,6 +157,19 @@ struct Pin {
 }
 
 impl WrenHeap {
+    /// The VM entered for this heap, when the caller is on its thread.
+    #[inline(always)]
+    pub(crate) fn entered_here(&self) -> *mut VM {
+        if self.thread != heap::thread_token() {
+            return ptr::null_mut();
+        }
+        self.entered.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_entered(&self, vm: *mut VM) {
+        self.entered.store(vm, Ordering::Relaxed);
+    }
+
     pub(crate) fn signatures(&self) -> &RefCell<crate::proto::Signatures> {
         &self.signatures
     }
@@ -151,6 +181,13 @@ impl WrenHeap {
     pub(crate) fn exports(&self) -> &RefCell<Exports> {
         &self.exports
     }
+}
+
+/// The record at `address`, which a call site keys a VM by. Records are
+/// never freed, so any key a site ever held still names one.
+#[inline(always)]
+pub(crate) unsafe fn record_at<'a>(address: usize) -> &'a WrenHeap {
+    unsafe { &*(address as *const WrenHeap) }
 }
 
 /// The record of the heap holding the wren_lift object at `obj`.
@@ -175,9 +212,14 @@ pub(crate) fn is_wren(start: *mut u8) -> bool {
 }
 
 /// Mark the object at `obj` as adopted: an instance of an installed class
-/// with a handle in its first field, which the sweep releases.
+/// holding another language's object in its first field.
 pub(crate) fn set_adopted(obj: *mut u8) {
     bridge_atom(obj.wrapping_sub(PREFIX)).fetch_or(ADOPTED, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub(crate) fn is_adopted(obj: *mut u8) -> bool {
+    (unsafe { *bridge_word(obj.wrapping_sub(PREFIX)) }) & ADOPTED != 0
 }
 
 /// The object of language `lang` kept on the object at `obj`, if any.
@@ -188,10 +230,13 @@ pub(crate) fn shadow_of(obj: *mut u8, lang: u32) -> Option<*mut u8> {
 
 /// Keep `shadow` on the object at `obj`: `Ok` when kept, `Err(Some(p))`
 /// when `p` of the same language already is, `Err(None)` when the word
-/// holds another language's. Under the GC lock, apart from any cycle.
+/// holds another language's. From another thread than the VM's, under
+/// the GC lock, apart from any cycle; the VM's own thread runs no cycle
+/// meanwhile.
 pub(crate) fn keep_shadow(obj: *mut u8, shadow: *mut u8) -> Result<(), Option<*mut u8>> {
-    let _gc = heap::gc_guard();
-    let atom = bridge_atom(obj.wrapping_sub(PREFIX));
+    let start = obj.wrapping_sub(PREFIX);
+    let _gc = (unsafe { record_of(start) }.thread != heap::thread_token()).then(heap::gc_guard);
+    let atom = bridge_atom(start);
     let mut w = atom.load(Ordering::Acquire);
     loop {
         let p = (w & !FLAGS) as *mut u8;
@@ -310,27 +355,35 @@ fn desc_ptr(d: *const TypeDesc) -> *mut hl_type {
 }
 
 /// The core's precise trace of a wren_lift object: its children through
-/// wren_lift's own visitor.
+/// wren_lift's own visitor, and what an adopted instance holds.
 unsafe extern "C" fn trace_object(obj: *mut u8, tracer: *mut Tracer<'_>) {
     let rec = unsafe { record_of(obj) };
     if rec.closing.load(Ordering::Relaxed) {
         return;
     }
-    unsafe { wlift_rt_object_trace()(obj.add(PREFIX), mark_child, tracer as *mut c_void) };
+    let object = unsafe { obj.add(PREFIX) };
+    if unsafe { *bridge_word(obj) } & ADOPTED != 0 {
+        unsafe { (*tracer).mark(import::held(object)) };
+    }
+    unsafe { wlift_rt_object_trace()(object, mark_child, tracer as *mut c_void) };
 }
 
 unsafe extern "C" fn mark_child(child: *mut u8, ctx: *mut c_void) {
     unsafe { (*(ctx as *mut Tracer<'_>)).mark(child.wrapping_sub(PREFIX)) };
 }
 
-/// The anchor's trace: every pin of its record, unless `collect_end` has
-/// just claimed them all itself. The anchor's word one is its record.
+/// The anchor's trace: every pin of its record, or, when `collect_end` has
+/// claimed the live ones itself, what the claimed adopted instances hold.
+/// The anchor's word one is its record.
 unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
     let rec = unsafe { &*(*bridge_word(obj) as *const WrenHeap) };
+    let tracer = unsafe { &mut *tracer };
     if rec.claimed {
+        for &held in &rec.held {
+            tracer.mark(held);
+        }
         return;
     }
-    let tracer = unsafe { &mut *tracer };
     for pin in &rec.pins {
         tracer.mark(pin.start as *const u8);
     }
@@ -371,6 +424,9 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
     let rec = Box::into_raw(Box::new(WrenHeap {
         desc: unsafe { ptr::read(&raw const WREN_DESC) },
         pins: Vec::new(),
+        held: Vec::new(),
+        thread: heap::thread_token(),
+        entered: AtomicPtr::new(ptr::null_mut()),
         anchor: Handle::NULL,
         bytes_since_cycle: AtomicUsize::new(0),
         trigger: AtomicUsize::new(gc.trigger_threshold()),
@@ -412,9 +468,6 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     let mut gc = heap::gc_locked_init();
     import::forget_classes(rec);
     for pin in &rec.pins {
-        if unsafe { *bridge_word(pin.start as *mut u8) } & ADOPTED != 0 {
-            import::finalize_dead((pin.start + PREFIX) as *mut u8, &mut gc);
-        }
         gc.forget_allocation(pin.start as *const u8);
     }
     let anchor = gc.handle_get(rec.anchor);
@@ -582,8 +635,7 @@ pub unsafe extern "C" fn collect_begin(_heap: *mut c_void) {
 }
 
 /// Mark every object of `rec` a core handle reaches, and everything
-/// reachable from it, as wren_lift's own marking would have: a handle is
-/// how another language holds a Wren object that crossed out.
+/// reachable from it, as wren_lift's own marking would have.
 fn mark_held(gc: &ImmixAllocator, rec: &WrenHeap) {
     let mut gray: Vec<*mut u8> = Vec::new();
     gc.for_each_handle(|p| {
@@ -594,19 +646,7 @@ fn mark_held(gc: &ImmixAllocator, rec: &WrenHeap) {
             }
         }
     });
-    if gray.is_empty() {
-        return;
-    }
-    let trace = wlift_rt_object_trace();
-    while let Some(obj) = gray.pop() {
-        unsafe {
-            trace(
-                obj,
-                mark_gray,
-                &mut gray as *mut Vec<*mut u8> as *mut c_void,
-            )
-        };
-    }
+    drain(&mut gray, mark_gray);
 }
 
 unsafe extern "C" fn mark_gray(child: *mut u8, ctx: *mut c_void) {
@@ -615,56 +655,120 @@ unsafe extern "C" fn mark_gray(child: *mut u8, ctx: *mut c_void) {
     }
 }
 
+/// Flag every unmarked object with a shadow as pending, and everything
+/// unmarked it reaches: what the core's collection decides.
+fn flag_pending(rec: &WrenHeap) -> bool {
+    let mut gray: Vec<*mut u8> = Vec::new();
+    for pin in &rec.pins {
+        let word = bridge_word(pin.start as *mut u8);
+        let w = unsafe { *word };
+        if w & (MARKED | PENDING) == 0 && w & !FLAGS != 0 {
+            unsafe { *word = w | PENDING };
+            gray.push((pin.start + PREFIX) as *mut u8);
+        }
+    }
+    let any = !gray.is_empty();
+    drain(&mut gray, pend_gray);
+    any
+}
+
+unsafe extern "C" fn pend_gray(child: *mut u8, ctx: *mut c_void) {
+    let word = bridge_word(child.wrapping_sub(PREFIX));
+    let w = unsafe { *word };
+    if w & (MARKED | PENDING) == 0 {
+        unsafe { *word = w | PENDING };
+        unsafe { (*(ctx as *mut Vec<*mut u8>)).push(child) };
+    }
+}
+
+/// Trace from every object on `gray` through wren_lift's visitor, `visit`
+/// pushing what it newly flags.
+fn drain(gray: &mut Vec<*mut u8>, visit: Visit) {
+    let trace = wlift_rt_object_trace();
+    while let Some(obj) = gray.pop() {
+        unsafe { trace(obj, visit, gray as *mut Vec<*mut u8> as *mut c_void) };
+    }
+}
+
 pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let drop_object = wlift_rt_object_drop();
     let mut gc = heap::gc_locked();
-    mark_held(&gc, unsafe { record(heap) });
+    let rec = unsafe { record_mut(heap) };
+    mark_held(&gc, rec);
+    let pending = flag_pending(rec);
     let mut live = 0usize;
-    let mut dead = Vec::new();
-    // Marked pins become the core's claims, in address order; the rest die.
-    unsafe { record_mut(heap) }.pins.retain(|pin| {
-        let start = pin.start;
-        let word = bridge_word(start as *mut u8);
+    let mut freed = 0usize;
+    let mut dead = 0usize;
+    // A dead object: wren_lift drops what it owns unless it is plain, and
+    // its start is forgotten.
+    let mut die = |gc: &mut ImmixAllocator, pin: &Pin, w: usize| {
+        if w & PLAIN == 0 {
+            unsafe { drop_object((pin.start + PREFIX) as *mut u8) };
+        }
+        gc.forget_allocation(pin.start as *const u8);
+        freed += pin.size as usize;
+        dead += 1;
+    };
+    // Marked pins become the core's claims, in address order, and what a
+    // marked adopted instance holds is for the anchor to mark; pending pins
+    // stand for the core to decide; the rest die here.
+    let held = &mut rec.held;
+    rec.pins.retain(|pin| {
+        let word = bridge_word(pin.start as *mut u8);
         let w = unsafe { *word };
         if w & MARKED != 0 {
             unsafe { *word = w & !MARKED };
             live += gc
-                .claim_start(start as *const u8)
+                .claim_start(pin.start as *const u8)
                 .expect("a pin is an allocation start");
-            true
-        } else {
-            dead.push((start, pin.size as usize, w & FLAGS));
-            false
+            if w & ADOPTED != 0 {
+                held.push(unsafe { import::held((pin.start + PREFIX) as *mut u8) });
+            }
+            return true;
         }
+        if w & PENDING != 0 {
+            return true;
+        }
+        die(&mut gc, pin, w);
+        false
     });
-    let mut freed = 0usize;
-    let dead_count = dead.len();
-    for (start, size, flags) in dead {
-        let obj = (start + PREFIX) as *mut u8;
-        if flags & ADOPTED != 0 {
-            import::finalize_dead(obj, &mut gc);
-        }
-        if flags & PLAIN == 0 {
-            unsafe { drop_object(obj) };
-        }
-        gc.forget_allocation(start as *const u8);
-        freed += size;
-    }
-    unsafe { record_mut(heap) }.freed_objects += dead_count;
-    // The core's collection is the sweep: it retains the pins, whose claims
-    // stand, clears them, and returns the forgotten objects' lines. A
-    // collection the core abandoned leaves the claims standing, and a claim
-    // made outside a collection is withdrawn.
+    // The core's collection is the second half of the cycle. It retains
+    // the claims, marks the pending objects it reaches, and between its
+    // mark and its sweep the rest die. A collection the core abandoned
+    // leaves the claims standing, and a claim made outside a collection is
+    // withdrawn.
     let before = heap::collections();
-    unsafe { record_mut(heap) }.claimed = true;
-    gc.collect_garbage();
-    let rec = unsafe { record_mut(heap) };
+    rec.claimed = true;
+    let pins = &mut rec.pins;
+    gc.collect_garbage_then(|gc| {
+        if !pending {
+            return;
+        }
+        pins.retain(|pin| {
+            let word = bridge_word(pin.start as *mut u8);
+            let w = unsafe { *word };
+            if w & PENDING == 0 {
+                return true;
+            }
+            unsafe { *word = w & !PENDING };
+            if gc.is_claimed_start(pin.start as *const u8) {
+                live += pin.size as usize;
+                return true;
+            }
+            die(gc, pin, w);
+            false
+        });
+    });
     rec.claimed = false;
+    rec.held.clear();
     if heap::collections() == before {
         for pin in &rec.pins {
+            let word = bridge_word(pin.start as *mut u8);
+            unsafe { *word &= !PENDING };
             gc.unclaim(pin.start as *const u8);
         }
     }
+    rec.freed_objects += dead;
     rec.trigger.store(gc.trigger_threshold(), Ordering::Relaxed);
     rec.live_bytes = live;
     rec.freed_bytes += freed;
