@@ -36,7 +36,7 @@ into a language that did not make it.
 | `index`, `set_index`, `len`, `iterate` | sequence and map access |
 | `to_string`, `hash`, `equals` | identity and display |
 | `unwrap_native` | the native payload of a plugin object |
-| `type_name` | what the registry publishes the object's class under |
+| `type_name` | what the registry publishes the object's class under, as an interned symbol |
 | `shadow`, `keep_shadow`, `drop_shadow` | the object of another language standing for this one, kept on the object (below); optional |
 | `is_error`, `error_message`, `error_kind`, `error_cause`, `error_trace` | the error protocol |
 

@@ -627,25 +627,27 @@ pub fn language_of(v: Value) -> Option<LangId> {
 }
 
 /// The name `v`'s own language gives its type, when its protocol answers
-/// `type_name`. Nothing is raised: an entry that raises or answers with a
-/// non-string is `None`, and its pending error is dropped.
-pub fn type_name(v: Value) -> Option<String> {
+/// `type_name`, as the interned symbol. Nothing is raised: an entry that
+/// raises is `None`, and its pending error is dropped.
+pub fn type_symbol(v: Value) -> Option<Symbol> {
     let obj = object_of(v)?;
     let outcome = protected(
-        || unsafe { protocol::Send::type_name(obj) },
+        || unsafe { protocol::Send::type_name(obj).map(|s| Value::int(s.0 as i32)) },
         |_| (ErrorKind::Type, String::new()),
     );
     match outcome {
-        Outcome::Ok(name) => {
-            let text = unsafe { crate::error::Str::text(name) }?;
-            Some(text.to_owned())
-        }
+        Outcome::Ok(id) => Some(Symbol(id.as_int()? as u32)),
         Outcome::Raised => {
             drop(take_pending_rooted());
             None
         }
         _ => None,
     }
+}
+
+/// [`type_symbol`] as text.
+pub fn type_name(v: Value) -> Option<String> {
+    type_symbol(v).map(|s| s.name().to_owned())
 }
 
 /// How many arguments `v` takes when it is a function of its language,

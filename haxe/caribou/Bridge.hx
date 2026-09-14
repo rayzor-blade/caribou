@@ -191,9 +191,21 @@ class Bridge {
 						return TPath({pack: f.pack, name: name});
 					}
 				}
-				var parts = module.split("/");
-				parts.pop();
-				return TPath({pack: [namespace].concat(parts), name: name});
+				// A Haxe class, under the spellings the registry resolves a
+				// namespaced name through: the module as given, then under
+				// the namespace. Found by its file, since typing a class
+				// from inside this macro would type it before the classes
+				// it imports exist.
+				var dotted = module.split("/").join(".");
+				for (candidate in [dotted, namespace + "." + dotted]) {
+					var file = candidate.split(".").join("/") + ".hx";
+					var found = try Context.resolvePath(file) catch (e:Dynamic) null;
+					if (found != null) {
+						var parts = candidate.split(".");
+						var last = parts.pop();
+						return TPath({pack: parts, name: last, sub: name == last ? null : name});
+					}
+				}
 			}
 			return macro :Dynamic;
 		}

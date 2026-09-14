@@ -147,25 +147,28 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         let s = vm.alloc_string(text.to_owned());
         return Some(made(vm, s));
     }
-    if let Some(inner) = proxied(vm, p) {
-        return Some(WValue::object(inner.wrapping_add(PREFIX)));
-    }
-    crate::import::proxy(vm, v)
-}
-
-/// The object of `vm`'s heap that the foreign object `p` stands for, when
-/// `p` answers `unwrap_native` with one: the convention a proxy follows.
-fn proxied(vm: &VM, p: *mut u8) -> Option<*mut u8> {
-    let inner = match unsafe { Send::unwrap_native(p) } {
+    // What the object stands for, when it stands for one: the object of
+    // this VM a ref holds, or the native a wrapper holds, which the
+    // instance already made for it is found by. Only a native seen for
+    // the first time costs the heap lookup that tells the two apart.
+    let native = match unsafe { Send::unwrap_native(p) } {
         Ok(inner) => inner as *mut u8,
         Err(Fault::Raised) => {
             bridge::take_pending();
-            return None;
+            ptr::null_mut()
         }
-        Err(_) => return None,
+        Err(_) => ptr::null_mut(),
     };
-    let rec = record_for(vm.object_class as *mut u8);
-    owns_start(rec, inner as usize).then_some(inner)
+    if !native.is_null() {
+        if let Some(instance) = crate::import::stand_in_for(vm, native) {
+            return Some(instance);
+        }
+        let rec = record_for(vm.object_class as *mut u8);
+        if owns_start(rec, native as usize) {
+            return Some(WValue::object(native.wrapping_add(PREFIX)));
+        }
+    }
+    crate::import::proxy(vm, v)
 }
 
 /// [`from_wren`], for a host handing a Wren value to the bridge.
@@ -1224,7 +1227,7 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
 
 /// The name the receiver's class was published under (`hud.Hud`), else
 /// its bare name.
-unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
+unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
     let (vm, _) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
@@ -1235,9 +1238,8 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
         .exports()
         .borrow()
         .type_name(class)
-        .map(str::to_owned);
-    let name = exported.unwrap_or_else(|| vm.class_name_of(recv));
-    unsafe { *out = Str::value(Str::new(&name)) };
+        .map(caribou::symbol::intern);
+    unsafe { *out = exported.unwrap_or_else(|| caribou::symbol::intern(&vm.class_name_of(recv))) };
     REPLY_OK
 }
 

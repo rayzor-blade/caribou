@@ -138,6 +138,8 @@ pub struct WrenHeap {
     allocated_bytes: usize,
     freed_bytes: usize,
     freed_objects: usize,
+    /// How many cycles this record has run.
+    cycles: usize,
     /// The other languages' classes installed in this heap's VM, and the
     /// handles its instances of them hold.
     imports: RefCell<Imports>,
@@ -176,6 +178,11 @@ impl WrenHeap {
 
     pub(crate) fn imports(&self) -> &RefCell<Imports> {
         &self.imports
+    }
+
+    /// Cycles run and objects they freed, for a report.
+    pub(crate) fn cycle_counts(&self) -> (usize, usize) {
+        (self.cycles, self.freed_objects)
     }
 
     pub(crate) fn exports(&self) -> &RefCell<Exports> {
@@ -444,6 +451,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         allocated_bytes: 0,
         freed_bytes: 0,
         freed_objects: 0,
+        cycles: 0,
         imports: RefCell::new(Imports::default()),
         signatures: RefCell::new(crate::proto::Signatures::default()),
         exports: RefCell::new(Exports::default()),
@@ -788,6 +796,7 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
         }
     }
     rec.freed_objects += dead;
+    rec.cycles += 1;
     rec.trigger.store(gc.trigger_threshold(), Ordering::Relaxed);
     rec.live_bytes = live;
     rec.freed_bytes += freed;

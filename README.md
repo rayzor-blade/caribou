@@ -108,7 +108,9 @@ target/debug/caribou-wren --mode tiered script.wren
 bridge in each direction beside the same call inside each language, per
 operation. `--bench swarm` runs a game frame three ways, engine and
 gameplay in Haxe, in Wren, and split between them, and reports the
-frame time of each.
+frame time of each. `--bench transfer` times an object, a string or a
+sequence crossing, with the bytes each crossing leaves behind and the
+collections the runs took.
 
 WrenLift's LLVM top tier is off by default, as it is in WrenLift, so a
 Wren body runs on its Cranelift baseline. `--features llvm` on

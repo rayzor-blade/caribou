@@ -453,13 +453,18 @@ unsafe fn ref_field(face: *mut vdynamic) -> *mut *mut c_void {
     unsafe { (face as *mut u8).add(offset) as *mut *mut c_void }
 }
 
-/// Whether `t` is `caribou.Ref` or extends it.
+/// Whether `t` is `caribou.Ref` or extends it. Names are compared in
+/// place: this runs on every object crossing.
 unsafe fn is_face_type(mut t: *const hl_type) -> bool {
-    while let Some(name) = unsafe { proto::obj_name(t) } {
-        if name == REF_CLASS {
+    while !t.is_null() && matches!(unsafe { (*t).kind }, hl::HOBJ | hl::HSTRUCT) {
+        if unsafe { proto::obj_name_is(t, REF_CLASS) } {
             return true;
         }
-        t = unsafe { (*(*t).detail.obj).super_ };
+        let obj = unsafe { (*t).detail.obj };
+        if obj.is_null() {
+            return false;
+        }
+        t = unsafe { (*obj).super_ };
     }
     false
 }

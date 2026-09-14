@@ -94,6 +94,12 @@ fn method_names(vm: &VM) -> HashMap<u32, String> {
     names
 }
 
+/// How many cycles the VM's heap has run, and how many objects they
+/// freed.
+pub fn cycles(vm: &VM) -> (usize, usize) {
+    record_for(vm.object_class as *mut u8).cycle_counts()
+}
+
 /// The host methods the program has called on the classes installed in
 /// this VM, as sites. Nothing crosses boxed here: a Wren value is a
 /// bridge value already.

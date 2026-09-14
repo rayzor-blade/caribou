@@ -427,8 +427,14 @@ unsafe extern "C-unwind" fn error_trace(obj: *mut u8, out: *mut Value) -> u8 {
     code(unsafe { Send::error_trace(inner(obj)) }, out)
 }
 
-unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
-    code(unsafe { Send::type_name(inner(obj)) }, out)
+unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
+    match unsafe { Send::type_name(inner(obj)) } {
+        Ok(sym) => {
+            unsafe { *out = sym };
+            REPLY_OK
+        }
+        Err(fault) => code_of(fault),
+    }
 }
 
 // A shadow is the object's, so a ref forwards it: whoever stands for the

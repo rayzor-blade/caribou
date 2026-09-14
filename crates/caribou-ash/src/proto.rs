@@ -395,7 +395,37 @@ pub(crate) unsafe fn obj_name(t: *const hl_type) -> Option<String> {
 }
 
 unsafe fn is_string(d: *mut vdynamic) -> bool {
-    unsafe { obj_name((*d).t) }.as_deref() == Some("String")
+    let t = unsafe { (*d).t };
+    let known = STRING_TYPE.load(Ordering::Acquire);
+    if !known.is_null() {
+        return std::ptr::eq(t, known);
+    }
+    unsafe { obj_name_is(t, "String") }
+}
+
+/// Whether the object type `t` is named `name`, read without a copy.
+pub(crate) unsafe fn obj_name_is(t: *const hl_type, name: &str) -> bool {
+    let Some(t) = (unsafe { t.as_ref() }) else {
+        return false;
+    };
+    if !matches!(t.kind, hl::HOBJ | hl::HSTRUCT) {
+        return false;
+    }
+    let obj = unsafe { t.detail.obj };
+    if obj.is_null() {
+        return false;
+    }
+    let mut p = unsafe { (*obj).name };
+    if p.is_null() {
+        return false;
+    }
+    for unit in name.encode_utf16() {
+        if unsafe { *p } != unit {
+            return false;
+        }
+        p = unsafe { p.add(1) };
+    }
+    (unsafe { *p }) == 0
 }
 
 /// The text of a `String` object.
@@ -1157,10 +1187,10 @@ unsafe extern "C-unwind" fn class_invoke(
     unsafe { on_class_instance(obj, |w| invoke(w, name, args, n, out)) }
 }
 
-unsafe extern "C-unwind" fn class_type_name(obj: *mut u8, out: *mut Value) -> u8 {
+unsafe extern "C-unwind" fn class_type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
     let t = unsafe { (*(obj as *const HaxeClass)).t };
     let name = unsafe { obj_name(t) }.unwrap_or_default();
-    unsafe { *out = Str::value(Str::new(&name)) };
+    unsafe { *out = caribou::symbol::intern(&name) };
     REPLY_OK
 }
 
@@ -1696,13 +1726,21 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
     REPLY_OK
 }
 
-/// The class name of an object or struct: what the registry publishes it
-/// under.
-unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
+/// The class name of an object or struct, interned: what the registry
+/// publishes it under. Kept per type, since every object crossing asks.
+unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
+    static NAMES: RwLock<Vec<(usize, Symbol)>> = RwLock::new(Vec::new());
     let d = unsafe { inner(obj) };
-    match unsafe { obj_name((*d).t) } {
+    let t = unsafe { (*d).t } as usize;
+    if let Some(&(_, sym)) = NAMES.read().unwrap().iter().find(|(key, _)| *key == t) {
+        unsafe { *out = sym };
+        return REPLY_OK;
+    }
+    match unsafe { obj_name(t as *const hl_type) } {
         Some(name) => {
-            unsafe { *out = Str::value(Str::new(&name)) };
+            let sym = caribou::symbol::intern(&name);
+            NAMES.write().unwrap().push((t, sym));
+            unsafe { *out = sym };
             REPLY_OK
         }
         None => REPLY_UNSUPPORTED,

@@ -144,8 +144,9 @@ struct ClassBinding {
 #[derive(Default)]
 pub(crate) struct Imports {
     classes: AddressMap<Rc<ClassBinding>>,
-    /// `(lang, type name)` to the class that stands for it.
-    by_type: HashMap<(LangId, String), *mut ObjClass>,
+    /// `(lang, type name)` to the class that stands for it, the name as
+    /// the symbol the protocol answers.
+    by_type: HashMap<(LangId, Symbol), *mut ObjClass>,
     /// The instance standing for each foreign object, by the object:
     /// the same object crossing twice is the same instance. An entry is
     /// removed when its instance dies, so presence means alive.
@@ -173,7 +174,7 @@ impl Imports {
         self.by_type
             .iter()
             .find(|(_, c)| **c == class)
-            .map(|((_, type_name), _)| type_name.clone())
+            .map(|((_, type_name), _)| type_name.name().to_owned())
     }
 }
 
@@ -193,6 +194,19 @@ fn stand_in_key(obj: *mut u8) -> usize {
         Ok(native) if !native.is_null() => native as usize,
         _ => obj as usize,
     }
+}
+
+/// The instance already standing for the native object `native` in
+/// `vm`, when there is one.
+pub(crate) fn stand_in_for(vm: &VM, native: *mut u8) -> Option<WValue> {
+    let rec = record_for(vm.object_class as *mut u8);
+    let instance = rec
+        .imports()
+        .borrow()
+        .stand_ins
+        .get(&(native as usize))
+        .copied()?;
+    Some(WValue::object(instance as *mut u8))
 }
 
 /// The adopted instance at `instance` is dying: its object may have a
@@ -328,7 +342,7 @@ pub fn install(vm: &mut VM, lang: LangId, module: &str) -> Result<String, Import
         imports.classes.insert(ptr as usize, Rc::new(binding));
         imports
             .by_type
-            .insert((iface.lang, class.type_name.clone()), ptr);
+            .insert((iface.lang, symbol::intern(&class.type_name)), ptr);
     }
     Ok(name)
 }
@@ -702,15 +716,15 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let class = if bridge::arity(v).is_some() {
         function_class(vm).ok()
     } else {
-        let published = bridge::type_name(v).and_then(|type_name| {
+        let published = bridge::type_symbol(v).and_then(|type_name| {
             let known = rec
                 .imports()
                 .borrow()
                 .by_type
-                .get(&(lang, type_name.clone()))
+                .get(&(lang, type_name))
                 .copied();
             known.or_else(|| {
-                let (iface, _) = registry::class_for_type(lang, &type_name)?;
+                let (iface, _) = registry::class_for_type(lang, type_name.name())?;
                 install(vm, lang, &iface.module).ok()?;
                 rec.imports()
                     .borrow()

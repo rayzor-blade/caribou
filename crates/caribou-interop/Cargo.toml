@@ -33,3 +33,7 @@ harness = false
 [[bench]]
 name = "swarm"
 harness = false
+
+[[bench]]
+name = "transfer"
+harness = false

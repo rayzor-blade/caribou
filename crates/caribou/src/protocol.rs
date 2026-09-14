@@ -109,9 +109,10 @@ pub struct Protocol {
     pub error_kind: Option<unsafe extern "C-unwind" fn(obj: *mut u8) -> ErrorKind>,
     pub error_cause: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
     pub error_trace: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
-    /// The object's type in its own language's terms, as a core `Str`:
-    /// what the registry's `ClassIface::type_name` holds for its class.
-    pub type_name: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
+    /// The object's type in its own language's terms, as an interned
+    /// symbol: what the registry's `ClassIface::type_name` holds for its
+    /// class. A symbol, so a cache keyed by it costs no string.
+    pub type_name: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Symbol) -> u8>,
     /// The object of language `lang` standing for this one, which this
     /// object's language keeps on it so the same object crossing twice is
     /// the same object on the other side; `Missing` when none is kept.
@@ -539,12 +540,12 @@ impl Send {
         reply(unsafe { f(obj, &mut out) }, out)
     }
 
-    pub unsafe fn type_name(obj: *mut u8) -> Reply {
+    pub unsafe fn type_name(obj: *mut u8) -> Result<Symbol, Fault> {
         let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.type_name) else {
             return Err(Fault::Unsupported);
         };
-        let mut out = Value::null();
-        reply(unsafe { f(obj, &mut out) }, out)
+        let mut out = Symbol::EMPTY;
+        reply(unsafe { f(obj, &mut out) }, Value::null()).map(|_| out)
     }
 
     pub unsafe fn shadow(obj: *mut u8, lang: LangId) -> Result<*mut u8, Fault> {
