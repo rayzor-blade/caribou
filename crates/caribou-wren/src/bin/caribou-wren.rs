@@ -131,10 +131,17 @@ fn run() -> Result<(), String> {
     vm.krio_fiber_active = true;
     let module_name = file.strip_suffix(".wren").unwrap_or(file);
     // The VM the bridge's Wren entries run on, for the life of the run.
-    let previous = unsafe { caribou_wren::enter_vm(&mut vm) };
-    // On failure wlift exits from here, VM and all.
-    let result = vm.interpret(module_name, &source);
-    unsafe { caribou_wren::leave_vm(previous) };
+    // Only on the core's heap: entering keeps the VM on its heap record,
+    // which wren_lift's own heap has none of.
+    let result = if args.install {
+        let previous = unsafe { caribou_wren::enter_vm(&mut vm) };
+        // On failure wlift exits from here, VM and all.
+        let result = vm.interpret(module_name, &source);
+        unsafe { caribou_wren::leave_vm(previous) };
+        result
+    } else {
+        vm.interpret(module_name, &source)
+    };
     match result {
         InterpretResult::Success => {}
         InterpretResult::CompileError => process::exit(65),
