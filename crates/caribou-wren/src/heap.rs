@@ -722,7 +722,11 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let mut dead = 0usize;
     // A dead object: wren_lift drops what it owns unless it is plain, and
     // its start is forgotten.
+    let imports = &rec.imports;
     let mut die = |gc: &mut ImmixAllocator, pin: &Pin, w: usize| {
+        if w & ADOPTED != 0 {
+            import::forget_stand_in(imports, (pin.start + PREFIX) as *mut u8);
+        }
         if w & PLAIN == 0 {
             unsafe { drop_object((pin.start + PREFIX) as *mut u8) };
         }

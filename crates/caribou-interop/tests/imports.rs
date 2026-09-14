@@ -44,7 +44,8 @@ System.print(Player.spawnAt(1, 1) is ByLanguage)
 /// A Haxe throw inside a bound method is a fiber abort with its message;
 /// so is an argument Haxe cannot take. Objects come back as the installed
 /// class, strings as strings, and a Wren subclass constructs through the
-/// Haxe constructor.
+/// Haxe constructor. A Haxe object that comes back is the instance that
+/// stood for it before, subclass included.
 const ERRORS_AND_SHAPES: &str = r#"
 import "game:Player" for Player
 var p = Player.new("bob")
@@ -63,6 +64,14 @@ class Hero is Player {
 var h = Hero.new("kay")
 System.print(h.name + " " + h.title)
 System.print(h.hit(100))
+var q = Player.apply(Fn.new {|v| v }, p)
+System.print("%(q is Player) %(q == p) %(q.name)")
+var inner = null
+Player.apply(Fn.new {|v| inner = v }, h)
+System.print("%(inner == h) %(inner is Hero)")
+for (i in 0...200) Player.spawnAt(i, i)
+System.gc()
+System.print(Player.apply(Fn.new {|v| v }, p) == p)
 "#;
 
 fn fixture() -> PathBuf {
@@ -114,7 +123,10 @@ fn drive(mode: ExecutionMode) {
 
     let (result, output, errors) = run(mode, "errors", ERRORS_AND_SHAPES);
     assert_eq!(result, InterpretResult::Success, "{errors:?}");
-    assert_eq!(output, "kaboom\ntrue\nspawned\nkay sir\ntrue\n");
+    assert_eq!(
+        output,
+        "kaboom\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n"
+    );
 
     // A module no namespace holds is an import error naming it.
     let (result, _, errors) = run(mode, "missing", "import \"game:Nope\" for Nope\n");

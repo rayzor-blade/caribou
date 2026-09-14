@@ -85,9 +85,9 @@ class Hero is Player {
 - A static field is a static getter and setter of its name:
   `Player.spawned` and `Player.spawned = 0` read and write the field where
   Haxe keeps it, on the class object.
-- A Haxe object is an instance of the imported class. Two crossings of one
-  Haxe object are two Wren instances today; identity is not kept in this
-  direction yet.
+- A Haxe object is an instance of the imported class, and the same
+  instance each time it crosses while Wren holds it, so Wren `==` works
+  on it; an instance going back to Haxe is the object it stands for.
 
 ## Haxe using Wren
 

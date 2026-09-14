@@ -108,13 +108,17 @@ pub fn current_vm() -> *mut VM {
 // ---------------------------------------------------------------------------
 
 /// A wren_lift value as a core value: a string as a fresh core `Str`, which
-/// the caller roots before allocating again; any other object by its core
-/// address; every other value bit for bit (the layouts agree on null, the
-/// booleans, numbers and the object tag).
+/// the caller roots before allocating again; an instance of a class
+/// installed for another language's as the object it stands for; any
+/// other object by its core address; every other value bit for bit (the
+/// layouts agree on null, the booleans, numbers and the object tag).
 pub fn from_wren(v: WValue) -> Value {
     match v.as_object() {
         Some(_) if v.is_string_object() => Str::value(Str::new(as_string(v))),
-        Some(p) => Value::object(p.wrapping_sub(PREFIX) as *const c_void),
+        Some(p) => match crate::import::foreign_of(v) {
+            Some(obj) => obj,
+            None => Value::object(p.wrapping_sub(PREFIX) as *const c_void),
+        },
         None => Value::from_bits(v.to_bits()),
     }
 }

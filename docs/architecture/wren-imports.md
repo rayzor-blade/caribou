@@ -70,5 +70,13 @@ field. The field holds, as a number, the address of the object it stands
 for: the `HaxeRef` the bridge wraps a Haxe object in. The instance is
 marked adopted in its bridge word, and the heap's trace marks what an
 adopted instance holds, so that object lives for as long as the Wren
-instance does. No identity cache is kept in this direction: two instances
-made for one Haxe object are distinct Wren objects.
+instance does.
+
+The instance is the object's stand-in, and there is one per object: the
+VM's imports keep a map from the object to its instance, keyed by the
+native object behind the ref (a Haxe object wrapped twice is one key),
+and a crossing finds the instance there before making one. The map does
+not root the instance; the cycle removes the entry when the instance
+dies, so an entry means a live instance. Going the other way, an
+instance leaving Wren, as an argument or a result, is the object it
+stands for (`from_wren`).

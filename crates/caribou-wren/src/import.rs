@@ -28,6 +28,7 @@
 //! `VMConfig` callback carries no VM handle the adapter could use to
 //! install a module.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
@@ -39,7 +40,7 @@ use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::hash::AddressMap;
 use caribou::heap::{self, Handle};
-use caribou::protocol::{CallSite, Callable};
+use caribou::protocol::{CallSite, Callable, Send};
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
 use caribou::symbol::{self, Symbol};
 use caribou::world::language_name;
@@ -121,6 +122,10 @@ pub(crate) struct Imports {
     classes: AddressMap<Rc<ClassBinding>>,
     /// `(lang, type name)` to the class that stands for it.
     by_type: HashMap<(LangId, String), *mut ObjClass>,
+    /// The instance standing for each foreign object, by the object:
+    /// the same object crossing twice is the same instance. An entry is
+    /// removed when its instance dies, so presence means alive.
+    stand_ins: AddressMap<*mut ObjInstance>,
 
     /// The class a foreign function is an instance of, once installed.
     function: Option<*mut ObjClass>,
@@ -143,6 +148,31 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
     let mut imports = rec.imports().borrow_mut();
     imports.classes.clear();
     imports.by_type.clear();
+    imports.stand_ins.clear();
+}
+
+/// The object an instance stands for is known by, for the stand-ins:
+/// the native object behind a wrapper, so a Haxe object wrapped twice is
+/// one key; the object itself when it has no native.
+fn stand_in_key(obj: *mut u8) -> usize {
+    match unsafe { Send::unwrap_native(obj) } {
+        Ok(native) if !native.is_null() => native as usize,
+        _ => obj as usize,
+    }
+}
+
+/// The adopted instance at `instance` is dying: its object may have a
+/// new stand-in.
+pub(crate) fn forget_stand_in(imports: &RefCell<Imports>, instance: *mut u8) {
+    let obj = unsafe { held(instance) };
+    if obj.is_null() {
+        return;
+    }
+    let key = stand_in_key(obj as *mut u8);
+    let mut imports = imports.borrow_mut();
+    if imports.stand_ins.get(&key).copied() == Some(instance as *mut ObjInstance) {
+        imports.stand_ins.remove(&key);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -447,11 +477,17 @@ pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
     v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize as *const u8
 }
 
-/// Hold `obj` from `instance`'s field, and mark the instance adopted: the
-/// heap's trace marks what an adopted instance holds.
-fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
+/// Hold `obj` from `instance`'s field, mark the instance adopted, so the
+/// heap's trace marks what it holds, and make it the object's stand-in
+/// in `vm`.
+fn adopt(vm: &VM, instance: *mut ObjInstance, obj: *mut u8) {
     unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64)) };
     crate::heap::set_adopted(instance as *mut u8);
+    let rec = record_for(vm.object_class as *mut u8);
+    rec.imports()
+        .borrow_mut()
+        .stand_ins
+        .insert(stand_in_key(obj), instance);
 }
 
 /// The object an instance of an installed class stands for, as the bridge
@@ -544,6 +580,11 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     }
     let lang = bridge::language_of(v)?;
     let rec = record_for(vm.object_class as *mut u8);
+    // The instance already standing for the object, when it has one.
+    let key = stand_in_key(obj);
+    if let Some(&instance) = rec.imports().borrow().stand_ins.get(&key) {
+        return Some(WValue::object(instance as *mut u8));
+    }
     // `v` is unrooted on the caller's frame, and installing and allocating
     // the instance both allocate.
     let root = heap::handle_new(obj);
@@ -570,7 +611,8 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     };
     let instance = class.map(|class| {
         let instance = vm.alloc_instance(class);
-        adopt(instance.as_object().unwrap() as *mut ObjInstance, obj);
+        let ptr = instance.as_object().unwrap() as *mut ObjInstance;
+        adopt(vm, ptr, obj);
         crate::proto::made(vm, instance)
     });
     heap::handle_release(root);
@@ -742,7 +784,7 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                     bridge::describe(made)
                 ));
             };
-            adopt(ptr, haxe as *mut u8);
+            adopt(vm, ptr, haxe as *mut u8);
             return Ok(instance);
         }
         Kind::Static => {
