@@ -726,6 +726,7 @@ unsafe fn direct_call(
 }
 
 /// `direct_call` with the signature's kinds already read.
+#[inline]
 unsafe fn call_by_kinds(
     func: *const c_void,
     sig: &Kinds,

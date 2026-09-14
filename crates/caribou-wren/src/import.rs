@@ -598,10 +598,11 @@ fn host_entry(vm: &mut VM, context: usize, args: &[WValue]) -> WValue {
     }
 }
 
-/// A call with scalars alone, through the direct send its site holds. A
-/// scalar has the bridge value's layout, so the arguments cross where
-/// they lie and nothing is rooted. `None` leaves the call to `run`: a
-/// site with no direct send yet, or an argument that has to cross.
+/// A call with scalars alone, through the direct send its site holds,
+/// and a field read or write of a scalar. A scalar has the bridge
+/// value's layout, so the arguments cross where they lie and nothing is
+/// rooted. `None` leaves the call to `run`: a site with no direct send
+/// yet, or an argument that has to cross.
 fn direct(vm: &mut VM, target: &Target, args: &[WValue]) -> Option<Result<WValue, String>> {
     let n = args.len() - 1;
     if n > WIDEST || !args[1..].iter().all(|a| a.as_object().is_none()) {
@@ -622,6 +623,14 @@ fn direct(vm: &mut VM, target: &Target, args: &[WValue]) -> Option<Result<WValue
             }
             let with_this = unsafe { with_this[..=n].assume_init_ref() };
             bridge::call_direct_at(target.callable, &target.site, with_this, wren, &target.name)?
+        }
+        Kind::Getter(name) => {
+            let this = foreign_of(args[0])?;
+            bridge::get_at(this, name, &target.site, wren)
+        }
+        Kind::Setter(name) if n == 1 => {
+            let this = foreign_of(args[0])?;
+            bridge::set_at(this, name, &target.site, scalars[0], wren).map(|()| scalars[0])
         }
         _ => return None,
     };
