@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":5,"timestamp":1789399411,"nonce":"WWqDOiLCoGMRQiyMyWbZqmtFkUI=","added":["perf","area:bridge"],"removed":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1789399433,"nonce":"4h/ZUJ2iS/5kbgCSloLhIJlFR/o=","message":"Bench and the three fixes landed as de96a8a. Same object Haxe→Wren 171 → 63 ns; fresh object 463 → 225 and 257 → 227; returned object 261 → 232 and 454 → 250.","files":null}]}
