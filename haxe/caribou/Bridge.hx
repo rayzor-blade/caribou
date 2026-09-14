@@ -178,6 +178,15 @@ class Bridge {
 		if (Reflect.hasField(ty, "Array")) {
 			return macro :Array<Dynamic>;
 		}
+		if (Reflect.hasField(ty, "Function")) {
+			// A function of a shape is a typed function value: Haxe calls it
+			// as its own, and the bridge makes it one that takes the call
+			// without boxing.
+			var f = Reflect.field(ty, "Function");
+			var params:Array<Dynamic> = Reflect.field(f, "params");
+			var args = [for (p in params) haxeType(p, pack, classes)];
+			return TFunction(args, haxeType(Reflect.field(f, "ret"), pack, classes));
+		}
 		return macro :Dynamic;
 	}
 
@@ -261,11 +270,14 @@ class Bridge {
 			var arity = m.params.length;
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
-			// A number or a bool comes back from the native in a register;
-			// anything else as a boxed dynamic the wrapper casts.
-			var nativeRet = switch (haxe.macro.ComplexTypeTools.toString(ret)) {
-				case "Float", "Bool": ret;
-				default: macro :Dynamic;
+			// A number, a bool or a function comes back from the native in a
+			// register; anything else as a boxed dynamic the wrapper casts.
+			var nativeRet = switch (ret) {
+				case TFunction(_, _): ret;
+				default: switch (haxe.macro.ComplexTypeTools.toString(ret)) {
+					case "Float", "Bool": ret;
+					default: macro :Dynamic;
+				}
 			}
 			// The native's Haxe name: distinct per kind, name and arity.
 			var nativeName = "__" + m.kind + "_" + m.name + arity;

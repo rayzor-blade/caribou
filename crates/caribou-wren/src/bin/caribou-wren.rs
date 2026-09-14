@@ -131,7 +131,7 @@ fn run() -> Result<(), String> {
     let previous = unsafe { caribou_wren::enter_vm(&mut vm) };
     // On failure wlift exits from here, VM and all.
     let result = vm.interpret(module_name, &source);
-    caribou_wren::leave_vm(previous);
+    unsafe { caribou_wren::leave_vm(previous) };
     match result {
         InterpretResult::Success => {}
         InterpretResult::CompileError => process::exit(65),

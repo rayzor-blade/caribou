@@ -104,7 +104,7 @@ class Bench {
 	}
 
 	public static function wrenClosure(n:Int):Float {
-		var f:Dynamic = Tally.adder();
+		var f = Tally.adder();
 		var s = 0.0;
 		for (i in 0...n)
 			s = f(s);

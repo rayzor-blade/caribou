@@ -744,13 +744,12 @@ fn invoke_named<'f>(
             caller,
         );
     };
-    let segment = unsafe { lang_of(target) };
     if let Some(site) = site
         && let Some(reply) = direct(site, target as usize, args)
     {
         return match reply {
             Ok(v) => Ok(v),
-            Err(()) => settle(Outcome::Raised, segment, frame(), caller),
+            Err(()) => settle(Outcome::Raised, unsafe { lang_of(target) }, frame(), caller),
         };
     }
     let outcome = protected(
@@ -760,7 +759,7 @@ fn invoke_named<'f>(
         },
         |fault| member_fault(fault, obj, name, "invoke"),
     );
-    settle_lazy(outcome, segment, frame, caller)
+    settle_lazy(outcome, unsafe { lang_of(target) }, frame, caller)
 }
 
 /// `settle` with the frame's name asked for only on the error path.
@@ -822,13 +821,17 @@ fn get_at_opt(
             caller,
         );
     };
-    let segment = unsafe { lang_of(target) };
     if let Some(site) = site
         && let Some(reply) = direct(site, target as usize, &[])
     {
         return match reply {
             Ok(v) => Ok(v),
-            Err(()) => settle(Outcome::Raised, segment, name.name(), caller),
+            Err(()) => settle(
+                Outcome::Raised,
+                unsafe { lang_of(target) },
+                name.name(),
+                caller,
+            ),
         };
     }
     let outcome = protected(
@@ -838,7 +841,7 @@ fn get_at_opt(
         },
         |fault| member_fault(fault, obj, name, "read"),
     );
-    settle_lazy(outcome, segment, || name.name(), caller)
+    settle_lazy(outcome, unsafe { lang_of(target) }, || name.name(), caller)
 }
 
 /// Write the member `name` of `obj`.
@@ -876,15 +879,21 @@ fn set_at_opt(
         )
         .map(|_| ());
     };
-    let segment = unsafe { lang_of(target) };
     if let Some(site) = site
         && let Some(reply) = direct(site, target as usize, &[value])
     {
         return match reply {
             Ok(_) => Ok(()),
-            Err(()) => settle(Outcome::Raised, segment, name.name(), caller).map(|_| ()),
+            Err(()) => settle(
+                Outcome::Raised,
+                unsafe { lang_of(target) },
+                name.name(),
+                caller,
+            )
+            .map(|_| ()),
         };
     }
+    let segment = unsafe { lang_of(target) };
     let outcome = protected(
         || {
             match site {

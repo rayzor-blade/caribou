@@ -332,6 +332,9 @@ thread_local! {
             cur: Cell::new(0),
             limit: Cell::new(0),
             block: Cell::new(usize::MAX),
+            hooked_cur: Cell::new(0),
+            hooked_limit: Cell::new(0),
+            hooked_block: Cell::new(usize::MAX),
             objects: Cell::new(std::ptr::null()),
             heap_base: Cell::new(0),
             blocks: Cell::new(std::ptr::null()),
@@ -351,6 +354,11 @@ struct Tlab {
     /// Heap offset of the block this thread is bumping through, so a refill
     /// can hand the previous one back to the sweep.
     block: Cell<usize>,
+    /// The same for objects with a drop hook: a region of their own, so the
+    /// sweep's drop pass walks only the blocks that hold them.
+    hooked_cur: Cell<usize>,
+    hooked_limit: Cell<usize>,
+    hooked_block: Cell<usize>,
     /// Stable side table, shared atomically with the stopped-world marker.
     /// A bump publishes its boundary before returning the new allocation.
     objects: Cell<*const std::sync::atomic::AtomicU8>,
@@ -1108,25 +1116,25 @@ fn gc_alloc_kind(size: usize, kind: u8, has_drop: bool) -> Option<NonNull<u8>> {
             if !t.registered.get() {
                 return Step::Unregistered;
             }
-            let cur = t.cur.get();
+            let (cur_cell, limit) = if has_drop {
+                (&t.hooked_cur, t.hooked_limit.get())
+            } else {
+                (&t.cur, t.limit.get())
+            };
+            let cur = cur_cell.get();
             if cur != 0 {
                 let mut p = cur;
                 if (p & (LINE_SIZE - 1)) + aligned > LINE_SIZE {
                     p = (p + LINE_SIZE - 1) & !(LINE_SIZE - 1);
                 }
                 let np = p + aligned;
-                if np <= t.limit.get() {
+                if np <= limit {
                     let offset = p - t.heap_base.get();
                     unsafe {
                         (*t.objects.get().add(offset / ALLOC_QUANTUM))
                             .store((aligned / ALLOC_QUANTUM) as u8 | kind, Ordering::Relaxed);
-                        if has_drop {
-                            (*t.blocks.get().add(offset / BLOCK_SIZE))
-                                .has_drop
-                                .store(true, Ordering::Relaxed);
-                        }
                     }
-                    t.cur.set(np);
+                    cur_cell.set(np);
                     return Step::Bumped(p);
                 }
             }
@@ -1136,7 +1144,7 @@ fn gc_alloc_kind(size: usize, kind: u8, has_drop: bool) -> Option<NonNull<u8>> {
             // Pre-zeroed at refill.
             Step::Bumped(p) => return Some(unsafe { NonNull::new_unchecked(p as *mut u8) }),
             Step::Refill => {
-                let p = tlab_refill_then_alloc(aligned)?;
+                let p = tlab_refill_then_alloc(aligned, has_drop)?;
                 if kind != 0 {
                     let mut gc = gc_locked_init();
                     let offset = p.as_ptr() as usize - gc.heap.memory.as_ptr() as usize;
@@ -1159,30 +1167,57 @@ fn gc_alloc_kind(size: usize, kind: u8, has_drop: bool) -> Option<NonNull<u8>> {
 /// Install `block` as this thread's bump region, releasing the previous one.
 /// The set of in-use regions lives on the heap because `sweep` consults it
 /// under the same lock; only the cursor is thread-local.
-fn adopt_tlab_region(gc: &mut ImmixAllocator, block: usize, cur: usize, limit: usize) {
-    gc.heap.tlab_blocks.insert(thread_self_fast(), block);
+fn adopt_tlab_region(
+    gc: &mut ImmixAllocator,
+    hooked: bool,
+    block: usize,
+    cur: usize,
+    limit: usize,
+) {
+    gc.heap
+        .tlab_blocks
+        .insert((thread_self_fast(), hooked), block);
+    if hooked {
+        gc.blocks[block / BLOCK_SIZE]
+            .has_drop
+            .store(true, Ordering::Relaxed);
+    }
     TLAB.with(|t| {
         t.objects.set(gc.heap.objects.as_ptr());
         t.heap_base.set(gc.heap.memory.as_ptr() as usize);
         t.blocks.set(gc.blocks.as_ptr());
-        t.block.set(block);
-        t.cur.set(cur);
-        t.limit.set(limit);
+        if hooked {
+            t.hooked_block.set(block);
+            t.hooked_cur.set(cur);
+            t.hooked_limit.set(limit);
+        } else {
+            t.block.set(block);
+            t.cur.set(cur);
+            t.limit.set(limit);
+        }
     });
 }
 
-/// Give up this thread's bump region entirely (thread exit).
+/// Give up this thread's bump regions entirely (thread exit).
 fn release_tlab_region(gc: &mut ImmixAllocator) {
-    gc.heap.tlab_blocks.remove(&thread_self_fast());
+    let thread = thread_self_fast();
+    gc.heap.tlab_blocks.remove(&(thread, false));
+    gc.heap.tlab_blocks.remove(&(thread, true));
     TLAB.with(|t| {
         t.block.set(usize::MAX);
         t.cur.set(0);
         t.limit.set(0);
+        t.hooked_block.set(usize::MAX);
+        t.hooked_cur.set(0);
+        t.hooked_limit.set(0);
     });
 }
 
+/// Refill this thread's region, the hooked one when `hooked`, and take the
+/// first object from it. A hooked region takes a fresh block, never a
+/// recycled span: its block is flagged for the drop pass whole.
 #[cold]
-fn tlab_refill_then_alloc(aligned: usize) -> Option<NonNull<u8>> {
+fn tlab_refill_then_alloc(aligned: usize, hooked: bool) -> Option<NonNull<u8>> {
     mark_site(SITE_TLAB_REFILL);
     let mut gc = gc_locked();
     // A refill is a true safepoint, so a due trigger collects here instead of
@@ -1193,7 +1228,7 @@ fn tlab_refill_then_alloc(aligned: usize) -> Option<NonNull<u8>> {
     // Recycled lines first. Spans too small for the pending object are dropped
     // rather than re-queued; the list is rebuilt each sweep.
     let want_lines = aligned.div_ceil(LINE_SIZE).max(1);
-    if recycle_lines() {
+    if recycle_lines() && !hooked {
         while let Some((rblock, start, len)) = gc.heap.recycle_spans.pop() {
             if len < want_lines {
                 continue;
@@ -1215,6 +1250,7 @@ fn tlab_refill_then_alloc(aligned: usize) -> Option<NonNull<u8>> {
                 .fetch_add(len as u64, Ordering::Relaxed);
             adopt_tlab_region(
                 &mut gc,
+                false,
                 rblock,
                 base as usize + aligned,
                 base as usize + span_bytes,
@@ -1243,6 +1279,7 @@ fn tlab_refill_then_alloc(aligned: usize) -> Option<NonNull<u8>> {
         .fetch_add(BLOCK_SIZE as u64, Ordering::Relaxed);
     adopt_tlab_region(
         &mut gc,
+        hooked,
         block,
         base as usize + aligned,
         base as usize + BLOCK_SIZE,
@@ -2136,7 +2173,8 @@ struct ImmixHeap {
     /// Which block each thread is bumping through; `sweep` never reclaims one.
     /// Keyed by thread because the recycled-span path can hand two threads spans
     /// of the same block.
-    tlab_blocks: HashMap<u64, usize>,
+    /// Per thread, the block of each of its bump regions: plain and hooked.
+    tlab_blocks: HashMap<(u64, bool), usize>,
     /// True once the interpreter has registered scan ranges. Its snapshot is
     /// complete only at publication, so byte-driven collections are deferred to
     /// the next `scan_roots_done`. JIT mode never sets this: its roots are the
@@ -4101,6 +4139,15 @@ impl ImmixAllocator {
     /// the reclaim loop would visit first.
     fn drop_dead_traced(&mut self, used: &[usize]) {
         let base = self.heap.memory.as_ptr() as usize;
+        // A hooked bump region's block stays flagged: the next object
+        // bumped into it has a drop hook.
+        let hooked: Vec<usize> = self
+            .heap
+            .tlab_blocks
+            .iter()
+            .filter(|((_, hooked), _)| *hooked)
+            .map(|(_, &block)| block)
+            .collect();
         for &block_addr in used {
             let block = &mut self.blocks[block_addr / BLOCK_SIZE];
             if !block.has_drop.load(Ordering::Relaxed) {
@@ -4139,7 +4186,9 @@ impl ImmixAllocator {
                 }
                 q += quanta;
             }
-            block.has_drop.store(any_live, Ordering::Relaxed);
+            block
+                .has_drop
+                .store(any_live || hooked.contains(&block_addr), Ordering::Relaxed);
         }
     }
 
@@ -5382,7 +5431,13 @@ mod tests {
             let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
             let block = gc.acquire_free_block().unwrap();
             let base = gc.heap.memory.as_ptr() as usize;
-            adopt_tlab_region(&mut gc, block, base + block, base + block + BLOCK_SIZE);
+            adopt_tlab_region(
+                &mut gc,
+                false,
+                block,
+                base + block,
+                base + block + BLOCK_SIZE,
+            );
             TLAB.with(|t| t.registered.set(true));
             let a = gc_alloc(80).unwrap();
             let b = gc_alloc(64).unwrap();

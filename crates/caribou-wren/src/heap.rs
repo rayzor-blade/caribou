@@ -362,7 +362,13 @@ unsafe extern "C" fn trace_object(obj: *mut u8, tracer: *mut Tracer<'_>) {
         return;
     }
     let object = unsafe { obj.add(PREFIX) };
-    if unsafe { *bridge_word(obj) } & ADOPTED != 0 {
+    let word = bridge_word(obj);
+    let w = unsafe { *word };
+    // Reached in the collection a cycle ends with: the object lives.
+    if w & PENDING != 0 {
+        unsafe { *word = w & !PENDING };
+    }
+    if w & ADOPTED != 0 {
         unsafe { (*tracer).mark(import::held(object)) };
     }
     unsafe { wlift_rt_object_trace()(object, mark_child, tracer as *mut c_void) };
@@ -733,10 +739,10 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
         false
     });
     // The core's collection is the second half of the cycle. It retains
-    // the claims, marks the pending objects it reaches, and between its
-    // mark and its sweep the rest die. A collection the core abandoned
-    // leaves the claims standing, and a claim made outside a collection is
-    // withdrawn.
+    // the claims, and its trace clears the pending flag of every pending
+    // object it reaches; between its mark and its sweep the rest die. A
+    // collection the core abandoned leaves the claims standing, and a
+    // claim made outside a collection is withdrawn.
     let before = heap::collections();
     rec.claimed = true;
     let pins = &mut rec.pins;
@@ -745,14 +751,8 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
             return;
         }
         pins.retain(|pin| {
-            let word = bridge_word(pin.start as *mut u8);
-            let w = unsafe { *word };
+            let w = unsafe { *bridge_word(pin.start as *mut u8) };
             if w & PENDING == 0 {
-                return true;
-            }
-            unsafe { *word = w & !PENDING };
-            if gc.is_claimed_start(pin.start as *const u8) {
-                live += pin.size as usize;
                 return true;
             }
             die(gc, pin, w);

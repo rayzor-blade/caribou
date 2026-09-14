@@ -187,8 +187,13 @@ Type names are Wren's own, or a class of the same module:
 | `String` | `Str` | `String` |
 | `List` | `Array(Dyn)` | `Array<Dynamic>` |
 | `Fn` | `Fun` | `Dynamic` |
+| `Fn(Num, Hud) -> Bool` | `Function` | `(Float, Hud) -> Bool` |
 | a class of the module | `Object("module.Class")` | that class |
 | anything else, or nothing | `Dyn` | `Dynamic` |
+
+A function type spells its parameters' types and its result's, each any
+type of this table; `Fn()` takes nothing, and a missing `-> Type` gives
+`Dynamic`.
 
 ### Inference
 
@@ -243,10 +248,14 @@ Hud.onTick(function(n:Dynamic):Dynamic return n * 2);
 Hud.twice(function(x:Float):Float return x + 1, 1);
 ```
 
-- A Wren `Fn` arrives in Haxe as a real function value, variadic, the one
-  `Reflect.makeVarArgs` makes: `cb(3)` calls it, `Reflect.isFunction`
-  says so, and a parameter or field declared `Int -> Void` takes it. Read
-  back by Wren, it is the same `Fn`.
+- A Wren `Fn` arrives in Haxe as a real function value: `cb(3)` calls
+  it, `Reflect.isFunction` says so, and a parameter or field declared
+  `Int -> Void` takes it. Read back by Wren, it is the same `Fn`. Where
+  the member declares the function's type, `adder() -> Fn(Num) -> Num`,
+  the value is a function of that type, `Float -> Float`, and Haxe calls
+  it as one of its own, nothing boxed on the way. Declared `Fn`, it is
+  the variadic function `Reflect.makeVarArgs` makes, and a call boxes its
+  arguments.
 - A Haxe function arrives in Wren as an object answering `call(...)` with
   up to eight arguments and `arity`, as a `Fn` does. It is not a `Fn`:
   `cb is Fn` is false.
@@ -259,7 +268,8 @@ Hud.twice(function(x:Float):Float return x + 1, 1);
   is gone, it raises "belongs to another Wren VM" instead of running. A
   Haxe static that holds a Wren callback must be cleared before that VM
   goes; in a project there is one VM for the program's life.
-- `#export = "onTick(cb: Fn)"` maps to `Dynamic` in Haxe today.
+- `#export = "onTick(cb: Fn)"` maps to `Dynamic` in Haxe; `cb: Fn(Num)`
+  to `Float -> Void`.
 
 ## Static state
 

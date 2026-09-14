@@ -21,7 +21,7 @@ class Tally {
   #export = "total=(v: Num)"
   total=(v) { _t = v }
 
-  #export = "adder() -> Fn"
+  #export = "adder() -> Fn(Num) -> Num"
   static adder() { Fn.new {|x| x + 1 } }
 
   // Baselines.

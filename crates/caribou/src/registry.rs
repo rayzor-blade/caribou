@@ -49,7 +49,14 @@ pub enum TypeRef {
     Array(Box<TypeRef>),
     /// Anything; the value's own type decides at the crossing.
     Dyn,
+    /// A function of any shape, called with whatever it is given.
     Fun,
+    /// A function of this shape, which a language may call as it calls
+    /// its own of that type.
+    Function {
+        params: Vec<TypeRef>,
+        ret: Box<TypeRef>,
+    },
 }
 
 #[derive(Clone, Debug)]

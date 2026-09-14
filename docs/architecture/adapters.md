@@ -159,14 +159,20 @@ its function's arity, a Haxe closure its visible type's, and a ref
 forwards it.
 
 A Wren function crossing into Haxe (`caribou-ash`'s `callback.rs`)
-becomes the var-args closure `Reflect.makeVarArgs` makes:
-`hlp_make_var_args` over an inner closure that `hlp_alloc_closure_ptr`
-binds to the function's ref. A Haxe call is packed into the inner
-closure's array by ash, whichever tier runs the caller (the interpreter
-calls a wrapped native entry directly since ash 425107a). The entry sends
-the arguments through the bridge, throws a bridge error into Haxe, and
-answers null for a result Haxe has no form for. A closure made this way
-going back is recognised by its entries and unwrapped to the function.
+becomes a closure Haxe calls as its own. Where the native it crosses
+through declares the function's type, it is Ash's *record closure*
+(`hlp_alloc_record_closure`): a closure of that very type over a
+`Callback` object holding the function and the signature's kinds. Ash's
+one entry for every signature places the argument registers as one word
+each and calls the callback's entry, which reads them by kind, sends them
+through the bridge, and answers the result as one word; nothing is boxed.
+Where the type is not known, or is one the registers cannot take, it is
+the var-args closure `Reflect.makeVarArgs` makes, `hlp_make_var_args`
+over an inner closure bound to the function's ref, and ash packs a call
+into the inner closure's array. Either entry throws a bridge error into
+Haxe and answers null for a result Haxe has no form for. A closure made
+either way going back is recognised by its entry and unwrapped to the
+function.
 
 A Haxe function crossing into Wren becomes an instance of `Function`, a
 class the adapter installs on first need in the bridge's own module. Its

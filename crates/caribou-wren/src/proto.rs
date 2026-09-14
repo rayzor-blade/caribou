@@ -75,7 +75,10 @@ pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
 }
 
 /// Restore what [`enter_vm`] replaced.
-pub fn leave_vm(previous: *mut VM) {
+///
+/// # Safety
+/// `previous` is what the matching `enter_vm` returned.
+pub unsafe fn leave_vm(previous: *mut VM) {
     unsafe { enter_vm(previous) };
 }
 
@@ -84,7 +87,7 @@ pub fn leave_vm(previous: *mut VM) {
 pub fn with_vm<R>(vm: &mut VM, f: impl FnOnce(&mut VM) -> R) -> R {
     let previous = unsafe { enter_vm(vm) };
     let result = f(vm);
-    leave_vm(previous);
+    unsafe { leave_vm(previous) };
     result
 }
 
@@ -238,9 +241,15 @@ fn take_error(vm: &mut VM) -> Option<u8> {
 /// another VM, or of one that is gone, has no VM to run on. With it, the
 /// address of its record, which names the VM to a call site.
 fn vm_of(obj: *mut u8) -> Result<(&'static mut VM, usize), u8> {
+    // The object's own record says whether its VM is entered here.
+    let key = record_address(obj);
+    let entered = unsafe { record_at(key) }.entered_here();
+    if !entered.is_null() {
+        return Ok((unsafe { &mut *entered }, key));
+    }
     let vm = vm_here()?;
     let mine = record_for(vm.object_class as *mut u8) as *const WrenHeap as usize;
-    if record_address(obj) != mine {
+    if key != mine {
         return Err(raise_core(
             ErrorKind::Runtime,
             "the object belongs to another Wren VM, or to one that is gone",
@@ -386,7 +395,15 @@ fn wren_args(vm: &mut VM, args: *const Value, n: usize) -> Result<Args, u8> {
     Args::cross(vm, 0, args, n)
 }
 
+#[inline]
 fn cross(vm: &mut VM, v: Value) -> Result<WValue, u8> {
+    // A number, which most arguments are, crosses without a call.
+    if let Some(n) = v.as_int() {
+        return Ok(WValue::num(f64::from(n)));
+    }
+    if v.as_object().is_none() {
+        return Ok(WValue::from_bits(v.to_bits()));
+    }
     to_wren(vm, v).ok_or_else(|| {
         raise_core(
             ErrorKind::Type,

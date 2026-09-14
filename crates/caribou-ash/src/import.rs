@@ -108,11 +108,16 @@ struct Resolved {
     target: Callable,
 }
 
-/// A native's declared argument and result kinds.
+/// A native's declared argument and result kinds, and once the program
+/// has built its types, the result's type: a function result crosses as
+/// a closure of that type.
 #[derive(Debug)]
 struct Kinds {
     args: Vec<hl_type_kind>,
     ret: hl_type_kind,
+    /// The native's function type in the program's type table.
+    type_index: usize,
+    ret_type: *const hl_type,
 }
 
 // The callable's pointers belong to the publishing language's program,
@@ -212,6 +217,8 @@ fn declared(bytecode: &DecodedBytecode, type_index: usize) -> Option<Kinds> {
     Some(Kinds {
         args: fun.args.iter().map(kind).collect::<Option<_>>()?,
         ret: kind(&fun.ret)?,
+        type_index,
+        ret_type: ptr::null(),
     })
 }
 
@@ -285,6 +292,24 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
     let fallback = bytecode
         .type_index_of(REF_CLASS)
         .map_or(0, |i| interpreter.c_type_of(i) as usize);
+    // The result types, now that they exist.
+    for s in table.iter() {
+        let kinds = s.kinds.load(Ordering::Acquire);
+        let Some(k) = (unsafe { kinds.as_ref() }) else {
+            continue;
+        };
+        let sig = interpreter.c_type_of(k.type_index) as *const hl_type;
+        let ret_type = unsafe { sig.as_ref() }
+            .and_then(|t| unsafe { t.detail.fun.as_ref() })
+            .map_or(ptr::null(), |f| f.ret as *const hl_type);
+        let fresh = Box::into_raw(Box::new(Kinds {
+            args: k.args.clone(),
+            ret: k.ret,
+            type_index: k.type_index,
+            ret_type,
+        }));
+        s.kinds.store(fresh, Ordering::Release);
+    }
     // Strings cross into Haxe under the program's own `String`.
     if let Some(i) = bytecode.type_index_of("String") {
         proto::set_string_type(interpreter.c_type_of(i).cast());
@@ -420,7 +445,7 @@ fn static_member(class: &ClassIface, member: Symbol) -> Option<&registry::Method
 
 /// A record word as a value, by the kind the program declared for it
 /// (`native_lib::HostNative::record`).
-unsafe fn word_to_value(word: i64, kind: hl_type_kind) -> Value {
+pub(crate) unsafe fn word_to_value(word: i64, kind: hl_type_kind) -> Value {
     match kind {
         hl::HVOID => Value::null(),
         hl::HUI8 => Value::int(i32::from(word as u8)),
@@ -433,9 +458,13 @@ unsafe fn word_to_value(word: i64, kind: hl_type_kind) -> Value {
     }
 }
 
-/// A result as the record word the program reads by `kind`; `None` for a
-/// value the kind cannot take.
-unsafe fn value_to_word(v: Value, kind: hl_type_kind) -> Result<i64, String> {
+/// A result as the record word the program reads by `kind`, which `ty`
+/// is the type of when known; `None` for a value the kind cannot take.
+pub(crate) unsafe fn value_to_word(
+    v: Value,
+    kind: hl_type_kind,
+    ty: *const hl_type,
+) -> Result<i64, String> {
     let int = || {
         v.as_int()
             .or_else(|| v.as_number().map(|n| n as i32))
@@ -456,6 +485,10 @@ unsafe fn value_to_word(v: Value, kind: hl_type_kind) -> Result<i64, String> {
             .as_bool()
             .or_else(|| v.is_null().then_some(false))
             .map(i64::from),
+        // A function of the declared type, when the value is one.
+        hl::HFUN if !ty.is_null() && bridge::arity(v).is_some() => {
+            Some(crate::callback::function_for_typed(v, ty) as i64)
+        }
         _ => return unsafe { proto::value_to_dyn(v, kind) }.map(|p| p as i64),
     };
     word.ok_or_else(|| format!("{} is not a {}", bridge::describe(v), kind_name(kind)))
@@ -551,7 +584,7 @@ unsafe extern "C" fn entry(slot: *const Slot, words: *const i64) -> i64 {
     let kinds =
         unsafe { s.kinds.load(Ordering::Acquire).as_ref() }.expect("a bound slot has its kinds");
     let thrown = match unsafe { run(s, kinds, words) } {
-        Ok(v) => match unsafe { value_to_word(v, kinds.ret) } {
+        Ok(v) => match unsafe { value_to_word(v, kinds.ret, kinds.ret_type) } {
             Ok(word) => return word,
             Err(m) => proto::throwable(proto::error_value(&s.name, &m)),
         },
@@ -600,14 +633,20 @@ mod tests {
             assert_eq!(word_to_value(1, hl::HBOOL).as_bool(), Some(true));
             let bits = 2.5f64.to_bits() as i64;
             assert_eq!(word_to_value(bits, hl::HF64).as_number(), Some(2.5));
-            assert_eq!(value_to_word(Value::number(2.5), hl::HF64), Ok(bits));
             assert_eq!(
-                value_to_word(Value::int(3), hl::HF64),
+                value_to_word(Value::number(2.5), hl::HF64, ptr::null()),
+                Ok(bits)
+            );
+            assert_eq!(
+                value_to_word(Value::int(3), hl::HF64, ptr::null()),
                 Ok(3.0f64.to_bits() as i64)
             );
-            assert_eq!(value_to_word(Value::bool(true), hl::HBOOL), Ok(1));
-            assert_eq!(value_to_word(Value::null(), hl::HVOID), Ok(0));
-            assert!(value_to_word(Value::bool(true), hl::HF64).is_err());
+            assert_eq!(
+                value_to_word(Value::bool(true), hl::HBOOL, ptr::null()),
+                Ok(1)
+            );
+            assert_eq!(value_to_word(Value::null(), hl::HVOID, ptr::null()), Ok(0));
+            assert!(value_to_word(Value::bool(true), hl::HF64, ptr::null()).is_err());
         }
     }
 }

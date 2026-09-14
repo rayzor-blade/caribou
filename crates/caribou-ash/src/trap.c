@@ -1,7 +1,7 @@
 #include <setjmp.h>
 #include <stddef.h>
 
-typedef void *(*caribou_ash_trap_setup_fn)(void *storage, size_t size);
+typedef void *(*caribou_ash_trap_setup_fn)(void *storage, size_t size, size_t lock_depth);
 typedef void (*caribou_ash_trap_remove_fn)(void *storage);
 typedef void (*caribou_ash_trap_callback_fn)(void *context);
 
@@ -30,7 +30,9 @@ int caribou_ash_run_with_hl_trap(
     caribou_ash_trap_callback_fn callback,
     void *context) {
     _Alignas(16) unsigned char storage[CARIBOU_ASH_TRAP_STORAGE];
-    jmp_buf *buffer = (jmp_buf *)setup(storage, sizeof storage);
+    /* The bridge never calls in holding the GC lock: a throw has nothing
+     * to release. */
+    jmp_buf *buffer = (jmp_buf *)setup(storage, sizeof storage, 0);
     if (buffer == NULL) {
         return 2;
     }

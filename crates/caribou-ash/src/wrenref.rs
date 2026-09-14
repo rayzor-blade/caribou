@@ -65,10 +65,13 @@ unsafe extern "C" fn trace_ref(obj: *mut u8, tracer: *mut Tracer) {
     }
 }
 
-/// The ref is dead: the object forgets it, or its entry goes.
+/// The ref is dead: the object forgets it, or its entry goes. An object
+/// already forgotten by its own language's cycle, which is the common
+/// end of a ref and its object, has nothing to forget.
 unsafe extern "C" fn drop_ref(obj: *mut u8) {
     let r = unsafe { &*(obj as *const WrenRef) };
     if let Some(key) = address_of(r.obj)
+        && heap::is_allocation_start(key as *const c_void)
         && unsafe { Send::drop_shadow(key as *mut u8, obj) }.is_err()
     {
         let mut map = refs();

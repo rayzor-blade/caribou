@@ -13,8 +13,10 @@
 //! each `name`, `name: Type` or `_: Type` (`_` keeps Wren's name); and
 //! `-> Type` for the result. A getter is `name -> Type` and a setter
 //! `name=(v: Type)`. Types are Wren's own names, `Num`, `Bool`, `String`,
-//! `List`, `Fn`, or a class of the same module; anything else, and an
-//! undeclared parameter or result, is `Dyn`. Parameters match by position,
+//! `List`, `Fn`, a class of the same module, or a function of a shape,
+//! `Fn(Num, Hud) -> Bool`, which the other language may call as one of
+//! its own; anything else, and an undeclared parameter or result, is
+//! `Dyn`. Parameters match by position,
 //! so a running class, which has no parameter names, reads the attribute
 //! the same way the source does. The attribute is optional: a member
 //! without one is exported under its own name with what inference gives.
@@ -48,37 +50,94 @@ pub struct Export {
     pub ret: Option<String>,
 }
 
+/// The index just past the `)` matching the `(` at `open`, if any.
+fn close_of(text: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, c) in text[open..].char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(open + i + 1);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `text` split at the commas outside parentheses.
+fn split_top(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (i, c) in text.char_indices() {
+        match c {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                parts.push(&text[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&text[start..]);
+    parts
+}
+
 impl Export {
-    /// Parse `name(a: T, b) -> R`, `name -> R` or `name=(v: T)`.
+    /// Parse `name(a: T, b) -> R`, `name -> R` or `name=(v: T)`. A type
+    /// may be a function's, `Fn(T, U) -> R`, so the parameter list is the
+    /// first balanced one and the result what follows its `->`.
     pub fn parse(text: &str) -> Result<Export, String> {
         let text = text.trim();
-        let (head, ret) = match text.split_once("->") {
-            Some((h, r)) => (h.trim(), Some(r.trim())),
-            None => (text, None),
+        let (name, params, has_params, is_setter, rest) = if let Some(i) = text.find("=(") {
+            let close = close_of(text, i + 1)
+                .ok_or_else(|| format!("`{text}`: unclosed parameter list"))?;
+            (
+                &text[..i],
+                &text[i + 2..close - 1],
+                true,
+                true,
+                &text[close..],
+            )
+        } else if let Some(i) = text.find('(')
+            && text.find("->").is_none_or(|arrow| i < arrow)
+        {
+            let close =
+                close_of(text, i).ok_or_else(|| format!("`{text}`: unclosed parameter list"))?;
+            (
+                &text[..i],
+                &text[i + 1..close - 1],
+                true,
+                false,
+                &text[close..],
+            )
+        } else {
+            match text.find("->") {
+                Some(arrow) => (&text[..arrow], "", false, false, &text[arrow..]),
+                None => (text, "", false, false, ""),
+            }
+        };
+        let rest = rest.trim();
+        let ret = match rest.strip_prefix("->") {
+            Some(r) => Some(r.trim()),
+            None if rest.is_empty() => None,
+            None => return Err(format!("`{text}`: `{rest}` after the parameter list")),
         };
         if ret == Some("") {
             return Err(format!("`{text}`: nothing after `->`"));
         }
-        let (name, params, has_params, is_setter) = if let Some(i) = head.find("=(") {
-            let inner = head[i + 2..]
-                .strip_suffix(')')
-                .ok_or_else(|| format!("`{text}`: unclosed parameter list"))?;
-            (&head[..i], inner, true, true)
-        } else if let Some(i) = head.find('(') {
-            let inner = head[i + 1..]
-                .strip_suffix(')')
-                .ok_or_else(|| format!("`{text}`: unclosed parameter list"))?;
-            (&head[..i], inner, true, false)
-        } else {
-            (head, "", false, false)
-        };
         let name = name.trim();
         if !is_identifier(name) {
             return Err(format!("`{text}`: `{name}` is not a name"));
         }
         let mut out = Vec::new();
         if !params.trim().is_empty() {
-            for p in params.split(',') {
+            for p in split_top(params) {
                 let (pname, ty) = match p.split_once(':') {
                     Some((n, t)) => (n.trim(), Some(t.trim())),
                     None => (p.trim(), None),
@@ -156,8 +215,31 @@ fn is_identifier(name: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// A Wren type name as a registry type.
+/// A Wren type name as a registry type. `Fn(T, U) -> R` is a function of
+/// that shape; `Fn` alone one of any.
 pub fn type_ref(name: &str, module: &str, classes: &[String]) -> TypeRef {
+    let name = name.trim();
+    if name.starts_with("Fn(")
+        && let Some(close) = close_of(name, 2)
+    {
+        let inner = &name[3..close - 1];
+        let params = if inner.trim().is_empty() {
+            Vec::new()
+        } else {
+            split_top(inner)
+                .into_iter()
+                .map(|p| type_ref(p, module, classes))
+                .collect()
+        };
+        let ret = match name[close..].trim().strip_prefix("->") {
+            Some(r) => type_ref(r, module, classes),
+            None => TypeRef::Dyn,
+        };
+        return TypeRef::Function {
+            params,
+            ret: Box::new(ret),
+        };
+    }
     match name {
         "Num" => TypeRef::Float,
         "Bool" => TypeRef::Bool,
@@ -193,6 +275,34 @@ mod tests {
 
         let e = Export::parse("score -> Num").unwrap();
         assert!(!e.has_params && e.params.is_empty());
+        let e = Export::parse("adder() -> Fn(Num) -> Num").unwrap();
+        assert!(e.has_params && e.params.is_empty());
+        assert_eq!(e.ret.as_deref(), Some("Fn(Num) -> Num"));
+        assert_eq!(
+            e.ret("hud", &classes),
+            Some(TypeRef::Function {
+                params: vec![TypeRef::Float],
+                ret: Box::new(TypeRef::Float)
+            })
+        );
+        let e = Export::parse("each(f: Fn(Hud, Num), n: Num)").unwrap();
+        assert_eq!(e.params.len(), 2);
+        assert_eq!(
+            e.param(0, "hud", &classes),
+            TypeRef::Function {
+                params: vec![TypeRef::Object("hud.Hud".to_owned()), TypeRef::Float],
+                ret: Box::new(TypeRef::Dyn)
+            }
+        );
+        assert_eq!(e.param(1, "hud", &classes), TypeRef::Float);
+        let e = Export::parse("done -> Fn()").unwrap();
+        assert_eq!(
+            e.ret("hud", &classes),
+            Some(TypeRef::Function {
+                params: vec![],
+                ret: Box::new(TypeRef::Dyn)
+            })
+        );
         let e = Export::parse("score=(v: Num)").unwrap();
         assert!(e.is_setter && e.params[0].ty.as_deref() == Some("Num"));
         let e = Export::parse("f(_: Num, b)").unwrap();

@@ -167,7 +167,7 @@ unsafe fn inner(obj: *mut u8) -> *mut vdynamic {
 
 unsafe extern "C" {
     fn caribou_ash_run_with_hl_trap(
-        setup: unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void,
+        setup: unsafe extern "C" fn(*mut c_void, usize, usize) -> *mut c_void,
         remove: unsafe extern "C" fn(*mut c_void),
         callback: unsafe extern "C" fn(*mut c_void),
         context: *mut c_void,
@@ -183,6 +183,8 @@ fn trapped<F: FnMut()>(mut f: F) -> Result<(), *mut vdynamic> {
     unsafe extern "C" fn thunk<F: FnMut()>(context: *mut c_void) {
         unsafe { (*(context as *mut F))() }
     }
+    // The shim tells the runtime the lock is not held; see `trap.c`.
+    debug_assert_eq!(heap::gc_lock_held_depth(), 0);
     let threw = unsafe {
         caribou_ash_run_with_hl_trap(
             hlp_setup_trap_in,
@@ -540,7 +542,7 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
         && let Some(code) = unsafe { code_of((*closure).fun as usize) }
     {
         let bound = (has_value == 1).then(|| unsafe { (*closure).value });
-        match unsafe { direct_call(code, fun, bound, args, out) } {
+        match unsafe { direct_call(code, (*closure).t, bound, args, out) } {
             Some(Ok(())) => return REPLY_OK,
             Some(Err(exception)) => return unsafe { raise_exception(exception) },
             None => {}
@@ -644,22 +646,41 @@ unsafe fn kinds_of(fun: *const hl_type_fun) -> Option<Kinds> {
     Some(kinds)
 }
 
+/// One signature's kinds in the list `kinds_for` keeps: pushed at the
+/// head once, read without a lock from then on.
+struct Known {
+    sig: usize,
+    kinds: Kinds,
+    next: *const Known,
+}
+
+static KNOWN: AtomicPtr<Known> = AtomicPtr::new(ptr::null_mut());
+
 /// The kinds of `sig`, kept once per signature for the direct sends that
-/// name it.
+/// name it. Readers take no lock: the list only grows, at its head.
 fn kinds_for(sig: *const hl_type) -> Option<&'static Kinds> {
-    static KINDS: RwLock<Vec<(usize, &'static Kinds)>> = RwLock::new(Vec::new());
-    if let Some((_, k)) = KINDS
-        .read()
-        .unwrap()
-        .iter()
-        .find(|(s, _)| *s == sig as usize)
-    {
-        return Some(k);
+    let mut node = KNOWN.load(Ordering::Acquire) as *const Known;
+    while let Some(k) = unsafe { node.as_ref() } {
+        if k.sig == sig as usize {
+            return Some(&k.kinds);
+        }
+        node = k.next;
     }
     let fun = unsafe { fun_of(sig) }?;
-    let kinds: &'static Kinds = Box::leak(Box::new(unsafe { kinds_of(fun) }?));
-    KINDS.write().unwrap().push((sig as usize, kinds));
-    Some(kinds)
+    let kinds = unsafe { kinds_of(fun) }?;
+    let fresh = Box::into_raw(Box::new(Known {
+        sig: sig as usize,
+        kinds,
+        next: ptr::null(),
+    }));
+    let mut head = KNOWN.load(Ordering::Acquire);
+    loop {
+        unsafe { (*fresh).next = head };
+        match KNOWN.compare_exchange(head, fresh, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return Some(unsafe { &(*fresh).kinds }),
+            Err(seen) => head = seen,
+        }
+    }
 }
 
 /// Call compiled code directly by its signature: each argument placed as
@@ -669,13 +690,13 @@ fn kinds_for(sig: *const hl_type) -> Option<&'static Kinds> {
 /// its kind; the caller then goes through `hlp_dyn_call`.
 unsafe fn direct_call(
     func: *const c_void,
-    fun: *const hl_type_fun,
+    sig: *const hl_type,
     bound: Option<*mut c_void>,
     args: &[Value],
     out: *mut Value,
 ) -> Option<Result<(), *mut vdynamic>> {
-    let kinds = unsafe { kinds_of(fun) }?;
-    unsafe { call_by_kinds(func, &kinds, bound, args, out) }
+    let kinds = kinds_for(sig)?;
+    unsafe { call_by_kinds(func, kinds, bound, args, out) }
 }
 
 /// `direct_call` with the signature's kinds already read.

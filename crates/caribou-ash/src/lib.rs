@@ -70,6 +70,7 @@ impl Adapter for Runtime {
         self.lang = Some(id);
         proto::set_lang(id);
         wrenref::set_lang(id);
+        callback::set_lang(id);
         caribou::bridge::set_typed_dispatch(id, proto::dispatch);
         // The dynamic-call hook `hlp_dyn_call` reaches native code through;
         // ash's own startup installs the same one, so this is idempotent.

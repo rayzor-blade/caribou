@@ -42,8 +42,9 @@ The value is the member's exported signature. The name is what other
 languages see, and it may differ from Wren's. There is one parameter per
 Wren parameter, each `name`, `name: Type` or `_: Type`, where `_` keeps
 the source's name. `-> Type` gives the result. A getter is `name ->
-Type`; a setter is `name=(v: Type)`. Types are Wren's own names or a
-class of the module (`caribou_wren::types`).
+Type`; a setter is `name=(v: Type)`. Types are Wren's own names, a
+class of the module, or a function's shape, `Fn(Num) -> Num`
+(`caribou_wren::types`).
 
 Parameters match by position. So the publisher can read the attribute
 off the running class, which has no parameter names, the way `describe`
