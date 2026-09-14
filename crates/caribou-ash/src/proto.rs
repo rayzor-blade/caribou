@@ -48,8 +48,8 @@ use caribou::protocol::{
 };
 use caribou::registry::ClassIface;
 use caribou_abi::hl::{
-    self, hl_field_lookup, hl_module_context, hl_runtime_obj, hl_type, hl_type_detail, hl_type_fun,
-    hl_type_kind, uchar, vclosure, vdynamic,
+    self, aptr, hl_field_lookup, hl_module_context, hl_runtime_obj, hl_type, hl_type_detail,
+    hl_type_fun, hl_type_kind, uchar, varray, vclosure, vdynamic,
 };
 use caribou_abi::mem::{KIND_DYNAMIC, KIND_NOPTR, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
@@ -1305,8 +1305,12 @@ unsafe fn field_of(t: *mut hl_type, hfield: i32) -> Option<(usize, *mut hl_type)
 
 /// Read the field at `offset` of `d` as a value, by its type's kind.
 unsafe fn read_field(d: *mut vdynamic, offset: usize, t: *mut hl_type) -> Option<Value> {
-    let at = unsafe { (d as *mut u8).add(offset) };
-    Some(match unsafe { (*t).kind } {
+    unsafe { read_kind((d as *mut u8).add(offset), (*t).kind) }
+}
+
+/// Read the value of `kind` at `at`.
+unsafe fn read_kind(at: *const u8, kind: hl_type_kind) -> Option<Value> {
+    Some(match kind {
         hl::HUI8 => Value::int(i32::from(unsafe { *at })),
         hl::HUI16 => Value::int(i32::from(unsafe { *(at as *const u16) })),
         hl::HI32 => Value::int(unsafe { *(at as *const i32) }),
@@ -1327,8 +1331,11 @@ unsafe fn write_field(
     t: *mut hl_type,
     value: Value,
 ) -> Option<Result<(), String>> {
-    let at = unsafe { (d as *mut u8).add(offset) };
-    let kind = unsafe { (*t).kind };
+    unsafe { write_kind((d as *mut u8).add(offset), (*t).kind, value) }
+}
+
+/// Write `value` as a value of `kind` at `at`.
+unsafe fn write_kind(at: *mut u8, kind: hl_type_kind, value: Value) -> Option<Result<(), String>> {
     let int = || {
         value
             .as_int()
@@ -1785,14 +1792,17 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
 // ---------------------------------------------------------------------------
 
 /// The names an array answers through: `getDyn` and `setDyn` of
-/// `hl.types.ArrayAccess`, which every array kind overrides, and its
-/// length, a declared field on `ArrayBase` and a `get_length` method on
-/// `ArrayDyn`.
+/// `hl.types.ArrayAccess`, which every array kind overrides; its length,
+/// a declared field on `ArrayBase` and a `get_length` method on
+/// `ArrayDyn`; and the field its elements lie behind, `bytes` on an
+/// `ArrayBytes` and `array` on an `ArrayObj`.
 struct ArrayNames {
     length: Symbol,
     get_length: Symbol,
     get_dyn: Symbol,
     set_dyn: Symbol,
+    bytes: Symbol,
+    array: Symbol,
 }
 
 fn array_names() -> &'static ArrayNames {
@@ -1802,7 +1812,35 @@ fn array_names() -> &'static ArrayNames {
         get_length: caribou::symbol::intern("get_length"),
         get_dyn: caribou::symbol::intern("getDyn"),
         set_dyn: caribou::symbol::intern("setDyn"),
+        bytes: caribou::symbol::intern("bytes"),
+        array: caribou::symbol::intern("array"),
     })
+}
+
+/// The `hl.types.ArrayBytes_*` classes by name, with the kind their
+/// elements are read and written as.
+fn bytes_element(t: *const hl_type) -> Option<hl_type_kind> {
+    [
+        ("hl.types.ArrayBytes_Int", hl::HI32),
+        ("hl.types.ArrayBytes_Float", hl::HF64),
+        ("hl.types.ArrayBytes_hl_F32", hl::HF32),
+        ("hl.types.ArrayBytes_hl_UI16", hl::HUI16),
+        ("hl.types.ArrayBytes_hl_UI8", hl::HUI8),
+        ("hl.types.ArrayBytes_hl_I64", hl::HI64),
+    ]
+    .iter()
+    .find(|(name, _)| unsafe { obj_name_is(t, name) })
+    .map(|&(_, kind)| kind)
+}
+
+/// The bytes one element of `kind` takes in an `ArrayBytes`.
+fn element_size(kind: hl_type_kind) -> usize {
+    match kind {
+        hl::HUI8 | hl::HBOOL => 1,
+        hl::HUI16 => 2,
+        hl::HI32 | hl::HF32 => 4,
+        _ => 8,
+    }
 }
 
 /// A method of an array type: its slot, read per call and resolved
@@ -1824,10 +1862,24 @@ enum Length {
     Method(Slot),
 }
 
-/// How an array type answers: its length, `getDyn` and `setDyn`.
+/// Where an array type keeps its elements within its length: behind a
+/// `bytes` field, one value of `kind` each, as `hl.types.ArrayBytes_*`
+/// lay them out; behind an `array` field, a native array of pointers, as
+/// `hl.types.ArrayObj` does; or where only `getDyn` reaches them.
+#[derive(Clone, Copy)]
+enum Elements {
+    Bytes { offset: usize, kind: hl_type_kind },
+    Objects { offset: usize },
+    Dyn,
+}
+
+/// How an array type answers: its length, its elements, and `getDyn` and
+/// `setDyn` for what is not reached in place, a write past the length
+/// among them.
 #[derive(Clone, Copy)]
 struct ArrayShape {
     length: Length,
+    elements: Elements,
     get_dyn: Slot,
     set_dyn: Slot,
 }
@@ -1863,11 +1915,74 @@ unsafe fn array_shape(t: *mut hl_type) -> Option<ArrayShape> {
         Some((offset, ft)) => Length::Field(offset, ft),
         None => Length::Method(unsafe { slot_of(t, names.get_length) }?),
     };
+    let field = |name, kind| {
+        unsafe { field_of(t, field_hash(name)) }.filter(|&(_, ft)| unsafe { (*ft).kind } == kind)
+    };
+    let elements = match bytes_element(t) {
+        Some(kind) => match field(names.bytes, hl::HBYTES) {
+            Some((offset, _)) => Elements::Bytes { offset, kind },
+            None => Elements::Dyn,
+        },
+        None if unsafe { obj_name_is(t, "hl.types.ArrayObj") } => {
+            match field(names.array, hl::HARRAY) {
+                Some((offset, _)) => Elements::Objects { offset },
+                None => Elements::Dyn,
+            }
+        }
+        None => Elements::Dyn,
+    };
     Some(ArrayShape {
         length,
+        elements,
         get_dyn,
         set_dyn,
     })
+}
+
+/// The element `pos` of `d`, within its length, where it lies; `None`
+/// for a type whose elements are not reached in place.
+unsafe fn element(shape: &ArrayShape, d: *mut vdynamic, pos: usize) -> Option<Value> {
+    match shape.elements {
+        Elements::Bytes { offset, kind } => {
+            let bytes = unsafe { *((d as *mut u8).add(offset) as *const *const u8) };
+            unsafe { read_kind(bytes.add(pos * element_size(kind)), kind) }
+        }
+        Elements::Objects { offset } => {
+            let array = unsafe { *((d as *mut u8).add(offset) as *const *mut varray) };
+            let at = unsafe { aptr::<*mut vdynamic>(array).add(pos) };
+            Some(unsafe { dyn_to_value(*at) })
+        }
+        Elements::Dyn => None,
+    }
+}
+
+/// Write `value` as the element `pos` of `d`, within its length, where it
+/// lies; `None` when the elements are not reached in place or the value
+/// cannot take their kind.
+unsafe fn set_element(
+    shape: &ArrayShape,
+    d: *mut vdynamic,
+    pos: usize,
+    value: Value,
+) -> Option<Result<(), String>> {
+    match shape.elements {
+        Elements::Bytes { offset, kind } => {
+            let bytes = unsafe { *((d as *mut u8).add(offset) as *const *mut u8) };
+            unsafe { write_kind(bytes.add(pos * element_size(kind)), kind, value) }
+        }
+        Elements::Objects { offset } => {
+            let array = unsafe { *((d as *mut u8).add(offset) as *const *mut varray) };
+            let at = unsafe { aptr::<*mut vdynamic>(array).add(pos) };
+            match unsafe { value_to_dyn(value, hl::HDYN) } {
+                Ok(p) => {
+                    unsafe { *at = p };
+                    Some(Ok(()))
+                }
+                Err(message) => Some(Err(message)),
+            }
+        }
+        Elements::Dyn => None,
+    }
 }
 
 /// Call an array's method on it, `this` first: compiled code by its
@@ -1947,6 +2062,10 @@ unsafe extern "C-unwind" fn index(obj: *mut u8, key: Value, out: *mut Value) -> 
     if pos < 0 || pos as usize >= length {
         return REPLY_MISSING;
     }
+    if let Some(v) = unsafe { element(shape, d, pos as usize) } {
+        unsafe { *out = v };
+        return REPLY_OK;
+    }
     unsafe { send_array(shape.get_dyn, obj, &[Value::int(pos)], out) }
 }
 
@@ -1960,6 +2079,16 @@ unsafe extern "C-unwind" fn set_index(obj: *mut u8, key: Value, value: Value) ->
     };
     if pos < 0 {
         return REPLY_MISSING;
+    }
+    // In place within the length; `setDyn` grows the array past it.
+    if let Ok(length) = unsafe { array_len(shape, obj, d) }
+        && (pos as usize) < length
+        && let Some(written) = unsafe { set_element(shape, d, pos as usize, value) }
+    {
+        return match written {
+            Ok(()) => REPLY_OK,
+            Err(message) => raise_core(ErrorKind::Type, &message),
+        };
     }
     let mut ignored = Value::null();
     unsafe { send_array(shape.set_dyn, obj, &[Value::int(pos), value], &mut ignored) }
@@ -1979,7 +2108,13 @@ unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut V
     if pos as usize >= length {
         return REPLY_MISSING;
     }
-    let code = unsafe { send_array(shape.get_dyn, obj, &[Value::int(pos)], out) };
+    let code = match unsafe { element(shape, d, pos as usize) } {
+        Some(v) => {
+            unsafe { *out = v };
+            REPLY_OK
+        }
+        None => unsafe { send_array(shape.get_dyn, obj, &[Value::int(pos)], out) },
+    };
     if code == REPLY_OK {
         unsafe { *state = Value::int(pos + 1) };
     }

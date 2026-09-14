@@ -41,8 +41,15 @@ Its protocol reaches the object the way compiled Haxe does.
 A Haxe `String` is not wrapped. It crosses as a core `Str`, and a core
 `Str` entering Haxe becomes a fresh `String` under the type the loaded
 program's `String` class carries. A HashLink array, an object with a
-declared `length` and a `getDyn` method, answers `len`, `index`,
-`set_index` and `iterate`, through those; nothing else answers them.
+declared `length` and `getDyn` and `setDyn` methods, answers `len`,
+`index`, `set_index` and `iterate`; nothing else answers them. Its
+shape is kept once per type: where the length is, and where the
+elements lie, behind the `bytes` field of an `hl.types.ArrayBytes_*`,
+one value of the class's kind each, or the `array` field of an
+`hl.types.ArrayObj`, a native array of pointers. An element within the
+length is read and written there, unboxed; any other array kind, and a
+write past the length, which grows the array, go through `getDyn` and
+`setDyn` as direct calls.
 
 ### Calling into Haxe
 

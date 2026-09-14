@@ -82,6 +82,11 @@ var scores = Player.scores()
 System.print("%(scores.count) %(scores[2]) %(scores.toList)")
 scores[0] = 10
 System.print(Player.total(scores))
+// An element written where the array keeps it, and one past the end,
+// which grows it; an object element read back is the instance it was.
+party[1] = party[0]
+scores[3] = 2
+System.print("%(party[1] == party[0]) %(party[1].name) %(scores.count) %(Player.total(scores))")
 // A Haxe throw two runs deep, under a function Haxe calls back: it is
 // the abort of the run it came from, twice, as the second run from the
 // site is guarded.
@@ -142,7 +147,7 @@ fn drive(mode: ExecutionMode) {
     assert_eq!(result, InterpretResult::Success, "{errors:?}");
     assert_eq!(
         output,
-        "kaboom\nbang\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\nkaboom\nbang\nkaboom\nbang\n"
+        "kaboom\nbang\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\ntrue ann 4 17\nkaboom\nbang\nkaboom\nbang\n"
     );
 
     // A module no namespace holds is an import error naming it.
