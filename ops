@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1789383000,"nonce":"rIdpoNww30MFkOmfukWgWtPh5eA=","status":2}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1789383806,"nonce":"ITJ/Bg8RrA5hfj4A9DuG3IVfWE0=","message":"Correction: the landing commit is 100501f; cf8f552 was amended away before it was recorded anywhere but here.","files":null}]}
