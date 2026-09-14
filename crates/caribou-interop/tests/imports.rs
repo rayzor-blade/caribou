@@ -51,6 +51,7 @@ import "game:Player" for Player
 var p = Player.new("bob")
 var caught = Fiber.new { p.explode() }.try()
 System.print(caught)
+System.print(Fiber.new { p.burst() }.try())
 var bad = Fiber.new { p.hit("thirty") }.try()
 System.print(bad is String)
 System.print(Player.spawnAt(2, 2).name)
@@ -134,7 +135,7 @@ fn drive(mode: ExecutionMode) {
     assert_eq!(result, InterpretResult::Success, "{errors:?}");
     assert_eq!(
         output,
-        "kaboom\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\n"
+        "kaboom\nbang\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\n"
     );
 
     // A module no namespace holds is an import error naming it.

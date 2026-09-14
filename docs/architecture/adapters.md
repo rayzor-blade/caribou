@@ -62,9 +62,11 @@ its storage after a normal return. An `hl_throw` inside lands in that
 frame instead of unwinding through Rust. The thrown value becomes a core
 `Error`. A bytes value is the runtime's own error, and its kind is read
 from the message (`Null access`, out of bounds, divide by zero); a
-String or any other object is a `User` error. The exception itself is
-the error's native payload, wrapped, so it is the same object when it
-returns to Haxe.
+String or any other object is a `User` error, whose message is the
+String, a `haxe.Exception`'s message read where it keeps it, or else
+the class's name; no user code runs while the error is built. The
+exception itself is the error's native payload, wrapped, so it is the
+same object when it returns to Haxe.
 
 Haxe is the language that leaves its code by a long jump, so Ash
 supplies the bridge's guard (`bridge::set_guard`): the same trap around

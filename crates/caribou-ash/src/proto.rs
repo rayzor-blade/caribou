@@ -271,17 +271,33 @@ unsafe fn describe_exception(exc: *mut vdynamic) -> (ErrorKind, String) {
             let obj = unsafe { (*t).detail.obj };
             let name = unsafe { utf16z((*obj).name) };
             if name == "String" {
-                // Its bytes are the first field, one pointer past the type.
-                let bytes = unsafe {
-                    *((exc as *const u8).add(size_of::<*mut hl_type>()) as *const *const uchar)
-                };
-                (ErrorKind::User, unsafe { utf16z(bytes) })
+                (ErrorKind::User, unsafe { string_text(exc) })
+            } else if let Some(message) = unsafe { exception_message(exc) } {
+                // A `haxe.Exception`: its message, read where it keeps it,
+                // so no user code runs while the error is built.
+                (ErrorKind::User, message)
             } else {
                 (ErrorKind::User, name)
             }
         }
         kind => (ErrorKind::User, format!("a thrown value of kind {kind}")),
     }
+}
+
+/// The message a `haxe.Exception` keeps in `__exceptionMessage`, for an
+/// object that has that field holding a `String`.
+unsafe fn exception_message(exc: *mut vdynamic) -> Option<String> {
+    static FIELD: OnceLock<Symbol> = OnceLock::new();
+    let field = *FIELD.get_or_init(|| caribou::symbol::intern("__exceptionMessage"));
+    let (offset, ft) = unsafe { field_of((*exc).t, field_hash(field)) }?;
+    if unsafe { (*ft).kind } != hl::HOBJ {
+        return None;
+    }
+    let s = unsafe { *((exc as *const u8).add(offset) as *const *mut vdynamic) };
+    if s.is_null() {
+        return None;
+    }
+    Some(unsafe { string_text(s) })
 }
 
 /// Raise `exc` as it was thrown: a core `Error` of Haxe's language whose

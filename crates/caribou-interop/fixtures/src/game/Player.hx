@@ -40,6 +40,10 @@ class Player {
 		throw "kaboom";
 	}
 
+	public function burst():Void {
+		throw new haxe.Exception("bang");
+	}
+
 	public static function spawnAt(x:Float, y:Float):Player {
 		var p = new Player("spawned");
 		p.hp = Std.int(x + y);
