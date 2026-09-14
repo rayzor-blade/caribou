@@ -64,10 +64,10 @@ thread_local! {
 pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
     let previous = VM_HERE.with(|cell| cell.replace(vm));
     if !previous.is_null() {
-        record_for(unsafe { (*previous).object_class } as *mut u8).set_entered(ptr::null_mut());
+        record_for(unsafe { &*previous }.object_class as *mut u8).set_entered(ptr::null_mut());
     }
     if !vm.is_null() {
-        record_for(unsafe { (*vm).object_class } as *mut u8).set_entered(vm);
+        record_for(unsafe { &*vm }.object_class as *mut u8).set_entered(vm);
     }
     previous
 }
@@ -671,7 +671,7 @@ fn tick(vm: &mut VM, closure: *mut ObjClosure) {
         .get(id.0 as usize)
         .is_some_and(|p| !p.is_null());
     if !compiled && vm.engine.record_call(id) {
-        vm.engine.request_tier_up(id, &vm.interner);
+        vm.request_tier_up(id);
     }
 }
 
