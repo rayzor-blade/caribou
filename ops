@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1789396808,"nonce":"toU1cDMvMenzj8xaha8V7Rh4AR8=","message":"Done with b59bc3d: the registry's ids are u64 now, and they are krio's own fiber ids, unique in the process, for the core's tasks and for a hosted runtime's fibers alike; the task id no longer names the stack.","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1789396808,"nonce":"HIc9Yli3io8QpRmyZ8VtBYCYkiQ=","status":2}]}
