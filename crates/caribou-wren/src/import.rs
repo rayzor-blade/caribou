@@ -188,14 +188,19 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
     imports.stand_ins.clear();
 }
 
+/// The native object behind a wrapper, null when `obj` has none.
+pub(crate) fn native_of(obj: *mut u8) -> *mut u8 {
+    match unsafe { Send::unwrap_native(obj) } {
+        Ok(native) => native as *mut u8,
+        Err(_) => ptr::null_mut(),
+    }
+}
+
 /// The object an instance stands for is known by, for the stand-ins:
 /// the native object behind a wrapper, so a Haxe object wrapped twice is
 /// one key; the object itself when it has no native.
-fn stand_in_key(obj: *mut u8) -> usize {
-    match unsafe { Send::unwrap_native(obj) } {
-        Ok(native) if !native.is_null() => native as usize,
-        _ => obj as usize,
-    }
+fn stand_in_key(obj: *mut u8, native: *mut u8) -> usize {
+    (if native.is_null() { obj } else { native }) as usize
 }
 
 /// The instance already standing for the native object `native` in
@@ -548,8 +553,7 @@ unsafe fn number_field(instance: *mut u8, field: usize) -> usize {
 /// Hold `obj` from `instance`'s field, mark the instance adopted, so the
 /// heap's trace marks what it holds, and make it the object's stand-in
 /// in `vm`.
-fn adopt(vm: &VM, instance: *mut ObjInstance, obj: *mut u8) {
-    let key = stand_in_key(obj);
+fn adopt(vm: &VM, instance: *mut ObjInstance, obj: *mut u8, key: usize) {
     unsafe {
         (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64));
         (*instance).set_field(KEY_FIELD, WValue::num(key as f64));
@@ -704,7 +708,7 @@ fn sequence_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
 /// The instance of an installed class that stands for `v`: of the class
 /// installed for its type, of `Function` when `v` is a function, else of
 /// `Sequence` when `v` answers `len`.
-pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
+pub(crate) fn proxy(vm: &mut VM, v: Value, native: *mut u8) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
         return None;
@@ -712,7 +716,7 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let lang = bridge::language_of(v)?;
     let rec = record_for(vm.object_class as *mut u8);
     // The instance already standing for the object, when it has one.
-    let key = stand_in_key(obj);
+    let key = stand_in_key(obj, native);
     if let Some(&instance) = rec.imports().borrow().stand_ins.get(&key) {
         return Some(WValue::object(instance as *mut u8));
     }
@@ -748,7 +752,7 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let instance = class.map(|class| {
         let instance = vm.alloc_instance(class);
         let ptr = instance.as_object().unwrap() as *mut ObjInstance;
-        adopt(vm, ptr, obj);
+        adopt(vm, ptr, obj, key);
         crate::proto::made(vm, instance)
     });
     heap::handle_release(root);
@@ -920,7 +924,8 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                     bridge::describe(made)
                 ));
             };
-            adopt(vm, ptr, haxe as *mut u8);
+            let haxe = haxe as *mut u8;
+            adopt(vm, ptr, haxe, stand_in_key(haxe, native_of(haxe)));
             return Ok(instance);
         }
         Kind::Static => {

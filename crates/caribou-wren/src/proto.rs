@@ -33,8 +33,7 @@ use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap;
 use caribou::protocol::{
-    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Send,
-    Symbol,
+    CallSite, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
 };
 use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::runtime::core::as_string;
@@ -148,14 +147,7 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     // What the object stands for, when it stands for one: the object of
     // this VM a ref holds, or the native a wrapper holds, which the
     // instance already made for it is found by.
-    let native = match unsafe { Send::unwrap_native(p) } {
-        Ok(inner) => inner as *mut u8,
-        Err(Fault::Raised) => {
-            bridge::take_pending();
-            ptr::null_mut()
-        }
-        Err(_) => ptr::null_mut(),
-    };
+    let native = crate::import::native_of(p);
     if !native.is_null() {
         if let Some(instance) = crate::import::stand_in_for(vm, native) {
             return Some(instance);
@@ -167,7 +159,7 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
             return Some(WValue::object(native.wrapping_add(PREFIX)));
         }
     }
-    crate::import::proxy(vm, v)
+    crate::import::proxy(vm, v, native)
 }
 
 /// [`from_wren`], for a host handing a Wren value to the bridge.
