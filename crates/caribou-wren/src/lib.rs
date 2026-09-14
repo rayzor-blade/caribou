@@ -142,6 +142,7 @@ fn table() -> RuntimeVTable {
         stack_new: Some(heap::stack_new),
         stack_suspended: Some(heap::stack_suspended),
         stack_drop: Some(heap::stack_drop),
+        run_guarded: Some(proto::run_guarded),
         ..RuntimeVTable::new()
     }
 }

@@ -11,7 +11,7 @@
 //! carry a bare `hl_type` wraps them before they cross.
 
 use core::ffi::c_void;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -99,6 +99,133 @@ fn take_pending_rooted() -> Option<Rooted> {
 pub fn raise(err: *mut Error) -> u8 {
     set_pending(Error::value(err));
     protocol::REPLY_RAISED
+}
+
+// ---------------------------------------------------------------------------
+// Guards: where a language that leaves its code by a long jump lands
+// ---------------------------------------------------------------------------
+
+/// Run `body(ctx)` where a throw in this language's code lands. Answers
+/// `REPLY_OK` when the body returned, `REPLY_RAISED` when a throw landed
+/// here, the error pending.
+pub type Guard = unsafe extern "C-unwind" fn(
+    body: unsafe extern "C-unwind" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> u8;
+
+/// The one guard a process has: one language leaves by a long jump.
+static GUARD: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+/// What a thread knows about the runs it is in.
+struct Runs {
+    /// How many guards the thread is under.
+    guarded: Cell<u32>,
+    /// The site of the innermost run entered without a guard, for a
+    /// crossing inside it to mark, else null.
+    entry: Cell<*const CallSite>,
+}
+
+thread_local! {
+    static RUNS: Runs = const {
+        Runs {
+            guarded: Cell::new(0),
+            entry: Cell::new(ptr::null()),
+        }
+    };
+}
+
+/// Register the guard for the language that leaves its code by a long
+/// jump, replacing any earlier one.
+pub fn set_guard(f: Guard) {
+    GUARD.store(f as *mut (), Ordering::Release);
+}
+
+/// Whether the caller runs under a guard: a throw in the guarded
+/// language's code lands there, so nothing between need catch it.
+#[inline]
+pub fn guarded() -> bool {
+    RUNS.with(|r| r.guarded.get() > 0)
+}
+
+/// Run `body(ctx)` as a run entered from `site`, when the caller keeps
+/// one. The run is under the guard when the thread is under one
+/// already, so a throw cannot land above this run, or when a send from
+/// the site has called back before; `prepare` runs first then, for
+/// whatever the caller wants to put back after a throw. Otherwise the
+/// run goes without, each crossing inside catching for itself, and the
+/// first crossing marks the site (`note_reentry`) so the next run from
+/// it is guarded. False when a throw landed in the guard, the error
+/// pending.
+///
+/// # Safety
+/// `ctx` is whatever `body` takes.
+pub unsafe fn enter(
+    site: Option<&CallSite>,
+    prepare: impl FnOnce(),
+    body: unsafe extern "C-unwind" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> bool {
+    RUNS.with(|r| {
+        let site = match site {
+            Some(site) if !site.reentrant() && r.guarded.get() == 0 => site,
+            _ => {
+                let f = GUARD.load(Ordering::Acquire);
+                if f.is_null() {
+                    unsafe { body(ctx) };
+                    return true;
+                }
+                let guard: Guard = unsafe { std::mem::transmute::<*mut (), Guard>(f) };
+                prepare();
+                r.guarded.set(r.guarded.get() + 1);
+                let code = unsafe { guard(body, ctx) };
+                r.guarded.set(r.guarded.get() - 1);
+                return code == protocol::REPLY_OK;
+            }
+        };
+        let previous = r.entry.replace(site);
+        unsafe { body(ctx) };
+        r.entry.set(previous);
+        true
+    })
+}
+
+/// A crossing back into the guarded language from a run entered without
+/// the guard: the run's site is marked, so the next run from it is
+/// guarded and the crossings inside it need not catch for themselves.
+#[inline]
+pub fn note_reentry() {
+    RUNS.with(|r| {
+        let entry = r.entry.get();
+        if !entry.is_null() {
+            unsafe { &*entry }.note_reentrant();
+        }
+    });
+}
+
+/// Run `body(ctx)` under the guard, when there is one. False when a
+/// throw landed in the guard, the error pending; the frames between the
+/// throw and the guard are gone, so the caller puts back whatever it
+/// keeps per thread.
+///
+/// # Safety
+/// `ctx` is whatever `body` takes.
+pub unsafe fn run_guarded(
+    body: unsafe extern "C-unwind" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> bool {
+    let f = GUARD.load(Ordering::Acquire);
+    if f.is_null() {
+        unsafe { body(ctx) };
+        return true;
+    }
+    let guard: Guard = unsafe { std::mem::transmute::<*mut (), Guard>(f) };
+    let code = RUNS.with(|r| {
+        r.guarded.set(r.guarded.get() + 1);
+        let code = unsafe { guard(body, ctx) };
+        r.guarded.set(r.guarded.get() - 1);
+        code
+    });
+    code == protocol::REPLY_OK
 }
 
 // ---------------------------------------------------------------------------

@@ -219,6 +219,33 @@ leaves the field's offset and type under the object's `hl_type`: the next
 send checks the type and reads or writes in place. A ref forwarding to a
 Wren object keeps no direct send, since it would be called on the ref.
 
+## Guards
+
+Haxe leaves its code by a long jump, so a call into Haxe needs a frame
+below it where a throw can land. Arming one per call is the cost of a
+crossing; the guard arms one per *run* instead. A guard is what the
+language that jumps registers (`set_guard`): a function that runs a body
+under its trap and answers `Raised` with the error pending when a throw
+landed. `run_guarded` runs a body under it, and `guarded` says whether
+the thread is under one, in which case a call into Haxe arms nothing:
+a throw lands at the guard, and every frame between owns nothing that
+a drop would have to release.
+
+A throw must land below the run it came from and above the frames of
+the language that entered it, so a run entered from a guarded thread
+is always guarded itself. A run entered otherwise may go without: its
+crossings back into Haxe catch for themselves, as before, and the first
+one marks the run's entry site (`CallSite::reentrant`), so the next run
+from that site is guarded. `enter` makes that choice for a site. A body
+that never calls back pays nothing; one that does pays one trap per
+entry instead of one per crossing.
+
+The frames a throw abandons are the other language's: what its adapter
+keeps per thread, it puts back after `run_guarded` answers false. What
+the abandoned frames rooted on the stack goes with them, which is why an
+adapter keeps an object it made for a call on its frame, not in a
+handle.
+
 ## Shadows
 
 When an object crosses into a language that cannot hold it as it is, that

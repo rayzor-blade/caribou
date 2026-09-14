@@ -177,7 +177,9 @@ impl Protocol {
 /// the bridge then calls it before anything else, and takes the plain
 /// path again when it answers `Missing` or `Unsupported`. `key`, `a` and
 /// `b` belong to whichever the callee filled last. `plain` counts the
-/// sends that took the plain path, for the run report.
+/// sends that took the plain path, for the run report. `reentrant` is
+/// set once a send from the site has called back into the caller's
+/// language (see `bridge::enter`).
 #[repr(C)]
 #[derive(Debug, Default)]
 pub struct CallSite {
@@ -186,6 +188,7 @@ pub struct CallSite {
     pub b: AtomicUsize,
     pub direct: AtomicUsize,
     pub plain: AtomicUsize,
+    pub reentrant: AtomicUsize,
 }
 
 /// The whole send for one site: `target` is what the bridge would have
@@ -209,6 +212,7 @@ impl CallSite {
             b: AtomicUsize::new(0),
             direct: AtomicUsize::new(0),
             plain: AtomicUsize::new(0),
+            reentrant: AtomicUsize::new(0),
         }
     }
 
@@ -269,6 +273,18 @@ impl CallSite {
     /// How many sends took the plain path.
     pub fn plain(&self) -> usize {
         self.plain.load(Ordering::Relaxed)
+    }
+
+    /// Whether a send from this site has called back into the caller's
+    /// language.
+    #[inline]
+    pub fn reentrant(&self) -> bool {
+        self.reentrant.load(Ordering::Relaxed) != 0
+    }
+
+    #[inline]
+    pub fn note_reentrant(&self) {
+        self.reentrant.store(1, Ordering::Relaxed);
     }
 
     /// `key`, `a` and `b` as the direct send left them.

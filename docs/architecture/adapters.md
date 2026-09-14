@@ -51,17 +51,25 @@ signature's kind into the `vdynamic` `hlp_dyn_call` takes (an object
 argument is the wrapped object itself), and unboxes the result by the
 return kind.
 
-Every call into Haxe code runs under a HashLink trap. The trap's setjmp
-frame is a C function of the adapter's own (`trap.c`), and its context
-lives in that frame too: `hlp_setup_trap_in` arms it there, so the
-runtime allocates and pools nothing for it, and `hlp_remove_trap_in` pops
-it by its storage after a normal return. An `hl_throw` inside lands in
-that frame instead of unwinding through Rust. The thrown value becomes a
-core `Error`. A bytes
-value is the runtime's own error, and its kind is read from the message
-(`Null access`, out of bounds, divide by zero); a String or any other
-object is a `User` error. The exception itself is the error's native
-payload, wrapped, so it is the same object when it returns to Haxe.
+A call into Haxe code runs under a HashLink trap, unless the thread is
+already under the bridge's guard (below). The trap's setjmp frame is a
+C function of the adapter's own (`trap.c`), and its context lives in
+that frame too: `hlp_setup_trap_in` arms it there, so the runtime
+allocates and pools nothing for it, and `hlp_remove_trap_in` pops it by
+its storage after a normal return. An `hl_throw` inside lands in that
+frame instead of unwinding through Rust. The thrown value becomes a core
+`Error`. A bytes value is the runtime's own error, and its kind is read
+from the message (`Null access`, out of bounds, divide by zero); a
+String or any other object is a `User` error. The exception itself is
+the error's native payload, wrapped, so it is the same object when it
+returns to Haxe.
+
+Haxe is the language that leaves its code by a long jump, so Ash
+supplies the bridge's guard (`bridge::set_guard`): the same trap around
+a whole run of another language's code, where a throw from any Haxe
+call inside lands. Under it a call into Haxe arms nothing, and marks
+the run's entry site as one that calls back (see
+[guards](bridge.md#guards)).
 
 ## Wren objects
 
@@ -139,7 +147,7 @@ that the object is this thread's VM's and that the receiver is that
 class or an instance of exactly it, then dispatches as above; otherwise
 it answers `Missing` and the plain path decides.
 
-### Fibers
+### Fibers and runs
 
 A Wren fiber runs on a krio stack of its own in every VM the driver or
 the runner makes (`krio_fiber_active`). wren_lift tells its seam when a
@@ -147,6 +155,16 @@ stack is made, suspended with its stack pointer, and freed; the adapter
 registers each with the core's heap under krio's id, so a collection
 scans a suspended fiber from where it stopped, as it scans the core's
 own tasks.
+
+Every run of a fiber, wren_lift's own included, goes through the seam's
+`run_guarded`, which the adapter fills with the bridge's guard: a Haxe
+throw inside lands at the base of the fiber's run, on the fiber's own
+stack, and is raised on the VM as a runtime error, which `Fiber.try`
+sees as it sees an abort. The adapter's own entries into compiled code
+(a direct send, an `invoke`, a `call`, a constructor) go through
+`bridge::enter`, under the guard when the entry site wants it. A throw
+that lands puts the thread's JIT state back to what it was at entry
+(`JitMark`), since the compiled frames between are gone.
 
 ### The VM an entry runs on
 

@@ -73,6 +73,7 @@ impl Adapter for Runtime {
         wrenref::set_lang(id);
         callback::set_lang(id);
         caribou::bridge::set_typed_dispatch(id, proto::dispatch);
+        caribou::bridge::set_guard(proto::guard);
         // The dynamic-call hook `hlp_dyn_call` reaches native code through;
         // ash's own startup installs the same one, so this is idempotent.
         unsafe { ash_std::fun::hlp_install_static_call() };

@@ -32,6 +32,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::mem::MaybeUninit;
+use std::ptr;
 use std::rc::Rc;
 
 use caribou::bridge;
@@ -627,24 +628,25 @@ fn direct(vm: &mut VM, target: &Target, args: &[WValue]) -> Option<Result<WValue
     Some(finish(vm, target, args, result))
 }
 
-/// A Wren argument as a bridge value, with the root it needs for the
-/// call: an instance of an installed class becomes the object it stands
-/// for; a string becomes a fresh core `Str`, rooted here.
+/// A Wren argument as a bridge value, with the object the caller keeps
+/// on its stack for the call: an instance of an installed class becomes
+/// the object it stands for; a string becomes a fresh core `Str`, which
+/// nothing else holds.
 #[inline]
-fn cross_in(v: WValue) -> (Value, Handle) {
+fn cross_in(v: WValue) -> (Value, *mut u8) {
     // A number, bool or null crosses as itself.
     if v.as_object().is_none() {
-        return (Value::from_bits(v.to_bits()), Handle::NULL);
+        return (Value::from_bits(v.to_bits()), ptr::null_mut());
     }
     if let Some(obj) = foreign_of(v) {
-        return (obj, Handle::NULL);
+        return (obj, ptr::null_mut());
     }
     let crossed = from_wren(v);
-    let root = match crossed.as_object() {
-        Some(p) if v.is_string_object() => heap::handle_new(p as *mut u8),
-        _ => Handle::NULL,
+    let keep = match crossed.as_object() {
+        Some(p) if v.is_string_object() => p as *mut u8,
+        _ => ptr::null_mut(),
     };
-    (crossed, root)
+    (crossed, keep)
 }
 
 /// A bridge result as a Wren value.
@@ -653,7 +655,7 @@ fn cross_out(vm: &mut VM, v: Value) -> Result<WValue, String> {
 }
 
 /// The message of an error the bridge returned to Wren.
-fn message_of(err: Value) -> String {
+pub(crate) fn message_of(err: Value) -> String {
     match unsafe { Error::from_value(err) } {
         Some(e) => {
             let message = unsafe { Error::message_str(e) };
@@ -678,31 +680,28 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
     };
     let wren = wren_lang();
 
-    // Arguments cross first, rooted for the call. On the stack: Wren's
-    // widest signature, with a slot before them for `this`; only the slots
-    // in use are written, and only the roots taken are released.
+    // Arguments cross first. On the stack: Wren's widest signature, with
+    // a slot before them for `this`, and only the slots in use written.
+    // An object made for the call is kept as a plain pointer on this
+    // frame, where the conservative scan sees it for exactly as long as
+    // the frame lives: a throw that abandons the frame lets it go too.
     let n = args.len() - 1;
-    let mut roots = [MaybeUninit::<Handle>::uninit(); WIDEST];
+    let mut keep = [ptr::null_mut::<u8>(); WIDEST];
     let mut buf = [MaybeUninit::<Value>::uninit(); WIDEST + 1];
     if n > WIDEST {
         return Err(format!("{} takes too many arguments", target.name));
     }
-    let mut rooted = 0;
     buf[0].write(Value::null());
     for (i, &arg) in args[1..].iter().enumerate() {
-        let (v, root) = cross_in(arg);
+        let (v, kept) = cross_in(arg);
         buf[1 + i].write(v);
-        if !root.is_null() {
-            roots[rooted].write(root);
-            rooted += 1;
-        }
+        keep[i] = kept;
     }
-    let roots = unsafe { roots[..rooted].assume_init_ref() };
-    let release = |roots: &[Handle]| {
-        for &h in roots {
-            heap::handle_release(h);
-        }
+    // Read after the call, so the pointers stay in the frame across it.
+    let release = |keep: &[*mut u8; WIDEST]| {
+        std::hint::black_box(keep);
     };
+    let roots = &keep;
     // Slot 0 is `this` for a method and unused otherwise.
     let with_this = unsafe { buf[..=n].assume_init_mut() };
 

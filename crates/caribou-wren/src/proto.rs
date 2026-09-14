@@ -33,7 +33,8 @@ use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap;
 use caribou::protocol::{
-    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Send, Symbol,
+    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Send,
+    Symbol,
 };
 use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::runtime::core::as_string;
@@ -221,6 +222,141 @@ fn raise_wren(message: String) -> u8 {
 
 fn raise_core(kind: ErrorKind, message: &str) -> u8 {
     bridge::raise(Error::new(kind, message, wren_lang()))
+}
+
+// ---------------------------------------------------------------------------
+// Guarded runs
+// ---------------------------------------------------------------------------
+
+/// What the thread keeps for compiled code across a run, put back when a
+/// throw lands in the guard and the frames between are gone.
+struct JitMark {
+    ctx: wren_lift::codegen::runtime_fns::JitContext,
+    roots: usize,
+    frames: usize,
+    depth: u32,
+    disabled: bool,
+}
+
+impl JitMark {
+    fn take() -> JitMark {
+        let j = unsafe { &*wren_lift::codegen::runtime_fns::jit_state() };
+        JitMark {
+            ctx: j.ctx,
+            roots: j.roots.len(),
+            frames: j.frames.len(),
+            depth: j.depth,
+            disabled: j.disabled,
+        }
+    }
+
+    fn restore(&self, vm: &mut VM) {
+        let j = unsafe { &mut *wren_lift::codegen::runtime_fns::jit_state() };
+        j.ctx = self.ctx;
+        j.roots.truncate(self.roots);
+        j.frames.truncate(self.frames);
+        j.depth = self.depth;
+        j.disabled = self.disabled;
+        vm.pending_fiber_action = None;
+    }
+}
+
+/// Run `body` on `vm` under the bridge's guard: a throw in another
+/// language's code the run calls into lands here, below the Wren frames
+/// and above the caller's, instead of at every crossing. `Err` is the
+/// reply for a throw that landed, the error pending and the thread's
+/// JIT state as it was.
+fn guarded<R, F: FnOnce(&mut VM) -> R>(vm: &mut VM, body: F) -> Result<R, u8> {
+    struct Run<'a, R, F> {
+        vm: &'a mut VM,
+        body: Option<F>,
+        result: Option<R>,
+    }
+    unsafe extern "C-unwind" fn thunk<R, F: FnOnce(&mut VM) -> R>(ctx: *mut c_void) {
+        let run = unsafe { &mut *(ctx as *mut Run<'_, R, F>) };
+        if let Some(body) = run.body.take() {
+            run.result = Some(body(run.vm));
+        }
+    }
+    let mark = JitMark::take();
+    let mut run = Run {
+        vm,
+        body: Some(body),
+        result: None,
+    };
+    let returned = unsafe {
+        bridge::run_guarded(thunk::<R, F>, &mut run as *mut Run<'_, R, F> as *mut c_void)
+    };
+    if returned {
+        return run.result.ok_or(REPLY_RAISED);
+    }
+    mark.restore(run.vm);
+    Err(REPLY_RAISED)
+}
+
+/// Enter compiled Wren code from another language, from `site` when the
+/// caller keeps one: `bridge::enter` decides whether the run is under
+/// the guard, and a throw that lands there leaves the thread's JIT
+/// state as it was.
+fn entered<R, F: FnOnce(&mut VM) -> R>(
+    vm: &mut VM,
+    site: Option<&CallSite>,
+    body: F,
+) -> Result<R, u8> {
+    struct Run<'a, R, F> {
+        vm: &'a mut VM,
+        body: Option<F>,
+        result: Option<R>,
+    }
+    unsafe extern "C-unwind" fn thunk<R, F: FnOnce(&mut VM) -> R>(ctx: *mut c_void) {
+        let run = unsafe { &mut *(ctx as *mut Run<'_, R, F>) };
+        if let Some(body) = run.body.take() {
+            run.result = Some(body(run.vm));
+        }
+    }
+    let mut mark = None;
+    let mut run = Run {
+        vm,
+        body: Some(body),
+        result: None,
+    };
+    let returned = unsafe {
+        bridge::enter(
+            site,
+            || mark = Some(JitMark::take()),
+            thunk::<R, F>,
+            &mut run as *mut Run<'_, R, F> as *mut c_void,
+        )
+    };
+    if returned {
+        return run.result.ok_or(REPLY_RAISED);
+    }
+    if let Some(mark) = mark {
+        mark.restore(run.vm);
+    }
+    Err(REPLY_RAISED)
+}
+
+/// The runtime seam's `run_guarded`: a run of the VM's fiber under the
+/// bridge's guard. A throw that lands is raised on the VM as a runtime
+/// error, the way one at a crossing is, and the run takes it from there.
+pub(crate) unsafe extern "C" fn run_guarded(
+    vm: *mut c_void,
+    body: unsafe extern "C" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> bool {
+    let vm = unsafe { &mut *(vm as *mut VM) };
+    match guarded(vm, |_| unsafe { body(ctx) }) {
+        Ok(()) => true,
+        Err(_) => {
+            let message = match bridge::take_pending() {
+                Some(err) => crate::import::message_of(err),
+                None => "error caught by the host".to_owned(),
+            };
+            vm.runtime_error(message);
+            false
+        }
+    }
 }
 
 /// The VM's pending error, taken, as a raise; `None` when there is none.
@@ -597,12 +733,17 @@ unsafe extern "C-unwind" fn direct_call(
     let with_recv = unsafe { with_recv[..=n].assume_init_ref() };
     // The closure the site found, called as a send would once it has found
     // it, with the thread's JIT state read once.
-    let bits = wren_lift::codegen::runtime_fns::call_found_closure(
-        vm,
-        closure as *mut ObjClosure,
-        with_recv,
-        class,
-    );
+    let bits = match entered(vm, Some(site), |vm| {
+        wren_lift::codegen::runtime_fns::call_found_closure(
+            vm,
+            closure as *mut ObjClosure,
+            with_recv,
+            class,
+        )
+    }) {
+        Ok(bits) => bits,
+        Err(code) => return code,
+    };
     finish(vm, Some(WValue::from_bits(bits)), "", out)
 }
 
@@ -626,12 +767,17 @@ unsafe extern "C-unwind" fn direct_construct(
     };
     args.slice_mut()[0] = recv;
     tick(vm, closure);
-    let bits = wren_lift::codegen::runtime_fns::dispatch_method_pub(
-        vm,
-        Method::Constructor(closure),
-        args.as_slice(),
-        Some(class),
-    );
+    let bits = match entered(vm, Some(site), |vm| {
+        wren_lift::codegen::runtime_fns::dispatch_method_pub(
+            vm,
+            Method::Constructor(closure),
+            args.as_slice(),
+            Some(class),
+        )
+    }) {
+        Ok(bits) => bits,
+        Err(code) => return code,
+    };
     let instance = made(vm, WValue::from_bits(bits));
     finish(vm, Some(instance), "", out)
 }
@@ -647,9 +793,16 @@ pub(crate) fn made(vm: &mut VM, v: WValue) -> WValue {
 /// Run `found` on `recv` with `args`, whose slot 0 is free for the
 /// receiver, through the VM's own method dispatch: what its compiled code
 /// calls once it has found a method.
-fn run(vm: &mut VM, recv: WValue, found: Found, args: &mut Args, out: *mut Value) -> u8 {
+fn run(
+    vm: &mut VM,
+    recv: WValue,
+    found: Found,
+    args: &mut Args,
+    site: Option<&CallSite>,
+    out: *mut Value,
+) -> u8 {
     args.slice_mut()[0] = recv;
-    let bits = match found.method {
+    let ran = entered(vm, site, |vm| match found.method {
         Method::Closure(closure) => wren_lift::codegen::runtime_fns::call_found_closure(
             vm,
             closure,
@@ -672,6 +825,10 @@ fn run(vm: &mut VM, recv: WValue, found: Found, args: &mut Args, out: *mut Value
             args.as_slice(),
             Some(found.class),
         ),
+    });
+    let bits = match ran {
+        Ok(bits) => bits,
+        Err(code) => return code,
     };
     finish(vm, Some(WValue::from_bits(bits)), "", out)
 }
@@ -682,7 +839,7 @@ fn send(vm: &mut VM, recv: WValue, sig: &str, args: &mut Args, out: *mut Value) 
     let instance = vm.interner.intern(sig);
     let statics = vm.interner.intern(&format!("static:{sig}"));
     match find(vm, recv, instance, statics) {
-        Some(found) => run(vm, recv, found, args, out),
+        Some(found) => run(vm, recv, found, args, None, out),
         None => {
             let result = vm.call_method_on(recv, sig, &args.as_slice()[1..]);
             finish(vm, result, sig, out)
@@ -743,7 +900,7 @@ fn get_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, out: *mut Value) 
     if let Some(found) = find_by(vm, key, recv, name, Shape::Get, site) {
         leave_direct(site, key, &found);
         let mut args = Args::receiver_only();
-        return run(vm, recv, found, &mut args, out);
+        return run(vm, recv, found, &mut args, site, out);
     }
     let name = name.name();
     if unsafe { obj_type(obj) } == ObjType::Instance
@@ -783,7 +940,7 @@ fn set_at(obj: *mut u8, name: Symbol, site: Option<&CallSite>, value: Value) -> 
     if let Some(found) = find_by(vm, key, recv, name, Shape::Set, site) {
         leave_direct(site, key, &found);
         let mut ignored = Value::null();
-        return run(vm, recv, found, &mut args, &mut ignored);
+        return run(vm, recv, found, &mut args, site, &mut ignored);
     }
     let name = name.name();
     if unsafe { obj_type(obj) } == ObjType::Instance
@@ -873,7 +1030,7 @@ fn invoke_at_opt(
         Ok(args) => args,
         Err(code) => return code,
     };
-    run(vm, recv, found, &mut args, out)
+    run(vm, recv, found, &mut args, site, out)
 }
 
 /// A closure, called with the arguments as its parameters.
@@ -897,12 +1054,17 @@ unsafe extern "C-unwind" fn call(
     let closure = unsafe { wren_ptr(obj) } as *mut ObjClosure;
     // A closure's compiled body when it has one; a `Fn` takes no receiver
     // and belongs to no class.
-    let bits = wren_lift::codegen::runtime_fns::call_found_closure(
-        vm,
-        closure,
-        args.as_slice(),
-        ptr::null_mut(),
-    );
+    let bits = match guarded(vm, |vm| {
+        wren_lift::codegen::runtime_fns::call_found_closure(
+            vm,
+            closure,
+            args.as_slice(),
+            ptr::null_mut(),
+        )
+    }) {
+        Ok(bits) => bits,
+        Err(code) => return code,
+    };
     finish(vm, Some(WValue::from_bits(bits)), "call", out)
 }
 

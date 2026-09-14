@@ -179,7 +179,21 @@ unsafe extern "C" {
 /// that needs one: it reads and writes slots the caller prepared. The
 /// trap's context lives in the C frame that sets the jump, so the runtime
 /// allocates and pools nothing for it.
+///
+/// Under a guard (`bridge::guarded`) no trap is armed: a throw lands in
+/// the guard, which is the language that entered Haxe taking the error
+/// at its own boundary, and every frame between is one that owns nothing.
 fn trapped<F: FnMut()>(mut f: F) -> Result<(), *mut vdynamic> {
+    if bridge::guarded() {
+        f();
+        return Ok(());
+    }
+    bridge::note_reentry();
+    trapped_always(f)
+}
+
+/// [`trapped`], guard or no guard: what a guard itself is made of.
+fn trapped_always<F: FnMut()>(mut f: F) -> Result<(), *mut vdynamic> {
     unsafe extern "C" fn thunk<F: FnMut()>(context: *mut c_void) {
         unsafe { (*(context as *mut F))() }
     }
@@ -287,6 +301,18 @@ unsafe fn raise_exception(exc: *mut vdynamic) -> u8 {
 
 fn raise_core(kind: ErrorKind, message: &str) -> u8 {
     bridge::raise(Error::new(kind, message, lang()))
+}
+
+/// Haxe's guard for the bridge: `body` runs under a trap, and a throw
+/// that reaches it is the pending error, as a throw at a crossing is.
+pub(crate) unsafe extern "C-unwind" fn guard(
+    body: unsafe extern "C-unwind" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> u8 {
+    match trapped_always(|| unsafe { body(ctx) }) {
+        Ok(()) => REPLY_OK,
+        Err(exception) => unsafe { raise_exception(exception) },
+    }
 }
 
 /// A core `Error` of Haxe's language for a failure at `name`, as a value.
