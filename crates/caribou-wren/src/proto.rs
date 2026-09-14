@@ -1,7 +1,7 @@
 //! The object protocol for Wren objects, and the value conversions under it.
 //!
 //! A Wren object crosses the bridge as its core address: the start of the
-//! prefixed allocation, where word zero is [`WREN_DESC`](crate::heap). Every
+//! prefixed allocation, where word zero is its heap record's descriptor. Every
 //! entry here receives that address and adds `PREFIX` to reach wren_lift's
 //! object; `from_wren` and `to_wren` translate at every edge, so wren_lift
 //! never sees a core address and the core never sees a wren_lift one.
@@ -33,9 +33,9 @@ use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::heap;
 use caribou::protocol::{
-    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Send, Symbol, desc_of,
+    CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_UNSUPPORTED, Send, Symbol,
 };
-use caribou_abi::{ErrorKind, Value};
+use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::runtime::core::as_string;
 use wren_lift::runtime::engine::FuncId;
 use wren_lift::runtime::object::{
@@ -45,7 +45,7 @@ use wren_lift::runtime::object::{
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{self, VM};
 
-use crate::heap::{PREFIX, WrenHeap, owns_start, record_address, record_for, wren_desc, wren_lang};
+use crate::heap::{PREFIX, WrenHeap, is_wren, owns_start, record_address, record_for, wren_lang};
 
 // ---------------------------------------------------------------------------
 // The VM the entries use
@@ -123,7 +123,7 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         return Some(WValue::null());
     }
     let p = p as *mut u8;
-    if ptr::eq(unsafe { desc_of(p) }, wren_desc()) {
+    if is_wren(p) {
         return Some(WValue::object(p.wrapping_add(PREFIX)));
     }
     if let Some(text) = unsafe { Str::text(v) } {
@@ -968,7 +968,7 @@ unsafe extern "C-unwind" fn to_string(obj: *mut u8, out: *mut Value) -> u8 {
 /// The text of a core value that is a Wren string.
 fn wren_string<'a>(v: Value) -> Option<&'a str> {
     let p = v.as_object()? as *mut u8;
-    if p.is_null() || !ptr::eq(unsafe { desc_of(p) }, wren_desc()) {
+    if p.is_null() || !is_wren(p) {
         return None;
     }
     if unsafe { obj_type(p) } != ObjType::String {
@@ -995,7 +995,7 @@ unsafe extern "C-unwind" fn hash(obj: *mut u8, out: *mut u64) -> u8 {
 unsafe extern "C-unwind" fn equals(obj: *mut u8, other: Value, out: *mut bool) -> u8 {
     let mine = unsafe { receiver(obj) };
     let same = match other.as_object() {
-        Some(p) if !p.is_null() && ptr::eq(unsafe { desc_of(p as *mut u8) }, wren_desc()) => {
+        Some(p) if !p.is_null() && is_wren(p as *mut u8) => {
             mine.equals(WValue::object((p as *mut u8).wrapping_add(PREFIX)))
         }
         Some(_) => match (wren_string(Value::object(obj as *const c_void)), unsafe {
@@ -1039,6 +1039,35 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
     REPLY_OK
 }
 
+/// The shadow is the object's bridge word (see `heap`): one object of one
+/// language, whichever keeps one first. No VM is needed: the word is the
+/// object's own, and its VM being gone changes nothing.
+unsafe extern "C-unwind" fn shadow(obj: *mut u8, lang: LangId, out: *mut *mut u8) -> u8 {
+    match crate::heap::shadow_of(unsafe { wren_ptr(obj) }, lang) {
+        Some(p) => {
+            unsafe { *out = p };
+            REPLY_OK
+        }
+        None => REPLY_MISSING,
+    }
+}
+
+unsafe extern "C-unwind" fn keep_shadow(obj: *mut u8, shadow: *mut u8, out: *mut *mut u8) -> u8 {
+    match crate::heap::keep_shadow(unsafe { wren_ptr(obj) }, shadow) {
+        Ok(()) => REPLY_OK,
+        Err(Some(kept)) => {
+            unsafe { *out = kept };
+            REPLY_MISSING
+        }
+        Err(None) => REPLY_UNSUPPORTED,
+    }
+}
+
+unsafe extern "C-unwind" fn drop_shadow(obj: *mut u8, shadow: *mut u8) -> u8 {
+    crate::heap::drop_shadow(unsafe { wren_ptr(obj) }, shadow);
+    REPLY_OK
+}
+
 /// No Wren object is an error by itself: wren_lift's error is a message,
 /// and one that reaches the bridge arrives wrapped in a core `Error` whose
 /// native payload is that message as a core string. So the error entries
@@ -1061,6 +1090,9 @@ pub static WREN_PROTO: Protocol = Protocol {
     equals: Some(equals),
     unwrap_native: Some(unwrap_native),
     type_name: Some(type_name),
+    shadow: Some(shadow),
+    keep_shadow: Some(keep_shadow),
+    drop_shadow: Some(drop_shadow),
     ..Protocol::NONE
 };
 

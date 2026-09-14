@@ -16,15 +16,18 @@
 //! answers `unwrap_native` with the object, which is how the Wren adapter
 //! recognises one of its own objects coming back and restores identity.
 //!
-//! One ref per object: a map from the object's address to the ref's. The
-//! map holds no handle on the ref, so a ref is reachable only from Haxe
-//! and dies when Haxe drops it. Its drop hook, run by the core's sweep
-//! before the ref's lines can be reused, removes the map entry and gives
-//! up the handle, the release deferred to the end of the collection since
-//! a hook cannot take the GC lock. The invariant: an entry in the map
-//! names a live ref. Presence means alive, because the only way out of the
-//! map is the drop of the ref named, and the object cannot die before its
-//! ref, which holds its handle.
+//! One ref per object. The object's own language keeps it, as the
+//! protocol's shadow, when it keeps one: a Wren object has a word for it.
+//! For an object whose language keeps none, a map from the object's
+//! address to the ref's. Neither holds a handle on the ref, so a ref is
+//! reachable only from Haxe and dies when Haxe drops it. Its drop hook,
+//! run by the core's sweep before the ref's lines can be reused, forgets
+//! it on the object or in the map and gives up the handle, the release
+//! deferred to the end of the collection since a hook cannot take the GC
+//! lock. The invariant: a ref kept on an object or named in the map is
+//! alive. Presence means alive, because the only way out is the drop of
+//! the ref itself, and the object cannot die before its ref, which holds
+//! its handle.
 //!
 //! Whatever is not Haxe's is wrapped the same way: a core `Str` or
 //! `Error`, an object of a language registered later.
@@ -65,10 +68,13 @@ unsafe extern "C" fn trace_ref(obj: *mut u8, tracer: *mut Tracer) {
     }
 }
 
-/// The ref is dead: its entry goes, and so does its hold on the object.
+/// The ref is dead: the object forgets it, or its entry goes, and so does
+/// its hold on the object.
 unsafe extern "C" fn drop_ref(obj: *mut u8) {
     let r = unsafe { &*(obj as *const WrenRef) };
-    if let Some(key) = address_of(r.obj) {
+    if let Some(key) = address_of(r.obj)
+        && unsafe { Send::drop_shadow(key as *mut u8, obj) }.is_err()
+    {
         let mut map = refs();
         if map.get(&key) == Some(&(obj as usize)) {
             map.remove(&key);
@@ -97,9 +103,9 @@ pub(crate) fn set_lang(lang: LangId) {
     unsafe { WRENREF_DESC.lang = lang };
 }
 
-/// Object address to ref address; see the module doc for what an entry
-/// means. Never held across an allocation: a collection's drop hooks
-/// take it.
+/// Object address to ref address, for objects whose language keeps no
+/// shadow; see the module doc for what an entry means. Never held across
+/// an allocation: a collection's drop hooks take it.
 static REFS: LazyLock<Mutex<AddressMap<usize>>> =
     LazyLock::new(|| Mutex::new(AddressMap::default()));
 
@@ -130,7 +136,12 @@ pub fn wrap_foreign(v: Value) -> Value {
     if bridge::language_of(v) == Some(lang()) {
         return v;
     }
-    if let Some(&r) = refs().get(&obj) {
+    let kept = match unsafe { Send::shadow(obj as *mut u8, lang()) } {
+        Ok(r) => return Value::object(r as *const c_void),
+        Err(Fault::Unsupported) => false,
+        Err(_) => true,
+    };
+    if !kept && let Some(&r) = refs().get(&obj) {
         return Value::object(r as *const c_void);
     }
     // The handle roots the object through the allocation.
@@ -155,9 +166,18 @@ pub fn wrap_foreign(v: Value) -> Value {
         p
     };
     // Another thread may have made one meanwhile. Ours is then garbage:
-    // its drop gives up its handle and leaves the entry, not being named
-    // by it.
-    let r = *refs().entry(obj).or_insert(p as usize);
+    // its drop gives up its handle and forgets nothing, not being the one
+    // kept.
+    let r = if kept {
+        let mut other = ptr::null_mut();
+        match unsafe { Send::keep_shadow(obj as *mut u8, p as *mut u8, &mut other) } {
+            Ok(()) => p as usize,
+            Err(Fault::Missing) => other as usize,
+            Err(_) => *refs().entry(obj).or_insert(p as usize),
+        }
+    } else {
+        *refs().entry(obj).or_insert(p as usize)
+    };
     Value::object(r as *const c_void)
 }
 
@@ -169,7 +189,11 @@ pub fn unwrap_foreign(v: Value) -> Value {
 /// The live ref for `v`'s object, if Haxe holds one.
 pub fn foreign_ref(v: Value) -> Option<Value> {
     let obj = address_of(v)?;
-    refs().get(&obj).map(|&r| Value::object(r as *const c_void))
+    match unsafe { Send::shadow(obj as *mut u8, lang()) } {
+        Ok(r) => Some(Value::object(r as *const c_void)),
+        Err(Fault::Unsupported) => refs().get(&obj).map(|&r| Value::object(r as *const c_void)),
+        Err(_) => None,
+    }
 }
 
 /// The Haxe object standing for the ref's object, if one was bound.
@@ -409,6 +433,32 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
     code(unsafe { Send::type_name(inner(obj)) }, out)
 }
 
+// A shadow is the object's, so a ref forwards it: whoever stands for the
+// ref stands for the object, and the ref is what stands for it in Haxe.
+unsafe extern "C-unwind" fn shadow(obj: *mut u8, lang: LangId, out: *mut *mut u8) -> u8 {
+    match unsafe { Send::shadow(inner(obj), lang) } {
+        Ok(p) => {
+            unsafe { *out = p };
+            REPLY_OK
+        }
+        Err(fault) => code_of(fault),
+    }
+}
+
+unsafe extern "C-unwind" fn keep_shadow(obj: *mut u8, shadow: *mut u8, out: *mut *mut u8) -> u8 {
+    match unsafe { Send::keep_shadow(inner(obj), shadow, &mut *out) } {
+        Ok(()) => REPLY_OK,
+        Err(fault) => code_of(fault),
+    }
+}
+
+unsafe extern "C-unwind" fn drop_shadow(obj: *mut u8, shadow: *mut u8) -> u8 {
+    match unsafe { Send::drop_shadow(inner(obj), shadow) } {
+        Ok(()) => REPLY_OK,
+        Err(fault) => code_of(fault),
+    }
+}
+
 static WRENREF_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
@@ -432,6 +482,9 @@ static WRENREF_PROTO: Protocol = Protocol {
     error_cause: Some(error_cause),
     error_trace: Some(error_trace),
     type_name: Some(type_name),
+    shadow: Some(shadow),
+    keep_shadow: Some(keep_shadow),
+    drop_shadow: Some(drop_shadow),
 };
 
 #[cfg(test)]

@@ -4,8 +4,11 @@
 //! A wren_lift object begins at the address `alloc_raw` returns, so the core's
 //! descriptor word cannot be its word zero. Every allocation is `PREFIX` bytes
 //! longer than asked, and wren_lift is handed the address after the prefix:
-//! word zero of the core allocation is [`WREN_DESC`], word one the heap record
-//! it belongs to. Every slot that takes or yields an address translates.
+//! word zero of the core allocation is the descriptor its heap record carries,
+//! which is how the record is found from the object, and word one is the
+//! bridge word: the object another language keeps standing for this one (the
+//! protocol's shadow), and three flag bits. Every slot that takes or yields an
+//! address translates.
 //!
 //! wren_lift's cycle is the only reclaimer of wren_lift objects; a core
 //! collection must retain every one of them, and no root of the core's reaches
@@ -47,32 +50,50 @@ use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_obje
 use crate::import::{self, Imports};
 use crate::publish::Exports;
 
-/// Bytes before the wren_lift object: the descriptor word and the record
-/// word, padded so the object keeps the allocation's 16-byte alignment.
+/// Bytes before the wren_lift object: the descriptor word and the bridge
+/// word, which keep the allocation's 16-byte alignment.
 pub(crate) const PREFIX: usize = 16;
-/// In the record word: wren_lift has marked the object in the open cycle.
-/// The record is a `Box`, so the bit is free. Cleared by `collect_end`.
+/// In the bridge word: wren_lift has marked the object in the open cycle.
+/// Cleared by `collect_end`.
 const MARKED: usize = 1;
 /// The object owns nothing outside the heap: the sweep skips `object_drop`.
 const PLAIN: usize = 2;
-const FLAGS: usize = MARKED | PLAIN;
+/// An instance of an installed class holding a handle in its first field.
+const ADOPTED: usize = 4;
+/// A shadow is a core object, 16-aligned, so the flags fit under it.
+const FLAGS: usize = MARKED | PLAIN | ADOPTED;
 
-/// The record word of the core allocation at `start`.
+/// The bridge word of the core allocation at `start`. A cycle writes its
+/// flags plainly, under the GC lock it holds throughout; a shadow is kept
+/// under the same lock and dropped by a hook of the sweep, so nothing
+/// races a plain write. The other flags are set by atomic read-modify-
+/// writes, since a shadow may be kept meanwhile.
 #[inline(always)]
-fn record_word(start: *mut u8) -> *mut usize {
+fn bridge_word(start: *mut u8) -> *mut usize {
     (start as *mut usize).wrapping_add(1)
 }
 
-/// The record the core allocation at `start` belongs to.
+#[inline(always)]
+fn bridge_atom<'a>(start: *mut u8) -> &'a AtomicUsize {
+    unsafe { AtomicUsize::from_ptr(bridge_word(start)) }
+}
+
+/// The record the core allocation at `start` belongs to: its descriptor
+/// is the record's first field.
 #[inline(always)]
 unsafe fn record_of<'a>(start: *mut u8) -> &'a WrenHeap {
-    unsafe { &*((*record_word(start) & !FLAGS) as *const WrenHeap) }
+    unsafe { &**(start as *const *const WrenHeap) }
 }
 
 /// One wren_lift heap: the handle `heap_new` mints. Touched only under the
 /// GC lock, which the trace hooks run under too, except the atomics, which
-/// `should_collect` reads without it.
+/// `should_collect` reads without it. Never freed: a value that outlives
+/// its VM still reads its descriptor, and is refused by the VM check.
+#[repr(C)]
 pub struct WrenHeap {
+    /// Word zero of every object of this heap. First, so the object's
+    /// descriptor address is the record's.
+    desc: TypeDesc,
     /// Core starts of every allocation wren_lift has not reclaimed.
     pins: Vec<Pin>,
     /// Roots the anchor, whose word one points back at this record.
@@ -138,10 +159,72 @@ pub(crate) fn record_for<'a>(obj: *mut u8) -> &'a WrenHeap {
 }
 
 /// The address of the record an object of the core start `start` belongs
-/// to, without reading the record: what to compare when the record may be
+/// to, without reading the record: what to compare when the VM may be
 /// gone.
+#[inline(always)]
 pub(crate) fn record_address(start: *mut u8) -> usize {
-    unsafe { *record_word(start) & !FLAGS }
+    unsafe { *(start as *const usize) }
+}
+
+/// Whether the core start `start` is a wren_lift object's: its descriptor
+/// is a record's.
+#[inline(always)]
+pub(crate) fn is_wren(start: *mut u8) -> bool {
+    let desc = unsafe { *(start as *const *const TypeDesc) };
+    !desc.is_null() && ptr::eq(unsafe { (*desc).protocol }, &crate::proto::WREN_PROTO)
+}
+
+/// Mark the object at `obj` as adopted: an instance of an installed class
+/// with a handle in its first field, which the sweep releases.
+pub(crate) fn set_adopted(obj: *mut u8) {
+    bridge_atom(obj.wrapping_sub(PREFIX)).fetch_or(ADOPTED, Ordering::Relaxed);
+}
+
+/// The object of language `lang` kept on the object at `obj`, if any.
+pub(crate) fn shadow_of(obj: *mut u8, lang: u32) -> Option<*mut u8> {
+    let p = (bridge_atom(obj.wrapping_sub(PREFIX)).load(Ordering::Acquire) & !FLAGS) as *mut u8;
+    (!p.is_null() && unsafe { lang_of(p) } == lang).then_some(p)
+}
+
+/// Keep `shadow` on the object at `obj`: `Ok` when kept, `Err(Some(p))`
+/// when `p` of the same language already is, `Err(None)` when the word
+/// holds another language's. Under the GC lock, apart from any cycle.
+pub(crate) fn keep_shadow(obj: *mut u8, shadow: *mut u8) -> Result<(), Option<*mut u8>> {
+    let _gc = heap::gc_guard();
+    let atom = bridge_atom(obj.wrapping_sub(PREFIX));
+    let mut w = atom.load(Ordering::Acquire);
+    loop {
+        let p = (w & !FLAGS) as *mut u8;
+        if !p.is_null() {
+            return Err((unsafe { lang_of(p) } == unsafe { lang_of(shadow) }).then_some(p));
+        }
+        match atom.compare_exchange_weak(
+            w,
+            w | shadow as usize,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return Ok(()),
+            Err(seen) => w = seen,
+        }
+    }
+}
+
+/// Forget `shadow` on the object at `obj`, if it is the one kept. From
+/// the shadow's drop hook, so under the GC lock.
+pub(crate) fn drop_shadow(obj: *mut u8, shadow: *mut u8) {
+    let atom = bridge_atom(obj.wrapping_sub(PREFIX));
+    let mut w = atom.load(Ordering::Acquire);
+    while w & !FLAGS == shadow as usize {
+        match atom.compare_exchange_weak(w, w & FLAGS, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return,
+            Err(seen) => w = seen,
+        }
+    }
+}
+
+unsafe fn lang_of(obj: *mut u8) -> u32 {
+    unsafe { (*caribou::protocol::desc_of(obj)).lang }
 }
 
 /// Whether `start` is the core start of an object of `rec`'s heap.
@@ -200,9 +283,9 @@ const fn desc(name: &'static str, trace: TraceFn) -> TypeDesc {
     d
 }
 
-/// Word zero of every wren_lift object's allocation. Mutable for one field:
+/// What every record's descriptor is made from. Mutable for one field:
 /// `lang` is the id the world assigns, written by `set_wren_lang` before the
-/// first VM exists and read from then on.
+/// first VM exists and copied into each record from then on.
 static mut WREN_DESC: TypeDesc = {
     let mut d = desc("wren object", trace_object);
     d.protocol = &crate::proto::WREN_PROTO;
@@ -211,14 +294,9 @@ static mut WREN_DESC: TypeDesc = {
 /// Word zero of a record's anchor.
 static ANCHOR_DESC: TypeDesc = desc("wren heap", trace_anchor);
 
-/// The descriptor every wren_lift object carries.
-pub(crate) fn wren_desc() -> *const TypeDesc {
-    &raw const WREN_DESC
-}
-
 /// The language id of Wren objects, as the world assigned it.
 pub(crate) fn wren_lang() -> u32 {
-    unsafe { (*wren_desc()).lang }
+    unsafe { WREN_DESC.lang }
 }
 
 /// Record the world's id for Wren. Before any VM allocates: a descriptor is
@@ -246,9 +324,9 @@ unsafe extern "C" fn mark_child(child: *mut u8, ctx: *mut c_void) {
 }
 
 /// The anchor's trace: every pin of its record, unless `collect_end` has
-/// just claimed them all itself.
+/// just claimed them all itself. The anchor's word one is its record.
 unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
-    let rec = unsafe { record_of(obj) };
+    let rec = unsafe { &*(*bridge_word(obj) as *const WrenHeap) };
     if rec.claimed {
         return;
     }
@@ -275,9 +353,7 @@ unsafe fn record_mut<'a>(heap: *mut c_void) -> &'a mut WrenHeap {
 /// bytes the core reserved for it.
 unsafe fn resolve(gc: &ImmixAllocator, rec: &WrenHeap, addr: usize) -> Option<(usize, usize)> {
     let (start, size) = gc.allocation_containing(addr)?;
-    let words = start as *const usize;
-    let ours = unsafe { *words == wren_desc() as usize }
-        && unsafe { *words.add(1) & !FLAGS == rec as *const WrenHeap as usize };
+    let ours = unsafe { *(start as *const usize) } == rec as *const WrenHeap as usize;
     ours.then_some((start, size))
 }
 
@@ -293,6 +369,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
     // handle exists, and a collection in between would forget it.
     let mut gc = heap::gc_locked_init();
     let rec = Box::into_raw(Box::new(WrenHeap {
+        desc: unsafe { ptr::read(&raw const WREN_DESC) },
         pins: Vec::new(),
         anchor: Handle::NULL,
         bytes_since_cycle: AtomicUsize::new(0),
@@ -319,7 +396,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
     if anchor.is_null() {
         heap::out_of_memory("a wren heap's anchor");
     }
-    unsafe { record_word(anchor).write(rec as usize) };
+    unsafe { bridge_word(anchor).write(rec as usize) };
     unsafe { (*rec).anchor = gc.handle_new(anchor) };
     rec as *mut c_void
 }
@@ -329,11 +406,15 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
 /// this thread in a collection that would otherwise trace the dropped
 /// objects.
 pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
-    let rec = unsafe { Box::from_raw(heap as *mut WrenHeap) };
+    // The record stays: see `WrenHeap`.
+    let rec = unsafe { record_mut(heap) };
     rec.closing.store(true, Ordering::Relaxed);
     let mut gc = heap::gc_locked_init();
-    import::release_all(&rec, &mut gc);
+    import::forget_classes(rec);
     for pin in &rec.pins {
+        if unsafe { *bridge_word(pin.start as *mut u8) } & ADOPTED != 0 {
+            import::finalize_dead((pin.start + PREFIX) as *mut u8, &mut gc);
+        }
         gc.forget_allocation(pin.start as *const u8);
     }
     let anchor = gc.handle_get(rec.anchor);
@@ -357,9 +438,10 @@ unsafe fn alloc_with(heap: *mut c_void, size: usize, flags: usize) -> *mut u8 {
     // collects, or parks for another mutator's collection, before it bumps,
     // and this thread reaches no safepoint until the pin is pushed.
     let reserved = (size + PREFIX).next_multiple_of(16);
+    let rec = unsafe { record_mut(heap) };
     let p = unsafe {
         heap::alloc_gen(
-            desc_ptr(wren_desc()),
+            desc_ptr(&rec.desc),
             size + PREFIX,
             mem::KIND_DYNAMIC | mem::TRACED,
         )
@@ -368,8 +450,7 @@ unsafe fn alloc_with(heap: *mut c_void, size: usize, flags: usize) -> *mut u8 {
         return p;
     }
     let start = p as usize;
-    unsafe { record_word(p).write(heap as usize | flags) };
-    let rec = unsafe { record_mut(heap) };
+    unsafe { bridge_word(p).write(flags) };
     rec.pins.push(Pin {
         start,
         size: reserved.min(u32::MAX as usize) as u32,
@@ -397,7 +478,7 @@ pub unsafe extern "C" fn is_heap_ptr(heap: *mut c_void, addr: usize) -> bool {
 /// The mark is a bit in the object's own prefix, as cheap as a header byte;
 /// the core's side table hears of it in `collect_end`, in address order.
 pub unsafe extern "C" fn mark_allocation(_heap: *mut c_void, ptr: *mut u8) -> bool {
-    let word = record_word(ptr.wrapping_sub(PREFIX));
+    let word = bridge_word(ptr.wrapping_sub(PREFIX));
     let w = unsafe { *word };
     if w & MARKED != 0 {
         return false;
@@ -407,7 +488,7 @@ pub unsafe extern "C" fn mark_allocation(_heap: *mut c_void, ptr: *mut u8) -> bo
 }
 
 pub unsafe extern "C" fn is_marked(_heap: *mut c_void, ptr: *mut u8) -> bool {
-    unsafe { *record_word(ptr.wrapping_sub(PREFIX)) & MARKED != 0 }
+    unsafe { *bridge_word(ptr.wrapping_sub(PREFIX)) & MARKED != 0 }
 }
 
 /// A word is a candidate as a raw address and, when its top 14 bits are set,
@@ -455,13 +536,7 @@ pub unsafe extern "C" fn watch(heap: *mut c_void, ptr: *mut u8) -> bool {
     if !owns_start(rec, start as usize) {
         return false;
     }
-    let word = record_word(start);
-    let w = unsafe { *word };
-    if w & PLAIN == 0 {
-        return false;
-    }
-    unsafe { *word = w & !PLAIN };
-    true
+    bridge_atom(start).fetch_and(!PLAIN, Ordering::Relaxed) & PLAIN != 0
 }
 
 /// True when this record has allocated a threshold's worth since its last
@@ -549,7 +624,7 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     // Marked pins become the core's claims, in address order; the rest die.
     unsafe { record_mut(heap) }.pins.retain(|pin| {
         let start = pin.start;
-        let word = record_word(start as *mut u8);
+        let word = bridge_word(start as *mut u8);
         let w = unsafe { *word };
         if w & MARKED != 0 {
             unsafe { *word = w & !MARKED };
@@ -558,17 +633,18 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
                 .expect("a pin is an allocation start");
             true
         } else {
-            dead.push((start, pin.size as usize, w & PLAIN != 0));
+            dead.push((start, pin.size as usize, w & FLAGS));
             false
         }
     });
     let mut freed = 0usize;
-    let rec = unsafe { record(heap) };
     let dead_count = dead.len();
-    for (start, size, plain) in dead {
+    for (start, size, flags) in dead {
         let obj = (start + PREFIX) as *mut u8;
-        import::finalize_dead(rec, obj, &mut gc);
-        if !plain {
+        if flags & ADOPTED != 0 {
+            import::finalize_dead(obj, &mut gc);
+        }
+        if flags & PLAIN == 0 {
             unsafe { drop_object(obj) };
         }
         gc.forget_allocation(start as *const u8);

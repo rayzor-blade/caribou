@@ -120,9 +120,6 @@ pub(crate) struct Imports {
     /// `(lang, type name)` to the class that stands for it.
     by_type: HashMap<(LangId, String), *mut ObjClass>,
 
-    /// Every live instance and the handle in its field, for the sweep and
-    /// for `heap_drop`.
-    live: AddressMap<Handle>,
     /// The class a foreign function is an instance of, once installed.
     function: Option<*mut ObjClass>,
 }
@@ -134,26 +131,19 @@ impl Imports {
     }
 }
 
-/// A dead object of `rec`'s heap, before it is dropped: release the handle
-/// an instance held. On the sweeping thread, the VM's, under the GC lock
-/// `gc` holds.
-pub(crate) fn finalize_dead(rec: &WrenHeap, obj: *mut u8, gc: &mut heap::ImmixAllocator) {
-    if unsafe { (*(obj as *const ObjHeader)).obj_type } != ObjType::Instance {
-        return;
-    }
-    let handle = rec.imports().borrow_mut().live.remove(&(obj as usize));
-    if let Some(handle) = handle {
+/// A dead adopted instance, before it is dropped: release the handle in
+/// its field. On the sweeping thread, the VM's, under the GC lock `gc`
+/// holds.
+pub(crate) fn finalize_dead(obj: *mut u8, gc: &mut heap::ImmixAllocator) {
+    let handle = unsafe { handle_of(obj as *mut ObjInstance) };
+    if !handle.is_null() {
         gc.handle_release(handle);
     }
 }
 
-/// Every handle the heap's instances still hold, released with the GC
-/// lock `gc` holds; the heap is going away with its VM.
-pub(crate) fn release_all(rec: &WrenHeap, gc: &mut heap::ImmixAllocator) {
+/// The heap is going away with its VM: forget its classes.
+pub(crate) fn forget_classes(rec: &WrenHeap) {
     let mut imports = rec.imports().borrow_mut();
-    for (_, handle) in imports.live.drain() {
-        gc.handle_release(handle);
-    }
     imports.classes.clear();
     imports.by_type.clear();
 }
@@ -460,17 +450,15 @@ unsafe fn handle_of(instance: *mut ObjInstance) -> Handle {
     }
 }
 
-/// Root `obj` from `instance`'s fields, recording it as live.
-fn adopt(rec: &WrenHeap, instance: *mut ObjInstance, obj: *mut u8) {
+/// Root `obj` from `instance`'s fields, and mark the instance adopted so
+/// the sweep releases the handle.
+fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
     let handle = heap::handle_new(obj);
     unsafe {
         (*instance).set_field(HANDLE_FIELD, WValue::num(f64::from(handle.as_raw())));
         (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64));
     }
-    rec.imports()
-        .borrow_mut()
-        .live
-        .insert(instance as usize, handle);
+    crate::heap::set_adopted(instance as *mut u8);
 }
 
 /// The object an instance of an installed class stands for, as the bridge
@@ -592,7 +580,7 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     };
     let instance = class.map(|class| {
         let instance = vm.alloc_instance(class);
-        adopt(rec, instance.as_object().unwrap() as *mut ObjInstance, obj);
+        adopt(instance.as_object().unwrap() as *mut ObjInstance, obj);
         instance
     });
     heap::handle_release(root);
@@ -715,7 +703,7 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                     bridge::describe(made)
                 ));
             };
-            adopt(record_for(obj), ptr, haxe as *mut u8);
+            adopt(ptr, haxe as *mut u8);
             return Ok(instance);
         }
         Kind::Static => {
@@ -800,15 +788,6 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
         heap::handle_release(root);
     }
     out
-}
-
-impl Drop for Imports {
-    fn drop(&mut self) {
-        debug_assert!(
-            self.live.is_empty(),
-            "handles released before the record drops"
-        );
-    }
 }
 
 #[cfg(test)]

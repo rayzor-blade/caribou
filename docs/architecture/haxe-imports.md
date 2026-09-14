@@ -155,17 +155,20 @@ collection retains every Wren object regardless (see [hosted
 collectors](heap.md#hosted-collectors)), and the ref's trace hook marks
 the object for it too.
 
-There is one ref per object: a process-wide map from the object's address
-to the ref's. The map holds no handle, so a ref is reachable only from
-Haxe and dies when Haxe drops it. Its drop hook, run by the core's sweep
-before the ref's lines can be reused, removes the map entry and gives up
-the handle. The release is deferred to the end of the collection through
-`heap::handle_release_deferred`, since a drop hook cannot take the GC
-lock.
+There is one ref per object, and the object keeps it: the ref is the
+protocol's *shadow* of the object for Haxe (see
+[bridge.md](bridge.md#shadows)), a word on a Wren object. An object whose
+language keeps no shadow, a core `Error` say, is entered in a map from
+its address to the ref's instead. Neither holds a handle on the ref, so
+a ref is reachable only from Haxe and dies when Haxe drops it. Its drop
+hook, run by the core's sweep before the ref's lines can be reused, drops
+the shadow or the entry and gives up the handle. The release is deferred
+to the end of the collection through `heap::handle_release_deferred`,
+since a drop hook cannot take the GC lock.
 
-The invariant the map keeps is that an entry names a live ref. Presence
-means alive, because the only way out of the map is the drop of the ref
-named, and the object cannot die before its ref, which holds its handle.
+The invariant is that a ref an object keeps, or the map names, is alive.
+Presence means alive, because the only way out is the drop of the ref
+itself, and the object cannot die before its ref, which holds its handle.
 So `wrap_foreign` on an object that already has a ref returns that ref,
 and a second wrap of one object is the same ref until Haxe lets it go.
 Once it does, the object dies with the next Wren cycle that finds no other

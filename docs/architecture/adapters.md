@@ -66,10 +66,13 @@ payload, wrapped, so it is the same object when it returns to Haxe.
 ## Wren objects
 
 A Wren object crosses as its own core address: the start of the prefixed
-allocation, where word zero is the shared `WREN_DESC`, sixteen bytes
-before the address wren_lift holds. `caribou_wren::wrap` and `unwrap`
-translate, and every protocol entry adds the prefix back before touching
-the object.
+allocation, sixteen bytes before the address wren_lift holds. Word zero
+is the descriptor its VM's heap record carries, which is how a message
+finds the VM the object belongs to. Word one is the bridge word: the
+object another language keeps standing for this one (the protocol's
+shadow, below), and three flag bits of the adapter's own. `caribou_wren::wrap`
+and `unwrap` translate, and every protocol entry adds the prefix back
+before touching the object.
 
 Strings cross by value in both directions. A Wren string leaving becomes
 a core `Str` at the edge, whichever entry or conversion it leaves through,
@@ -99,6 +102,7 @@ signature convention:
 | `len` | `count` |
 | `iterate` | `iterate(_)` and `iteratorValue(_)` |
 | `type_name` | the name the class was published under (`hud.Hud`), else its bare name |
+| `shadow`, `keep_shadow`, `drop_shadow` | the bridge word: one object of one language, whichever keeps one first |
 
 A method the class lacks raises Wren's own `does not implement` error.
 wren_lift's error is a message string, so a Wren error crossing the bridge

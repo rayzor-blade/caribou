@@ -37,6 +37,7 @@ into a language that did not make it.
 | `to_string`, `hash`, `equals` | identity and display |
 | `unwrap_native` | the native payload of a plugin object |
 | `type_name` | what the registry publishes the object's class under |
+| `shadow`, `keep_shadow`, `drop_shadow` | the object of another language standing for this one, kept on the object (below); optional |
 | `is_error`, `error_message`, `error_kind`, `error_cause`, `error_trace` | the error protocol |
 
 A message an object does not answer returns `Unsupported`, and the calling
@@ -212,6 +213,21 @@ dispatcher leaves the signature's kinds, read once and kept per
 signature: the next call places the arguments by them and calls the
 code, unless the cell holds a stub again. A ref forwarding to a Wren
 object keeps no direct send, since it would be called on the ref.
+
+## Shadows
+
+When an object crosses into a language that cannot hold it as it is, that
+language makes an object of its own to stand for it: Haxe's ref for a
+Wren object. The same object crossing twice must give the same
+stand-in, so the stand-in has to be found from the object. The
+protocol's answer is the *shadow*: the object's own language keeps the
+stand-in on the object, where finding it is a read. `shadow(lang)` gives
+the one kept for a language, `keep_shadow` keeps one when none is kept
+yet and answers with the one kept otherwise, and `drop_shadow` forgets it
+when the stand-in dies. A Wren object keeps one in its bridge word (see
+[adapters.md](adapters.md#wren-objects)). A language that keeps none
+answers `Unsupported`, and the other side remembers its stand-ins in a
+map of its own.
 
 ## Diagnostics
 

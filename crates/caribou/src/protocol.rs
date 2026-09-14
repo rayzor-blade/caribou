@@ -112,6 +112,20 @@ pub struct Protocol {
     /// The object's type in its own language's terms, as a core `Str`:
     /// what the registry's `ClassIface::type_name` holds for its class.
     pub type_name: Option<unsafe extern "C-unwind" fn(obj: *mut u8, out: *mut Value) -> u8>,
+    /// The object of language `lang` standing for this one, which this
+    /// object's language keeps on it so the same object crossing twice is
+    /// the same object on the other side; `Missing` when none is kept.
+    /// Optional: a language that keeps none answers `Unsupported`, and the
+    /// other language remembers its own.
+    pub shadow:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, lang: LangId, out: *mut *mut u8) -> u8>,
+    /// Keep `shadow` as the object of its language standing for this one,
+    /// when none of that language is kept yet; else `Missing`, with the one
+    /// kept in `out`.
+    pub keep_shadow:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, shadow: *mut u8, out: *mut *mut u8) -> u8>,
+    /// Forget `shadow`, if it is the one kept.
+    pub drop_shadow: Option<unsafe extern "C-unwind" fn(obj: *mut u8, shadow: *mut u8) -> u8>,
 }
 
 /// Reply codes an entry returns.
@@ -145,6 +159,9 @@ impl Protocol {
         error_cause: None,
         error_trace: None,
         type_name: None,
+        shadow: None,
+        keep_shadow: None,
+        drop_shadow: None,
     };
 }
 
@@ -495,6 +512,33 @@ impl Send {
         };
         let mut out = Value::null();
         reply(unsafe { f(obj, &mut out) }, out)
+    }
+
+    pub unsafe fn shadow(obj: *mut u8, lang: LangId) -> Result<*mut u8, Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.shadow) else {
+            return Err(Fault::Unsupported);
+        };
+        let mut out = core::ptr::null_mut();
+        reply(unsafe { f(obj, lang, &mut out) }, Value::null()).map(|_| out)
+    }
+
+    /// `Err(Fault::Missing)` comes with the shadow already kept, in `out`.
+    pub unsafe fn keep_shadow(
+        obj: *mut u8,
+        shadow: *mut u8,
+        out: &mut *mut u8,
+    ) -> Result<(), Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.keep_shadow) else {
+            return Err(Fault::Unsupported);
+        };
+        reply(unsafe { f(obj, shadow, out) }, Value::null()).map(|_| ())
+    }
+
+    pub unsafe fn drop_shadow(obj: *mut u8, shadow: *mut u8) -> Result<(), Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.drop_shadow) else {
+            return Err(Fault::Unsupported);
+        };
+        reply(unsafe { f(obj, shadow) }, Value::null()).map(|_| ())
     }
 }
 

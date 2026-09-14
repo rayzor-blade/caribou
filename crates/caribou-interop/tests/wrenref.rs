@@ -176,10 +176,12 @@ fn haxe_holds_a_wren_object_through_a_ref() {
     );
 
     // Haxe lets go: the ref dies with the core's collection and gives up
-    // its handle; the object goes with the next Wren cycle.
+    // its handle; the object goes with the next Wren cycle. The scrub
+    // clears what `ref_for` left below this frame.
     heap::handle_release(root);
+    scrub_stack();
     heap::major();
-    assert_eq!(ref_for(obj_hidden), 0, "the map entry is gone");
+    assert_eq!(ref_for(obj_hidden), 0, "the object no longer keeps the ref");
     scrub_stack();
     vm.collect_garbage();
     assert!(
