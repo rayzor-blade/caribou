@@ -667,6 +667,71 @@ pub fn arity(v: Value) -> Option<usize> {
     }
 }
 
+/// Whether `v` is a sequence of its language: its protocol answers `len`.
+/// Nothing is raised; an entry that raises is `false`.
+pub fn is_sequence(v: Value) -> bool {
+    len(v, LANG_CORE).is_ok()
+}
+
+/// How many elements the sequence `v` has.
+pub fn len(v: Value, caller: LangId) -> Result<usize, Value> {
+    let Some(obj) = object_of(v) else {
+        return Err(sequence_error(v, "len", caller));
+    };
+    let segment = unsafe { lang_of(obj) };
+    let outcome = protected(
+        || unsafe { protocol::Send::len(obj).map(|n| Value::int(n as i32)) },
+        |fault| sequence_fault(fault, v, "len"),
+    );
+    settle(outcome, segment, "len", caller).map(|n| n.as_int().unwrap_or(0).max(0) as usize)
+}
+
+/// The element of `v` at `key`.
+pub fn index(v: Value, key: Value, caller: LangId) -> Result<Value, Value> {
+    let Some(obj) = object_of(v) else {
+        return Err(sequence_error(v, "index", caller));
+    };
+    let segment = unsafe { lang_of(obj) };
+    let outcome = protected(
+        || unsafe { protocol::Send::index(obj, key) },
+        |fault| sequence_fault(fault, v, "index"),
+    );
+    settle(outcome, segment, "index", caller)
+}
+
+/// Set the element of `v` at `key`.
+pub fn set_index(v: Value, key: Value, value: Value, caller: LangId) -> Result<(), Value> {
+    let Some(obj) = object_of(v) else {
+        return Err(sequence_error(v, "set_index", caller));
+    };
+    let segment = unsafe { lang_of(obj) };
+    let outcome = protected(
+        || unsafe { protocol::Send::set_index(obj, key, value).map(|()| Value::null()) },
+        |fault| sequence_fault(fault, v, "set_index"),
+    );
+    settle(outcome, segment, "set_index", caller).map(|_| ())
+}
+
+fn sequence_error(v: Value, what: &str, caller: LangId) -> Value {
+    let (kind, message) = sequence_fault(Fault::Unsupported, v, what);
+    settle(Outcome::Fault(kind, message), LANG_CORE, what, caller)
+        .err()
+        .unwrap_or_else(Value::null)
+}
+
+fn sequence_fault(fault: Fault, v: Value, what: &str) -> (ErrorKind, String) {
+    match fault {
+        Fault::Missing => (
+            ErrorKind::Index,
+            format!("{} has no element there", describe(v)),
+        ),
+        _ => (
+            ErrorKind::Type,
+            format!("{} does not answer {what}", describe(v)),
+        ),
+    }
+}
+
 /// Call `callable` with `args` on behalf of `caller`. `Ok` is the callee's
 /// result; `Err` is an `Error` value carrying one more trace frame, or the
 /// caller's own error object when the error started there.

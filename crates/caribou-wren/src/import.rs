@@ -84,6 +84,13 @@ enum Kind {
     Call,
     /// `arity` of a foreign function.
     Arity,
+    /// `[_]`, `[_]=(_)`, `count`, `iterate(_)` and `iteratorValue(_)` of
+    /// a foreign sequence: Wren's own protocol, over the bridge's.
+    Index,
+    SetIndex,
+    Count,
+    Iterate,
+    IteratorValue,
 }
 
 pub(crate) struct Target {
@@ -146,6 +153,8 @@ pub(crate) struct Imports {
 
     /// The class a foreign function is an instance of, once installed.
     function: Option<*mut ObjClass>,
+    /// The class a foreign sequence is an instance of, once installed.
+    sequence: Option<*mut ObjClass>,
 }
 
 impl Imports {
@@ -346,7 +355,14 @@ fn blob(iface: &Interface) -> Result<Vec<u8>, serialize::SerializeError> {
             );
             ClassMir {
                 name: interner.intern(&class.name),
-                superclass: None,
+                // A class of the bridge's own module may extend one of
+                // Wren's core classes, which every module sees; a
+                // published class's superclass is its own language's.
+                superclass: class
+                    .superclass
+                    .as_deref()
+                    .filter(|_| iface.lang == caribou::world::LANG_CORE)
+                    .map(|name| interner.intern(name)),
                 methods: Vec::new(),
                 num_fields: FIELD_NAMES.len() as u16,
                 protocols: ProtocolSet::EMPTY,
@@ -604,8 +620,70 @@ fn function_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
     Ok(ptr)
 }
 
+/// The class a foreign sequence is an instance of: `Sequence`, in the
+/// bridge's own module, answering Wren's own sequence protocol through
+/// the bridge's: `[_]`, `[_]=(_)`, `count`, and `iterate(_)` with
+/// `iteratorValue(_)`, the iterator being the position. Installed on
+/// first need.
+pub const SEQUENCE_CLASS: &str = "Sequence";
+const SEQUENCE_MODULE: &str = "caribou:Sequence";
+
+fn sequence_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
+    let rec = record_for(vm.object_class as *mut u8);
+    if let Some(class) = rec.imports().borrow().sequence {
+        return Ok(class);
+    }
+    let shell = Interface {
+        lang: caribou::world::LANG_CORE,
+        module: SEQUENCE_MODULE.to_owned(),
+        classes: vec![ClassIface {
+            name: SEQUENCE_CLASS.to_owned(),
+            type_name: SEQUENCE_CLASS.to_owned(),
+            // Wren's own `Sequence`, for `toList`, `map`, `where` and the
+            // rest over the protocol below.
+            superclass: Some("Sequence".to_owned()),
+            fields: Vec::new(),
+            statics: Vec::new(),
+            methods: Vec::new(),
+            ctor: None,
+            class_object: Value::null(),
+        }],
+    };
+    let bytes = blob(&shell).map_err(|e| ImportError(format!("`{SEQUENCE_MODULE}`: {e}")))?;
+    if vm.interpret_bytecode(SEQUENCE_MODULE, &bytes) != InterpretResult::Success {
+        return Err(ImportError(format!("`{SEQUENCE_MODULE}` did not install")));
+    }
+    let value = vm
+        .find_imported_var_from(SEQUENCE_CLASS, SEQUENCE_MODULE)
+        .ok_or_else(|| ImportError(format!("`{SEQUENCE_MODULE}` installed no class")))?;
+    let ptr = value.as_object().unwrap_or(std::ptr::null_mut()) as *mut ObjClass;
+    let member = |sig: &str, kind: Kind, name: &str| {
+        (
+            sig.to_owned(),
+            Target::new(
+                kind,
+                format!("{SEQUENCE_CLASS}.{name}"),
+                Callable::Dynamic(Value::null()),
+            ),
+        )
+    };
+    let members = vec![
+        member("[_]", Kind::Index, "[]"),
+        member("[_]=(_)", Kind::SetIndex, "[]="),
+        member("count", Kind::Count, "count"),
+        member("iterate(_)", Kind::Iterate, "iterate"),
+        member("iteratorValue(_)", Kind::IteratorValue, "iteratorValue"),
+    ];
+    let binding = bind_members(vm, ptr, SEQUENCE_CLASS, members)?;
+    let mut imports = rec.imports().borrow_mut();
+    imports.classes.insert(ptr as usize, Rc::new(binding));
+    imports.sequence = Some(ptr);
+    Ok(ptr)
+}
+
 /// The instance of an installed class that stands for `v`: of the class
-/// installed for its type, or of `Function` when `v` is a function.
+/// installed for its type, of `Function` when `v` is a function, else of
+/// `Sequence` when `v` answers `len`.
 pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
@@ -623,24 +701,29 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let root = heap::handle_new(obj);
     let class = if bridge::arity(v).is_some() {
         function_class(vm).ok()
-    } else if let Some(type_name) = bridge::type_name(v) {
-        let known = rec
-            .imports()
-            .borrow()
-            .by_type
-            .get(&(lang, type_name.clone()))
-            .copied();
-        known.or_else(|| {
-            let (iface, _) = registry::class_for_type(lang, &type_name)?;
-            install(vm, lang, &iface.module).ok()?;
-            rec.imports()
+    } else {
+        let published = bridge::type_name(v).and_then(|type_name| {
+            let known = rec
+                .imports()
                 .borrow()
                 .by_type
-                .get(&(lang, type_name))
-                .copied()
+                .get(&(lang, type_name.clone()))
+                .copied();
+            known.or_else(|| {
+                let (iface, _) = registry::class_for_type(lang, &type_name)?;
+                install(vm, lang, &iface.module).ok()?;
+                rec.imports()
+                    .borrow()
+                    .by_type
+                    .get(&(lang, type_name))
+                    .copied()
+            })
+        });
+        published.or_else(|| {
+            bridge::is_sequence(v)
+                .then(|| sequence_class(vm).ok())
+                .flatten()
         })
-    } else {
-        None
     };
     let instance = class.map(|class| {
         let instance = vm.alloc_instance(class);
@@ -828,6 +911,34 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 wren,
                 &target.name,
             );
+            release(roots);
+            r
+        }
+        Kind::Index | Kind::SetIndex | Kind::Count | Kind::Iterate | Kind::IteratorValue => {
+            let this = foreign_of(recv).ok_or_else(|| {
+                release(roots);
+                format!("{} has no sequence behind it", vm.class_name_of(recv))
+            })?;
+            let args = &with_this[1..];
+            let r = match target.kind {
+                Kind::Index => bridge::index(this, args[0], wren),
+                Kind::SetIndex => bridge::set_index(this, args[0], args[1], wren).map(|()| args[1]),
+                Kind::Count => bridge::len(this, wren).map(|n| Value::number(n as f64)),
+                // Wren's iterator here is the position: null starts, false
+                // ends.
+                Kind::Iterate => bridge::len(this, wren).map(|n| {
+                    let next = match args[0].as_number() {
+                        Some(i) => i + 1.0,
+                        None => 0.0,
+                    };
+                    if (next as usize) < n {
+                        Value::number(next)
+                    } else {
+                        Value::bool(false)
+                    }
+                }),
+                _ => bridge::index(this, args[0], wren),
+            };
             release(roots);
             r
         }

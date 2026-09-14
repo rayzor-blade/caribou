@@ -46,4 +46,20 @@ class Player {
 		spawned++;
 		return p;
 	}
+
+	/** Arrays of objects and of numbers, for the other language to walk. */
+	public static function party():Array<Player> {
+		return [new Player("ann"), new Player("ben")];
+	}
+
+	public static function scores():Array<Int> {
+		return [3, 1, 4];
+	}
+
+	/** The sum of what the other language handed back. */
+	public static function total(xs:Array<Int>):Int {
+		var t = 0;
+		for (x in xs) t += x;
+		return t;
+	}
 }

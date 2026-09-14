@@ -72,6 +72,15 @@ System.print("%(inner == h) %(inner is Hero)")
 for (i in 0...200) Player.spawnAt(i, i)
 System.gc()
 System.print(Player.apply(Fn.new {|v| v }, p) == p)
+var party = Player.party()
+System.print("%(party.count) %(party[0].name) %(party[1] is Player)")
+var names = []
+for (m in party) names.add(m.name)
+System.print(names)
+var scores = Player.scores()
+System.print("%(scores.count) %(scores[2]) %(scores.toList)")
+scores[0] = 10
+System.print(Player.total(scores))
 "#;
 
 fn fixture() -> PathBuf {
@@ -125,7 +134,7 @@ fn drive(mode: ExecutionMode) {
     assert_eq!(result, InterpretResult::Success, "{errors:?}");
     assert_eq!(
         output,
-        "kaboom\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n"
+        "kaboom\ntrue\nspawned\nkay sir\ntrue\ntrue true bob\ntrue true\ntrue\n2 ann true\n[ann, ben]\n3 4 [3, 1, 4]\n15\n"
     );
 
     // A module no namespace holds is an import error naming it.

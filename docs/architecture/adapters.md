@@ -40,7 +40,9 @@ Its protocol reaches the object the way compiled Haxe does.
 
 A Haxe `String` is not wrapped. It crosses as a core `Str`, and a core
 `Str` entering Haxe becomes a fresh `String` under the type the loaded
-program's `String` class carries. Sequence access is not answered yet.
+program's `String` class carries. A HashLink array, an object with a
+declared `length` and a `getDyn` method, answers `len`, `index`,
+`set_index` and `iterate`, through those; nothing else answers them.
 
 ### Calling into Haxe
 
@@ -208,3 +210,11 @@ class the adapter installs on first need in the bridge's own module. Its
 `call` natives, one per arity, and its `arity` reach the object behind the
 instance through `bridge::call`. It is chosen over the published class's
 proxy when the value answers `arity`.
+
+An object of another language that answers `len` and has no published
+class, a Haxe array, becomes an instance of `Sequence`, installed the
+same way and extending Wren's own `Sequence`: `[_]`, `[_]=(_)` and
+`count` are the bridge's `index`, `set_index` and `len`, and `iterate`
+with `iteratorValue` walk it by position, so `for`, `toList`, `map` and
+the rest of Wren's sequence methods work on it. Going back, it is the
+array it stands for.

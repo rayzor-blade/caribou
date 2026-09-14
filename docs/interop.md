@@ -88,6 +88,10 @@ class Hero is Player {
 - A Haxe object is an instance of the imported class, and the same
   instance each time it crosses while Wren holds it, so Wren `==` works
   on it; an instance going back to Haxe is the object it stands for.
+- A Haxe array is a Wren `Sequence`: `xs.count`, `xs[i]`, `xs[i] = v`,
+  `for (x in xs)`, `xs.toList` and the rest of `Sequence` work on it,
+  reading and writing the array where Haxe keeps it. Going back to Haxe
+  it is the same array.
 
 ## Haxe using Wren
 

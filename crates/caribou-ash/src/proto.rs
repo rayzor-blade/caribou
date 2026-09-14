@@ -25,8 +25,8 @@
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::{OnceLock, RwLock};
 
 use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
@@ -1693,8 +1693,111 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Value) -> u8 {
     }
 }
 
-/// Sequence access is not answered yet: a Haxe array is a class instance
-/// whose element storage differs by element type.
+// ---------------------------------------------------------------------------
+// Sequences: HashLink's arrays
+// ---------------------------------------------------------------------------
+
+/// The names an array answers through: `length`, and `getDyn` and
+/// `setDyn` of `hl.types.ArrayAccess`, which every array kind overrides.
+struct ArrayNames {
+    length: Symbol,
+    get_dyn: Symbol,
+    set_dyn: Symbol,
+}
+
+fn array_names() -> &'static ArrayNames {
+    static NAMES: OnceLock<ArrayNames> = OnceLock::new();
+    NAMES.get_or_init(|| ArrayNames {
+        length: caribou::symbol::intern("length"),
+        get_dyn: caribou::symbol::intern("getDyn"),
+        set_dyn: caribou::symbol::intern("setDyn"),
+    })
+}
+
+/// Whether the object is a HashLink array: a declared `length` and a
+/// `getDyn` method.
+fn is_array(d: *mut vdynamic) -> bool {
+    let names = array_names();
+    has_members(unsafe { kind_of(d) })
+        && unsafe { field_of((*d).t, field_hash(names.length)) }.is_some()
+        && unsafe { find_method(d, field_hash(names.get_dyn)) }.is_some()
+}
+
+unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
+    let d = unsafe { inner(obj) };
+    if !is_array(d) {
+        return REPLY_UNSUPPORTED;
+    }
+    let mut length = Value::null();
+    let code = get_at(obj, array_names().length, None, &mut length);
+    if code != REPLY_OK {
+        return code;
+    }
+    unsafe { *out = length.as_int().unwrap_or(0).max(0) as usize };
+    REPLY_OK
+}
+
+unsafe extern "C-unwind" fn index(obj: *mut u8, key: Value, out: *mut Value) -> u8 {
+    let d = unsafe { inner(obj) };
+    if !is_array(d) {
+        return REPLY_UNSUPPORTED;
+    }
+    let Some(pos) = key.as_int().or_else(|| key.as_number().map(|n| n as i32)) else {
+        return REPLY_MISSING;
+    };
+    let mut length = 0usize;
+    let code = unsafe { len(obj, &mut length) };
+    if code != REPLY_OK {
+        return code;
+    }
+    if pos < 0 || pos as usize >= length {
+        return REPLY_MISSING;
+    }
+    let args = [Value::int(pos)];
+    invoke_at_opt(obj, array_names().get_dyn, None, args.as_ptr(), 1, out)
+}
+
+unsafe extern "C-unwind" fn set_index(obj: *mut u8, key: Value, value: Value) -> u8 {
+    let d = unsafe { inner(obj) };
+    if !is_array(d) {
+        return REPLY_UNSUPPORTED;
+    }
+    let Some(pos) = key.as_int().or_else(|| key.as_number().map(|n| n as i32)) else {
+        return REPLY_MISSING;
+    };
+    if pos < 0 {
+        return REPLY_MISSING;
+    }
+    let args = [Value::int(pos), value];
+    let mut ignored = Value::null();
+    invoke_at_opt(
+        obj,
+        array_names().set_dyn,
+        None,
+        args.as_ptr(),
+        2,
+        &mut ignored,
+    )
+}
+
+/// The elements in order: the state is the next position.
+unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8 {
+    let pos = unsafe { *state }.as_int().unwrap_or(0).max(0);
+    let mut length = 0usize;
+    let code = unsafe { len(obj, &mut length) };
+    if code != REPLY_OK {
+        return code;
+    }
+    if pos as usize >= length {
+        return REPLY_MISSING;
+    }
+    let code = unsafe { index(obj, Value::int(pos), out) };
+    if code == REPLY_OK {
+        unsafe { *state = Value::int(pos + 1) };
+    }
+    code
+}
+
 static HAXE_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
@@ -1704,6 +1807,10 @@ static HAXE_PROTO: Protocol = Protocol {
     invoke_at: Some(invoke_at),
     call: Some(call),
     arity: Some(arity),
+    index: Some(index),
+    set_index: Some(set_index),
+    len: Some(len),
+    iterate: Some(iterate),
     to_string: Some(to_string),
     hash: Some(hash),
     equals: Some(equals),
