@@ -38,7 +38,7 @@ use std::rc::Rc;
 
 use caribou::bridge;
 use caribou::error::{Error, Str};
-use caribou::hash::AddressMap;
+use caribou::hash::{AddressMap, BuildAddressHasher};
 use caribou::heap::{self, Handle};
 use caribou::protocol::{CallSite, Callable, Send};
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
@@ -57,13 +57,15 @@ use wren_lift::serialize;
 use crate::heap::{WrenHeap, record_for, wren_lang};
 use crate::proto::{current_vm, from_wren, to_wren};
 
-/// The fields of every instance: the handle on the object it stands for,
-/// and the object's address, as numbers. The heap does not move, so the
-/// address is good for as long as the handle holds.
+/// The fields of every instance, as numbers: the address of the object it
+/// stands for, which the heap's trace marks while the instance lives, and
+/// the key it stands in under (`stand_in_key`), so a dying instance need
+/// not read its object to be forgotten.
 const OBJECT_FIELD: usize = 0;
+const KEY_FIELD: usize = 1;
 /// Their names in the class's field layout: not names Wren source can
 /// spell, so a subclass's own fields never alias them.
-const FIELD_NAMES: [&str; 1] = ["__caribou_object"];
+const FIELD_NAMES: [&str; 2] = ["__caribou_object", "__caribou_key"];
 
 // ---------------------------------------------------------------------------
 // The per-heap table
@@ -146,7 +148,7 @@ pub(crate) struct Imports {
     classes: AddressMap<Rc<ClassBinding>>,
     /// `(lang, type name)` to the class that stands for it, the name as
     /// the symbol the protocol answers.
-    by_type: HashMap<(LangId, Symbol), *mut ObjClass>,
+    by_type: HashMap<(LangId, Symbol), *mut ObjClass, BuildAddressHasher>,
     /// The instance standing for each foreign object, by the object:
     /// the same object crossing twice is the same instance. An entry is
     /// removed when its instance dies, so presence means alive.
@@ -212,11 +214,10 @@ pub(crate) fn stand_in_for(vm: &VM, native: *mut u8) -> Option<WValue> {
 /// The adopted instance at `instance` is dying: its object may have a
 /// new stand-in.
 pub(crate) fn forget_stand_in(imports: &RefCell<Imports>, instance: *mut u8) {
-    let obj = unsafe { held(instance) };
-    if obj.is_null() {
+    let key = unsafe { number_field(instance, KEY_FIELD) };
+    if key == 0 {
         return;
     }
-    let key = stand_in_key(obj as *mut u8);
     let mut imports = imports.borrow_mut();
     if imports.stand_ins.get(&key).copied() == Some(instance as *mut ObjInstance) {
         imports.stand_ins.remove(&key);
@@ -536,21 +537,26 @@ fn bind_members(
 
 /// The object an adopted instance holds in its field.
 pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
-    let v = unsafe { (*(instance as *mut ObjInstance)).get_field(OBJECT_FIELD) };
-    v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize as *const u8
+    unsafe { number_field(instance, OBJECT_FIELD) as *const u8 }
+}
+
+unsafe fn number_field(instance: *mut u8, field: usize) -> usize {
+    let v = unsafe { (*(instance as *mut ObjInstance)).get_field(field) };
+    v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize
 }
 
 /// Hold `obj` from `instance`'s field, mark the instance adopted, so the
 /// heap's trace marks what it holds, and make it the object's stand-in
 /// in `vm`.
 fn adopt(vm: &VM, instance: *mut ObjInstance, obj: *mut u8) {
-    unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64)) };
+    let key = stand_in_key(obj);
+    unsafe {
+        (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64));
+        (*instance).set_field(KEY_FIELD, WValue::num(key as f64));
+    }
     crate::heap::set_adopted(instance as *mut u8);
     let rec = record_for(vm.object_class as *mut u8);
-    rec.imports()
-        .borrow_mut()
-        .stand_ins
-        .insert(stand_in_key(obj), instance);
+    rec.imports().borrow_mut().stand_ins.insert(key, instance);
 }
 
 /// The object an instance of an installed class stands for, as the bridge

@@ -40,6 +40,7 @@ use ash_interp::interpreter::HLInterpreter;
 use ash_std::error::hlp_throw;
 use ash_std::obj::{hlp_alloc_obj, hlp_get_obj_rt};
 use caribou::bridge;
+use caribou::hash::BuildAddressHasher;
 use caribou::protocol::{CallSite, Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
 use caribou::report;
@@ -256,7 +257,7 @@ struct Faces {
     by_class: HashMap<(String, String, String), usize>,
     fallback: usize,
     /// Answers already found for a published type name.
-    by_type: HashMap<(LangId, String), usize>,
+    by_type: HashMap<(LangId, Symbol), usize, BuildAddressHasher>,
 }
 
 /// Parse `game:hud.Hud.draw(_)`: namespace, module, class, and the
@@ -436,7 +437,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
     *FACES.write().unwrap() = Some(Faces {
         by_class,
         fallback,
-        by_type: HashMap::new(),
+        by_type: HashMap::default(),
     });
     Ok(())
 }
@@ -507,14 +508,22 @@ unsafe fn bind_face(face: *mut vdynamic, obj: Value) {
 /// The class the program declares for the object's published type.
 fn face_type(v: Value) -> Result<*mut hl_type, String> {
     let lang = bridge::language_of(v).ok_or("not an object")?;
-    let type_name = bridge::type_name(v).unwrap_or_default();
-    let mut faces = FACES.write().unwrap();
-    let faces = faces.as_mut().ok_or("no program is loaded")?;
-    let key = (lang, type_name.clone());
-    if let Some(&t) = faces.by_type.get(&key) {
+    let type_name = bridge::type_symbol(v).unwrap_or_else(|| intern(""));
+    let key = (lang, type_name);
+    if let Some(&t) = FACES
+        .read()
+        .unwrap()
+        .as_ref()
+        .ok_or("no program is loaded")?
+        .by_type
+        .get(&key)
+    {
         return Ok(t as *mut hl_type);
     }
-    let published = registry::class_for_type(lang, &type_name);
+    let mut faces = FACES.write().unwrap();
+    let faces = faces.as_mut().ok_or("no program is loaded")?;
+    let type_name = type_name.name();
+    let published = registry::class_for_type(lang, type_name);
     let declared = published.as_ref().and_then(|(iface, index)| {
         let class = &iface.classes[*index].name;
         faces.by_class.iter().find_map(|((ns, module, c), &t)| {

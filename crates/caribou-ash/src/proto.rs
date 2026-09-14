@@ -25,8 +25,8 @@
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicPtr, Ordering};
-use std::sync::{OnceLock, RwLock};
 
 use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
@@ -428,15 +428,20 @@ pub(crate) unsafe fn obj_name_is(t: *const hl_type, name: &str) -> bool {
     (unsafe { *p }) == 0
 }
 
-/// The text of a `String` object.
-unsafe fn string_text(d: *mut vdynamic) -> String {
+/// The UTF-16 units of a `String` object, where it keeps them.
+unsafe fn string_units<'a>(d: *mut vdynamic) -> &'a [uchar] {
     let base = d as *const u8;
     let bytes = unsafe { *(base.add(STRING_BYTES) as *const *const uchar) };
     let len = unsafe { *(base.add(STRING_LENGTH) as *const i32) };
     if bytes.is_null() || len <= 0 {
-        return String::new();
+        return &[];
     }
-    String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(bytes, len as usize) })
+    unsafe { std::slice::from_raw_parts(bytes, len as usize) }
+}
+
+/// The text of a `String` object.
+unsafe fn string_text(d: *mut vdynamic) -> String {
+    String::from_utf16_lossy(unsafe { string_units(d) })
 }
 
 /// A `String` object holding `text`, or `None` before a program has
@@ -447,17 +452,21 @@ unsafe fn alloc_string(text: &str) -> Option<*mut vdynamic> {
     if t.is_null() {
         return None;
     }
-    let units: Vec<uchar> = text.encode_utf16().collect();
-    let bytes = unsafe { hlp_alloc_bytes(((units.len() + 1) * 2) as i32) } as *mut uchar;
-    unsafe {
-        ptr::copy_nonoverlapping(units.as_ptr(), bytes, units.len());
-        *bytes.add(units.len()) = 0;
+    let n = text.encode_utf16().count();
+    let bytes = unsafe { hlp_alloc_bytes(((n + 1) * 2) as i32) } as *mut uchar;
+    let mut at = bytes;
+    for unit in text.encode_utf16() {
+        unsafe {
+            *at = unit;
+            at = at.add(1);
+        }
     }
+    unsafe { *at = 0 };
     let s = unsafe { hlp_alloc_obj(t.cast()) } as *mut vdynamic;
     let base = s as *mut u8;
     unsafe {
         *(base.add(STRING_BYTES) as *mut *const uchar) = bytes;
-        *(base.add(STRING_LENGTH) as *mut i32) = units.len() as i32;
+        *(base.add(STRING_LENGTH) as *mut i32) = n as i32;
     }
     Some(s)
 }
@@ -488,8 +497,7 @@ pub(crate) unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
         hl::HF64 => Value::number(unsafe { v.d }),
         hl::HBOOL => Value::bool(unsafe { v.b }),
         hl::HOBJ if unsafe { is_string(d) } => {
-            let text = unsafe { string_text(d) };
-            Str::value(Str::new(&text))
+            Str::value(Str::from_utf16(unsafe { string_units(d) }))
         }
         hl::HOBJ => match unsafe { import::behind_face(d) } {
             Some(obj) => obj,
@@ -718,41 +726,74 @@ unsafe fn kinds_of(fun: *const hl_type_fun) -> Option<Kinds> {
     Some(kinds)
 }
 
-/// One signature's kinds in the list `kinds_for` keeps: pushed at the
-/// head once, read without a lock from then on.
-struct Known {
-    sig: usize,
-    kinds: Kinds,
-    next: *const Known,
+/// What is kept once per type (a signature's kinds, an array type's
+/// shape, a class's name): a list pushed at the head, read with no lock
+/// from then on, since it only grows and a value is written before it is
+/// published.
+struct PerType<T> {
+    head: AtomicPtr<Entry<T>>,
 }
 
-static KNOWN: AtomicPtr<Known> = AtomicPtr::new(ptr::null_mut());
+struct Entry<T> {
+    key: usize,
+    value: T,
+    next: *const Entry<T>,
+}
+
+unsafe impl<T> Sync for PerType<T> {}
+
+impl<T> PerType<T> {
+    const fn new() -> PerType<T> {
+        PerType {
+            head: AtomicPtr::new(ptr::null_mut()),
+        }
+    }
+
+    fn get(&self, key: usize) -> Option<&'static T> {
+        let mut node = self.head.load(Ordering::Acquire) as *const Entry<T>;
+        while let Some(e) = unsafe { node.as_ref() } {
+            if e.key == key {
+                return Some(&e.value);
+            }
+            node = e.next;
+        }
+        None
+    }
+
+    /// The value under `key`, made by `make` on the first ask. Two threads
+    /// asking at once may both make one; the loser's is kept behind the
+    /// winner's and never found again, which is harmless.
+    fn get_or_insert_with(&self, key: usize, make: impl FnOnce() -> T) -> &'static T {
+        if let Some(v) = self.get(key) {
+            return v;
+        }
+        let fresh = Box::into_raw(Box::new(Entry {
+            key,
+            value: make(),
+            next: ptr::null(),
+        }));
+        let mut head = self.head.load(Ordering::Acquire);
+        loop {
+            unsafe { (*fresh).next = head };
+            match self
+                .head
+                .compare_exchange(head, fresh, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return unsafe { &(*fresh).value },
+                Err(seen) => head = seen,
+            }
+        }
+    }
+}
+
+static KINDS: PerType<Option<Kinds>> = PerType::new();
 
 /// The kinds of `sig`, kept once per signature for the direct sends that
-/// name it. Readers take no lock: the list only grows, at its head.
+/// name it.
 fn kinds_for(sig: *const hl_type) -> Option<&'static Kinds> {
-    let mut node = KNOWN.load(Ordering::Acquire) as *const Known;
-    while let Some(k) = unsafe { node.as_ref() } {
-        if k.sig == sig as usize {
-            return Some(&k.kinds);
-        }
-        node = k.next;
-    }
-    let fun = unsafe { fun_of(sig) }?;
-    let kinds = unsafe { kinds_of(fun) }?;
-    let fresh = Box::into_raw(Box::new(Known {
-        sig: sig as usize,
-        kinds,
-        next: ptr::null(),
-    }));
-    let mut head = KNOWN.load(Ordering::Acquire);
-    loop {
-        unsafe { (*fresh).next = head };
-        match KNOWN.compare_exchange(head, fresh, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return Some(unsafe { &(*fresh).kinds }),
-            Err(seen) => head = seen,
-        }
-    }
+    KINDS
+        .get_or_insert_with(sig as usize, || unsafe { kinds_of(fun_of(sig)?) })
+        .as_ref()
 }
 
 /// Call compiled code directly by its signature: each argument placed as
@@ -1721,17 +1762,14 @@ unsafe extern "C-unwind" fn unwrap_native(obj: *mut u8, out: *mut *mut c_void) -
 /// The class name of an object or struct, interned: what the registry
 /// publishes it under. Kept per type, since every object crossing asks.
 unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
-    static NAMES: RwLock<Vec<(usize, Symbol)>> = RwLock::new(Vec::new());
+    static NAMES: PerType<Option<Symbol>> = PerType::new();
     let d = unsafe { inner(obj) };
-    let t = unsafe { (*d).t } as usize;
-    if let Some(&(_, sym)) = NAMES.read().unwrap().iter().find(|(key, _)| *key == t) {
-        unsafe { *out = sym };
-        return REPLY_OK;
-    }
-    match unsafe { obj_name(t as *const hl_type) } {
-        Some(name) => {
-            let sym = caribou::symbol::intern(&name);
-            NAMES.write().unwrap().push((t, sym));
+    let t = unsafe { (*d).t };
+    let name = NAMES.get_or_insert_with(t as usize, || {
+        unsafe { obj_name(t) }.map(|name| caribou::symbol::intern(&name))
+    });
+    match *name {
+        Some(sym) => {
             unsafe { *out = sym };
             REPLY_OK
         }
@@ -1791,40 +1829,16 @@ struct ArrayShape {
     set_dyn: Slot,
 }
 
-/// One type's answer in the list `shape_of` keeps: `None` for a type that
-/// is not an array, so the question costs one walk either way.
-struct Shaped {
-    t: usize,
-    shape: Option<ArrayShape>,
-    next: *const Shaped,
-}
+/// One answer per type, `None` for a type that is not an array, so the
+/// question costs one walk either way.
+static SHAPES: PerType<Option<ArrayShape>> = PerType::new();
 
-static SHAPES: AtomicPtr<Shaped> = AtomicPtr::new(ptr::null_mut());
-
-/// The array shape of `d`'s type, if it is one. Kept once per type;
-/// readers take no lock, the list only grows at its head.
+/// The array shape of `d`'s type, if it is one.
 fn shape_of(d: *mut vdynamic) -> Option<&'static ArrayShape> {
     let t = unsafe { (*d).t };
-    let mut node = SHAPES.load(Ordering::Acquire) as *const Shaped;
-    while let Some(s) = unsafe { node.as_ref() } {
-        if s.t == t as usize {
-            return s.shape.as_ref();
-        }
-        node = s.next;
-    }
-    let fresh = Box::into_raw(Box::new(Shaped {
-        t: t as usize,
-        shape: unsafe { array_shape(t) },
-        next: ptr::null(),
-    }));
-    let mut head = SHAPES.load(Ordering::Acquire);
-    loop {
-        unsafe { (*fresh).next = head };
-        match SHAPES.compare_exchange(head, fresh, Ordering::AcqRel, Ordering::Acquire) {
-            Ok(_) => return unsafe { (*fresh).shape.as_ref() },
-            Err(seen) => head = seen,
-        }
-    }
+    SHAPES
+        .get_or_insert_with(t as usize, || unsafe { array_shape(t) })
+        .as_ref()
 }
 
 unsafe fn slot_of(t: *mut hl_type, name: Symbol) -> Option<Slot> {

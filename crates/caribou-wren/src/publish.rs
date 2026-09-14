@@ -32,7 +32,7 @@ use std::sync::Arc;
 use caribou::hash::AddressMap;
 use caribou::protocol::Callable;
 use caribou::registry::{self, ClassIface, FieldIface, Interface, MethodIface, TypeRef};
-use caribou::symbol;
+use caribou::symbol::{self, Symbol};
 use caribou::world::RegisterError;
 use wren_lift::intern::SymbolId;
 use wren_lift::runtime::engine::FuncId;
@@ -48,12 +48,14 @@ use crate::types::{Classes, Export};
 /// its instances report.
 #[derive(Default)]
 pub(crate) struct Exports {
-    types: AddressMap<String>,
+    /// The type name each published class is registered under, interned
+    /// once here since every object crossing asks.
+    types: AddressMap<Symbol>,
 }
 
 impl Exports {
-    pub(crate) fn type_name(&self, class: *mut ObjClass) -> Option<&str> {
-        self.types.get(&(class as usize)).map(String::as_str)
+    pub(crate) fn type_name(&self, class: *mut ObjClass) -> Option<Symbol> {
+        self.types.get(&(class as usize)).copied()
     }
 }
 
@@ -121,7 +123,7 @@ pub fn publish_module(vm: &VM, module: &str) -> Result<Arc<Interface>, PublishEr
     for (class, described) in seen.iter().zip(&iface.classes) {
         exports
             .types
-            .insert(*class as usize, described.type_name.clone());
+            .insert(*class as usize, symbol::intern(&described.type_name));
     }
     Ok(Arc::new(iface))
 }

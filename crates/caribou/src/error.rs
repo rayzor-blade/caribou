@@ -153,7 +153,46 @@ pub struct Str {
 impl Str {
     /// The caller must root the result before allocating again.
     pub fn new(s: &str) -> *mut Str {
-        Self::new_rooted(s).ptr() as *mut Str
+        let p = Self::alloc(s.len());
+        unsafe { ptr::copy_nonoverlapping(s.as_ptr(), Self::bytes_ptr(p), s.len()) };
+        p
+    }
+
+    /// `units` as UTF-8, an unpaired surrogate as U+FFFD, encoded where
+    /// the string lies; rooted by the caller, as for `new`.
+    pub fn from_utf16(units: &[u16]) -> *mut Str {
+        let chars = || {
+            char::decode_utf16(units.iter().copied())
+                .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        };
+        let p = Self::alloc(chars().map(char::len_utf8).sum());
+        let mut at = unsafe { Self::bytes_ptr(p) };
+        let mut buf = [0u8; 4];
+        for c in chars() {
+            let bytes = c.encode_utf8(&mut buf).as_bytes();
+            unsafe {
+                ptr::copy_nonoverlapping(bytes.as_ptr(), at, bytes.len());
+                at = at.add(bytes.len());
+            }
+        }
+        p
+    }
+
+    /// A string of `len` bytes, unwritten and unrooted. A typed
+    /// allocation takes no lock.
+    fn alloc(len: usize) -> *mut Str {
+        let p = unsafe {
+            heap::alloc_gen(
+                desc_ptr(&STR_DESC),
+                size_of::<Str>() + len,
+                KIND_DYNAMIC | TRACED,
+            )
+        } as *mut Str;
+        if p.is_null() {
+            heap::out_of_memory("a string");
+        }
+        unsafe { (*p).len = len };
+        p
     }
 
     pub(crate) fn new_rooted(s: &str) -> Rooted {

@@ -46,9 +46,7 @@ use wren_lift::runtime::object::{
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{self, VM};
 
-use crate::heap::{
-    PREFIX, WrenHeap, is_wren, owns_start, record_address, record_at, record_for, wren_lang,
-};
+use crate::heap::{PREFIX, WrenHeap, is_wren, record_address, record_at, record_for, wren_lang};
 
 // ---------------------------------------------------------------------------
 // The VM the entries use
@@ -149,8 +147,7 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     }
     // What the object stands for, when it stands for one: the object of
     // this VM a ref holds, or the native a wrapper holds, which the
-    // instance already made for it is found by. Only a native seen for
-    // the first time costs the heap lookup that tells the two apart.
+    // instance already made for it is found by.
     let native = match unsafe { Send::unwrap_native(p) } {
         Ok(inner) => inner as *mut u8,
         Err(Fault::Raised) => {
@@ -163,8 +160,10 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         if let Some(instance) = crate::import::stand_in_for(vm, native) {
             return Some(instance);
         }
+        // A native is an object's start; one of this VM's has the record
+        // at word zero, where any other object has its own type.
         let rec = record_for(vm.object_class as *mut u8);
-        if owns_start(rec, native as usize) {
+        if unsafe { *(native as *const usize) } == rec as *const WrenHeap as usize {
             return Some(WValue::object(native.wrapping_add(PREFIX)));
         }
     }
@@ -1243,8 +1242,7 @@ unsafe extern "C-unwind" fn type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
     let exported = record_for(unsafe { wren_ptr(obj) })
         .exports()
         .borrow()
-        .type_name(class)
-        .map(caribou::symbol::intern);
+        .type_name(class);
     unsafe { *out = exported.unwrap_or_else(|| caribou::symbol::intern(&vm.class_name_of(recv))) };
     REPLY_OK
 }
