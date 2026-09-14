@@ -1,0 +1,6 @@
+# The Swarm arena benchmark's program. Rebuild with `haxe swarm.hxml`
+# (Haxe 4.3.6) from this directory; swarm.hl is checked in.
+-cp src
+-lib caribou
+-main Swarm
+-hl swarm.hl

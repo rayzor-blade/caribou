@@ -29,3 +29,7 @@ crate-type = ["rlib"]
 [[bench]]
 name = "interop"
 harness = false
+
+[[bench]]
+name = "swarm"
+harness = false
