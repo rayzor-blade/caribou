@@ -65,17 +65,19 @@ the instance already made.
 
 ## Lifetime
 
-A Haxe object entering Wren is its cell (`caribou::cell`, see
-[bridge.md](bridge.md#cells-and-shadows)): the one core object Ash
-keeps for it, found by the object's address. The cell keeps a view for
-Wren 16 bytes in, where wren_lift's prefix puts an object's header: an
-`ObjInstance` of the class installed for the object's type, with no
-fields, which `proxy` writes on the first crossing. Wren holds the cell
-through that view, so a send on it is wren_lift's own dispatch, its
-receiver the cell, which `foreign_of` reads back as the object 16 bytes
-up. The same object crossing twice is the same Wren value, `==`
+A Haxe object entering Wren is held through a cell (`caribou::cell`,
+see [bridge.md](bridge.md#cells-and-shadows)): the one core object
+standing for it, which this adapter makes on the first crossing and
+finds by the object's address after, since a Haxe object keeps no
+shadow. The cell keeps a view for Wren 16 bytes in, where wren_lift's
+prefix puts an object's header: an `ObjInstance` of the class installed
+for the object's type, with no fields, which `proxy` writes. Wren holds
+the cell through that view, so a send on it is wren_lift's own dispatch,
+its receiver the cell, which `foreign_of` reads back as the object it
+stands for. The same object crossing twice is the same Wren value, `==`
 included, and a Haxe function or array is held the same way, under the
-`Function` or `Sequence` class.
+`Function` or `Sequence` class. An object that is a cell already, of
+another language's making, gets its view in that cell.
 
 A cell is no allocation of this heap, so the heap keeps a list of the
 cells Wren holds through their views (`hold_view`), flagged in the
@@ -92,8 +94,6 @@ heap's own objects.
 A Wren class may extend an installed one. Its instances are the heap's
 own, with one hidden field, `__caribou_object`, holding the address of
 the object the constructor adopted, and the instance is marked adopted
-in its bridge word, so the heap's trace marks what it holds. The cell
-keeps such an instance in front, and the object comes back as it; when
-the instance dies, the cell has no front. An object of another language
-that is no cell, a core object of the bridge's own, gets an instance of
-the class holding it the same way.
+in its bridge word, so the heap's trace marks what it holds. The
+object's cell keeps such an instance in front, and the object comes
+back as it; when the instance dies, the cell has no front.

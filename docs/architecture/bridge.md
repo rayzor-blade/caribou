@@ -249,20 +249,30 @@ handle.
 
 ## Cells and shadows
 
+A core object's word zero names its descriptor. A HashLink object's
+names a bare `hl_type`, a layout the core cannot prefix, and the two
+are told apart by the `hl_type`'s mark bits: every descriptor's name one
+static of the core's (`heap::CORE_MARK`), which no HashLink type's do,
+so `desc_of` answers the descriptor at word zero or, for a bare
+`hl_type`, the one foreign descriptor the language with that layout
+registers (`set_foreign_descriptor`). So a Haxe object is a core object
+as it is, and crosses as itself.
+
 A language's compiled code reads its own objects at fixed offsets, so an
 object of another language can only be held as one the holder's code
 can read: something with the holder's header. A *cell* (`caribou::cell`)
 is the one core object standing for an object in the terms of the
-language holding it. Its word zero is a descriptor the holder's adapter
-fills so it reads as the holder's own header, an `hl_type` mirroring a
-Haxe class, say, so the cell is an instance of that class to Haxe and a
-core object to the bridge; its protocol forwards every message to the
-object; its trace keeps the object; its drop forgets it. Cells are
-known by their type's mark bits, which name one static of the core's:
-no other type's do, and nothing reads a cell type's mark bits but that
-test. A holder may put an object it constructed itself in front of a
-cell, and the object then always comes back as that one. See
-[haxe-imports.md](haxe-imports.md#cells) for Haxe's use.
+languages holding it, each finding its own header at the offset its
+code expects: word zero is a descriptor the holder's adapter fills so it
+reads as the holder's own type, an `hl_type` mirroring a Haxe class, so
+the cell is an instance of that class to Haxe; 16 bytes in lies a
+wren_lift instance header, so the cell plus 16 is an instance of an
+installed class to Wren. The cell's protocol forwards every message to
+the object, which is what tells a cell from any other core object; its
+trace keeps the object; its drop forgets it. A holder may put an object
+it constructed itself in front of a cell, and the object then always
+comes back as that one. See [haxe-imports.md](haxe-imports.md#cells)
+and [wren-imports.md](wren-imports.md#lifetime) for each side's use.
 
 The same object crossing twice must give the same cell, so the cell
 has to be found from the object. The protocol's answer is the *shadow*:
@@ -271,9 +281,9 @@ it is a read. `shadow(lang)` gives the one kept for a language,
 `keep_shadow` keeps one when none is kept yet and answers with the one
 kept otherwise, and `drop_shadow` forgets it when the cell dies. A Wren
 object keeps one in its bridge word (see
-[adapters.md](adapters.md#wren-objects)). A language that keeps none
-answers `Unsupported`, and the cell module remembers those in a map of
-its own.
+[adapters.md](adapters.md#wren-objects)). A language that keeps none,
+Haxe, whose object has no word to spare, answers `Unsupported`, and the
+cell module remembers those in a map of its own.
 
 ## Diagnostics
 

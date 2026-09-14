@@ -4,9 +4,10 @@
 //! names.
 
 use core::ffi::c_void;
+use core::ptr;
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-
+use caribou_abi::hl::hl_type;
 use caribou_abi::{ErrorKind, LangId, Value};
 
 use crate::heap::TypeDesc;
@@ -310,12 +311,31 @@ pub(crate) fn reply(code: u8, out: Value) -> Reply {
     }
 }
 
-/// The descriptor of a heap object, from its word zero.
+/// The descriptor of objects whose word zero is a bare `hl_type`: the
+/// one language whose object layout the core cannot prefix registers
+/// it. Until then such an object has no protocol and no language.
+static FOREIGN: AtomicPtr<TypeDesc> = AtomicPtr::new(ptr::null_mut());
+
+/// Register the descriptor every object with a bare `hl_type` at word
+/// zero answers under, replacing any earlier one.
+pub fn set_foreign_descriptor(desc: &'static TypeDesc) {
+    FOREIGN.store(desc as *const TypeDesc as *mut TypeDesc, Ordering::Release);
+}
+
+/// The descriptor of a heap object, from its word zero: the descriptor
+/// there, or the foreign one when word zero is a bare `hl_type`.
 ///
 /// # Safety
-/// `obj` must be a live object whose word zero is a `*const TypeDesc`.
+/// `obj` must be a live object whose word zero is a `*const TypeDesc` or
+/// an `*const hl_type`.
+#[inline]
 pub unsafe fn desc_of(obj: *const u8) -> *const TypeDesc {
-    unsafe { *(obj as *const *const TypeDesc) }
+    let t = unsafe { *(obj as *const *const hl_type) };
+    if unsafe { crate::heap::is_descriptor(t) } {
+        t as *const TypeDesc
+    } else {
+        FOREIGN.load(Ordering::Acquire)
+    }
 }
 
 /// Dispatch helpers: read the object's descriptor, find its protocol, send.

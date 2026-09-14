@@ -3,10 +3,31 @@
 //! A descriptor is not a heap object. It lives in a static or in memory the
 //! defining runtime owns for the life of its type, and the collector never
 //! follows word zero of a traced object.
+//!
+//! Word zero of an object of a language whose layout the core cannot
+//! prefix, a HashLink object, is a bare `hl_type` instead. The two are
+//! told apart by the `hl_type`'s mark bits: every descriptor's name one
+//! static of the core's ([`CORE_MARK`]), which no HashLink type's do.
+//! HashLink reads a type's mark bits only to trace objects allocated
+//! under the type, and none is allocated under a descriptor.
 
 use super::immix::Tracer;
 use caribou_abi::hl::hl_type;
+use core::ffi::c_uint;
 use std::sync::atomic::AtomicU32;
+
+/// What every descriptor's `hl_type` names as its mark bits.
+pub static CORE_MARK: u32 = 0;
+
+/// Whether `t`, word zero of some object, is a descriptor rather than a
+/// bare `hl_type`.
+///
+/// # Safety
+/// `t` must be null or point at a live `hl_type`.
+#[inline]
+pub unsafe fn is_descriptor(t: *const hl_type) -> bool {
+    !t.is_null() && core::ptr::eq(unsafe { (*t).mark_bits }, &raw const CORE_MARK)
+}
 
 /// The precise-marking hook: mark, through `tracer`, every heap pointer the
 /// object holds, in its fields or in the Rust containers it owns. Runs inside
@@ -45,7 +66,8 @@ pub struct TypeDesc {
 impl TypeDesc {
     /// A descriptor with no hooks, no name and no extension: what an
     /// `hl_type` alone would be.
-    pub const fn new(hl: hl_type) -> TypeDesc {
+    pub const fn new(mut hl: hl_type) -> TypeDesc {
+        hl.mark_bits = &raw const CORE_MARK as *mut c_uint;
         TypeDesc {
             hl,
             trace: None,

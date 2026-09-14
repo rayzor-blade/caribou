@@ -230,7 +230,7 @@ pub(crate) fn record_address(start: *mut u8) -> usize {
 /// is a record's.
 #[inline(always)]
 pub(crate) fn is_wren(start: *mut u8) -> bool {
-    let desc = unsafe { *(start as *const *const TypeDesc) };
+    let desc = unsafe { caribou::protocol::desc_of(start) };
     !desc.is_null() && ptr::eq(unsafe { (*desc).protocol }, &crate::proto::WREN_PROTO)
 }
 

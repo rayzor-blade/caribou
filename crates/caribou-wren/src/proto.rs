@@ -145,25 +145,28 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         let s = vm.alloc_string(text.to_owned());
         return Some(made(vm, s));
     }
-    if unsafe { cell::is_cell(p) } {
-        // A cell holding one of this VM's own objects, whose start has
-        // the record at word zero where any other object has its type:
-        // the object comes home. Any other cell is held through the
-        // instance a subclass constructed in front of it, else the view
-        // the cell keeps for Wren, filled on first need.
-        if let Some(native) = unsafe { cell::object_at(p) }.as_object()
-            && !native.is_null()
-            && unsafe { *(native as *const usize) }
-                == record_for(vm.object_class as *mut u8) as *const WrenHeap as usize
-        {
-            return Some(WValue::object((native as *mut u8).wrapping_add(PREFIX)));
-        }
-        if let Some(front) = cell::front(v) {
+    // A cell holding one of this VM's own objects, whose start has the
+    // record at word zero where any other object has its type: the
+    // object comes home.
+    if unsafe { cell::is_cell(p) }
+        && let Some(native) = unsafe { cell::object_at(p) }.as_object()
+        && !native.is_null()
+        && unsafe { *(native as *const usize) }
+            == record_for(vm.object_class as *mut u8) as *const WrenHeap as usize
+    {
+        return Some(WValue::object((native as *mut u8).wrapping_add(PREFIX)));
+    }
+    // Any other object is held through the instance a subclass
+    // constructed in front of its cell, else the view the cell keeps for
+    // Wren, filled on first need.
+    if let Some(c) = crate::import::cell_of(v) {
+        if let Some(front) = cell::front(c) {
             return Some(WValue::object(front as *mut u8));
         }
-        if unsafe { crate::import::viewed(p) } {
-            crate::heap::hold_view(record_for(vm.object_class as *mut u8), p);
-            return Some(WValue::object(unsafe { cell::view_at(p) }));
+        let start = c.as_object()? as *mut u8;
+        if unsafe { crate::import::viewed(start) } {
+            crate::heap::hold_view(record_for(vm.object_class as *mut u8), start);
+            return Some(WValue::object(unsafe { cell::view_at(start) }));
         }
     }
     crate::import::proxy(vm, v)

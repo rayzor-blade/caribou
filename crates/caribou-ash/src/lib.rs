@@ -170,6 +170,7 @@ pub fn install_into(seam: Seam) -> Result<(), InstallError> {
     if !unsafe { (seam.install)(&table) } {
         return Err(InstallError::Refused);
     }
+    proto::register_descriptor();
     INSTALLED.store(true, Ordering::Release);
     Ok(())
 }

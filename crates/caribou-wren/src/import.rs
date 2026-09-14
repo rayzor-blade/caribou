@@ -34,15 +34,18 @@ use std::fmt;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use caribou::bridge;
 use caribou::cell;
 use caribou::error::{Error, Str};
 use caribou::hash::{AddressMap, BuildAddressHasher};
+use caribou::heap::TypeDesc;
 use caribou::protocol::{CallSite, Callable};
 use caribou::registry::{self, ClassIface, Interface, MethodIface};
 use caribou::symbol::{self, Symbol};
 use caribou::world::language_name;
+use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::intern::Interner;
 use wren_lift::mir::{BasicBlock, BlockId, ClassMir, MirFunction, ModuleMir, Terminator};
@@ -184,13 +187,48 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
 /// front of, if any, has no front now.
 pub(crate) fn forget_front(instance: *mut u8) {
     let obj = unsafe { held(instance) };
-    if obj.is_null() || !unsafe { cell::is_cell(obj) } {
+    if obj.is_null() {
         return;
     }
-    let c = Value::object(obj as *const c_void);
+    let Some(c) = cell_of(Value::object(obj as *const c_void)) else {
+        return;
+    };
     if cell::front(c) == Some(instance as *mut c_void) {
         cell::set_front(c, ptr::null_mut());
     }
+}
+
+/// The view every object Wren holds a cell for is read under: an
+/// abstract type to any language reading word zero, since only Wren
+/// holds these cells, through the view 16 bytes in.
+fn view_desc() -> &'static TypeDesc {
+    static DESC: OnceLock<&'static TypeDesc> = OnceLock::new();
+    DESC.get_or_init(|| {
+        cell::descriptor(
+            hl_type {
+                kind: hl::HABSTRACT,
+                detail: hl_type_detail {
+                    abs_name: ptr::null(),
+                },
+                vobj_proto: ptr::null_mut(),
+                mark_bits: ptr::null_mut(),
+            },
+            wren_lang(),
+            "held object",
+        )
+    })
+}
+
+/// The cell Wren holds `v` through, if `v` is one or has one.
+pub(crate) fn cell_of(v: Value) -> Option<Value> {
+    let p = v.as_object()? as *mut u8;
+    if p.is_null() {
+        return None;
+    }
+    if unsafe { cell::is_cell(p) } {
+        return Some(v);
+    }
+    cell::of(v, wren_lang())
 }
 
 /// Whether the cell at `p` has its Wren view: the instance header the
@@ -523,22 +561,22 @@ pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
 fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
     unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64)) };
     crate::heap::set_adopted(instance as *mut u8);
-    if unsafe { cell::is_cell(obj) } {
-        cell::set_front(Value::object(obj as *const c_void), instance as *mut c_void);
-    }
+    let v = Value::object(obj as *const c_void);
+    let c = cell_of(v).unwrap_or_else(|| cell::wrap(v, view_desc()));
+    cell::set_front(c, instance as *mut c_void);
 }
 
 /// The object a Wren value stands for, as the bridge value it crossed
-/// as: a cell, which Wren holds through the view `VIEW` bytes in, is
-/// its own; an adopted instance's is the one it holds. `None` for an
-/// object of this heap that is neither, or an instance whose constructor
-/// never reached the installed class's. Only `adopt` writes the field
-/// and the bit, so no lock or lookup is needed.
+/// as: the object of a cell, which Wren holds through the view `VIEW`
+/// bytes in; the one an adopted instance holds. `None` for an object of
+/// this heap that is neither, or an instance whose constructor never
+/// reached the installed class's. Only `adopt` writes the field and the
+/// bit, so no lock or lookup is needed.
 pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
     let ptr = v.as_object()?;
     let start = ptr.wrapping_sub(cell::VIEW);
     if unsafe { cell::is_cell(start) } {
-        return Some(Value::object(start as *const c_void));
+        return Some(cell::unwrap(Value::object(start as *const c_void)));
     }
     if unsafe { (*(ptr as *const ObjHeader)).obj_type } != ObjType::Instance
         || !crate::heap::is_adopted(ptr)
@@ -717,33 +755,30 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
         })
     };
     let class = class?;
-    if unsafe { cell::is_cell(obj) } {
-        let view = unsafe { cell::view_at(obj) } as *mut ObjInstance;
-        unsafe {
-            view.write(ObjInstance {
-                header: ObjHeader {
-                    obj_type: ObjType::Instance,
-                    gc_mark: 0,
-                    generation: 0,
-                    flags: 0,
-                    next: ptr::null_mut(),
-                    class,
-                },
-                num_fields: 0,
-                fields_owned: false,
-                fields: ptr::null_mut(),
-            });
-        }
-        crate::heap::hold_view(rec, obj);
-        // A view handed out is a safepoint, as an allocation is.
-        return Some(crate::proto::made(vm, WValue::object(view as *mut u8)));
+    // The object's cell, made here when it has none yet: a cell holds a
+    // view for Wren whichever language made it.
+    let c = cell_of(v).unwrap_or_else(|| cell::wrap(v, view_desc()));
+    let start = c.as_object()? as *mut u8;
+    let view = unsafe { cell::view_at(start) } as *mut ObjInstance;
+    unsafe {
+        view.write(ObjInstance {
+            header: ObjHeader {
+                obj_type: ObjType::Instance,
+                gc_mark: 0,
+                generation: 0,
+                flags: 0,
+                next: ptr::null_mut(),
+                class,
+            },
+            num_fields: 0,
+            fields_owned: false,
+            fields: ptr::null_mut(),
+        });
     }
-    let instance = vm.alloc_instance(class);
-    let ptr = instance.as_object().unwrap() as *mut ObjInstance;
-    adopt(ptr, obj);
-    let instance = crate::proto::made(vm, instance);
+    crate::heap::hold_view(rec, start);
     std::hint::black_box(obj);
-    Some(instance)
+    // A view handed out is a safepoint, as an allocation is.
+    Some(crate::proto::made(vm, WValue::object(view as *mut u8)))
 }
 
 // ---------------------------------------------------------------------------

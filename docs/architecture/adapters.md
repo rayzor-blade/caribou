@@ -13,12 +13,12 @@ every collection from then on.
 
 ## Haxe objects
 
-A Haxe object crosses as its cell. Its word zero is a bare `hl_type`,
-which has no protocol slot, so `caribou_ash::wrap` gives the one cell
-standing for it (`caribou::cell`), made on first need under a
-descriptor of Haxe's language and found by the object's address from
-then on. Its trace hook marks the object. Its protocol reaches the
-object the way compiled Haxe does.
+A Haxe object crosses as itself. Its word zero is a bare `hl_type`,
+which the core tells from a descriptor by its mark bits, so every
+object with one at word zero answers under the one foreign descriptor
+Ash registers at install (`protocol::set_foreign_descriptor`): of
+Haxe's language, with the protocol here, which reaches the object the
+way compiled Haxe does.
 
 - `get_member` and `set_member` find a declared field in the runtime's
   own lookup tables, `hl_runtime_obj` up the class chain. The entry there

@@ -23,26 +23,25 @@
 //! message to the object it stands for, so a caller reaching it through
 //! `Dynamic` gets the object's own semantics, and it answers
 //! `unwrap_native` with the object, which is how the object's adapter
-//! recognises it coming home; a language whose objects are not core
-//! objects gives its cells a protocol of its own instead.
+//! recognises it coming home. A cell is known by that protocol.
 //!
 //! One cell per object. The object's own language keeps it, as the
 //! protocol's shadow, when it keeps one; for an object whose language
-//! keeps none, or that is no core object at all, a map from the object's
-//! address to the cell's. Neither roots the cell, so a cell is reachable
-//! only from its holders and dies when they drop it. Its trace marks the
-//! object, and the core's mark is what the object's own cycle ends with,
-//! so a live cell keeps its object. Its drop hook, run by the sweep
-//! before the cell's lines can be reused, forgets it on the object or in
-//! the map: a cell kept on an object or named in the map is alive,
-//! because the only way out is the drop of the cell itself, and the
-//! object cannot die before a cell whose trace marks it.
+//! keeps none, a map from the object's address to the cell's. Neither
+//! roots the cell, so a cell is reachable only from its holders and dies
+//! when they drop it. Its trace marks the object, and the core's mark is
+//! what the object's own cycle ends with, so a live cell keeps its
+//! object. Its drop hook, run by the sweep before the cell's lines can be
+//! reused, forgets it on the object or in the map: a cell kept on an
+//! object or named in the map is alive, because the only way out is the
+//! drop of the cell itself, and the object cannot die before a cell whose
+//! trace marks it.
 //!
 //! A holder may make an object of its own to stand in front of the cell,
 //! a class instance its code constructed, and the cell keeps it, so the
 //! object always comes back as that one.
 
-use core::ffi::{c_uint, c_void};
+use core::ffi::c_void;
 use core::ptr;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
@@ -77,49 +76,15 @@ const VIEW_WORDS: usize = 5;
 /// The cell is named in the map, not kept as a shadow.
 const MAPPED: usize = 1;
 
-impl Cell {
-    /// A cell on the caller's frame, standing for `obj` under `desc` for
-    /// the length of one call: not made through `wrap`, so never found
-    /// again, never traced and never dropped.
-    pub fn transient(desc: &'static TypeDesc, obj: Value) -> Cell {
-        Cell {
-            desc,
-            bridge: 0,
-            view: [0; VIEW_WORDS],
-            obj,
-            front: ptr::null_mut(),
-            flags: 0,
-        }
-    }
-}
-
-/// What every cell's type names as its mark bits, and nothing else does:
-/// what tells a cell from any other object by its word zero. HashLink
-/// reads a type's mark bits only to trace objects it allocated under the
-/// type, and nothing is allocated under a cell's type but cells, which
-/// the core traces through the descriptor.
-static MARK: u32 = 0;
-
-fn mark_sentinel() -> *mut c_uint {
-    &raw const MARK as *mut c_uint
-}
-
 /// A cell descriptor for holder `lang`: `prefix` is what the holder's
-/// code reads at word zero, `name` what the object is described as, and
-/// `protocol` how the cell answers, forwarding to the object when none
-/// is given. Kept for the process; one per view a holder has.
-pub fn descriptor(
-    prefix: hl_type,
-    lang: LangId,
-    name: &str,
-    protocol: Option<&'static Protocol>,
-) -> &'static TypeDesc {
+/// code reads at word zero, `name` what the object is described as.
+/// Kept for the process; one per view a holder has.
+pub fn descriptor(prefix: hl_type, lang: LangId, name: &str) -> &'static TypeDesc {
     let name: &'static str = String::leak(name.to_owned());
     let mut d = TypeDesc::new(prefix);
-    d.hl.mark_bits = mark_sentinel();
     d.trace = Some(trace);
     d.drop = Some(drop);
-    d.protocol = protocol.unwrap_or(&PROTO);
+    d.protocol = &PROTO;
     d.name = name.as_ptr();
     d.name_len = name.len();
     d.lang = lang;
@@ -135,14 +100,16 @@ pub unsafe fn set_lang(desc: &'static TypeDesc, lang: LangId) {
     unsafe { (*(desc as *const TypeDesc as *mut TypeDesc)).lang = lang };
 }
 
-/// Whether the object at `p` is a cell, by its word zero.
+/// Whether the object at `p` is a cell, by its word zero: a descriptor
+/// whose protocol is the cell's.
 ///
 /// # Safety
 /// `p` must be a live object whose word zero is an `hl_type*`.
 #[inline]
 pub unsafe fn is_cell(p: *const u8) -> bool {
     let t = unsafe { *(p as *const *const hl_type) };
-    !t.is_null() && ptr::eq(unsafe { (*t).mark_bits }, mark_sentinel())
+    let descriptor = unsafe { heap::is_descriptor(t) };
+    descriptor && ptr::eq(unsafe { (*(t as *const TypeDesc)).protocol }, &PROTO)
 }
 
 /// The cell `v` is, if it is one.
@@ -159,32 +126,13 @@ fn address_of(v: Value) -> Option<usize> {
 }
 
 /// Object address to cell address, for objects whose language keeps no
-/// shadow, and for objects that are no core object. Never held across an
-/// allocation: a collection's drop hooks take it.
+/// shadow. Never held across an allocation: a collection's drop hooks
+/// take it.
 static CELLS: LazyLock<Mutex<AddressMap<usize>>> =
     LazyLock::new(|| Mutex::new(AddressMap::default()));
 
 fn cells() -> MutexGuard<'static, AddressMap<usize>> {
     CELLS.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// The cell for the object at `key`, which is no core object, standing
-/// for it as `v` under `desc`; made on first need, named in the map. A
-/// fresh cell is not rooted: store it or root it before allocating.
-pub fn wrap_at(key: usize, v: Value, desc: &'static TypeDesc) -> Value {
-    if let Some(&c) = cells().get(&key) {
-        return Value::object(c as *const c_void);
-    }
-    let p = alloc(desc, v, MAPPED);
-    let c = *cells().entry(key).or_insert(p as usize);
-    Value::object(c as *const c_void)
-}
-
-/// The live cell for the object at `key`, if there is one.
-pub fn of_at(key: usize) -> Option<Value> {
-    cells()
-        .get(&key)
-        .map(|&c| Value::object(c as *const c_void))
 }
 
 fn alloc(desc: &'static TypeDesc, v: Value, flags: usize) -> *mut Cell {
@@ -645,7 +593,6 @@ mod tests {
                 },
                 41,
                 "foreign object",
-                None,
             )
         })
     }

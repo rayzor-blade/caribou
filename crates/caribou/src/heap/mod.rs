@@ -9,7 +9,7 @@
 mod desc;
 mod immix;
 
-pub use desc::{DropFn, TraceFn, TypeDesc};
+pub use desc::{CORE_MARK, DropFn, TraceFn, TypeDesc, is_descriptor};
 pub use immix::{
     // Allocation.
     alloc_gen, alloc_with_finalizer, allocation_size, gc_alloc, is_allocation_start, mark_size,
