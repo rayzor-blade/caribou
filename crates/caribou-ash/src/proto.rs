@@ -8,7 +8,7 @@
 //! and hash alike but are distinct objects. Every entry here reads the
 //! wrapper's field and works on the Haxe object through ash's own dynamic
 //! access: `hlp_dyn_getp`, `hlp_dyn_setp`, `hlp_dyn_call`, by the field
-//! hash `hlp_hash_gen` gives a name.
+//! hash a symbol carries for its name.
 //!
 //! A Haxe `String` crosses as a value, not wrapped: it becomes a core `Str`
 //! on the way out, and a core `Str` becomes a fresh `String` on the way in,
@@ -35,7 +35,7 @@ use ash_std::error::{
 use ash_std::fun::hlp_dyn_call;
 use ash_std::obj::{
     hl_get_obj_proto, hlp_alloc_dynamic, hlp_alloc_dynbool, hlp_alloc_obj, hlp_dyn_getp,
-    hlp_dyn_setp, hlp_hash_gen, hlp_lookup_find, hlp_obj_has_field,
+    hlp_dyn_setp, hlp_lookup_find, hlp_obj_has_field,
 };
 use ash_std::strings::hlp_value_to_string;
 use ash_std::types::{hlt_bytes, hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
@@ -1230,25 +1230,10 @@ pub fn is_constructor(callable: Callable) -> bool {
 // Members
 // ---------------------------------------------------------------------------
 
-/// HashLink's hash of a symbol's name, through ash's own table so a
-/// collision resolves as the loader resolved it. Computed once per symbol.
-/// The field hash of a symbol's name, kept per symbol: a symbol is an
-/// index, so the cache is a table.
+/// HashLink's field hash of a symbol's name: the symbol carries it.
+#[inline]
 fn field_hash(name: Symbol) -> i32 {
-    static HASHES: RwLock<Vec<Option<i32>>> = RwLock::new(Vec::new());
-    let index = name.0 as usize;
-    if let Some(Some(h)) = HASHES.read().unwrap().get(index) {
-        return *h;
-    }
-    let mut units: Vec<uchar> = name.name().encode_utf16().collect();
-    units.push(0);
-    let h = unsafe { hlp_hash_gen(units.as_ptr(), true) };
-    let mut hashes = HASHES.write().unwrap();
-    if hashes.len() <= index {
-        hashes.resize(index + 1, None);
-    }
-    hashes[index] = Some(h);
-    h
+    name.hash()
 }
 
 /// A declared field of an object type: its byte offset and type, found
@@ -1355,7 +1340,14 @@ unsafe fn find_method(
     d: *mut vdynamic,
     hfield: i32,
 ) -> Option<(*const *const c_void, *const hl_type)> {
-    let t = unsafe { (*d).t };
+    unsafe { method_of((*d).t, hfield) }
+}
+
+/// `find_method` by the type.
+unsafe fn method_of(
+    t: *mut hl_type,
+    hfield: i32,
+) -> Option<(*const *const c_void, *const hl_type)> {
     if !matches!(unsafe { (*t).kind }, hl::HOBJ | hl::HSTRUCT) {
         return None;
     }
@@ -1772,90 +1764,205 @@ fn array_names() -> &'static ArrayNames {
     })
 }
 
-/// Whether the object is a HashLink array: a `getDyn` method, and a
-/// length to read.
-fn is_array(d: *mut vdynamic) -> bool {
+/// A method of an array type: its slot, read per call since a promoted
+/// body lands there, and its signature with the kinds read.
+#[derive(Clone, Copy)]
+struct Slot {
+    at: *const *const c_void,
+    sig: *const hl_type,
+    kinds: &'static Kinds,
+}
+
+unsafe impl Sync for Slot {}
+unsafe impl Send for Slot {}
+
+/// Where an array type keeps its length.
+#[derive(Clone, Copy)]
+enum Length {
+    Field(usize, *mut hl_type),
+    Method(Slot),
+}
+
+/// How an array type answers: its length, `getDyn` and `setDyn`.
+#[derive(Clone, Copy)]
+struct ArrayShape {
+    length: Length,
+    get_dyn: Slot,
+    set_dyn: Slot,
+}
+
+/// One type's answer in the list `shape_of` keeps: `None` for a type that
+/// is not an array, so the question costs one walk either way.
+struct Shaped {
+    t: usize,
+    shape: Option<ArrayShape>,
+    next: *const Shaped,
+}
+
+static SHAPES: AtomicPtr<Shaped> = AtomicPtr::new(ptr::null_mut());
+
+/// The array shape of `d`'s type, if it is one. Kept once per type;
+/// readers take no lock, the list only grows at its head.
+fn shape_of(d: *mut vdynamic) -> Option<&'static ArrayShape> {
+    let t = unsafe { (*d).t };
+    let mut node = SHAPES.load(Ordering::Acquire) as *const Shaped;
+    while let Some(s) = unsafe { node.as_ref() } {
+        if s.t == t as usize {
+            return s.shape.as_ref();
+        }
+        node = s.next;
+    }
+    let fresh = Box::into_raw(Box::new(Shaped {
+        t: t as usize,
+        shape: unsafe { array_shape(t) },
+        next: ptr::null(),
+    }));
+    let mut head = SHAPES.load(Ordering::Acquire);
+    loop {
+        unsafe { (*fresh).next = head };
+        match SHAPES.compare_exchange(head, fresh, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => return unsafe { (*fresh).shape.as_ref() },
+            Err(seen) => head = seen,
+        }
+    }
+}
+
+unsafe fn slot_of(t: *mut hl_type, name: Symbol) -> Option<Slot> {
+    let (at, sig) = unsafe { method_of(t, field_hash(name)) }?;
+    Some(Slot {
+        at,
+        sig,
+        kinds: kinds_for(sig)?,
+    })
+}
+
+/// Whether `t` is a HashLink array: a `getDyn` and a `setDyn` method,
+/// and a length to read.
+unsafe fn array_shape(t: *mut hl_type) -> Option<ArrayShape> {
     let names = array_names();
-    has_members(unsafe { kind_of(d) })
-        && unsafe { find_method(d, field_hash(names.get_dyn)) }.is_some()
-        && (unsafe { field_of((*d).t, field_hash(names.length)) }.is_some()
-            || unsafe { find_method(d, field_hash(names.get_length)) }.is_some())
+    let get_dyn = unsafe { slot_of(t, names.get_dyn) }?;
+    let set_dyn = unsafe { slot_of(t, names.set_dyn) }?;
+    let length = match unsafe { field_of(t, field_hash(names.length)) } {
+        Some((offset, ft)) => Length::Field(offset, ft),
+        None => Length::Method(unsafe { slot_of(t, names.get_length) }?),
+    };
+    Some(ArrayShape {
+        length,
+        get_dyn,
+        set_dyn,
+    })
+}
+
+/// Call an array's method on it, `this` first: compiled code by its
+/// kinds, an interpreter stub through `dispatch`.
+unsafe fn send_array(slot: Slot, obj: *mut u8, args: &[Value], out: *mut Value) -> u8 {
+    let mut with_this = [Value::object(obj as *const c_void); 3];
+    with_this[1..=args.len()].copy_from_slice(args);
+    let with_this = &with_this[..=args.len()];
+    let func = unsafe { *slot.at };
+    if func as usize >= STUB_SENTINEL_LIMIT
+        && let Some(sent) = unsafe { call_by_kinds(func, slot.kinds, None, with_this, out) }
+    {
+        return match sent {
+            Ok(()) => REPLY_OK,
+            Err(exception) => unsafe { raise_exception(exception) },
+        };
+    }
+    unsafe {
+        dispatch(
+            func,
+            slot.sig,
+            ptr::null_mut(),
+            with_this.as_ptr(),
+            with_this.len(),
+            out,
+        )
+    }
+}
+
+unsafe fn array_len(shape: &ArrayShape, obj: *mut u8, d: *mut vdynamic) -> Result<usize, u8> {
+    let mut length = Value::null();
+    match shape.length {
+        Length::Field(offset, t) => match unsafe { read_field(d, offset, t) } {
+            Some(v) => length = v,
+            None => return Err(REPLY_UNSUPPORTED),
+        },
+        Length::Method(slot) => {
+            let code = unsafe { send_array(slot, obj, &[], &mut length) };
+            if code != REPLY_OK {
+                return Err(code);
+            }
+        }
+    }
+    Ok(length.as_int().unwrap_or(0).max(0) as usize)
 }
 
 unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
     let d = unsafe { inner(obj) };
-    if !is_array(d) {
+    let Some(shape) = shape_of(d) else {
         return REPLY_UNSUPPORTED;
-    }
-    let names = array_names();
-    let mut length = Value::null();
-    let code = if unsafe { field_of((*d).t, field_hash(names.length)) }.is_some() {
-        get_at(obj, names.length, None, &mut length)
-    } else {
-        invoke_at_opt(obj, names.get_length, None, ptr::null(), 0, &mut length)
     };
-    if code != REPLY_OK {
-        return code;
+    match unsafe { array_len(shape, obj, d) } {
+        Ok(n) => {
+            unsafe { *out = n };
+            REPLY_OK
+        }
+        Err(code) => code,
     }
-    unsafe { *out = length.as_int().unwrap_or(0).max(0) as usize };
-    REPLY_OK
+}
+
+fn position(key: Value) -> Option<i32> {
+    key.as_int().or_else(|| key.as_number().map(|n| n as i32))
 }
 
 unsafe extern "C-unwind" fn index(obj: *mut u8, key: Value, out: *mut Value) -> u8 {
     let d = unsafe { inner(obj) };
-    if !is_array(d) {
+    let Some(shape) = shape_of(d) else {
         return REPLY_UNSUPPORTED;
-    }
-    let Some(pos) = key.as_int().or_else(|| key.as_number().map(|n| n as i32)) else {
+    };
+    let Some(pos) = position(key) else {
         return REPLY_MISSING;
     };
-    let mut length = 0usize;
-    let code = unsafe { len(obj, &mut length) };
-    if code != REPLY_OK {
-        return code;
-    }
+    let length = match unsafe { array_len(shape, obj, d) } {
+        Ok(n) => n,
+        Err(code) => return code,
+    };
     if pos < 0 || pos as usize >= length {
         return REPLY_MISSING;
     }
-    let args = [Value::int(pos)];
-    invoke_at_opt(obj, array_names().get_dyn, None, args.as_ptr(), 1, out)
+    unsafe { send_array(shape.get_dyn, obj, &[Value::int(pos)], out) }
 }
 
 unsafe extern "C-unwind" fn set_index(obj: *mut u8, key: Value, value: Value) -> u8 {
     let d = unsafe { inner(obj) };
-    if !is_array(d) {
+    let Some(shape) = shape_of(d) else {
         return REPLY_UNSUPPORTED;
-    }
-    let Some(pos) = key.as_int().or_else(|| key.as_number().map(|n| n as i32)) else {
+    };
+    let Some(pos) = position(key) else {
         return REPLY_MISSING;
     };
     if pos < 0 {
         return REPLY_MISSING;
     }
-    let args = [Value::int(pos), value];
     let mut ignored = Value::null();
-    invoke_at_opt(
-        obj,
-        array_names().set_dyn,
-        None,
-        args.as_ptr(),
-        2,
-        &mut ignored,
-    )
+    unsafe { send_array(shape.set_dyn, obj, &[Value::int(pos), value], &mut ignored) }
 }
 
 /// The elements in order: the state is the next position.
 unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8 {
+    let d = unsafe { inner(obj) };
+    let Some(shape) = shape_of(d) else {
+        return REPLY_UNSUPPORTED;
+    };
     let pos = unsafe { *state }.as_int().unwrap_or(0).max(0);
-    let mut length = 0usize;
-    let code = unsafe { len(obj, &mut length) };
-    if code != REPLY_OK {
-        return code;
-    }
+    let length = match unsafe { array_len(shape, obj, d) } {
+        Ok(n) => n,
+        Err(code) => return code,
+    };
     if pos as usize >= length {
         return REPLY_MISSING;
     }
-    let code = unsafe { index(obj, Value::int(pos), out) };
+    let code = unsafe { send_array(shape.get_dyn, obj, &[Value::int(pos)], out) };
     if code == REPLY_OK {
         unsafe { *state = Value::int(pos + 1) };
     }

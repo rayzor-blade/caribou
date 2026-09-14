@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering}
 use std::time::Instant;
 
 use caribou::heap::{self, Handle, ImmixAllocator, TraceFn, Tracer, TypeDesc};
+use caribou::protocol::CallSite;
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::mem;
 use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_object_trace};
@@ -146,6 +147,9 @@ pub struct WrenHeap {
     /// The VM's symbols for the signatures the bridge asks for, by the core
     /// symbol and shape asked (`proto::Signatures`).
     signatures: RefCell<crate::proto::Signatures>,
+    /// A site per signature the protocol sends of its own accord, for
+    /// `bridge::enter` to keep whether such a send has called back.
+    fixed_sites: [CallSite; crate::proto::Fixed::COUNT],
     /// This heap's classes published to the registry.
     exports: RefCell<Exports>,
 }
@@ -174,6 +178,10 @@ impl WrenHeap {
 
     pub(crate) fn signatures(&self) -> &RefCell<crate::proto::Signatures> {
         &self.signatures
+    }
+
+    pub(crate) fn fixed_site(&self, which: crate::proto::Fixed) -> &CallSite {
+        &self.fixed_sites[which as usize]
     }
 
     pub(crate) fn imports(&self) -> &RefCell<Imports> {
@@ -454,6 +462,7 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
         cycles: 0,
         imports: RefCell::new(Imports::default()),
         signatures: RefCell::new(crate::proto::Signatures::default()),
+        fixed_sites: [const { CallSite::new() }; crate::proto::Fixed::COUNT],
         exports: RefCell::new(Exports::default()),
     }));
     let anchor = unsafe {

@@ -12,16 +12,22 @@ package caribou;
 abstract Sequence<T>(Dynamic) from Array<T> {
 	public var length(get, never):Int;
 
+	// Every array kind extends `ArrayBase`, and a class with no
+	// implementers is one walk up the object's class chain.
+	inline function isArray():Bool {
+		return Std.isOfType(this, hl.types.ArrayBase);
+	}
+
 	inline function get_length():Int {
-		return Std.isOfType(this, Array) ? (this : Array<T>).length : Ref.__len(this);
+		return isArray() ? (this : Array<T>).length : Ref.__len(this);
 	}
 
 	@:arrayAccess public inline function get(i:Int):T {
-		return Std.isOfType(this, Array) ? (this : Array<T>)[i] : cast Ref.__index(this, i);
+		return isArray() ? (this : Array<T>)[i] : cast Ref.__index(this, i);
 	}
 
 	@:arrayAccess public inline function set(i:Int, v:T):T {
-		if (Std.isOfType(this, Array)) {
+		if (isArray()) {
 			(this : Array<T>)[i] = v;
 		} else {
 			Ref.__setIndex(this, i, v);
@@ -35,7 +41,7 @@ abstract Sequence<T>(Dynamic) from Array<T> {
 
 	/** A Haxe array with the elements as they are now. */
 	public function toArray():Array<T> {
-		if (Std.isOfType(this, Array)) {
+		if (isArray()) {
 			return (this : Array<T>).copy();
 		}
 		var out = [];
@@ -47,19 +53,28 @@ abstract Sequence<T>(Dynamic) from Array<T> {
 	}
 }
 
+/** Decides once which kind it walks; the length is read per step, as
+	the sequence may change under the walk. Both fields start null
+	explicitly: inlined, they are locals, and HashLink does not clear
+	one that is never assigned. */
 private class SequenceIterator<T> {
-	var xs:Sequence<T>;
+	var array:Array<T> = null;
+	var ref:Dynamic = null;
 	var i = 0;
 
-	public inline function new(xs:Sequence<T>) {
-		this.xs = xs;
+	public inline function new(xs:Dynamic) {
+		if (Std.isOfType(xs, hl.types.ArrayBase)) {
+			array = xs;
+		} else {
+			ref = xs;
+		}
 	}
 
 	public inline function hasNext():Bool {
-		return i < xs.length;
+		return i < (array != null ? array.length : Ref.__len(ref));
 	}
 
 	public inline function next():T {
-		return xs[i++];
+		return array != null ? array[i++] : cast Ref.__index(ref, i++);
 	}
 }

@@ -439,28 +439,6 @@ fn signature(name: &str, arity: usize) -> String {
     sig
 }
 
-/// Whether `recv`'s class answers `sig`: on the class, or as a static when
-/// the receiver is itself a class.
-fn has_method(vm: &VM, recv: WValue, sig: &str) -> bool {
-    let class = vm.class_of(recv);
-    if let Some(sym) = vm.interner.lookup(sig)
-        && !class.is_null()
-        && unsafe { (*class).find_method(sym) }.is_some()
-    {
-        return true;
-    }
-    let Some(p) = recv.as_object() else {
-        return false;
-    };
-    if unsafe { (*(p as *const ObjHeader)).obj_type } != ObjType::Class {
-        return false;
-    }
-    match vm.interner.lookup(&format!("static:{sig}")) {
-        Some(sym) => unsafe { (*(p as *const ObjClass)).find_method(sym) }.is_some(),
-        None => false,
-    }
-}
-
 /// `args` as Wren values, or the raise for the first that cannot cross.
 /// Arguments crossed into Wren, with room for a receiver before them. On
 /// the stack for what a compiled body takes in registers, else on the
@@ -568,12 +546,49 @@ enum Shape {
     Set,
 }
 
+/// The signatures the protocol sends of its own accord, for a sequence
+/// and `to_string`, in the order `Signatures::fixed` keeps their symbols
+/// and the record keeps their sites.
+#[derive(Clone, Copy)]
+pub(crate) enum Fixed {
+    Index,
+    SetIndex,
+    Count,
+    Iterate,
+    IteratorValue,
+    ToString,
+}
+
+impl Fixed {
+    pub(crate) const COUNT: usize = 6;
+    const ALL: [Fixed; Fixed::COUNT] = [
+        Fixed::Index,
+        Fixed::SetIndex,
+        Fixed::Count,
+        Fixed::Iterate,
+        Fixed::IteratorValue,
+        Fixed::ToString,
+    ];
+
+    fn text(self) -> &'static str {
+        match self {
+            Fixed::Index => "[_]",
+            Fixed::SetIndex => "[_]=(_)",
+            Fixed::Count => "count",
+            Fixed::Iterate => "iterate(_)",
+            Fixed::IteratorValue => "iteratorValue(_)",
+            Fixed::ToString => "toString",
+        }
+    }
+}
+
 /// The VM's symbols for the signatures the bridge asks for, so a call
 /// hashes no name: per core symbol and shape, the instance signature's
-/// symbol and its `static:` twin's.
+/// symbol and its `static:` twin's, and the fixed ones once.
 #[derive(Default)]
 pub(crate) struct Signatures {
     known: HashMap<(u32, Shape), (SymbolId, SymbolId)>,
+    fixed: Option<[(SymbolId, SymbolId); Fixed::COUNT]>,
 }
 
 impl Signatures {
@@ -586,11 +601,20 @@ impl Signatures {
                 Shape::Get => text.to_owned(),
                 Shape::Set => format!("{text}=(_)"),
             };
-            let instance = vm.interner.intern(&sig);
-            let statics = vm.interner.intern(&format!("static:{sig}"));
-            (instance, statics)
+            intern_both(vm, &sig)
         })
     }
+
+    fn fixed(&mut self, vm: &mut VM, which: Fixed) -> (SymbolId, SymbolId) {
+        self.fixed
+            .get_or_insert_with(|| Fixed::ALL.map(|s| intern_both(vm, s.text())))[which as usize]
+    }
+}
+
+fn intern_both(vm: &mut VM, sig: &str) -> (SymbolId, SymbolId) {
+    let instance = vm.interner.intern(sig);
+    let statics = vm.interner.intern(&format!("static:{sig}"));
+    (instance, statics)
 }
 
 /// A method found for a receiver, and the class it was found on.
@@ -840,20 +864,6 @@ fn run(
     finish(vm, Some(WValue::from_bits(bits)), "", out)
 }
 
-/// Send `sig` to `recv` and write the result. The caller has checked that
-/// the method exists; `None` from the VM is then a failure of its own.
-fn send(vm: &mut VM, recv: WValue, sig: &str, args: &mut Args, out: *mut Value) -> u8 {
-    let instance = vm.interner.intern(sig);
-    let statics = vm.interner.intern(&format!("static:{sig}"));
-    match find(vm, recv, instance, statics) {
-        Some(found) => run(vm, recv, found, args, None, out),
-        None => {
-            let result = vm.call_method_on(recv, sig, &args.as_slice()[1..]);
-            finish(vm, result, sig, out)
-        }
-    }
-}
-
 fn finish(vm: &mut VM, result: Option<WValue>, sig: &str, out: *mut Value) -> u8 {
     if let Some(code) = take_error(vm) {
         return code;
@@ -1075,30 +1085,35 @@ unsafe extern "C-unwind" fn call(
     finish(vm, Some(WValue::from_bits(bits)), "call", out)
 }
 
-/// Send `sig` with `args` if the class has it, else `Unsupported`.
-fn send_if_present(obj: *mut u8, sig: &str, args: &[Value], out: *mut Value) -> u8 {
+/// Send a fixed signature with `args` if the class has it, else
+/// `Unsupported`. The record's site for the signature stands for every
+/// such send into this VM, so the run is guarded only once one has
+/// called back.
+fn send_if_present(obj: *mut u8, which: Fixed, args: &[Value], out: *mut Value) -> u8 {
     let (vm, _) = match vm_of(obj) {
         Ok(vm) => vm,
         Err(code) => return code,
     };
     let recv = unsafe { receiver(obj) };
-    if !has_method(vm, recv, sig) {
+    let rec = record_for(vm.object_class as *mut u8);
+    let (sig, statics) = rec.signatures().borrow_mut().fixed(vm, which);
+    let Some(found) = find(vm, recv, sig, statics) else {
         return REPLY_UNSUPPORTED;
-    }
+    };
     let mut args = match Args::cross(vm, 1, args.as_ptr(), args.len()) {
         Ok(args) => args,
         Err(code) => return code,
     };
-    send(vm, recv, sig, &mut args, out)
+    run(vm, recv, found, &mut args, Some(rec.fixed_site(which)), out)
 }
 
 unsafe extern "C-unwind" fn index(obj: *mut u8, key: Value, out: *mut Value) -> u8 {
-    send_if_present(obj, "[_]", &[key], out)
+    send_if_present(obj, Fixed::Index, &[key], out)
 }
 
 unsafe extern "C-unwind" fn set_index(obj: *mut u8, key: Value, value: Value) -> u8 {
     let mut ignored = Value::null();
-    send_if_present(obj, "[_]=(_)", &[key, value], &mut ignored)
+    send_if_present(obj, Fixed::SetIndex, &[key, value], &mut ignored)
 }
 
 /// `count`, for anything that has one.
@@ -1118,7 +1133,7 @@ unsafe extern "C-unwind" fn arity(obj: *mut u8, out: *mut usize) -> u8 {
 
 unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
     let mut count = Value::null();
-    let code = send_if_present(obj, "count", &[], &mut count);
+    let code = send_if_present(obj, Fixed::Count, &[], &mut count);
     if code != REPLY_OK {
         return code;
     }
@@ -1135,7 +1150,7 @@ unsafe extern "C-unwind" fn len(obj: *mut u8, out: *mut usize) -> u8 {
 /// ending it; `iteratorValue(_)` reads the element at a state.
 unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut Value) -> u8 {
     let mut next = Value::null();
-    let code = send_if_present(obj, "iterate(_)", &[unsafe { *state }], &mut next);
+    let code = send_if_present(obj, Fixed::Iterate, &[unsafe { *state }], &mut next);
     if code != REPLY_OK {
         return code;
     }
@@ -1143,23 +1158,14 @@ unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut V
         return REPLY_MISSING;
     }
     unsafe { *state = next };
-    let (vm, _) = match vm_of(obj) {
-        Ok(vm) => vm,
-        Err(code) => return code,
-    };
-    let recv = unsafe { receiver(obj) };
-    let mut args = match Args::cross(vm, 1, &next, 1) {
-        Ok(args) => args,
-        Err(_) => return REPLY_UNSUPPORTED,
-    };
-    send(vm, recv, "iteratorValue(_)", &mut args, out)
+    send_if_present(obj, Fixed::IteratorValue, &[next], out)
 }
 
 /// `toString`, as a core string: what it answered, having crossed as one,
 /// or a description of a non-string it answered.
 unsafe extern "C-unwind" fn to_string(obj: *mut u8, out: *mut Value) -> u8 {
     let mut text = Value::null();
-    let code = send_if_present(obj, "toString", &[], &mut text);
+    let code = send_if_present(obj, Fixed::ToString, &[], &mut text);
     if code != REPLY_OK {
         return code;
     }
