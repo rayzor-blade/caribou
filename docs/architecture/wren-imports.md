@@ -35,24 +35,28 @@ answers is left to the VM, whose import error names it.
 
 ## A call
 
-A `NativeFn` is a bare function receiving the receiver and the arguments.
-So the natives are trampolines: a fixed number of distinct functions,
-where the `i`th calls the `i`th member bound on the receiver's class.
+Each member is bound as a host native, `bind_host`: one entry for every
+member, and a word wren_lift hands the entry on each call. The word is
+the member's target, which the binding keeps for as long as the class:
+its kind, its callable, its name for the trace, and the call site the
+callee's protocol fills. So a call looks nothing up. It is the bridge
+call the kind names:
 
-A call costs one lookup by class pointer in the table the VM's heap record
-keeps, a map hashed by address, and then the bridge call:
-
-- `call_named` with the typed callable, for a method or a static;
-- `get_at` and `set_at` by interned symbol, for a field, through the call
-  site the member's target keeps;
+- `call_at` with the typed callable, for a method or a static;
+- `get_at` and `set_at` by interned symbol, for a field;
 - the constructor's callable, for `new`.
 
-The arguments cross into a buffer on the stack, sized for Wren's widest
-signature, with a slot before them for the receiver. They cross as bridge
-values; a Wren string becomes a core `Str`, rooted for the call. Results
-come back through `to_wren`, so an object of another language becomes an
-instance of the class installed for its type, installing that class's
-module on first need.
+A method or a static called with scalars alone takes the direct send its
+site holds (`bridge::call_direct_at`, see [call
+sites](bridge.md#call-sites)). A scalar has the bridge value's layout, so
+the arguments cross where they lie, and nothing is rooted. Any other
+call, and the first one, before the site is filled, crosses its
+arguments into a buffer on the stack, sized for Wren's widest signature,
+with a slot before them for the receiver. They cross as bridge values; a
+Wren string becomes a core `Str`, rooted for the call. Results come back
+through `to_wren`, so an object of another language becomes an instance
+of the class installed for its type, installing that class's module on
+first need.
 
 A Haxe throw, or an argument Haxe refuses, arrives as the error's message
 and aborts the fiber, which `Fiber.try` sees. A Wren class may extend an

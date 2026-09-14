@@ -206,7 +206,9 @@ in the site as a *direct send*, with two words of its own beside it. The
 bridge calls that function before anything else, with the receiver's
 address or the typed callable's function as the target, and only when it
 answers `Missing` or `Unsupported` forgets it and takes the plain path,
-which fills the site again. Wren leaves the closure it found and the
+which fills the site again. A caller with nothing to convert asks for
+the direct send alone, `call_direct_at`, and takes the plain path itself
+when there is none. Wren leaves the closure it found and the
 class it found it on: the next call checks that the receiver is that
 class or an instance of exactly it, and dispatches. Ash's typed
 dispatcher leaves the signature's kinds, read once and kept per

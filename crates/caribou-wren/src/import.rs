@@ -574,13 +574,47 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
 /// `bind_members` boxed for the life of the binding.
 fn host_entry(vm: &mut VM, context: usize, args: &[WValue]) -> WValue {
     let target = unsafe { &*(context as *const Target) };
-    match run(vm, target, args) {
+    let result = match direct(vm, target, args) {
+        Some(result) => result,
+        None => run(vm, target, args),
+    };
+    match result {
         Ok(v) => v,
         Err(message) => {
             vm.runtime_error(message);
             WValue::null()
         }
     }
+}
+
+/// A call with scalars alone, through the direct send its site holds. A
+/// scalar has the bridge value's layout, so the arguments cross where
+/// they lie and nothing is rooted. `None` leaves the call to `run`: a
+/// site with no direct send yet, or an argument that has to cross.
+fn direct(vm: &mut VM, target: &Target, args: &[WValue]) -> Option<Result<WValue, String>> {
+    let n = args.len() - 1;
+    if n > WIDEST || !args[1..].iter().all(|a| a.as_object().is_none()) {
+        return None;
+    }
+    let scalars = unsafe { std::slice::from_raw_parts(args[1..].as_ptr().cast::<Value>(), n) };
+    let wren = wren_lang();
+    let result = match target.kind {
+        Kind::Static => {
+            bridge::call_direct_at(target.callable, &target.site, scalars, wren, &target.name)?
+        }
+        Kind::Method => {
+            let this = foreign_of(args[0])?;
+            let mut with_this = [MaybeUninit::<Value>::uninit(); WIDEST + 1];
+            with_this[0].write(this);
+            for (slot, &v) in with_this[1..].iter_mut().zip(scalars) {
+                slot.write(v);
+            }
+            let with_this = unsafe { with_this[..=n].assume_init_ref() };
+            bridge::call_direct_at(target.callable, &target.site, with_this, wren, &target.name)?
+        }
+        _ => return None,
+    };
+    Some(finish(vm, target, args, result))
 }
 
 /// A Wren argument as a bridge value, with the root it needs for the
@@ -755,6 +789,16 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
             r
         }
     };
+    finish(vm, target, args, result)
+}
+
+/// A call's result as Wren's.
+fn finish(
+    vm: &mut VM,
+    target: &Target,
+    args: &[WValue],
+    result: Result<Value, Value>,
+) -> Result<WValue, String> {
     let value = result.map_err(message_of)?;
     if let Kind::Setter(_) | Kind::ClassSetter(_) = target.kind {
         // The assigned value, as Wren's own setters evaluate to.

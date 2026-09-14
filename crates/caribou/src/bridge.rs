@@ -571,6 +571,29 @@ pub fn call_at(
     call_at_opt(callable, args, caller, name, Some(site))
 }
 
+/// The direct send `site` holds for `callable`, when it holds one and it
+/// takes the call: a typed callable's, the whole call in one function.
+/// `None` when the site holds none, or when what it holds declined and
+/// the plain path is to fill it again.
+#[inline]
+pub fn call_direct_at(
+    callable: Callable,
+    site: &CallSite,
+    args: &[Value],
+    caller: LangId,
+    name: &str,
+) -> Option<Result<Value, Value>> {
+    let (func, lang) = match callable {
+        Callable::Typed { func, lang, .. } => (func as usize, lang),
+        Callable::Cell { cell, lang, .. } => (unsafe { *cell } as usize, lang),
+        _ => return None,
+    };
+    Some(match direct(site, func, args)? {
+        Ok(v) => Ok(v),
+        Err(()) => settle(Outcome::Raised, lang, name, caller),
+    })
+}
+
 #[inline]
 fn call_at_opt(
     callable: Callable,
@@ -609,12 +632,9 @@ fn call_at_opt(
             lang,
         } => {
             if let Some(site) = site
-                && let Some(reply) = direct(site, func as usize, args)
+                && let Some(result) = call_direct_at(callable, site, args, caller, name)
             {
-                return match reply {
-                    Ok(v) => Ok(v),
-                    Err(()) => settle(Outcome::Raised, lang, name, caller),
-                };
+                return result;
             }
             let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
@@ -624,15 +644,12 @@ fn call_at_opt(
             signature,
             lang,
         } => {
-            let func = unsafe { *cell };
             if let Some(site) = site
-                && let Some(reply) = direct(site, func as usize, args)
+                && let Some(result) = call_direct_at(callable, site, args, caller, name)
             {
-                return match reply {
-                    Ok(v) => Ok(v),
-                    Err(()) => settle(Outcome::Raised, lang, name, caller),
-                };
+                return result;
             }
+            let func = unsafe { *cell };
             let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
         }
