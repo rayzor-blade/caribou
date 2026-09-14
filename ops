@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1789396809,"nonce":"b5bcn8PwzFMMyR0iNDJV2LHvov4=","message":"Closing: landed as recorded above (6510c06 and what followed: call sites, direct sends, shadows, guards). The protocol gaps that remain are d803152's.","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1789396809,"nonce":"AYBEeA3nKoo1lgFRedE7RO8vjtc=","status":2}]}
