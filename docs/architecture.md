@@ -17,11 +17,11 @@ design proposal, and work in progress lives in git-bug.
 |---|---|
 | [Heap](architecture/heap.md) | The Immix collector: memory, allocation kinds, type descriptors, roots, collection, hosted collectors, locking. |
 | [Scheduler](architecture/scheduler.md) | Worlds and tasks, the loop, parking, preemption, multiple worlds, what an adapter provides. |
-| [Bridge](architecture/bridge.md) | Values at the boundary, the object protocol, symbols, errors, typed dispatch, calls, call sites, guards, shadows, diagnostics. |
+| [Bridge](architecture/bridge.md) | Values at the boundary, the object protocol, symbols, errors, typed dispatch, calls, call sites, guards, cells and shadows, diagnostics. |
 | [Adapters](architecture/adapters.md) | How a Haxe object and a Wren object answer the protocol, calling into Haxe under a trap or a guard, Wren dispatch, fibers and runs, functions crossing either way. |
 | [Registry](architecture/registry.md) | Interfaces and namespaces, and what Ash and WrenLift publish. |
 | [Wren imports a Haxe class](architecture/wren-imports.md) | Resolving and installing, a call, lifetime. |
-| [Haxe imports a Wren class](architecture/haxe-imports.md) | The build macro, declaring types, the emitted class, binding the natives, faces, how a Wren object is held by Haxe. |
+| [Haxe imports a Wren class](architecture/haxe-imports.md) | The build macro, declaring types, the emitted class, binding the natives, cells, how a Wren object is held by Haxe. |
 | [World and driver](architecture/world.md) | Adapters and languages, startup, the driver and its project layout, the run report, events. |
 | [Linking](architecture/linking.md) | A member at link time: the symbol, the C signature, each AOT's half, what stays at run time. |
 

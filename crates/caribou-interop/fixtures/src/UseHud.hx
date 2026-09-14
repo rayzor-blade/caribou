@@ -15,6 +15,10 @@ class UseHud {
 		Sys.println(h.score);
 		Sys.println(h.label("hp"));
 		var m = Hud.make(1);
+		// An object Wren made is a Hud to Haxe's own type tests and casts.
+		Sys.println(m.score + " " + Std.isOfType(m, Hud) + " " + (Type.getClass(m) == Hud) + " " + Std.isOfType(m, caribou.Ref));
+		var d:Dynamic = m;
+		Sys.println((d : Hud) == m && Std.isOfType(d, Hud) && !Std.isOfType(h, Array));
 		var b = Hud.best(h, m);
 		Sys.println(b == h);
 		Sys.println(b.score);

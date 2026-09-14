@@ -70,7 +70,6 @@ impl Adapter for Runtime {
         };
         self.lang = Some(id);
         proto::set_lang(id);
-        wrenref::set_lang(id);
         callback::set_lang(id);
         caribou::bridge::set_typed_dispatch(id, proto::dispatch);
         caribou::bridge::set_guard(proto::guard);

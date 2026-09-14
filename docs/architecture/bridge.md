@@ -247,20 +247,33 @@ the abandoned frames rooted on the stack goes with them, which is why an
 adapter keeps an object it made for a call on its frame, not in a
 handle.
 
-## Shadows
+## Cells and shadows
 
-When an object crosses into a language that cannot hold it as it is, that
-language makes an object of its own to stand for it: Haxe's ref for a
-Wren object. The same object crossing twice must give the same
-stand-in, so the stand-in has to be found from the object. The
-protocol's answer is the *shadow*: the object's own language keeps the
-stand-in on the object, where finding it is a read. `shadow(lang)` gives
-the one kept for a language, `keep_shadow` keeps one when none is kept
-yet and answers with the one kept otherwise, and `drop_shadow` forgets it
-when the stand-in dies. A Wren object keeps one in its bridge word (see
+A language's compiled code reads its own objects at fixed offsets, so an
+object of another language can only be held as one the holder's code
+can read: something with the holder's header. A *cell* (`caribou::cell`)
+is the one core object standing for an object in the terms of the
+language holding it. Its word zero is a descriptor the holder's adapter
+fills so it reads as the holder's own header, an `hl_type` mirroring a
+Haxe class, say, so the cell is an instance of that class to Haxe and a
+core object to the bridge; its protocol forwards every message to the
+object; its trace keeps the object; its drop forgets it. Cells are
+known by their type's mark bits, which name one static of the core's:
+no other type's do, and nothing reads a cell type's mark bits but that
+test. A holder may put an object it constructed itself in front of a
+cell, and the object then always comes back as that one. See
+[haxe-imports.md](haxe-imports.md#cells) for Haxe's use.
+
+The same object crossing twice must give the same cell, so the cell
+has to be found from the object. The protocol's answer is the *shadow*:
+the object's own language keeps the cell on the object, where finding
+it is a read. `shadow(lang)` gives the one kept for a language,
+`keep_shadow` keeps one when none is kept yet and answers with the one
+kept otherwise, and `drop_shadow` forgets it when the cell dies. A Wren
+object keeps one in its bridge word (see
 [adapters.md](adapters.md#wren-objects)). A language that keeps none
-answers `Unsupported`, and the other side remembers its stand-ins in a
-map of its own.
+answers `Unsupported`, and the cell module remembers those in a map of
+its own.
 
 ## Diagnostics
 

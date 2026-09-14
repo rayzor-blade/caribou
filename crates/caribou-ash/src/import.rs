@@ -38,9 +38,11 @@ use ash_core::native_lib::HostNative;
 #[cfg(feature = "runner")]
 use ash_interp::interpreter::HLInterpreter;
 use ash_std::error::hlp_throw;
-use ash_std::obj::{hlp_alloc_obj, hlp_get_obj_rt};
+use ash_std::obj::hlp_get_obj_rt;
 use caribou::bridge;
-use caribou::hash::BuildAddressHasher;
+use caribou::cell;
+use caribou::hash::{AddressMap, BuildAddressHasher};
+use caribou::heap::TypeDesc;
 use caribou::protocol::{CallSite, Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
 use caribou::report;
@@ -250,14 +252,42 @@ fn links(s: &Slot) -> bool {
 }
 
 /// The `hl_type` of the face class per `(namespace, module, class)`, and
-/// of `caribou.Ref`, recorded once the interpreter has built its types.
+/// of `caribou.Ref`, recorded once the interpreter has built its types,
+/// and the cell view for each once a crossing asks: a cell read under it
+/// is an instance of the class to Haxe.
 static FACES: RwLock<Option<Faces>> = RwLock::new(None);
 
 struct Faces {
     by_class: HashMap<(String, String, String), usize>,
     fallback: usize,
     /// Answers already found for a published type name.
-    by_type: HashMap<(LangId, Symbol), usize, BuildAddressHasher>,
+    by_type: HashMap<(LangId, Symbol), &'static TypeDesc, BuildAddressHasher>,
+    /// The view per class `hl_type`.
+    views: AddressMap<&'static TypeDesc>,
+}
+
+impl Faces {
+    /// The cell view mirroring the class `t`: its `hl_type`, so Haxe
+    /// reads the class's own runtime data through it, built here first
+    /// so the mirror never builds it. A class the macro emits declares
+    /// no field, which is what keeps the cell's words its own. Made on
+    /// first use, when the runtime has its language.
+    fn view(&mut self, t: usize) -> Result<&'static TypeDesc, String> {
+        if let Some(&d) = self.views.get(&t) {
+            return Ok(d);
+        }
+        let t = t as *mut hl_type;
+        let name = unsafe { proto::obj_name(t) }.unwrap_or_default();
+        let rt = unsafe { hlp_get_obj_rt(t.cast()) };
+        if unsafe { (*rt).size } as usize > size_of::<cell::Cell>() {
+            return Err(format!(
+                "`{name}` declares fields, so a foreign object cannot be one"
+            ));
+        }
+        let d = cell::descriptor(unsafe { ptr::read(t) }, lang(), &name);
+        self.views.insert(t as usize, d);
+        Ok(d)
+    }
 }
 
 /// Parse `game:hud.Hud.draw(_)`: namespace, module, class, and the
@@ -438,6 +468,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
         by_class,
         fallback,
         by_type: HashMap::default(),
+        views: AddressMap::default(),
     });
     Ok(())
 }
@@ -446,7 +477,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
 // Faces
 // ---------------------------------------------------------------------------
 
-/// The ref a face holds: its first field.
+/// The cell a constructed face holds: its first field.
 unsafe fn ref_field(face: *mut vdynamic) -> *mut *mut c_void {
     let t = unsafe { (*face).t };
     let rt = unsafe { hlp_get_obj_rt(t.cast()) };
@@ -470,8 +501,12 @@ unsafe fn is_face_type(mut t: *const hl_type) -> bool {
     false
 }
 
-/// The foreign object `d` stands for, when `d` is a face holding one.
+/// The foreign object `d` stands for, when `d` is a cell or a face
+/// holding one.
 pub(crate) unsafe fn behind_face(d: *mut vdynamic) -> Option<Value> {
+    if unsafe { cell::is_cell(d as *const u8) } {
+        return Some(cell::unwrap(Value::object(d as *const c_void)));
+    }
     if !unsafe { is_face_type((*d).t) } {
         return None;
     }
@@ -484,10 +519,14 @@ pub(crate) unsafe fn behind_face(d: *mut vdynamic) -> Option<Value> {
     }))
 }
 
-/// The foreign object a face stands for.
+/// The foreign object a receiver stands for: a cell, or a constructed
+/// face holding one.
 unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
     if face.is_null() {
         return Err("the receiver is null".to_owned());
+    }
+    if unsafe { cell::is_cell(face as *const u8) } {
+        return Ok(cell::unwrap(Value::object(face as *const c_void)));
     }
     let r = unsafe { *ref_field(face) };
     if r.is_null() {
@@ -498,14 +537,15 @@ unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
     }))
 }
 
-/// Make `face` the face of the object `r` is the ref of.
+/// Put `face`, an instance Haxe constructed, in front of the cell `r`.
 unsafe fn bind_face(face: *mut vdynamic, r: Value) {
     unsafe { *ref_field(face) = wrenref::wrenref_as_abstract(r) };
-    wrenref::set_face(r, face);
+    cell::set_front(r, face.cast());
 }
 
-/// The class the program declares for the object's published type.
-fn face_type(v: Value) -> Result<*mut hl_type, String> {
+/// The view of the class the program declares for the object's
+/// published type.
+fn face_type(v: Value) -> Result<&'static TypeDesc, String> {
     let lang = bridge::language_of(v).ok_or("not an object")?;
     let type_name = bridge::type_symbol(v).unwrap_or_else(|| intern(""));
     let key = (lang, type_name);
@@ -517,7 +557,7 @@ fn face_type(v: Value) -> Result<*mut hl_type, String> {
         .by_type
         .get(&key)
     {
-        return Ok(t as *mut hl_type);
+        return Ok(t);
     }
     let mut faces = FACES.write().unwrap();
     let faces = faces.as_mut().ok_or("no program is loaded")?;
@@ -541,23 +581,29 @@ fn face_type(v: Value) -> Result<*mut hl_type, String> {
             ));
         }
     };
-    faces.by_type.insert(key, t);
-    Ok(t as *mut hl_type)
+    let view = faces.view(t)?;
+    faces.by_type.insert(key, view);
+    Ok(view)
 }
 
-/// The Haxe object for a foreign one: its face, made on first need. A
-/// ref found before the face is allocated is still there after: its
-/// object's heap keeps it.
+/// The Haxe object for a foreign one: the instance Haxe constructed for
+/// it, if it did, else its cell, read under the class the program
+/// declares for its type from now on.
 pub(crate) fn face_for(v: Value) -> Result<*mut vdynamic, String> {
-    let r = wrenref::foreign_ref(v);
-    if let Some(face) = r.and_then(wrenref::face) {
-        return Ok(face);
-    }
-    let t = face_type(v)?;
-    let face = unsafe { hlp_alloc_obj(t.cast()) } as *mut vdynamic;
-    let r = r.unwrap_or_else(|| wrenref::wrap_foreign(v));
-    unsafe { bind_face(face, r) };
-    Ok(face)
+    let found = wrenref::foreign_ref(v);
+    let (c, front) = match found.and_then(|c| cell::view_of(c).map(|(d, f)| (c, d, f))) {
+        Some((c, desc, front)) if !ptr::eq(desc, wrenref::plain()) => (c, front),
+        Some((c, _, front)) => {
+            cell::view(c, face_type(v)?);
+            (c, front)
+        }
+        None => (cell::wrap(v, face_type(v)?), ptr::null_mut()),
+    };
+    Ok(if front.is_null() {
+        c.as_object().map_or(ptr::null_mut(), |p| p.cast())
+    } else {
+        front.cast()
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -120,63 +120,64 @@ The arguments cross as bridge values. The result comes back through the
 Haxe conversion. A bridge error is thrown into Haxe as the exception it
 carries, else as its message in a `String`. `attach_types` records, once
 the interpreter has built its types, which Haxe class each slot's class
-is, and `caribou.Ref`, for the faces below, and the program's `String` for
-the strings that cross.
+is, and `caribou.Ref`, for the cells below, and the program's `String`
+for the strings that cross.
 
-## Faces
+## Cells
 
-A Haxe object of an emitted class is the face of one foreign object. Its
-first field holds the object's ref, and the ref knows its face. So the
-same Wren object reaching Haxe twice is the same Haxe object, and a face
-going back to Wren is the object it stands for.
+A Wren object reaching Haxe is a cell (`caribou::cell`): the one core
+object standing for it in Haxe's terms. Word zero is a descriptor whose
+`hl_type` prefix mirrors the class the program declares for the
+object's published type, found through the registry by the object's
+`type_name`, else `caribou.Ref` when the program has that class. To
+HashLink the cell is an instance of that class: it dispatches, casts
+and tests the type through the mirror, which shares the class's runtime
+data (`hlp_get_obj_rt` is built for the class before the mirror is
+made, so the mirror never builds it). Nothing else of the cell is read
+by Haxe; a class the macro emits declares no field, so the cell's own
+words are its own. So the same Wren object reaching Haxe twice is the
+same Haxe object, `==` included, and one going back to Wren is the
+object it stands for.
 
-A foreign object crossing into a `Dynamic` gets a face under the class
-the program declares for its published type, found through the registry
-by the object's `type_name`, else under `caribou.Ref` when the program has
-that class. The ref and its face hold each other, and both die when Haxe
-lets go.
+An instance Haxe constructs itself, `new Hud(3)`, is a real object of
+the class whose first field, `hl.Abstract<"caribou_obj">`, holds the
+cell: the cell keeps it in front, so the object always comes back as
+that instance. A cell Haxe holds only as such a pointer, a callback's
+target too, is made under a plain view, an abstract type, and is read
+under the class's view from the first time Haxe gets it as an object.
 
 ## How a Wren object is held by Haxe
 
 A Wren object reaching Haxe must be something Haxe can keep, that Haxe's
 collector sees, and that stays alive in Wren for as long as Haxe keeps it.
 
-`caribou_ash::wrap_foreign` answers with a `WrenRef`: a traced core object
-under a static descriptor of Haxe's language, holding the object's bridge
-value. The name is the common case; whatever is not Haxe's is wrapped the
+`caribou_ash::wrap_foreign` answers with the cell under the plain view:
+a traced core object of Haxe's language holding the object's bridge
+value. The name is the common case; whatever is not Haxe's is held the
 same way, a core `Str` or `Error` included, and a Haxe value or a scalar
-passes through. Haxe keeps the ref as the raw pointer
-`wrenref_as_abstract` gives, in the `hl.Abstract<"caribou_obj">` field of
-the class the build macro emits: a word the conservative scan sees and
-HashLink never reads. `wrenref_from_abstract` turns it back into a value,
-and `unwrap_foreign` into the object.
+passes through. `wrenref_as_abstract` gives the cell as the raw pointer
+a constructed instance's field holds, `wrenref_from_abstract` turns it
+back into a value, and `unwrap_foreign` into the object.
 
-The ref's protocol forwards every message to the object, call sites
+The cell's protocol forwards every message to the object, call sites
 included, so a Haxe caller reaching it through `Dynamic` gets Wren
-semantics, and `equals` sees through a ref on either side. It answers
+semantics, and `equals` sees through a cell on either side. It answers
 `unwrap_native` with the object itself, which is how the Wren adapter
 recognises one of its own objects coming back and restores identity.
 
-The ref's trace hook is what keeps the object. A Wren cycle ends with a
+The cell's trace hook is what keeps the object. A Wren cycle ends with a
 core collection, and an object Wren's own marking did not reach lives if
-the core's mark reaches it, which it does through a live ref (see [hosted
-collectors](heap.md#hosted-collectors)). So a ref Haxe still holds keeps
-its object, and one Haxe dropped lets it go, in the same cycle. The core's
-collection retains every Wren object regardless outside a cycle.
+the core's mark reaches it, which it does through a live cell (see
+[hosted collectors](heap.md#hosted-collectors)). So a cell Haxe still
+holds keeps its object, and one Haxe dropped lets it go, in the same
+cycle. The core's collection retains every Wren object regardless
+outside a cycle.
 
-There is one ref per object, and the object keeps it: the ref is the
+There is one cell per object, and the object keeps it: the cell is the
 protocol's *shadow* of the object for Haxe (see
 [bridge.md](bridge.md#shadows)), a word on a Wren object. An object whose
 language keeps no shadow, a core `Error` say, is entered in a map from
-its address to the ref's instead. Neither roots the ref, so a ref is
+its address to the cell's instead. Neither roots the cell, so a cell is
 reachable only from Haxe and dies when Haxe drops it. Its drop hook, run
-by the core's sweep before the ref's lines can be reused, drops the
+by the core's sweep before the cell's lines can be reused, drops the
 shadow or the entry.
-
-The invariant is that a ref an object keeps, or the map names, is alive.
-Presence means alive, because the only way out is the drop of the ref
-itself, and the object cannot die before its ref, whose trace marks it.
-So `wrap_foreign` on an object that already has a ref returns that ref,
-and a second wrap of one object is the same ref until Haxe lets it go.
-Once it does, the object dies with the next Wren cycle that finds no other
-reference to it.

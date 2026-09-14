@@ -101,7 +101,7 @@ other. A core int becomes a Wren number on the way in, Wren having no
 other.
 
 An object of another language entering Wren is one of two things. If it
-stands for one of this VM's own objects (a `WrenRef`, see
+stands for one of this VM's own objects (a cell, see
 [haxe-imports.md](haxe-imports.md), answers `unwrap_native` with the
 object it holds), it becomes that object again, so identity survives a
 round trip. Otherwise it becomes an instance of the class installed for
