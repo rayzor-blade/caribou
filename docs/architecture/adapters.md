@@ -139,6 +139,15 @@ that the object is this thread's VM's and that the receiver is that
 class or an instance of exactly it, then dispatches as above; otherwise
 it answers `Missing` and the plain path decides.
 
+### Fibers
+
+A Wren fiber runs on a krio stack of its own in every VM the driver or
+the runner makes (`krio_fiber_active`). wren_lift tells its seam when a
+stack is made, suspended with its stack pointer, and freed; the adapter
+registers each with the core's heap under krio's id, so a collection
+scans a suspended fiber from where it stopped, as it scans the core's
+own tasks.
+
 ### The VM an entry runs on
 
 The Wren entries run on a VM, and `install` cannot know which. Whoever

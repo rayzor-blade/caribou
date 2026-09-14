@@ -86,6 +86,9 @@ fn vm(mode: ExecutionMode, errors: &Rc<RefCell<Vec<String>>>) -> VM {
     };
     caribou_wren::import::configure(&mut config);
     let mut vm = VM::new(config);
+    // Fibers on stacks of their own, as the driver makes them: a Haxe
+    // throw inside `Fiber.try` crosses a stack switch.
+    vm.krio_fiber_active = true;
     vm.output_buffer = Some(String::new());
     vm
 }

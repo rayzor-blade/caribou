@@ -99,7 +99,11 @@ section is one; a module's variable array is another.
 
 Fiber stacks register with `gc_register_fiber_stack` and report their
 suspended stack pointer with `gc_update_fiber_sp`. A stack that was never
-suspended is skipped.
+suspended is skipped. A stack is registered under krio's id for it, which
+is unique in the process, so the core's own tasks and a hosted runtime's
+fibers share one registry: wren_lift tells its seam's stack slots when a
+fiber's stack is made, suspended and freed, and the Wren adapter forwards
+them (see [adapters.md](adapters.md#wren-objects)).
 
 ## Collection
 

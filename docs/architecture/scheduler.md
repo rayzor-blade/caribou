@@ -144,6 +144,5 @@ adapter's to keep, with one `schedule_step` after spawning.
 ## Boundaries of the current implementation
 
 - No reactor. Idle blocks on the endpoint and the timer heap only.
-- Heap fiber-stack ids are `u32` and task ids `u64`; the id is truncated.
 - The main stack's published probe sits above the callee-saved registers
   krio spills at a switch, as in Ash.

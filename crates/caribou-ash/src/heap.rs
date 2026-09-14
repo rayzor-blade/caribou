@@ -85,15 +85,15 @@ pub unsafe extern "C" fn gc_unregister_current_os_thread() {
 }
 
 pub unsafe extern "C" fn gc_register_fiber_stack(id: u32, base: usize, size: usize) {
-    unsafe { heap::gc_register_fiber_stack(id, base, size) };
+    unsafe { heap::gc_register_fiber_stack(u64::from(id), base, size) };
 }
 
 pub unsafe extern "C" fn gc_update_fiber_sp(id: u32, sp: usize) {
-    unsafe { heap::gc_update_fiber_sp(id, sp) };
+    unsafe { heap::gc_update_fiber_sp(u64::from(id), sp) };
 }
 
 pub unsafe extern "C" fn gc_unregister_fiber_stack(id: u32) {
-    unsafe { heap::gc_unregister_fiber_stack(id) };
+    unsafe { heap::gc_unregister_fiber_stack(u64::from(id)) };
 }
 
 pub unsafe extern "C" fn gc_add_persistent(ptr: *mut vdynamic) {

@@ -2377,7 +2377,9 @@ impl HandleTable {
 #[derive(Clone, Copy)]
 pub(crate) struct FiberStackInfo {
     pub thread: u64,
-    pub id: u32,
+    /// krio's id for the stack, unique in the process; 0 is the thread's
+    /// own stack.
+    pub id: u64,
     pub base: usize,
     pub size: usize,
     /// SP recorded at the stack's last switch-out; 0 = never suspended.
@@ -5139,7 +5141,7 @@ pub unsafe fn dump_memory(filename: *mut hl::vbyte) {
 
 // ── Fiber-stack registry ────────────────────────────────────────────────────
 
-pub unsafe fn gc_register_fiber_stack(id: u32, base: usize, size: usize) {
+pub unsafe fn gc_register_fiber_stack(id: u64, base: usize, size: usize) {
     let thread = thread_self_fast();
     let mut gc = gc_locked();
     // Lazily register the main-stack descriptor the first time a fiber
@@ -5166,7 +5168,7 @@ pub unsafe fn gc_register_fiber_stack(id: u32, base: usize, size: usize) {
     });
 }
 
-pub unsafe fn gc_update_fiber_sp(id: u32, sp: usize) {
+pub unsafe fn gc_update_fiber_sp(id: u64, sp: usize) {
     let thread = thread_self_fast();
     let mut gc = gc_locked();
     if let Some(f) = gc
@@ -5179,7 +5181,7 @@ pub unsafe fn gc_update_fiber_sp(id: u32, sp: usize) {
 }
 
 /// Must be called BEFORE the fiber's stack memory is freed.
-pub unsafe fn gc_unregister_fiber_stack(id: u32) {
+pub unsafe fn gc_unregister_fiber_stack(id: u64) {
     let thread = thread_self_fast();
     let mut gc = gc_locked();
     gc.fiber_stacks

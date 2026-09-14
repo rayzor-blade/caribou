@@ -585,6 +585,21 @@ pub unsafe extern "C" fn track_external(_heap: *mut c_void, bytes: usize) {
     heap::track_external(bytes as u64);
 }
 
+// A krio stack is a root the core scans from where it is suspended, as
+// it scans its own tasks' stacks; krio's ids are the core's registry
+// keys, so nothing is renumbered.
+pub unsafe extern "C" fn stack_new(id: u64, base: usize, size: usize) {
+    unsafe { heap::gc_register_fiber_stack(id, base, size) };
+}
+
+pub unsafe extern "C" fn stack_suspended(id: u64, sp: usize) {
+    unsafe { heap::gc_update_fiber_sp(id, sp) };
+}
+
+pub unsafe extern "C" fn stack_drop(id: u64) {
+    unsafe { heap::gc_unregister_fiber_stack(id) };
+}
+
 /// Have `object_drop` run for the plain allocation at `ptr` once a cycle
 /// finds it dead, as for a raw one: its plain bit is cleared, which is
 /// all the sweep consults. False when `ptr` is not a plain allocation of

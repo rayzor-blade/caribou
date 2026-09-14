@@ -105,6 +105,9 @@ impl Session {
         };
         caribou_wren::import::configure(&mut config);
         let mut vm = VM::new(config);
+        // Every Wren fiber on a stack of its own: the core scans them as
+        // it scans its own tasks' (see `caribou_wren::install`).
+        vm.krio_fiber_active = true;
         if options.report {
             caribou_wren::report::count_entries(&mut vm);
         }

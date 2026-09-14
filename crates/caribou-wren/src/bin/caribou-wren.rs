@@ -126,6 +126,9 @@ fn run() -> Result<(), String> {
         gc_strategy: GcStrategy::Immix,
         ..VMConfig::default()
     });
+    // Every fiber on a stack of its own, on the core's heap and on
+    // wren_lift's alike.
+    vm.krio_fiber_active = true;
     let module_name = file.strip_suffix(".wren").unwrap_or(file);
     // The VM the bridge's Wren entries run on, for the life of the run.
     let previous = unsafe { caribou_wren::enter_vm(&mut vm) };

@@ -139,6 +139,9 @@ fn table() -> RuntimeVTable {
         collect_end: Some(heap::collect_end),
         for_each_allocation: Some(heap::for_each_allocation),
         stats: Some(heap::stats),
+        stack_new: Some(heap::stack_new),
+        stack_suspended: Some(heap::stack_suspended),
+        stack_drop: Some(heap::stack_drop),
         ..RuntimeVTable::new()
     }
 }

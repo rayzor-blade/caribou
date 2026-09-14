@@ -287,7 +287,7 @@ pub fn spawn_fiber(stack_size: usize, body: impl FnOnce() + 'static) -> TaskId {
     let id = next_task_id();
     preempt::task_created();
     trace("create", id.0, 0);
-    spawn_local(id, Body::fiber(id, stack_size, Box::new(body)))
+    spawn_local(id, Body::fiber(stack_size, Box::new(body)))
 }
 
 /// A stackless task on this world: the scheduler calls `step` on its own
@@ -308,7 +308,7 @@ pub fn spawn_fiber_on_pool(stack_size: usize, body: impl FnOnce() + Send + 'stat
     let body: Box<dyn FnOnce() + Send + 'static> = Box::new(body);
     match pool::dispatch(id, stack_size, body) {
         Ok(()) => id,
-        Err(body) => spawn_local(id, Body::fiber(id, stack_size, body)),
+        Err(body) => spawn_local(id, Body::fiber(stack_size, body)),
     }
 }
 
@@ -391,7 +391,7 @@ fn drain_commands() {
                 id,
                 stack_size,
                 body,
-            } => install(id, Body::fiber(id, stack_size, body)),
+            } => install(id, Body::fiber(stack_size, body)),
         }
     }
 }

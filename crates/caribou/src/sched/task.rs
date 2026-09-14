@@ -57,14 +57,14 @@ pub(super) enum Body {
 
 impl Body {
     /// Build the body `spawn_fiber` asks for.
-    pub(super) fn fiber(id: TaskId, stack_size: usize, body: Box<dyn FnOnce()>) -> Self {
+    pub(super) fn fiber(stack_size: usize, body: Box<dyn FnOnce()>) -> Self {
         #[cfg(not(target_family = "wasm"))]
         {
-            Body::Stackful(StackfulTask::new(id, stack_size, body))
+            Body::Stackful(StackfulTask::new(stack_size, body))
         }
         #[cfg(target_family = "wasm")]
         {
-            let _ = (id, stack_size);
+            let _ = stack_size;
             Body::Stackless(Box::new(RunThrough(Some(body))))
         }
     }
@@ -139,7 +139,7 @@ pub(super) struct StackfulTask {
     fiber: krio_fiber::Fiber,
     /// The low bits of the task id: the heap keys fiber stacks by a u32
     /// (git-bug 0c7bfb5c717452391ab18aec34727a546c94bd7e2e24659c0618cc731f024d00).
-    gc_id: u32,
+    gc_id: u64,
     /// The stack pointer last published to the heap; zero before the
     /// first suspension.
     published_sp: usize,
@@ -147,10 +147,12 @@ pub(super) struct StackfulTask {
 
 #[cfg(not(target_family = "wasm"))]
 impl StackfulTask {
-    fn new(id: TaskId, stack_size: usize, body: Box<dyn FnOnce()>) -> Self {
+    fn new(stack_size: usize, body: Box<dyn FnOnce()>) -> Self {
         let fiber = krio_fiber::Fiber::with_stack_size(stack_size, body);
         let (base, len) = fiber.stack_range();
-        let gc_id = id.0 as u32;
+        // krio's id, unique in the process: the one every stack, whichever
+        // runtime made it, is registered under.
+        let gc_id = fiber.id();
         // Registering a stack needs the heap singleton; an adapter that has
         // not initialised it yet gets it here.
         heap::init();
