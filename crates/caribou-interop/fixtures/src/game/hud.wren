@@ -43,4 +43,8 @@ class Hud {
   static tick(n) { __tick.call(n) }
   #export = "twice(f: Fn, x: Num) -> Num"
   static twice(f, x) { f.call(f.call(x)) }
+
+  // A Wren function Haxe keeps, typed, and calls after both collectors.
+  #export = "scaler(k: Num) -> Fn(Num) -> Num"
+  static scaler(k) { Fn.new {|x| x * k } }
 }

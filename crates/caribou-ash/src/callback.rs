@@ -110,7 +110,9 @@ pub(crate) unsafe fn behind(d: *mut vdynamic) -> Option<Value> {
         if cb.is_null() || !ptr::eq(unsafe { desc_of(cb) }, &raw const CALLBACK_DESC) {
             return None;
         }
-        return Some(unsafe { (*(cb as *const Callback)).target });
+        return Some(wrenref::unwrap_foreign(unsafe {
+            (*(cb as *const Callback)).target
+        }));
     }
     if unsafe { (*outer).fun } != unsafe { fun_var_args } as *mut c_void {
         return None;
@@ -227,7 +229,10 @@ fn shape_for(t: *const hl_type) -> Option<&'static Shape> {
 }
 
 /// What a typed closure is bound to: Ash's record closure, whose first
-/// word is this object's descriptor, then the function and its shape.
+/// word is this object's descriptor, then the function's ref and its
+/// shape. The ref, not the function: a Wren object another language
+/// holds is held through its shadow, which is what a Wren cycle looks
+/// for (see `wrenref`).
 #[repr(C)]
 struct Callback {
     rc: RecordClosure,
@@ -259,6 +264,9 @@ pub(crate) fn function_for_typed(v: Value, t: *const hl_type) -> *mut vdynamic {
     let Some(shape) = shape_for(t) else {
         return function_for(v);
     };
+    let r = wrenref::wrap_foreign(v);
+    // The ref is unrooted until the callback holds it.
+    let root = heap::handle_new(r.as_object().unwrap() as *mut u8);
     let cb = unsafe {
         heap::alloc_gen(
             &raw mut CALLBACK_DESC as *mut hl_type,
@@ -279,9 +287,10 @@ pub(crate) fn function_for_typed(v: Value, t: *const hl_type) -> *mut vdynamic {
             ret_kind: shape.ret_code,
             full: shape.full.cast(),
         });
-        ptr::addr_of_mut!((*cb).target).write(v);
+        ptr::addr_of_mut!((*cb).target).write(r);
         ptr::addr_of_mut!((*cb).shape).write(shape);
     }
+    heap::handle_release(root);
     // The callback is unrooted until the closure holds it: it is on this
     // frame, which the conservative scan sees. The closure is of the
     // program's own type `t`, so a call site declaring it calls directly.
@@ -308,7 +317,9 @@ unsafe extern "C" fn entry(context: usize, words: *const i64) -> i64 {
         slot.write(unsafe { word_to_value(*words.add(i), shape.args[i]) });
     }
     let crossed = unsafe { crossed[..n].assume_init_ref() };
-    let result = bridge::call_named(Callable::Dynamic(cb.target), crossed, lang(), "callback");
+    // The ref keeps the function; the call goes to the function itself.
+    let function = wrenref::unwrap_foreign(cb.target);
+    let result = bridge::call_named(Callable::Dynamic(function), crossed, lang(), "callback");
     let thrown = match result {
         Ok(v) => match unsafe { value_to_word(v, shape.ret, shape.ret_type) } {
             Ok(word) => return word,

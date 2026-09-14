@@ -5,6 +5,7 @@ import game.hud.Hud;
 // prints, then collects on both sides and calls `after`.
 class UseHud {
 	static var kept:Hud;
+	static var keptFn:Float->Float;
 
 	static function main() {
 		var h = new Hud(3);
@@ -29,9 +30,13 @@ class UseHud {
 		Hud.onTick(function(n:Dynamic):Dynamic return n * 2);
 		Sys.println(Hud.tick(21));
 		Sys.println(Hud.twice(function(x:Float):Float return x + 1, 1));
+		// A Wren function Haxe keeps, typed, and calls after both collectors.
+		keptFn = Hud.scaler(3);
+		Sys.println(keptFn(2));
 	}
 
 	@:keep static function after() {
 		Sys.println(kept.label("after"));
+		Sys.println(keptFn(4));
 	}
 }

@@ -162,7 +162,9 @@ A Wren function crossing into Haxe (`caribou-ash`'s `callback.rs`)
 becomes a closure Haxe calls as its own. Where the native it crosses
 through declares the function's type, it is Ash's *record closure*
 (`hlp_alloc_record_closure`): a closure of that very type over a
-`Callback` object holding the function and the signature's kinds. Ash's
+`Callback` object holding the function's ref and the signature's kinds.
+The ref, since a Wren object another language holds is held through
+its shadow, which is what a Wren cycle looks for. Ash's
 one entry for every signature places the argument registers as one word
 each and calls the callback's entry, which reads them by kind, sends them
 through the bridge, and answers the result as one word; nothing is boxed.

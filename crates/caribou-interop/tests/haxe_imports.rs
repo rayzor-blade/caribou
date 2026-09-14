@@ -26,7 +26,7 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 const HUD: &str = include_str!("../fixtures/src/game/hud.wren");
 
-const EXPECTED: &str = "7\n10\nhp: 10\ntrue\n10\ncaught boom\nada\n5\n42\n3\n";
+const EXPECTED: &str = "7\n10\nhp: 10\ntrue\n10\ncaught boom\nada\n5\n42\n3\n6\n";
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/hud.hl")
@@ -90,8 +90,9 @@ fn a_haxe_program_imports_a_wren_class() {
     });
     assert_eq!(output, EXPECTED);
 
-    // Both collectors run while a Haxe static holds the face: the Wren
-    // object stays, and the face is still the same object.
+    // Both collectors run while Haxe statics hold the face and a typed
+    // closure: the Wren object and the function stay, and the face is
+    // still the same object.
     let after = program
         .publish()
         .expect("the program publishes")
@@ -108,7 +109,7 @@ fn a_haxe_program_imports_a_wren_class() {
             bridge::call(after, &[], caribou_wren::lang()).expect("after runs");
         });
     });
-    assert_eq!(output, "after: 10\n");
+    assert_eq!(output, "after: 10\n12\n");
     assert!(errors.take().is_empty());
     program.finish();
 }
