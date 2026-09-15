@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":5,"timestamp":1789213423,"nonce":"PNk/rxcBlfRhz+3iliy7IohVI3Q=","added":["feature","area:bundle"],"removed":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1789485763,"nonce":"qRGzsRC2RaSlDN6twGZ8ddEIPAo=","message":"Loading a program from memory (ash BytecodeDecoder::from_bytes) belongs here: the bundle is its consumer. Moved from 85f37ec, where it was listed.","files":null}]}
