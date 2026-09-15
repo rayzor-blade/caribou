@@ -1,5 +1,5 @@
 //! The driver's handle: adapter registry, language table and namespace
-//! table. Module loading, call and events arrive with the reload pipeline.
+//! table, and the reload of a module with the event it raises.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -20,7 +20,40 @@ pub trait Adapter: 'static {
     fn languages(&self) -> Vec<String>;
     /// Called once with the ids the world assigned, in the same order.
     fn assign_languages(&mut self, ids: &[LangId]);
+    /// Load the module `module` of `lang` afresh in place: its classes
+    /// keep their identity and get the new bodies, its interface is
+    /// published again. On the world's thread, with whatever the adapter
+    /// needs entered. `Err` when the language does not reload, or the
+    /// reload failed.
+    fn reload(&self, lang: LangId, module: &str) -> Result<(), String> {
+        let _ = module;
+        Err(format!("{} does not reload", language_name(lang)))
+    }
 }
+
+/// What a world tells its subscribers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Event {
+    /// A module was loaded afresh; its classes are the ones they were,
+    /// with new bodies, and every call site fills again.
+    Reload { lang: LangId, module: String },
+}
+
+/// The kind of event a subscriber asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventKind {
+    Reload,
+}
+
+impl Event {
+    pub fn kind(&self) -> EventKind {
+        match self {
+            Event::Reload { .. } => EventKind::Reload,
+        }
+    }
+}
+
+type Handler = Box<dyn FnMut(&Event)>;
 
 /// One entry in the language table.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +83,10 @@ pub struct World {
     adapters: Vec<Box<dyn Adapter>>,
     languages: Vec<Language>,
     by_name: HashMap<String, LangId>,
+    handlers: Vec<(EventKind, Handler)>,
+    /// Raised and not yet delivered: handlers run from `tick` and from
+    /// the end of a reload, never from inside a collection or a switch.
+    pending: Vec<Event>,
 }
 
 static NEXT_LANG: AtomicU32 = AtomicU32::new(1);
@@ -106,6 +143,8 @@ impl World {
             adapters: Vec::new(),
             languages: Vec::new(),
             by_name: HashMap::new(),
+            handlers: Vec::new(),
+            pending: Vec::new(),
         }
     }
 
@@ -158,10 +197,57 @@ impl World {
         self.adapters.get(entry.adapter).map(|a| a.as_ref())
     }
 
-    /// Run scheduler turns until nothing is ready or the deadline passes.
-    /// Returns whether live tasks remain.
+    /// Run scheduler turns until nothing is ready or the deadline passes,
+    /// then deliver the events raised meanwhile. Returns whether live
+    /// tasks remain.
     pub fn tick(&mut self, deadline: Option<std::time::Instant>) -> bool {
-        sched::tick(deadline)
+        let live = sched::tick(deadline);
+        self.deliver();
+        live
+    }
+
+    /// Subscribe `handler` to events of `kind`. Handlers run on the
+    /// world's thread, from `tick` and at the end of a reload.
+    pub fn on(&mut self, kind: EventKind, handler: impl FnMut(&Event) + 'static) {
+        self.handlers.push((kind, Box::new(handler)));
+    }
+
+    /// Raise `event`, for the next delivery.
+    pub fn raise(&mut self, event: Event) {
+        self.pending.push(event);
+    }
+
+    fn deliver(&mut self) {
+        while !self.pending.is_empty() {
+            let events = std::mem::take(&mut self.pending);
+            for event in &events {
+                for (kind, handler) in &mut self.handlers {
+                    if *kind == event.kind() {
+                        handler(event);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Load the module `namespace:module` afresh, whichever language it
+    /// is: the adapter re-runs it in place with its classes' identity
+    /// kept, its interface is published again, every call site in every
+    /// language fills again (the protocol's epoch), and subscribers hear
+    /// `Event::Reload`. Objects of the module made before keep their
+    /// classes and so their new bodies. A module nothing has loaded is
+    /// an error.
+    pub fn reload(&mut self, namespace: &str, module: &str) -> Result<(), String> {
+        let (lang, module) = registry::resolve(namespace, module)
+            .ok_or_else(|| format!("{namespace}:{module} is not loaded"))?;
+        let adapter = self
+            .adapter_for(lang)
+            .ok_or_else(|| format!("no adapter serves {}", language_name(lang)))?;
+        adapter.reload(lang, &module)?;
+        crate::protocol::bump_epoch();
+        self.raise(Event::Reload { lang, module });
+        self.deliver();
+        Ok(())
     }
 }
 

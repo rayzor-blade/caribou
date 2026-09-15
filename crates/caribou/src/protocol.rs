@@ -167,12 +167,29 @@ impl Protocol {
     };
 }
 
+/// The epoch every call site's cache is good for: bumped when a module
+/// reloads, since what a site derived (a method, a slot, a direct send)
+/// may name code that is gone. One increment empties every site in every
+/// language at its next use.
+static EPOCH: AtomicUsize = AtomicUsize::new(1);
+
+/// The current epoch.
+#[inline]
+pub fn epoch() -> usize {
+    EPOCH.load(Ordering::Relaxed)
+}
+
+/// Start a new epoch: every call site fills again.
+pub fn bump_epoch() -> usize {
+    EPOCH.fetch_add(1, Ordering::AcqRel) + 1
+}
+
 /// A foreign call site's cache: three words the callee's protocol fills
 /// with what it derived for the site, `key` naming what the rest is good
-/// for (a class, a type, a VM), and reads back when `key` matches. Zero is
-/// empty. Owned by the caller for the life of the site; shared, since a
-/// site may be reached from several threads, and a stale read costs one
-/// lookup.
+/// for (a class, a type, a VM), and reads back when `key` matches and the
+/// site was filled in the current epoch. Zero is empty. Owned by the
+/// caller for the life of the site; shared, since a site may be reached
+/// from several threads, and a stale read costs one lookup.
 ///
 /// A callee that can do the whole send for the site in one function
 /// leaves that function in `direct`, with `a` and `b` as its own data:
@@ -191,6 +208,8 @@ pub struct CallSite {
     pub direct: AtomicUsize,
     pub plain: AtomicUsize,
     pub reentrant: AtomicUsize,
+    /// The epoch `key`, `a`, `b` and `direct` were filled in.
+    pub epoch: AtomicUsize,
 }
 
 /// The whole send for one site: `target` is what the bridge would have
@@ -215,22 +234,30 @@ impl CallSite {
             direct: AtomicUsize::new(0),
             plain: AtomicUsize::new(0),
             reentrant: AtomicUsize::new(0),
+            epoch: AtomicUsize::new(0),
         }
     }
 
-    /// `(a, b)` when the site was filled under `key` and holds no direct
-    /// send.
+    /// Whether what the site holds was filled in the current epoch.
+    #[inline]
+    fn current(&self) -> bool {
+        self.epoch.load(Ordering::Relaxed) == epoch()
+    }
+
+    /// `(a, b)` when the site was filled under `key` in this epoch and
+    /// holds no direct send.
     #[inline]
     pub fn get(&self, key: usize) -> Option<(usize, usize)> {
         (key != 0
             && self.direct.load(Ordering::Relaxed) == 0
-            && self.key.load(Ordering::Acquire) == key)
-            .then(|| {
-                (
-                    self.a.load(Ordering::Relaxed),
-                    self.b.load(Ordering::Relaxed),
-                )
-            })
+            && self.key.load(Ordering::Acquire) == key
+            && self.current())
+        .then(|| {
+            (
+                self.a.load(Ordering::Relaxed),
+                self.b.load(Ordering::Relaxed),
+            )
+        })
     }
 
     #[inline]
@@ -238,14 +265,15 @@ impl CallSite {
         self.direct.store(0, Ordering::Relaxed);
         self.a.store(a, Ordering::Relaxed);
         self.b.store(b, Ordering::Relaxed);
+        self.epoch.store(epoch(), Ordering::Relaxed);
         self.key.store(key, Ordering::Release);
     }
 
-    /// The direct send, when the callee left one.
+    /// The direct send, when the callee left one in this epoch.
     #[inline]
     pub fn direct(&self) -> Option<Direct> {
         let f = self.direct.load(Ordering::Acquire);
-        (f != 0).then(|| unsafe { std::mem::transmute::<usize, Direct>(f) })
+        (f != 0 && self.current()).then(|| unsafe { std::mem::transmute::<usize, Direct>(f) })
     }
 
     /// Leave `f` as the direct send, with `key`, `a` and `b` for it.
@@ -254,6 +282,7 @@ impl CallSite {
         self.key.store(key, Ordering::Relaxed);
         self.a.store(a, Ordering::Relaxed);
         self.b.store(b, Ordering::Relaxed);
+        self.epoch.store(epoch(), Ordering::Relaxed);
         self.direct.store(f as usize, Ordering::Release);
     }
 

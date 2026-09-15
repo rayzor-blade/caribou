@@ -61,6 +61,20 @@ pub fn load_into(vm: &mut VM, name: &str, path: &PathBuf) -> Result<(), String> 
     Ok(())
 }
 
+/// Load the module `name` afresh from the roots, in place: wren_lift
+/// re-runs it with its classes' identity kept and its compiled bodies
+/// dropped, the registry gets its interface again, and the program's
+/// `Hatch.onReload` callbacks hear of it. The module must be loaded.
+pub fn reload(vm: &mut VM, name: &str) -> Result<(), String> {
+    if !vm.engine.modules.contains_key(name) {
+        return Err(format!("`{name}` is not loaded"));
+    }
+    vm.reload_module(name)?;
+    publish_module(vm, name).map_err(|e| format!("`{name}`: {e}"))?;
+    vm.notify_reloaded(name);
+    Ok(())
+}
+
 /// A plain import's module name: `name` beside the importer when a file
 /// is there, else `name` itself.
 pub fn relative(name: &str, from: &str) -> String {

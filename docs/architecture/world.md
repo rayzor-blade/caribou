@@ -93,15 +93,40 @@ typed or boxed. Each adapter answers for its language (`caribou_ash::report`,
 `caribou_wren::report`), and the session gathers the answers. `caribou
 run --report` prints it when the program ends.
 
+## Reload
+
+`World::reload(namespace, module)` loads a module afresh from the
+project's sources, whichever language it is. The adapter that serves the
+language re-runs the module in place (`Adapter::reload`): its classes keep
+their identity and get the new bodies, and its interface is published
+again. Then the protocol's epoch is bumped, so every call site in every
+language fills again (see [bridge.md](bridge.md#call-sites)), and
+subscribers hear `Event::Reload`. An object of the module made before the
+reload keeps its class and so runs the new bodies, and a call the other
+language bound to the class before reaches them through its site.
+
+wren_lift reloads a module by re-running it with the class objects it
+declared kept (`VM::reload_module`), its compiled bodies dropped and its
+inline caches cleared; the adapter then publishes the module again and
+runs the program's `Hatch.onReload` callbacks. `Session::reload` does the
+same with the VM entered. Ash does not reload yet: `Adapter::reload` is an
+error for Haxe.
+
+What triggers a reload is the caller's: the driver's API today; a file
+watch once the reactor exists.
+
 ## Events
 
-`World::on(kind, handler)` subscribes a handler to `Reload`, `TaskError`
-and `Log` events. Handlers run on the world's thread, from `tick`, never
-from inside a collection or a switch.
+`World::on(kind, handler)` subscribes a handler to events of a kind;
+`World::raise` raises one. Handlers run on the world's thread, from
+`tick` and at the end of a reload, never from inside a collection or a
+switch. `Reload` is the one kind so far; a task's uncaught error and a
+language's log line come as events with the paths that raise them.
 
 ## Boundaries of the current implementation
 
 Built so far: the adapter registry, the language table, the namespace
-table, the source roots, the loaders, and the driver above. Reload, call
-and events through the world arrive with the reload pipeline. The world
-does not tick yet; a session runs the program's own loop.
+table, the source roots, the loaders, the driver above, the reload of a
+Wren module and the events. Ash's reload, and a file watch as the
+trigger, are not built. The world does not tick under the session yet; a
+session runs the program's own loop.

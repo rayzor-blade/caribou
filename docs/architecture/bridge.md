@@ -201,6 +201,12 @@ tier installs a promoted body.
 A site is shared. It may be reached from several threads, and a stale
 read costs one lookup.
 
+Whatever a site holds was filled in an *epoch*, `protocol::epoch`, and is
+read back only in that epoch. A reload bumps it, so every site in every
+language fills again at its next use: a method a site found, a slot, a
+direct send may name a body that is gone. One load and a compare per
+send, beside the key.
+
 A callee that can do the whole send for a site in one function leaves it
 in the site as a *direct send*, with two words of its own beside it. The
 bridge calls that function before anything else, with the receiver's

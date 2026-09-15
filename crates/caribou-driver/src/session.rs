@@ -168,6 +168,21 @@ impl Session {
         })
     }
 
+    /// Load the module `namespace:module` afresh from the project's
+    /// sources, whichever language it is (see `World::reload`): its
+    /// classes keep their identity, calls from the other language reach
+    /// the new bodies, and the world's `Reload` subscribers hear of it.
+    pub fn reload(&mut self, namespace: &str, module: &str) -> Result<()> {
+        let world = &mut self.world;
+        caribou_wren::with_vm(&mut self.vm, |_| world.reload(namespace, module))
+            .map_err(|e| anyhow!(e))
+    }
+
+    /// The world, for its events.
+    pub fn world_mut(&mut self) -> &mut World {
+        &mut self.world
+    }
+
     /// What the run did so far, in the program's terms: the tier each
     /// function reached, how each send across the bridge went, and what
     /// crossed boxed. Entry counts need `Options::report`.

@@ -32,7 +32,8 @@ can map to.
 
 `publish(iface)` puts an interface in the process-wide table, replacing an
 earlier one of the same `(lang, module)`, and bumps a generation counter
-a caller can cache against. `interface(lang, module)` reads one back.
+a caller can cache against; a reload publishes the module again (see
+[world.md](world.md#reload)). `interface(lang, module)` reads one back.
 `class_for_type(lang, type_name)` finds the class an object belongs to.
 `lookup(namespace, module)` and `lookup_class` resolve an import path
 first. A language may register a loader with `set_loader`;
