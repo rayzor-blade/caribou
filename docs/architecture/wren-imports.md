@@ -83,9 +83,11 @@ A cell is no allocation of this heap, so the heap keeps a list of the
 cells Wren holds through their views (`hold_view`), flagged in the
 cell's bridge word, and the anchor retains them outside a cycle as it
 retains every pin. wren_lift's marking marks a cell in that word as it
-marks its own objects; a cycle claims the marked ones for the core, whose
-trace keeps the object each holds, and drops the rest from the list, for
-the core's collection to decide. A held cell counts as pressure toward
+marks its own objects; a cycle hands the marked ones to the anchor to
+mark in the collection it ends with, not as claims, since a claim is
+marked but not traced and only the cell's trace keeps the object it
+holds; the rest leave the list, for the core's collection to decide. A
+held cell counts as pressure toward
 the next cycle, and handing a view out is a safepoint, as an allocation
 is, so a Wren program that allocates nothing of its own still collects
 what it drops. A scan of a native range finds a held cell beside the
@@ -93,7 +95,8 @@ heap's own objects.
 
 A Wren class may extend an installed one. Its instances are the heap's
 own, with one hidden field, `__caribou_object`, holding the address of
-the object the constructor adopted, and the instance is marked adopted
-in its bridge word, so the heap's trace marks what it holds. The
-object's cell keeps such an instance in front, and the object comes
-back as it; when the instance dies, the cell has no front.
+the cell of the object the constructor adopted, and the instance is
+marked adopted in its bridge word, so the heap's trace marks the cell,
+whose trace marks the object and the instance in front of it. So the
+cell lives as long as the instance, the object comes back as the
+instance, and when the instance dies the cell has no front.

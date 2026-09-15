@@ -184,15 +184,13 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
 }
 
 /// The adopted instance at `instance` is dying: the cell it stood in
-/// front of, if any, has no front now.
+/// front of has no front now.
 pub(crate) fn forget_front(instance: *mut u8) {
-    let obj = unsafe { held(instance) };
-    if obj.is_null() {
+    let c = unsafe { held(instance) };
+    if c.is_null() {
         return;
     }
-    let Some(c) = cell_of(Value::object(obj as *const c_void)) else {
-        return;
-    };
+    let c = Value::object(c as *const c_void);
     if cell::front(c) == Some(instance as *mut c_void) {
         cell::set_front(c, ptr::null_mut());
     }
@@ -549,20 +547,25 @@ fn bind_members(
 // Instances
 // ---------------------------------------------------------------------------
 
-/// The object an adopted instance holds in its field.
+/// The cell an adopted instance holds in its field: the object's, with
+/// the instance in front. Held as the cell rather than the object, so
+/// the trace of the instance keeps the cell, whose own trace keeps the
+/// object and the front, and the cell is found from the instance
+/// without the map.
 pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
     let v = unsafe { (*(instance as *mut ObjInstance)).get_field(OBJECT_FIELD) };
     v.and_then(|v| v.as_num()).unwrap_or(0.0) as usize as *const u8
 }
 
-/// Hold `obj` from `instance`'s field and mark the instance adopted, so
-/// the heap's trace marks what it holds; a cell gets the instance in
-/// front, so the object comes back as it.
+/// Hold `obj`'s cell from `instance`'s field and mark the instance
+/// adopted, so the heap's trace marks what it holds; the cell gets the
+/// instance in front, so the object comes back as it.
 fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
-    unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(obj as usize as f64)) };
-    crate::heap::set_adopted(instance as *mut u8);
     let v = Value::object(obj as *const c_void);
     let c = cell_of(v).unwrap_or_else(|| cell::wrap(v, view_desc()));
+    let cell_ptr = c.as_object().unwrap_or(ptr::null_mut()) as usize;
+    unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(cell_ptr as f64)) };
+    crate::heap::set_adopted(instance as *mut u8);
     cell::set_front(c, instance as *mut c_void);
 }
 
@@ -583,8 +586,8 @@ pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
     {
         return None;
     }
-    let obj = unsafe { held(ptr) };
-    (!obj.is_null()).then(|| Value::object(obj as *const c_void))
+    let c = unsafe { held(ptr) };
+    (!c.is_null()).then(|| cell::unwrap(Value::object(c as *const c_void)))
 }
 
 /// A foreign object as an instance of the class installed for its type,

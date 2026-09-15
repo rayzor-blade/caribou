@@ -854,16 +854,18 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
         dead += 1;
     };
     let shards = rec.shards.all();
-    // A viewed cell the cycle marked is the core's claim too, its trace
-    // keeping what it holds; one the cycle did not reach leaves the list,
-    // for the core to decide.
+    // A viewed cell the cycle marked is the anchor's to mark, not a
+    // claim: a claim is marked and not traced, and the cell holds what is
+    // no pin, its object of another language, which only its trace keeps.
+    // One the cycle did not reach leaves the list, for the core to decide.
+    let held = &mut rec.held;
     for &shard in &shards {
         unsafe { &mut *shard }.views.retain(|&start| {
             let word = bridge_word(start as *mut u8);
             let w = unsafe { *word };
             if w & MARKED != 0 {
                 unsafe { *word = w & !MARKED };
-                live += gc.claim_start(start as *const u8).unwrap_or(0);
+                held.push(start as *const u8);
                 return true;
             }
             unsafe { *word = w & !VIEW_HELD };
@@ -873,7 +875,6 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     // Marked pins become the core's claims, in address order, and what a
     // marked adopted instance holds is for the anchor to mark; the rest
     // are pending, for the core to decide.
-    let held = &mut rec.held;
     for &shard in &shards {
         for pin in &unsafe { &*shard }.pins {
             let word = bridge_word(pin.start as *mut u8);
