@@ -92,4 +92,9 @@ class Player {
 			return "caught " + e;
 		}
 	}
+
+	/** A 64-bit integer in and out, past what a double keeps exactly. */
+	public static function twiceBig(x:haxe.Int64):haxe.Int64 {
+		return x * 2;
+	}
 }

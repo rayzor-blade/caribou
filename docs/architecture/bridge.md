@@ -19,6 +19,12 @@ An object `Value` that reaches the bridge has a `TypeDesc` at word zero.
 That is the protocol's contract. An adapter whose native objects carry a
 bare `hl_type` wraps them before they cross.
 
+A `Value` holds an `i32`, a double, a bool, null or an object. What a
+language has and the word cannot hold crosses boxed as a core object of
+its own kind: a string as a `Str`, a 64-bit integer beyond `i32` as an
+`Int64` (`caribou::error`). The language that has such integers reads
+the box back exact; one that has only doubles takes its nearest number.
+
 ## The protocol
 
 Every heap object answers a closed set of messages through the `Protocol`

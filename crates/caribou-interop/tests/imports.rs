@@ -12,11 +12,12 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use caribou::bridge;
-use caribou::error::Str;
+use caribou::error::{Int64, Str};
 use caribou::heap;
 use caribou::registry::{self, Namespace};
 use caribou::symbol::intern;
-use caribou::world::{Config, World};
+use caribou::world::{Config, LANG_CORE, World};
+use caribou_abi::Value;
 use caribou_ash::{Mode, Options};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
 use wren_lift::runtime::gc_trait::GcStrategy;
@@ -159,6 +160,49 @@ fn drive(mode: ExecutionMode) {
     );
 
     strings_cross_by_value(mode);
+    integers_cross_whole(mode);
+}
+
+/// A 64-bit integer crosses whole: one beyond `i32` leaves Haxe boxed as
+/// a core `Int64` and comes back to Haxe exact, past what a double
+/// keeps; Wren takes its number, and a Wren number Haxe can hold as an
+/// `Int64` reaches it whole, i32 or not.
+fn integers_cross_whole(mode: ExecutionMode) {
+    let errors = Rc::new(RefCell::new(Vec::new()));
+    let mut vm = vm(mode, &errors);
+    vm.output_buffer = Some(String::new());
+    let (player, index) = registry::lookup_class("game", "Player", "Player").expect("published");
+    let class = &player.classes[index];
+    let twice_big = class
+        .methods
+        .iter()
+        .find(|m| m.is_static && m.name == "twiceBig")
+        .map(|m| m.target)
+        .expect("twiceBig is published");
+    caribou_wren::with_vm(&mut vm, |_| {
+        let big = 1i64 << 60 | 1;
+        let doubled = bridge::call(twice_big, &[Int64::value(big)], LANG_CORE).expect("doubles");
+        assert!(Int64::is(doubled), "{}", bridge::describe(doubled));
+        assert_eq!(Int64::of(doubled), Some(big * 2));
+        // Small enough for an int, it is one.
+        let small = bridge::call(twice_big, &[Value::int(21)], LANG_CORE).expect("doubles");
+        assert_eq!(small.as_int(), Some(42));
+        // A number past i32 is whole to Haxe.
+        let from_number =
+            bridge::call(twice_big, &[Value::number(5_000_000_000.0)], LANG_CORE).expect("doubles");
+        assert_eq!(Int64::of(from_number), Some(10_000_000_000));
+    });
+    let (result, output, errors) = {
+        let source = "import \"game:Player\" for Player\n\
+                      System.print(Player.twiceBig(3))\n\
+                      System.print(Player.twiceBig(4294967296) == 8589934592)\n\
+                      System.print(Player.twiceBig(2.pow(60)) == 2.pow(61))\n";
+        let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("ints", source));
+        (result, vm.take_output(), errors.take())
+    };
+    assert_eq!(result, InterpretResult::Success, "{errors:?}");
+    assert_eq!(output, "6\ntrue\ntrue\n");
+    drop(vm);
 }
 
 /// A string crosses by value at every edge: a Wren string leaves as a core

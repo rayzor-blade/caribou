@@ -31,7 +31,7 @@ use wren_lift::intern::SymbolId;
 
 use caribou::bridge;
 use caribou::cell;
-use caribou::error::{Error, Str};
+use caribou::error::{Error, Int64, Str};
 use caribou::heap;
 use caribou::protocol::{
     CallSite, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
@@ -132,8 +132,9 @@ pub fn from_wren(v: WValue) -> Value {
 }
 
 /// A core value as a wren_lift value. An int becomes a number, Wren having
-/// no other; a Wren object is translated back; a core `Str` becomes a Wren
-/// string; a proxy another language holds one of this VM's objects through
+/// no other, and so does a boxed `Int64`, as near as a double comes; a
+/// Wren object is translated back; a core `Str` becomes a Wren string; a
+/// proxy another language holds one of this VM's objects through
 /// becomes that object; any other object of another language becomes an
 /// instance of the class installed for its type (see `import`), or `None`
 /// when its language publishes none.
@@ -154,6 +155,10 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     if let Some(text) = unsafe { Str::text(v) } {
         let s = vm.alloc_string(text.to_owned());
         return Some(made(vm, s));
+    }
+    // Wren has the one number: an integer beyond i32 is its nearest.
+    if Int64::is(v) {
+        return Some(WValue::num(Int64::of(v)? as f64));
     }
     // A cell holding one of this VM's own objects, whose start has the
     // record at word zero where any other object has its type: the

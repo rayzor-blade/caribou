@@ -1,6 +1,7 @@
 //! The core's own heap objects, all under `LANG_CORE`: `Str`, a UTF-8
-//! string; `Trace`, the segments an error crossed; and `Error`, the value
-//! every error becomes at a language boundary.
+//! string; `Int64`, an integer a `Value` cannot hold; `Trace`, the
+//! segments an error crossed; and `Error`, the value every error becomes
+//! at a language boundary.
 //!
 //! Each is a `KIND_DYNAMIC | TRACED` allocation whose word zero is a static
 //! `TypeDesc` here, traced precisely through its hook and answering the
@@ -53,6 +54,7 @@ const fn desc(name: &'static str, trace: TraceFn, protocol: &'static Protocol) -
 }
 
 pub static STR_DESC: TypeDesc = desc("caribou.Str", trace_nothing, &STR_PROTO);
+pub static INT64_DESC: TypeDesc = desc("caribou.Int64", trace_nothing, &INT64_PROTO);
 pub static TRACE_DESC: TypeDesc = desc("caribou.Trace", trace_trace, &TRACE_PROTO);
 pub static ERROR_DESC: TypeDesc = desc("caribou.Error", trace_error, &ERROR_PROTO);
 
@@ -265,6 +267,89 @@ static STR_PROTO: Protocol = Protocol {
     len: Some(str_len),
     equals: Some(str_equals),
     hash: Some(str_hash),
+    ..Protocol::NONE
+};
+
+// ---------------------------------------------------------------------------
+// Int64
+// ---------------------------------------------------------------------------
+
+/// A 64-bit integer a `Value` cannot hold as an int: one beyond `i32`.
+/// A language with such integers boxes one here at the boundary and reads
+/// one back exactly; a language without them takes its number.
+#[repr(C)]
+pub struct Int64 {
+    desc: *const TypeDesc,
+    value: i64,
+}
+
+impl Int64 {
+    /// `n` as a bridge value: an int when it fits one, else boxed here.
+    /// A box is unrooted; store it or root it before allocating.
+    pub fn value(n: i64) -> Value {
+        if let Ok(i) = i32::try_from(n) {
+            return Value::int(i);
+        }
+        let p = unsafe {
+            heap::alloc_gen(
+                desc_ptr(&INT64_DESC),
+                size_of::<Int64>(),
+                KIND_DYNAMIC | TRACED,
+            )
+        } as *mut Int64;
+        if p.is_null() {
+            heap::out_of_memory("an integer");
+        }
+        unsafe { (*p).value = n };
+        Value::object(p as *const c_void)
+    }
+
+    /// The integer `v` holds: an int, a box, or a number with no fraction
+    /// that an `i64` can hold. `None` for anything else.
+    pub fn of(v: Value) -> Option<i64> {
+        if let Some(i) = v.as_int() {
+            return Some(i64::from(i));
+        }
+        if let Some(p) = unsafe { is_instance(v, &INT64_DESC) } {
+            return Some(unsafe { (*(p as *const Int64)).value });
+        }
+        let n = v.as_number()?;
+        (n.fract() == 0.0 && n.abs() < 9_223_372_036_854_775_808.0).then_some(n as i64)
+    }
+
+    /// Whether `v` is a box of this kind.
+    pub fn is(v: Value) -> bool {
+        unsafe { is_instance(v, &INT64_DESC) }.is_some()
+    }
+}
+
+unsafe extern "C-unwind" fn int64_to_string(obj: *mut u8, out: *mut Value) -> u8 {
+    let n = unsafe { (*(obj as *const Int64)).value };
+    unsafe { *out = Str::value(Str::new(&n.to_string())) };
+    REPLY_OK
+}
+
+unsafe extern "C-unwind" fn int64_equals(obj: *mut u8, other: Value, out: *mut bool) -> u8 {
+    let n = unsafe { (*(obj as *const Int64)).value };
+    unsafe { *out = Int64::of(other) == Some(n) };
+    REPLY_OK
+}
+
+unsafe extern "C-unwind" fn int64_hash(obj: *mut u8, out: *mut u64) -> u8 {
+    unsafe { *out = (*(obj as *const Int64)).value as u64 };
+    REPLY_OK
+}
+
+unsafe extern "C-unwind" fn int64_type_name(_obj: *mut u8, out: *mut Symbol) -> u8 {
+    unsafe { *out = crate::symbol::intern("Int64") };
+    REPLY_OK
+}
+
+static INT64_PROTO: Protocol = Protocol {
+    to_string: Some(int64_to_string),
+    equals: Some(int64_equals),
+    hash: Some(int64_hash),
+    type_name: Some(int64_type_name),
     ..Protocol::NONE
 };
 

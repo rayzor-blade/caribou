@@ -41,6 +41,7 @@ use ash_std::error::hlp_throw;
 use ash_std::obj::hlp_get_obj_rt;
 use caribou::bridge;
 use caribou::cell;
+use caribou::error::Int64;
 use caribou::hash::{AddressMap, BuildAddressHasher};
 use caribou::heap::TypeDesc;
 use caribou::protocol::{CallSite, Callable, Symbol};
@@ -631,7 +632,7 @@ pub(crate) unsafe fn word_to_value(word: i64, kind: hl_type_kind) -> Value {
         hl::HUI8 => Value::int(i32::from(word as u8)),
         hl::HUI16 => Value::int(i32::from(word as u16)),
         hl::HI32 => Value::int(word as i32),
-        hl::HI64 => Value::number(word as f64),
+        hl::HI64 => Int64::value(word),
         hl::HF32 | hl::HF64 => Value::number(f64::from_bits(word as u64)),
         hl::HBOOL => Value::bool(word as u8 != 0),
         _ => unsafe { proto::dyn_to_value(word as *mut vdynamic) },
@@ -659,7 +660,7 @@ pub(crate) unsafe fn value_to_word(
     let word = match kind {
         hl::HVOID => Some(0),
         hl::HUI8 | hl::HUI16 | hl::HI32 => int().map(i64::from),
-        hl::HI64 => int().map(i64::from),
+        hl::HI64 => Int64::of(v).or_else(|| v.is_null().then_some(0)),
         hl::HF32 | hl::HF64 => float().map(|n| n.to_bits() as i64),
         hl::HBOOL => v
             .as_bool()

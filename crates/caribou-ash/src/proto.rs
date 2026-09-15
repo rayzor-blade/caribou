@@ -42,7 +42,7 @@ use ash_std::obj::{
 use ash_std::strings::hlp_value_to_string;
 use ash_std::types::{hlt_bytes, hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
 use caribou::bridge;
-use caribou::error::{Error, Str};
+use caribou::error::{Error, Int64, Str};
 use caribou::heap::{self, Handle, TypeDesc};
 use caribou::protocol::{
     CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
@@ -476,7 +476,7 @@ pub(crate) unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
         hl::HUI8 => Value::int(i32::from(unsafe { v.ui8 })),
         hl::HUI16 => Value::int(i32::from(unsafe { v.ui16 })),
         hl::HI32 => Value::int(unsafe { v.i }),
-        hl::HI64 => Value::number(unsafe { v.i64_ } as f64),
+        hl::HI64 => Int64::value(unsafe { v.i64_ }),
         hl::HF32 => Value::number(f64::from(unsafe { v.f })),
         hl::HF64 => Value::number(unsafe { v.d }),
         hl::HBOOL => Value::bool(unsafe { v.b }),
@@ -527,7 +527,7 @@ pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut v
     let float = || v.as_number().or_else(|| v.as_int().map(f64::from));
     let boxed = match kind {
         hl::HUI8 | hl::HUI16 | hl::HI32 => int().map(|n| unsafe { box_int(n) }),
-        hl::HI64 => int().map(|n| unsafe { box_i64(i64::from(n)) }),
+        hl::HI64 => Int64::of(v).map(|n| unsafe { box_i64(n) }),
         hl::HF32 | hl::HF64 => float().map(|n| unsafe { box_f64(n) }),
         hl::HBOOL => v.as_bool().map(|b| unsafe { hlp_alloc_dynbool(b) }.cast()),
         hl::HVOID => None,
@@ -841,11 +841,7 @@ unsafe fn call_by_kinds(
                 words[i] = i64::from(v) as u64;
             }
             hl::HI64 => {
-                let v = arg
-                    .as_int()
-                    .map(i64::from)
-                    .or_else(|| arg.as_number().map(|n| n as i64))?;
-                words[i] = v as u64;
+                words[i] = Int64::of(arg)? as u64;
             }
             // Pointers: what the boxed path would pass, checked against the
             // declared kind, since nothing casts on a direct call.
@@ -899,7 +895,7 @@ unsafe fn call_by_kinds(
                 hl::HUI8 => Value::int(i32::from(raw as u8)),
                 hl::HUI16 => Value::int(i32::from(raw as u16)),
                 hl::HI32 => Value::int(raw as i32),
-                hl::HI64 => Value::number(raw as f64),
+                hl::HI64 => Int64::value(raw),
                 _ => unsafe { dyn_to_value(raw as *mut vdynamic) },
             };
             unsafe { *out = v };
@@ -1293,7 +1289,7 @@ unsafe fn read_kind(at: *const u8, kind: hl_type_kind) -> Option<Value> {
         hl::HUI8 => Value::int(i32::from(unsafe { *at })),
         hl::HUI16 => Value::int(i32::from(unsafe { *(at as *const u16) })),
         hl::HI32 => Value::int(unsafe { *(at as *const i32) }),
-        hl::HI64 => Value::number(unsafe { *(at as *const i64) } as f64),
+        hl::HI64 => Int64::value(unsafe { *(at as *const i64) }),
         hl::HF32 => Value::number(f64::from(unsafe { *(at as *const f32) })),
         hl::HF64 => Value::number(unsafe { *(at as *const f64) }),
         hl::HBOOL => Value::bool(unsafe { *at } != 0),
@@ -1327,7 +1323,7 @@ unsafe fn write_kind(at: *mut u8, kind: hl_type_kind, value: Value) -> Option<Re
             hl::HUI8 => *at = int()? as u8,
             hl::HUI16 => *(at as *mut u16) = int()? as u16,
             hl::HI32 => *(at as *mut i32) = int()?,
-            hl::HI64 => *(at as *mut i64) = int().map(i64::from)?,
+            hl::HI64 => *(at as *mut i64) = Int64::of(value)?,
             hl::HF32 => *(at as *mut f32) = float()? as f32,
             hl::HF64 => *(at as *mut f64) = float()?,
             hl::HBOOL => *at = u8::from(value.as_bool()?),
