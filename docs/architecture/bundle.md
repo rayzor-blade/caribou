@@ -22,8 +22,9 @@ is the language's own and versioned by the language, never by the
 bundle: a Haxe program is `hl`; a Wren module is `wlbc@N`, wren_lift's
 compiled form at the version `N` of its serializer, or `source`, which
 the adapter also reads; a `.hatch` package comes when a project depends
-on one. The bundle versions its framing alone. A *resource* section is
-bytes by name.
+on one. The bundle versions its framing alone. A *source* section is
+the text a compiled module was built from, under the module's name, for
+the language's diagnostics. A *resource* section is bytes by name.
 
 The file is the magic `CARIBOU\0`, a version, flags, the manifest, then
 the sections, every integer little-endian and every string and byte
@@ -43,7 +44,8 @@ first root's is taken, as a run from the directory would take it. The
 Wren modules are compiled (`caribou_wren::project::compile`) on one
 VM, each after the modules it imports by a plain import
 (`import_order`), so a class one module declares is known to the
-modules that use it, and each becomes a `wlbc@N` section. A module
+modules that use it, and each becomes a `wlbc@N` section with its text
+beside it as a source section. A module
 that does not compile fails the build, naming it. The bundle is written
 beside the program as `game.cb`, or where `-o` says.
 
@@ -66,10 +68,16 @@ module loads what it imports as a source module does. An adapter
 refuses a format it does not read, a `wlbc` of another version
 included, and the open fails then, naming the section.
 
-Nothing is watched: a bundle's modules have no file to change. A
-compiled module carries no source, so a runtime error in one names its
-line and not the text, and `Session::reload` cannot re-run it; a module
-staged as source reloads from what was staged.
+A source section beside a compiled module is the text it was built
+from: the adapter keeps it with the module, and gives it to the VM as
+the module loads (`interpret_bytecode_with_source`), so a runtime error
+in the module renders its line as it would from a file. The Haxe
+program's own lines come with its bytecode, when it was built with
+debug information.
+
+Nothing is watched: a bundle's modules have no file to change.
+`Session::reload` re-runs a module staged as source from what was
+staged; a compiled one does not reload.
 
 ## Boundaries of the current implementation
 

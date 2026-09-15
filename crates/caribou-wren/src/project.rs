@@ -21,7 +21,7 @@ use caribou::registry;
 use caribou::world;
 use wren_lift::runtime::engine::InterpretResult;
 use wren_lift::runtime::gc_trait::GcStrategy;
-use wren_lift::runtime::vm::{VM, VMConfig};
+use wren_lift::runtime::vm::{CompiledModule, VM, VMConfig};
 
 use crate::proto::current_vm;
 use crate::publish::publish_module;
@@ -38,10 +38,24 @@ pub enum Staged {
 static STAGED: LazyLock<Mutex<HashMap<String, Staged>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// The text a staged compiled module was built from, by module name:
+/// what its runtime errors render their line from.
+static TEXT: LazyLock<Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Keep `module` as the module `name`'s, to load when the program first
 /// uses it; replaces a file under a root of the same name.
 pub fn stage(name: &str, module: Staged) {
     STAGED.lock().unwrap().insert(name.to_owned(), module);
+}
+
+/// Keep `text` as the source the module `name` was compiled from.
+pub fn stage_text(name: &str, text: String) {
+    TEXT.lock().unwrap().insert(name.to_owned(), text);
+}
+
+fn text(name: &str) -> Option<String> {
+    TEXT.lock().unwrap().get(name).cloned()
 }
 
 /// The format a compiled module is written as in a bundle: wren_lift's
@@ -135,11 +149,15 @@ fn locate(name: &str) -> Option<Found> {
     find(name).map(Found::File)
 }
 
-/// The compiled form of a plain module name, when a bundle staged one:
-/// wren_lift's loader for a module's own imports.
-pub fn bytecode(name: &str) -> Option<Vec<u8>> {
+/// The compiled form of a plain module name, when a bundle staged one,
+/// with its source when the bundle carried it: wren_lift's loader for
+/// a module's own imports.
+pub fn bytecode(name: &str) -> Option<CompiledModule> {
     match STAGED.lock().unwrap().get(name)? {
-        Staged::Wlbc(bytes) => Some(bytes.clone()),
+        Staged::Wlbc(bytes) => Some(CompiledModule {
+            bytes: bytes.clone(),
+            source: text(name),
+        }),
         Staged::Source(_) => None,
     }
 }
@@ -183,7 +201,9 @@ pub fn load(namespace: &str, module: &str) -> Result<bool, String> {
     if !vm.engine.modules.contains_key(&name) {
         let loaded = match &staged {
             Staged::Source(source) => vm.interpret(&name, source),
-            Staged::Wlbc(bytes) => vm.interpret_bytecode(&name, bytes),
+            Staged::Wlbc(bytes) => {
+                vm.interpret_bytecode_with_source(&name, bytes, text(&name).as_deref())
+            }
         };
         if loaded != InterpretResult::Success {
             return Err(format!("`{name}` did not load"));

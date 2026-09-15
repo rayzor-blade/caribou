@@ -9,7 +9,9 @@
 //! language versions it (`hl`, `source`, `wlbc@7`), the module's name in
 //! its language (`game/hud`) and the bytes. The bundle versions its own
 //! framing only; a module's format is its language's to read and to
-//! refuse. A resource is bytes by name, for whoever asks for it.
+//! refuse. A source is the text a compiled module was built from, for
+//! its language's diagnostics, under the module's name. A resource is
+//! bytes by name, for whoever asks for it.
 //!
 //! Wire format, all integers little-endian:
 //!
@@ -40,11 +42,14 @@ pub const VERSION: u32 = 1;
 pub enum SectionKind {
     Module = 1,
     Resource = 2,
+    Source = 3,
 }
 
 /// One section: for a module, `lang` names the language, `format` the
 /// form of `data` as the language versions it, `name` the module in its
-/// language; for a resource, `name` alone, `lang` and `format` empty.
+/// language; for a source, `lang` and the module's `name`, `format`
+/// empty, `data` the text; for a resource, `name` alone, `lang` and
+/// `format` empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub kind: SectionKind,
@@ -205,6 +210,7 @@ pub fn load(bytes: &[u8]) -> Result<Bundle, Error> {
         let kind = match r.u8()? {
             1 => SectionKind::Module,
             2 => SectionKind::Resource,
+            3 => SectionKind::Source,
             k => return Err(Error::Kind(k)),
         };
         sections.push(Section {
@@ -312,6 +318,13 @@ mod tests {
                     kind: SectionKind::Module,
                     lang: "wren".to_owned(),
                     format: "source".to_owned(),
+                    name: "game/hud".to_owned(),
+                    data: b"class Hud {}\n".to_vec(),
+                },
+                Section {
+                    kind: SectionKind::Source,
+                    lang: "wren".to_owned(),
+                    format: String::new(),
                     name: "game/hud".to_owned(),
                     data: b"class Hud {}\n".to_vec(),
                 },

@@ -39,6 +39,14 @@ fn a_bundle_runs_as_the_project_did() {
         modules.contains(&("wren", wlbc, "bench/tally")),
         "{modules:?}"
     );
+    let sources: Vec<&str> = bundle
+        .sections
+        .iter()
+        .filter(|s| s.kind == SectionKind::Source && s.lang == "wren")
+        .map(|s| s.name.as_str())
+        .collect();
+    assert!(sources.contains(&"game/hud"), "{sources:?}");
+    assert!(sources.contains(&"game/format"), "{sources:?}");
 
     // Written where nothing else is, and opened from there.
     let dir = std::env::temp_dir().join(format!("caribou-bundle-{}", std::process::id()));
@@ -64,5 +72,13 @@ fn a_bundle_runs_as_the_project_did() {
         }
     });
     assert_eq!(output, "after: 10\n12\nscore 10\n");
+
+    // Each compiled module has its text with it, for its errors: the one
+    // Haxe loaded and the sibling it imported.
+    let hud = std::fs::read_to_string(fixtures.join("src/game/hud.wren")).unwrap();
+    let format = std::fs::read_to_string(fixtures.join("src/game/format.wren")).unwrap();
+    let sources = &session.wren().module_sources;
+    assert_eq!(sources.get("game/hud"), Some(&hud));
+    assert_eq!(sources.get("game/format"), Some(&format));
     let _ = std::fs::remove_dir_all(&dir);
 }

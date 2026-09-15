@@ -33,12 +33,14 @@ pub trait Adapter: 'static {
         let _ = module;
         Err(format!("{} does not reload", language_name(lang)))
     }
-    /// Take a module of `lang` from a bundle: `section.format` says what
-    /// its bytes are, in the language's own terms, and the language
-    /// refuses a format it does not read. Installed means the module
-    /// loads from these bytes when the program first uses it, as it
-    /// would from a file under a root. `Err` when the language does not
-    /// install, or the section is not its to read.
+    /// Take a module of `lang` from a bundle, or the source of one:
+    /// `section.format` says what a module's bytes are, in the
+    /// language's own terms, and the language refuses a format it does
+    /// not read. Installed means the module loads from these bytes when
+    /// the program first uses it, as it would from a file under a root,
+    /// and its source, when the bundle carries it, is what its errors
+    /// render from. `Err` when the language does not install, or the
+    /// section is not its to read.
     fn install(&self, lang: LangId, section: &crate::bundle::Section) -> Result<(), String> {
         let _ = section;
         Err(format!("{} does not install modules", language_name(lang)))
@@ -320,13 +322,19 @@ impl World {
         result
     }
 
-    /// Install every module a bundle carries but its entry, each through
-    /// the adapter of its language; the entry is the driver's to load.
-    /// The bundle's namespaces are the world's own (`Config`).
+    /// Install every module a bundle carries but its entry, and every
+    /// source, each through the adapter of its language; the entry is
+    /// the driver's to load. The bundle's namespaces are the world's own
+    /// (`Config`).
     pub fn install(&self, bundle: &crate::bundle::Bundle) -> Result<(), String> {
+        use crate::bundle::SectionKind;
         let entry = &bundle.manifest.entry;
-        for section in bundle.modules() {
-            if section.lang == entry.lang && section.name == entry.module {
+        for section in &bundle.sections {
+            let installed = matches!(section.kind, SectionKind::Module | SectionKind::Source);
+            let is_entry = section.kind == SectionKind::Module
+                && section.lang == entry.lang
+                && section.name == entry.module;
+            if !installed || is_entry {
                 continue;
             }
             let lang = self

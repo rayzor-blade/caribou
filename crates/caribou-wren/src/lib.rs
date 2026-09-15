@@ -73,8 +73,15 @@ impl Adapter for Runtime {
     }
 
     /// A Wren module from a bundle, staged for its first use: its source,
-    /// or its compiled form at the version this build reads.
+    /// or its compiled form at the version this build reads; or the
+    /// source a compiled module was built from, kept for its errors.
     fn install(&self, _lang: LangId, section: &caribou::bundle::Section) -> Result<(), String> {
+        if section.kind == caribou::bundle::SectionKind::Source {
+            let text = String::from_utf8(section.data.clone())
+                .map_err(|_| "the module's source is not UTF-8".to_owned())?;
+            project::stage_text(&section.name, text);
+            return Ok(());
+        }
         let staged = match section.format.as_str() {
             "source" => project::Staged::Source(
                 String::from_utf8(section.data.clone())

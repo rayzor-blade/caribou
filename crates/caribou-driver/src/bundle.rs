@@ -62,6 +62,16 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
             data: bytes,
         });
     }
+    // The text beside each, for the errors a module raises at run time.
+    for (module, source) in sources {
+        sections.push(Section {
+            kind: SectionKind::Source,
+            lang: "wren".to_owned(),
+            format: String::new(),
+            name: module,
+            data: source.into_bytes(),
+        });
+    }
     Ok(Bundle {
         manifest: Manifest {
             name: name.clone(),
