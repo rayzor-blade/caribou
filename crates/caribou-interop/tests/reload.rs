@@ -23,6 +23,12 @@ fn a_wren_module_reloads_under_a_haxe_program() {
     std::fs::create_dir_all(module.parent().unwrap()).unwrap();
     let source = std::fs::read_to_string(fixtures.join("src/game/hud.wren")).unwrap();
     std::fs::write(&module, &source).unwrap();
+    // The sibling the module imports, beside it.
+    std::fs::copy(
+        fixtures.join("src/game/format.wren"),
+        roots.join("game").join("format.wren"),
+    )
+    .unwrap();
 
     let mut session = Session::open(
         &fixtures.join("hud.hl"),
@@ -45,7 +51,7 @@ fn a_wren_module_reloads_under_a_haxe_program() {
             .call(ns, module, class, member, &[])
             .expect("after runs");
     });
-    assert_eq!(output, "after: 10\n12\n");
+    assert_eq!(output, "after: 10\n12\nscore 10\n");
 
     let heard = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&heard);
@@ -73,7 +79,7 @@ fn a_wren_module_reloads_under_a_haxe_program() {
             .call(ns, module, class, member, &[])
             .expect("after runs again");
     });
-    assert_eq!(output, "after= 10\n12\n");
+    assert_eq!(output, "after= 10\n12\nscore 10\n");
 
     // A module nothing loaded does not reload.
     assert!(session.reload("game", "nothing").is_err());

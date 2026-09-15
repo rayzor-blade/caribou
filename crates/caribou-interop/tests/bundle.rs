@@ -1,6 +1,6 @@
 //! A bundle built from the project runs as the project did: the program
-//! from memory, its Wren modules from the bundle's sections, its
-//! namespaces from the manifest, with no source root in sight.
+//! from memory, its Wren modules compiled, from the bundle's sections,
+//! its namespaces from the manifest, with no source root in sight.
 
 use std::path::PathBuf;
 
@@ -25,15 +25,20 @@ fn a_bundle_runs_as_the_project_did() {
         .map(|n| n.name.as_str())
         .collect();
     assert!(names.contains(&"game"), "{names:?}");
-    let modules: Vec<(&str, &str)> = bundle
+    let modules: Vec<(&str, &str, &str)> = bundle
         .sections
         .iter()
         .filter(|s| s.kind == SectionKind::Module)
-        .map(|s| (s.lang.as_str(), s.name.as_str()))
+        .map(|s| (s.lang.as_str(), s.format.as_str(), s.name.as_str()))
         .collect();
-    assert!(modules.contains(&("haxe", "hud")), "{modules:?}");
-    assert!(modules.contains(&("wren", "game/hud")), "{modules:?}");
-    assert!(modules.contains(&("wren", "bench/tally")), "{modules:?}");
+    let wlbc = caribou_wren::project::WLBC.as_str();
+    assert!(wlbc.starts_with("wlbc@"), "{wlbc}");
+    assert!(modules.contains(&("haxe", "hl", "hud")), "{modules:?}");
+    assert!(modules.contains(&("wren", wlbc, "game/hud")), "{modules:?}");
+    assert!(
+        modules.contains(&("wren", wlbc, "bench/tally")),
+        "{modules:?}"
+    );
 
     // Written where nothing else is, and opened from there.
     let dir = std::env::temp_dir().join(format!("caribou-bundle-{}", std::process::id()));
@@ -52,10 +57,12 @@ fn a_bundle_runs_as_the_project_did() {
     let output = captured(|| session.start().expect("main runs"));
     assert_eq!(output, OUTPUT);
     let output = captured(|| {
-        session
-            .call("haxe", "UseHud", "UseHud", "after", &[])
-            .expect("after runs");
+        if let Err(e) = session.call("haxe", "UseHud", "UseHud", "after", &[]) {
+            panic!("after: {}", unsafe {
+                caribou::error::Error::message_str(e.as_object().unwrap() as *const _)
+            });
+        }
     });
-    assert_eq!(output, "after: 10\n12\n");
+    assert_eq!(output, "after: 10\n12\nscore 10\n");
     let _ = std::fs::remove_dir_all(&dir);
 }

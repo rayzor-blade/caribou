@@ -2,6 +2,7 @@
 // game/hud.wren, so Haxe code reaches it as `game.hud.Hud`. It imports a
 // class of the Haxe program the same way.
 import "game:Player" for Player
+import "format" for Format
 
 class Hud {
   construct new(score) { _score = score }
@@ -18,6 +19,9 @@ class Hud {
   // The result is inferred: an interpolation is a String.
   #export = "label(prefix: String)"
   label(prefix) { "%(prefix): %(_score)" }
+
+  // Through the sibling module.
+  text { Format.score(_score) }
 
   // Exported under another name.
   #export = "explode()"

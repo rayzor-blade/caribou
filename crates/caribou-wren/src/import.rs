@@ -318,6 +318,17 @@ pub fn configure(config: &mut VMConfig) {
             .and_then(|f| f(name, from))
             .or_else(|| crate::project::source(name))
     }));
+    // A module a bundle staged compiled.
+    let previous_bytecode = config.load_bytecode_fn.take();
+    config.load_bytecode_fn = Some(Box::new(move |name: &str, from: &str| {
+        if namespaced(name).is_some() {
+            return None;
+        }
+        previous_bytecode
+            .as_ref()
+            .and_then(|f| f(name, from))
+            .or_else(|| crate::project::bytecode(name))
+    }));
 }
 
 /// Install the published module `module` of `lang` into `vm`, if it is not

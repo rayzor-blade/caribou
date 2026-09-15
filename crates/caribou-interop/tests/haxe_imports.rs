@@ -25,6 +25,7 @@ use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const HUD: &str = include_str!("../fixtures/src/game/hud.wren");
+const FORMAT: &str = include_str!("../fixtures/src/game/format.wren");
 
 const EXPECTED: &str = "7\n10\nhp: 10\n1 true true true\ntrue\ntrue\n10\ncaught boom\nada\n5\n42\n3\n6\n3 hp\nhp,mp,4\n6.5\n3 10\n";
 
@@ -72,6 +73,10 @@ fn a_haxe_program_imports_a_wren_class() {
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),
+        // The sibling the module imports, served by hand: no roots here.
+        load_module_fn: Some(Box::new(|name: &str, _from: &str| {
+            (name == "format").then(|| FORMAT.to_owned())
+        })),
         ..VMConfig::default()
     };
     caribou_wren::import::configure(&mut config);
@@ -109,7 +114,7 @@ fn a_haxe_program_imports_a_wren_class() {
             bridge::call(after, &[], caribou_wren::lang()).expect("after runs");
         });
     });
-    assert_eq!(output, "after: 10\n12\n");
+    assert_eq!(output, "after: 10\n12\nscore 10\n");
     assert!(errors.take().is_empty());
     program.finish();
 }

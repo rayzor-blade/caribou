@@ -52,5 +52,6 @@ class UseHud {
 	@:keep static function after() {
 		Sys.println(kept.label("after"));
 		Sys.println(keptFn(4));
+		Sys.println(kept.text);
 	}
 }
