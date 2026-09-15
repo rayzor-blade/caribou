@@ -184,3 +184,15 @@ its address to the cell's instead. Neither roots the cell, so a cell is
 reachable only from Haxe and dies when Haxe drops it. Its drop hook, run
 by the core's sweep before the cell's lines can be reused, drops the
 shadow or the entry.
+
+A Wren VM may go before Haxe lets go of one of its objects: an isolate
+ending, a VM a host drops. At its teardown (`heap_drop`) the adapter
+severs every cell kept as a shadow on one of the VM's objects
+(`cell::sever`): the cell stands for nothing from then on, its trace
+marks nothing, and every send through it raises, "the object is gone",
+where it would have reached freed memory. Unwrapped, it is the gone
+object, a core object with the same answers, so it stays that whoever
+holds it next. The VM's published modules leave the registry at the
+same time (`registry::withdraw`), so nothing reaches its classes after;
+a later lookup asks the loader again. An adopted instance in front of a
+Haxe object's cell leaves the cell as it goes.

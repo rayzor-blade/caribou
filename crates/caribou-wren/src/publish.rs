@@ -51,11 +51,21 @@ pub(crate) struct Exports {
     /// The type name each published class is registered under, interned
     /// once here since every object crossing asks.
     types: AddressMap<Symbol>,
+    /// The modules this heap published, to withdraw when it goes.
+    modules: Vec<String>,
 }
 
 impl Exports {
     pub(crate) fn type_name(&self, class: *mut ObjClass) -> Option<Symbol> {
         self.types.get(&(class as usize)).copied()
+    }
+
+    /// Withdraw every module this heap published from the registry.
+    pub(crate) fn withdraw(&mut self) {
+        for module in self.modules.drain(..) {
+            registry::withdraw(wren_lang(), &module);
+        }
+        self.types.clear();
     }
 }
 
@@ -124,6 +134,9 @@ pub fn publish_module(vm: &VM, module: &str) -> Result<Arc<Interface>, PublishEr
         exports
             .types
             .insert(*class as usize, symbol::intern(&described.type_name));
+    }
+    if !exports.modules.iter().any(|m| m == module) {
+        exports.modules.push(module.to_owned());
     }
     Ok(Arc::new(iface))
 }

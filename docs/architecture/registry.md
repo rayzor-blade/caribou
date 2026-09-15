@@ -34,7 +34,10 @@ can map to.
 earlier one of the same `(lang, module)`, and bumps a generation counter
 a caller can cache against; a reload publishes the module again (see
 [world.md](world.md#reload)). `interface(lang, module)` reads one back.
-`class_for_type(lang, type_name)` finds the class an object belongs to.
+`withdraw(lang, module)` takes an interface out again, and the file it
+came from: what a runtime does for its modules as it goes, so nothing
+reaches its callables after. `class_for_type(lang, type_name)` finds the
+class an object belongs to.
 `lookup(namespace, module)` and `lookup_class` resolve an import path
 first. A language may register a loader with `set_loader`;
 `resolve_or_load` and `lookup_class_or_load` ask the namespace's loaders

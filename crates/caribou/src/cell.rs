@@ -40,6 +40,11 @@
 //! A holder may make an object of its own to stand in front of the cell,
 //! a class instance its code constructed, and the cell keeps it, so the
 //! object always comes back as that one.
+//!
+//! An object's runtime may go before the cell's holders let go: a VM
+//! dropped while another language keeps one of its objects. The runtime
+//! severs the cell at its teardown (`sever`): the cell stands for
+//! nothing from then on, and every send through it raises.
 
 use core::ffi::c_void;
 use core::ptr;
@@ -49,12 +54,15 @@ use caribou_abi::hl::hl_type;
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
 
+use crate::bridge;
+use crate::error::Error;
 use crate::hash::AddressMap;
 use crate::heap::{self, Handle, Tracer, TypeDesc};
 use crate::protocol::{
     CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Reply,
     Send, Symbol,
 };
+use crate::world::LANG_CORE;
 
 #[repr(C)]
 pub struct Cell {
@@ -212,15 +220,21 @@ pub fn of(v: Value, lang: LangId) -> Option<Value> {
 
 /// The object behind `v` when `v` is a cell, else `v`.
 pub fn unwrap(v: Value) -> Value {
-    as_cell(v).map_or(v, |c| unsafe { (*c).obj })
+    as_cell(v).map_or(v, |c| unsafe { object_at(c as *const u8) })
 }
 
-/// The object the cell at `p` stands for.
+/// The object the cell at `p` stands for; a severed cell's is the gone
+/// object, whose every send raises, so it stays that whoever holds it
+/// next.
 ///
 /// # Safety
 /// `p` must be a live cell.
 pub unsafe fn object_at(p: *const u8) -> Value {
-    unsafe { (*(p as *const Cell)).obj }
+    let obj = unsafe { (*(p as *const Cell)).obj };
+    if obj.is_null() {
+        return Value::object(&raw const GONE as *const c_void);
+    }
+    obj
 }
 
 /// The second holder's header in the cell at `p`, `VIEW` in: zero until
@@ -305,14 +319,123 @@ unsafe extern "C" fn drop(obj: *mut u8) {
     }
 }
 
+/// The cell's object is going with its runtime: from now on the cell
+/// stands for nothing, and every send through it raises. Its entry in
+/// the map goes now, before the object's address can be reused. From
+/// the runtime's teardown, under the GC lock.
+///
+/// # Safety
+/// `cell` is a live cell.
+pub unsafe fn sever(cell: *mut u8) {
+    let c = unsafe { &mut *(cell as *mut Cell) };
+    if c.flags & MAPPED != 0
+        && let Some(key) = address_of(c.obj)
+    {
+        let mut map = cells();
+        if map.get(&key) == Some(&(cell as usize)) {
+            map.remove(&key);
+        }
+    }
+    c.obj = Value::null();
+}
+
 // ---------------------------------------------------------------------------
 // The protocol: every message goes to the object
 // ---------------------------------------------------------------------------
 
-/// The object's address, for `Send`.
+/// What a severed cell stands for: one object, on no heap, whose every
+/// send raises.
+#[repr(C)]
+struct Gone {
+    desc: *const TypeDesc,
+}
+
+unsafe impl Sync for Gone {}
+
+static GONE_DESC: TypeDesc = {
+    let mut d = TypeDesc::new(crate::error::core_type());
+    d.protocol = &GONE_PROTO;
+    d.name = "gone object".as_ptr();
+    d.name_len = "gone object".len();
+    d.lang = LANG_CORE;
+    d
+};
+
+static GONE: Gone = Gone { desc: &GONE_DESC };
+
+fn gone() -> u8 {
+    bridge::raise(Error::new(
+        ErrorKind::Runtime,
+        "the object is gone: the runtime that owned it was dropped",
+        LANG_CORE,
+    ))
+}
+
+unsafe extern "C-unwind" fn gone_get(_: *mut u8, _: Symbol, _: *mut Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_set(_: *mut u8, _: Symbol, _: Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_invoke(
+    _: *mut u8,
+    _: Symbol,
+    _: *const Value,
+    _: usize,
+    _: *mut Value,
+) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_call(_: *mut u8, _: *const Value, _: usize, _: *mut Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_index(_: *mut u8, _: Value, _: *mut Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_set_index(_: *mut u8, _: Value, _: Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_count(_: *mut u8, _: *mut usize) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_iterate(_: *mut u8, _: *mut Value, _: *mut Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_to_string(_: *mut u8, _: *mut Value) -> u8 {
+    gone()
+}
+
+unsafe extern "C-unwind" fn gone_type_name(_: *mut u8, out: *mut Symbol) -> u8 {
+    unsafe { *out = crate::symbol::intern("gone object") };
+    REPLY_OK
+}
+
+static GONE_PROTO: Protocol = Protocol {
+    get_member: Some(gone_get),
+    set_member: Some(gone_set),
+    invoke: Some(gone_invoke),
+    call: Some(gone_call),
+    index: Some(gone_index),
+    set_index: Some(gone_set_index),
+    len: Some(gone_count),
+    arity: Some(gone_count),
+    iterate: Some(gone_iterate),
+    to_string: Some(gone_to_string),
+    type_name: Some(gone_type_name),
+    ..Protocol::NONE
+};
+
+/// The object's address, for `Send`; a severed cell's is the gone object.
 unsafe fn inner(obj: *mut u8) -> *mut u8 {
-    let c = unsafe { &*(obj as *const Cell) };
-    address_of(c.obj).map_or(ptr::null_mut(), |p| p as *mut u8)
+    address_of(unsafe { object_at(obj) }).map_or(ptr::null_mut(), |p| p as *mut u8)
 }
 
 fn code(reply: Reply, out: *mut Value) -> u8 {

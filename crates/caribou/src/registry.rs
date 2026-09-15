@@ -328,6 +328,23 @@ pub fn publish(iface: Interface) -> Result<(), RegisterError> {
     Ok(())
 }
 
+/// Withdraw the interface of `module` in `lang`, and the file it came
+/// from: what a runtime does for the modules it published as it goes,
+/// so nothing reaches its callables after. A later lookup asks the
+/// loader again.
+pub fn withdraw(lang: LangId, module: &str) {
+    let key = (lang, module.to_owned());
+    let mut table = TABLE.write().unwrap();
+    if let Some(old) = table.interfaces.remove(&key) {
+        GENERATION.fetch_add(1, Ordering::AcqRel);
+        for class in &old.classes {
+            table.by_type.remove(&(old.lang, class.type_name.clone()));
+        }
+    }
+    drop(table);
+    SOURCES.write().unwrap().remove(&key);
+}
+
 /// The published interface of `module` in `lang`.
 pub fn interface(lang: LangId, module: &str) -> Option<Arc<Interface>> {
     TABLE

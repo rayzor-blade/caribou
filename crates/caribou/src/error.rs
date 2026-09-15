@@ -31,7 +31,7 @@ use crate::world::{LANG_CORE, language_name};
 // ---------------------------------------------------------------------------
 
 /// What C sees at word zero of a core object: an abstract with no name.
-const fn core_type() -> hl_type {
+pub(crate) const fn core_type() -> hl_type {
     hl_type {
         kind: hl::HABSTRACT,
         detail: hl_type_detail {

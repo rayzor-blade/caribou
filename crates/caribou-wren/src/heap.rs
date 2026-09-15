@@ -555,10 +555,23 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     // The record stays: see `WrenHeap`.
     let rec = unsafe { record_mut(heap) };
     rec.closing.store(true, Ordering::Relaxed);
+    // Nothing reaches this VM's classes through the registry after.
+    rec.exports().borrow_mut().withdraw();
     let mut gc = heap::gc_locked_init();
     import::forget_classes(rec);
     for shard in rec.shards.all() {
         for pin in &unsafe { &*shard }.pins {
+            // Another language may hold one of these objects through a
+            // cell: it stands for nothing now. An adopted instance in
+            // front of another language's cell leaves it.
+            let w = unsafe { *bridge_word(pin.start as *mut u8) };
+            let shadow = (w & !FLAGS) as *mut u8;
+            if !shadow.is_null() {
+                unsafe { cell::sever(shadow) };
+            }
+            if w & ADOPTED != 0 {
+                import::forget_front((pin.start + PREFIX) as *mut u8);
+            }
             gc.forget_allocation(pin.start as *const u8);
         }
     }
