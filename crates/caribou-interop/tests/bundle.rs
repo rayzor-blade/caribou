@@ -38,7 +38,7 @@ fn a_bundle_runs_as_the_project_did() {
     // Written where nothing else is, and opened from there.
     let dir = std::env::temp_dir().join(format!("caribou-bundle-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("hud.caribou");
+    let path = dir.join("hud.cb");
     std::fs::write(&path, caribou::bundle::emit(&bundle)).unwrap();
 
     let mut session = Session::open(

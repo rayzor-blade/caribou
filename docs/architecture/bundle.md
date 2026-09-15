@@ -38,7 +38,7 @@ bytecode without loading it (`caribou_ash::imports_in`), and every
 `.wren` under a root becomes a module section named by its path under
 the root, `game/hud`. Where two roots have a module of one name, the
 first root's is taken, as a run from the directory would take it. The
-bundle is written beside the program as `game.caribou`, or where `-o`
+bundle is written beside the program as `game.cb`, or where `-o`
 says.
 
 ## Opening

@@ -1,7 +1,7 @@
 //! The caribou command.
 //!
 //!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]
-//!     caribou build <program.hl> [-o <out.caribou>]
+//!     caribou build <program.hl> [-o <out.cb>]
 //!     caribou describe <module.wren>...
 //!
 //! `run` runs a program with every resident language, from the project
@@ -19,7 +19,7 @@ use std::process;
 use caribou_ash::Mode;
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.caribou>]\n       caribou describe <module.wren>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.cb>]\n       caribou describe <module.wren>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();

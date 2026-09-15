@@ -11,7 +11,7 @@ use caribou::bundle::{Bundle, Entry, Manifest, Section, SectionKind};
 use crate::project;
 
 /// The extension a bundle is written with.
-pub const EXTENSION: &str = "caribou";
+pub const EXTENSION: &str = "cb";
 
 /// The bundle for the program at `program`, with the Wren modules under
 /// `roots`.
@@ -97,7 +97,7 @@ fn wren_modules(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Re
 }
 
 /// Build the bundle for `program` from its project and write it to
-/// `out`, or beside the program as `<name>.caribou`. Returns where it
+/// `out`, or beside the program as `<name>.cb`. Returns where it
 /// was written.
 pub fn write(program: &Path, out: Option<&Path>) -> Result<PathBuf> {
     let roots = project::roots(program);

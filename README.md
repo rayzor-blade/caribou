@@ -90,9 +90,9 @@ use:
 caribou run bin/game.hl
 ```
 
-`caribou build bin/game.hl` writes `bin/game.caribou`, the program and
+`caribou build bin/game.hl` writes `bin/game.cb`, the program and
 every module under the class paths in one file, and `caribou run
-bin/game.caribou` runs it the same way from anywhere.
+bin/game.cb` runs it the same way from anywhere.
 
 `caribou run --report` prints, when the program ends, what the run did:
 the tier each function reached, whether each send across the bridge is
