@@ -37,9 +37,15 @@ calling thread's scheduler, and installs the heap's poll hook. The driver
 then registers adapters and loads modules. After that it either calls
 `World::run_main(module)`, letting the world own the loop, or calls
 `World::tick(deadline)` from its own frame loop. `tick` runs scheduler
-turns, drains reload checks and delivers events until the deadline. Ash's
-frame pump is the first driver: the world ticks inside it, between the
-Haxe application's frames.
+turns, drains reload checks and delivers events until the deadline.
+
+The Haxe application's own loop is the first driver, and it needs no
+call of its own: every wait it makes reaches the scheduler through the
+seam. `Sys.sleep` and a `Lock` wait park on a scheduler timer, and so
+does the idle time of a frame loop installed through `sys_set_loop`,
+the way a UI library installs one, while any task is alive. Between two
+Haxe frames the scheduler drives what is ready and idles on its
+endpoint, timers and, once it exists, the reactor.
 
 ## The driver
 
@@ -128,5 +134,7 @@ language's log line come as events with the paths that raise them.
 Built so far: the adapter registry, the language table, the namespace
 table, the source roots, the loaders, the driver above, the reload of a
 Wren module and the events. Ash's reload, and a file watch as the
-trigger, are not built. The world does not tick under the session yet; a
-session runs the program's own loop.
+trigger, are not built. Under a session the program's own loop drives
+the scheduler; the world's events are delivered from `tick` and from a
+reload, so a driver with a loop of its own hears them, and the program's
+loop does when the reactor raises them.

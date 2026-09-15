@@ -1,0 +1,7 @@
+# The Haxe program of the frame test: it installs a frame loop, and a
+# Wren fiber runs in the frames' idle time. Rebuild with `haxe frame.hxml`
+# (Haxe 4.3.6) from this directory; frame.hl is checked in.
+-cp src
+-lib caribou
+-main UseFrame
+-hl frame.hl
