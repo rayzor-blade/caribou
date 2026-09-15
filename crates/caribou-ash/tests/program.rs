@@ -23,7 +23,7 @@ fn fixture() -> PathBuf {
 #[test]
 fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
-    let mut world = World::new(Config::default());
+    let world = World::new(Config::default());
     let haxe = world
         .register(Box::new(caribou_ash::Runtime::new()))
         .expect("haxe registers")[0];

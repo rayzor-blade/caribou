@@ -404,7 +404,7 @@ var Alias = Hud
             return;
         }
         crate::install().expect("a fresh process takes the table");
-        let mut world = World::new(Config::default());
+        let world = World::new(Config::default());
         let wren = world
             .register(Box::new(crate::Runtime::new()))
             .expect("wren registers")[0];
@@ -617,7 +617,7 @@ var Alias = Hud
             return;
         }
         crate::install().expect("a fresh process takes the table");
-        let mut world = World::new(Config::default());
+        let world = World::new(Config::default());
         world
             .register(Box::new(crate::Runtime::new()))
             .expect("wren registers");
@@ -677,7 +677,7 @@ mod vm_tests {
             return;
         }
         crate::install().expect("a fresh process takes the table");
-        let mut world = World::new(Config::default());
+        let world = World::new(Config::default());
         world
             .register(Box::new(crate::Runtime::new()))
             .expect("wren registers");

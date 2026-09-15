@@ -26,6 +26,7 @@
 //! answering. That is how a program's first use of a module loads it.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, RwLock};
 
@@ -240,6 +241,29 @@ pub fn set_loader(lang: LangId, loader: Loader) {
 
 fn loader_of(lang: LangId) -> Option<Loader> {
     LOADERS.read().unwrap().get(&lang).cloned()
+}
+
+/// The file each module loaded from a project's sources came from, by
+/// `(lang, module)`: what a source watch looks at.
+static SOURCES: LazyLock<RwLock<HashMap<(LangId, String), PathBuf>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Record that `module` of `lang` was loaded from `path`.
+pub fn set_source(lang: LangId, module: &str, path: PathBuf) {
+    SOURCES
+        .write()
+        .unwrap()
+        .insert((lang, module.to_owned()), path);
+}
+
+/// Every module loaded from a file, with the file.
+pub fn sources() -> Vec<(LangId, String, PathBuf)> {
+    SOURCES
+        .read()
+        .unwrap()
+        .iter()
+        .map(|((lang, module), path)| (*lang, module.clone(), path.clone()))
+        .collect()
 }
 
 /// The languages `namespace` covers, in order: the configured ones, or
@@ -459,7 +483,7 @@ mod tests {
     #[test]
     fn a_missing_module_is_asked_of_the_namespaces_loaders_in_order() {
         let _serial = world::SERIAL.lock().unwrap();
-        let mut world = World::new(Config {
+        let world = World::new(Config {
             namespaces: vec![Namespace {
                 name: "lgame".to_owned(),
                 langs: vec!["llang_a".to_owned(), "llang_b".to_owned()],
@@ -503,7 +527,7 @@ mod tests {
     #[test]
     fn namespaces_resolve_and_a_clash_is_refused() {
         let _serial = world::SERIAL.lock().unwrap();
-        let mut world = World::new(Config {
+        let world = World::new(Config {
             namespaces: vec![
                 Namespace {
                     name: "rgame".to_owned(),

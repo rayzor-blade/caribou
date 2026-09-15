@@ -39,7 +39,8 @@ a caller can cache against; a reload publishes the module again (see
 first. A language may register a loader with `set_loader`;
 `resolve_or_load` and `lookup_class_or_load` ask the namespace's loaders
 in turn when nothing has published a module yet, which is how a module
-loads on first use.
+loads on first use. A loader that read a module from a file records the
+file with `set_source`, and `sources` lists them, for the world's watch.
 
 ## Namespaces
 

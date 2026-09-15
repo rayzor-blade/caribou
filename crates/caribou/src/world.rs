@@ -1,10 +1,14 @@
 //! The driver's handle: adapter registry, language table and namespace
-//! table, and the reload of a module with the event it raises.
+//! table, the reload of a module with the event it raises, and the watch
+//! on the sources that triggers one.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{LazyLock, Mutex, RwLock};
+use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
+use std::time::{Duration, SystemTime};
 
 use caribou_abi::LangId;
 
@@ -34,9 +38,14 @@ pub trait Adapter: 'static {
 /// What a world tells its subscribers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// A module was loaded afresh; its classes are the ones they were,
-    /// with new bodies, and every call site fills again.
-    Reload { lang: LangId, module: String },
+    /// A module was loaded afresh: its classes are the ones they were,
+    /// with new bodies, and every call site fills again. With `error`,
+    /// the load failed and the module is as it was.
+    Reload {
+        lang: LangId,
+        module: String,
+        error: Option<String>,
+    },
 }
 
 /// The kind of event a subscriber asks for.
@@ -66,7 +75,7 @@ pub struct Language {
 /// What `World::new` takes.
 #[derive(Clone, Debug, Default)]
 pub struct Config {
-    /// Kept for the reactor; nothing reads it yet.
+    /// Names the world's threads: its source watch's.
     pub name: String,
     /// The namespaces imports are addressed through, beside the one every
     /// registered language gets under its own name. See `caribou::registry`.
@@ -78,15 +87,34 @@ pub struct Config {
 }
 
 /// The driver's handle. One per OS thread; `new` initialises that thread's
-/// scheduler and the process heap on first use.
+/// scheduler and the process heap on first use. A clone is the same
+/// world: what the reactor's handlers hold.
+#[derive(Clone)]
 pub struct World {
-    adapters: Vec<Box<dyn Adapter>>,
+    inner: Rc<RefCell<Inner>>,
+}
+
+struct Inner {
+    adapters: Vec<Rc<dyn Adapter>>,
     languages: Vec<Language>,
     by_name: HashMap<String, LangId>,
     handlers: Vec<(EventKind, Handler)>,
     /// Raised and not yet delivered: handlers run from `tick` and from
     /// the end of a reload, never from inside a collection or a switch.
     pending: Vec<Event>,
+    /// The source watch, while one runs: its source's signal, and the
+    /// flag that ends its thread.
+    watch: Option<(sched::Signal, Arc<AtomicBool>)>,
+    name: String,
+}
+
+impl Drop for Inner {
+    fn drop(&mut self) {
+        if let Some((signal, stop)) = &self.watch {
+            stop.store(true, Ordering::Relaxed);
+            sched::remove_source(signal);
+        }
+    }
 }
 
 static NEXT_LANG: AtomicU32 = AtomicU32::new(1);
@@ -140,67 +168,70 @@ impl World {
         registry::set_namespaces(config.namespaces);
         *ROOTS.write().unwrap() = config.roots;
         World {
-            adapters: Vec::new(),
-            languages: Vec::new(),
-            by_name: HashMap::new(),
-            handlers: Vec::new(),
-            pending: Vec::new(),
+            inner: Rc::new(RefCell::new(Inner {
+                adapters: Vec::new(),
+                languages: Vec::new(),
+                by_name: HashMap::new(),
+                handlers: Vec::new(),
+                pending: Vec::new(),
+                watch: None,
+                name: config.name,
+            })),
         }
     }
 
     /// Register an adapter and assign its languages. A name already taken by
     /// another adapter is an error: a symbol means what it means inside the
     /// language asking, and two adapters cannot both answer for one.
-    pub fn register(
-        &mut self,
-        mut adapter: Box<dyn Adapter>,
-    ) -> Result<Vec<LangId>, RegisterError> {
+    pub fn register(&self, mut adapter: Box<dyn Adapter>) -> Result<Vec<LangId>, RegisterError> {
         let names = adapter.languages();
         if names.is_empty() {
             return Err(RegisterError::NoLanguages);
         }
+        let mut inner = self.inner.borrow_mut();
         for name in &names {
-            if self.by_name.contains_key(name) {
+            if inner.by_name.contains_key(name) {
                 return Err(RegisterError::NameTaken(name.clone()));
             }
         }
-        let index = self.adapters.len();
+        let index = inner.adapters.len();
         let ids: Vec<LangId> = names
             .iter()
             .map(|_| NEXT_LANG.fetch_add(1, Ordering::Relaxed))
             .collect();
         for (name, &id) in names.iter().zip(&ids) {
-            self.by_name.insert(name.clone(), id);
+            inner.by_name.insert(name.clone(), id);
             LANG_NAMES.lock().unwrap().insert(id, name.clone());
             LANG_IDS.lock().unwrap().insert(name.clone(), id);
-            self.languages.push(Language {
+            inner.languages.push(Language {
                 id,
                 name: name.clone(),
                 adapter: index,
             });
         }
         adapter.assign_languages(&ids);
-        self.adapters.push(adapter);
+        inner.adapters.push(Rc::from(adapter));
         Ok(ids)
     }
 
     pub fn language(&self, name: &str) -> Option<LangId> {
-        self.by_name.get(name).copied()
+        self.inner.borrow().by_name.get(name).copied()
     }
 
-    pub fn languages(&self) -> &[Language] {
-        &self.languages
+    pub fn languages(&self) -> Vec<Language> {
+        self.inner.borrow().languages.clone()
     }
 
-    pub fn adapter_for(&self, lang: LangId) -> Option<&dyn Adapter> {
-        let entry = self.languages.iter().find(|l| l.id == lang)?;
-        self.adapters.get(entry.adapter).map(|a| a.as_ref())
+    pub fn adapter_for(&self, lang: LangId) -> Option<Rc<dyn Adapter>> {
+        let inner = self.inner.borrow();
+        let entry = inner.languages.iter().find(|l| l.id == lang)?;
+        inner.adapters.get(entry.adapter).cloned()
     }
 
     /// Run scheduler turns until nothing is ready or the deadline passes,
     /// then deliver the events raised meanwhile. Returns whether live
     /// tasks remain.
-    pub fn tick(&mut self, deadline: Option<std::time::Instant>) -> bool {
+    pub fn tick(&self, deadline: Option<std::time::Instant>) -> bool {
         let live = sched::tick(deadline);
         self.deliver();
         live
@@ -208,25 +239,42 @@ impl World {
 
     /// Subscribe `handler` to events of `kind`. Handlers run on the
     /// world's thread, from `tick` and at the end of a reload.
-    pub fn on(&mut self, kind: EventKind, handler: impl FnMut(&Event) + 'static) {
-        self.handlers.push((kind, Box::new(handler)));
+    pub fn on(&self, kind: EventKind, handler: impl FnMut(&Event) + 'static) {
+        self.inner
+            .borrow_mut()
+            .handlers
+            .push((kind, Box::new(handler)));
     }
 
     /// Raise `event`, for the next delivery.
-    pub fn raise(&mut self, event: Event) {
-        self.pending.push(event);
+    pub fn raise(&self, event: Event) {
+        self.inner.borrow_mut().pending.push(event);
     }
 
-    fn deliver(&mut self) {
-        while !self.pending.is_empty() {
-            let events = std::mem::take(&mut self.pending);
+    /// Run the handlers for what is pending, with the world unborrowed,
+    /// so a handler may subscribe, raise or reload.
+    fn deliver(&self) {
+        loop {
+            let (events, mut handlers) = {
+                let mut inner = self.inner.borrow_mut();
+                if inner.pending.is_empty() {
+                    return;
+                }
+                (
+                    std::mem::take(&mut inner.pending),
+                    std::mem::take(&mut inner.handlers),
+                )
+            };
             for event in &events {
-                for (kind, handler) in &mut self.handlers {
+                for (kind, handler) in &mut handlers {
                     if *kind == event.kind() {
                         handler(event);
                     }
                 }
             }
+            let mut inner = self.inner.borrow_mut();
+            handlers.append(&mut inner.handlers);
+            inner.handlers = handlers;
         }
     }
 
@@ -236,18 +284,116 @@ impl World {
     /// language fills again (the protocol's epoch), and subscribers hear
     /// `Event::Reload`. Objects of the module made before keep their
     /// classes and so their new bodies. A module nothing has loaded is
-    /// an error.
-    pub fn reload(&mut self, namespace: &str, module: &str) -> Result<(), String> {
+    /// an error, and so is a load that fails, after which the module is
+    /// as it was.
+    pub fn reload(&self, namespace: &str, module: &str) -> Result<(), String> {
         let (lang, module) = registry::resolve(namespace, module)
             .ok_or_else(|| format!("{namespace}:{module} is not loaded"))?;
+        self.reload_module(lang, &module)
+    }
+
+    /// `reload` for a module already resolved to its language.
+    pub fn reload_module(&self, lang: LangId, module: &str) -> Result<(), String> {
         let adapter = self
             .adapter_for(lang)
             .ok_or_else(|| format!("no adapter serves {}", language_name(lang)))?;
-        adapter.reload(lang, &module)?;
-        crate::protocol::bump_epoch();
-        self.raise(Event::Reload { lang, module });
+        let result = adapter.reload(lang, module);
+        if result.is_ok() {
+            crate::protocol::bump_epoch();
+        }
+        self.raise(Event::Reload {
+            lang,
+            module: module.to_owned(),
+            error: result.clone().err(),
+        });
         self.deliver();
-        Ok(())
+        result
+    }
+
+    /// Watch the files the loaded modules came from, and reload a module
+    /// when its file changes: the reload runs on this world's thread
+    /// between scheduler turns, wherever the program is idle, and
+    /// subscribers hear of it as of any reload. A module loaded later is
+    /// watched from then on. The watch ends with the world.
+    pub fn watch_sources(&self) {
+        if self.inner.borrow().watch.is_some() {
+            return;
+        }
+        let changed: Arc<Mutex<Vec<(LangId, String)>>> = Arc::new(Mutex::new(Vec::new()));
+        // Weak, so the source does not keep the world: the driver's handle
+        // does, and the source goes with it.
+        let world = Rc::downgrade(&self.inner);
+        let queue = Arc::clone(&changed);
+        let signal = sched::add_source(move || {
+            let Some(inner) = Weak::upgrade(&world) else {
+                return;
+            };
+            let world = World { inner };
+            let modules = std::mem::take(&mut *queue.lock().unwrap());
+            for (lang, module) in modules {
+                // Reported through the event; the watch has no caller.
+                let _ = world.reload_module(lang, &module);
+            }
+        });
+        let stop = Arc::new(AtomicBool::new(false));
+        let name = self.inner.borrow().name.clone();
+        let name = if name.is_empty() { "world" } else { &name };
+        std::thread::Builder::new()
+            .name(format!("{name}-watch"))
+            .spawn({
+                let signal = signal.clone();
+                let stop = Arc::clone(&stop);
+                move || watch_sources(&signal, &changed, &stop)
+            })
+            .expect("a watch thread");
+        self.inner.borrow_mut().watch = Some((signal, stop));
+    }
+}
+
+/// How often the sources are looked at.
+const WATCH_INTERVAL: Duration = Duration::from_millis(100);
+
+/// What a file was last seen as: its modification time and length.
+type Seen = Option<(SystemTime, u64)>;
+
+fn seen(path: &std::path::Path) -> Seen {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+/// The watch thread: look at every loaded module's file on an interval,
+/// queue the modules whose files changed and raise the signal, until the
+/// world is gone.
+fn watch_sources(
+    signal: &sched::Signal,
+    changed: &Mutex<Vec<(LangId, String)>>,
+    stop: &AtomicBool,
+) {
+    let mut last: HashMap<PathBuf, Seen> = HashMap::new();
+    loop {
+        std::thread::sleep(WATCH_INTERVAL);
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut any = false;
+        for (lang, module, path) in registry::sources() {
+            let now = seen(&path);
+            match last.get(&path) {
+                // Seen for the first time as it is: nothing to reload.
+                None => {
+                    last.insert(path, now);
+                }
+                Some(before) if *before != now => {
+                    last.insert(path, now);
+                    changed.lock().unwrap().push((lang, module));
+                    any = true;
+                }
+                Some(_) => {}
+            }
+        }
+        if any && !signal.raise() {
+            return;
+        }
     }
 }
 
@@ -309,7 +455,7 @@ mod tests {
     #[test]
     fn languages_get_distinct_ids_and_resolve_by_name() {
         let _serial = SERIAL.lock().unwrap();
-        let mut world = World::new(Config::default());
+        let world = World::new(Config::default());
         let ids = world
             .register(Box::new(Fake {
                 names: vec!["haxe"],
@@ -342,7 +488,7 @@ mod tests {
     #[test]
     fn a_taken_name_is_refused_and_nothing_is_registered() {
         let _serial = SERIAL.lock().unwrap();
-        let mut world = World::new(Config::default());
+        let world = World::new(Config::default());
         world
             .register(Box::new(Fake {
                 names: vec!["wren"],
@@ -372,7 +518,7 @@ mod tests {
     #[test]
     fn tick_with_no_tasks_returns_promptly() {
         let _serial = SERIAL.lock().unwrap();
-        let mut world = World::new(Config::default());
+        let world = World::new(Config::default());
         assert!(!world.tick(Some(std::time::Instant::now())));
     }
 }

@@ -158,7 +158,7 @@ fn a_counter_crosses_from_wren_and_a_typed_call_crosses_from_haxe() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
     caribou_wren::install().expect("wren_lift takes the table in a fresh process");
 
-    let mut world = World::new(Config::default());
+    let world = World::new(Config::default());
     let ash = world
         .register(Box::new(caribou_ash::Runtime::new()))
         .expect("haxe registers")[0];

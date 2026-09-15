@@ -18,12 +18,15 @@
 //! on them. Compiled loops poll [`POLL_EPOCH`], which a timer bumps while
 //! tasks exist and the collector bumps when it wants the world stopped.
 //!
-//! Other threads reach a world only through its endpoint: a wake, or a
-//! task to spawn. Worker worlds for pooled bodies are OS threads running
-//! the same loop; a task is placed once and never migrates.
+//! Other threads reach a world only through its endpoint: a wake, a
+//! task to spawn, or a reactor source's signal ([`add_source`]), whose
+//! handler the world runs between turns. Worker worlds for pooled bodies
+//! are OS threads running the same loop; a task is placed once and never
+//! migrates.
 
 mod pool;
 mod preempt;
+mod reactor;
 mod stack;
 mod task;
 mod wait;
@@ -33,6 +36,7 @@ pub use krio_core::{Suspension, Task, TaskId};
 
 pub use pool::{has_worker_pool, is_pool_worker, worker_count};
 pub use preempt::{POLL_EPOCH, any_live_tasks, poll_epoch_address, request_poll};
+pub use reactor::{Signal, add_source, remove_source};
 pub use stack::{
     add_stack_hook, attach_stack_host_state, forget_stack, switch_stack, with_stack_host_state,
 };

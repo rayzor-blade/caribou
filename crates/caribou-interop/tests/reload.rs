@@ -49,7 +49,7 @@ fn a_wren_module_reloads_under_a_haxe_program() {
 
     let heard = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&heard);
-    session.world_mut().on(EventKind::Reload, move |event| {
+    session.world().on(EventKind::Reload, move |event| {
         sink.borrow_mut().push(event.clone());
     });
 
@@ -60,10 +60,11 @@ fn a_wren_module_reloads_under_a_haxe_program() {
     )
     .unwrap();
     session.reload("game", "hud").expect("the module reloads");
-    assert!(matches!(
-        heard.borrow().as_slice(),
-        [Event::Reload { module, .. }] if module == "game/hud"
-    ));
+    // The session's watch may hear the edit too: at least this one.
+    assert!(heard.borrow().iter().any(|event| matches!(
+        event,
+        Event::Reload { module, error: None, .. } if module == "game/hud"
+    )));
 
     // The same object, the same site, the new body.
     let output = captured(|| {

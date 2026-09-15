@@ -145,7 +145,7 @@ fn haxe_holds_a_wren_object_through_a_ref() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
     caribou_wren::install().expect("wren_lift takes the table in a fresh process");
 
-    let mut world = World::new(Config::default());
+    let world = World::new(Config::default());
     let ash = world
         .register(Box::new(caribou_ash::Runtime::new()))
         .expect("haxe registers")[0];

@@ -7,7 +7,7 @@ use caribou::bridge;
 use caribou::error::Error;
 use caribou::registry;
 use caribou::report::Report;
-use caribou::world::{Config, LANG_CORE, World};
+use caribou::world::{Config, Event, EventKind, LANG_CORE, World};
 use caribou_abi::{ErrorKind, Value};
 use caribou_ash::{Mode, Options as AshOptions, Program};
 use wren_lift::runtime::engine::ExecutionMode;
@@ -84,7 +84,7 @@ impl Session {
             .into_iter()
             .map(|(namespace, _)| namespace)
             .collect();
-        let mut world = World::new(Config {
+        let world = World::new(Config {
             namespaces: project::namespaces(&roots, &imported),
             roots,
             ..Config::default()
@@ -97,6 +97,8 @@ impl Session {
             .map_err(|e| anyhow!("registering wren: {e}"))?;
         // The program's classes are what the other languages import.
         program.publish()?;
+        // A module's file edited while the program runs reloads it.
+        world.watch_sources();
 
         let mut config = VMConfig {
             execution_mode: options.wren_mode,
@@ -173,14 +175,9 @@ impl Session {
     /// classes keep their identity, calls from the other language reach
     /// the new bodies, and the world's `Reload` subscribers hear of it.
     pub fn reload(&mut self, namespace: &str, module: &str) -> Result<()> {
-        let world = &mut self.world;
+        let world = &self.world;
         caribou_wren::with_vm(&mut self.vm, |_| world.reload(namespace, module))
             .map_err(|e| anyhow!(e))
-    }
-
-    /// The world, for its events.
-    pub fn world_mut(&mut self) -> &mut World {
-        &mut self.world
     }
 
     /// What the run did so far, in the program's terms: the tier each
@@ -199,9 +196,22 @@ impl Session {
         report
     }
 
-    /// Run the program to the end of its entry point and its event loop.
-    /// With `Options::report`, print the report after.
+    /// Run the program to the end of its entry point and its event loop,
+    /// saying on stderr what reloads meanwhile. With `Options::report`,
+    /// print the report after.
     pub fn run(mut self) -> Result<()> {
+        self.world.on(EventKind::Reload, |event| {
+            let Event::Reload {
+                lang,
+                module,
+                error,
+            } = event;
+            let lang = caribou::world::language_name(*lang);
+            match error {
+                None => eprintln!("[caribou] reloaded {lang} {module}"),
+                Some(error) => eprintln!("[caribou] {lang} {module} did not reload: {error}"),
+            }
+        });
         let result = self.start();
         if self.report_wanted {
             eprint!("{}", self.report());

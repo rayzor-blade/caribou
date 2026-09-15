@@ -1,0 +1,7 @@
+# The Haxe program of the watch test: a frame loop reading a Wren value
+# whose file the test edits while it runs. Rebuild with `haxe watch.hxml`
+# (Haxe 4.3.6) from this directory; watch.hl is checked in.
+-cp src
+-lib caribou
+-main UseWatch
+-hl watch.hl

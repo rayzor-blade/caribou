@@ -22,6 +22,8 @@ use crate::heap;
 /// What another thread may ask of a world.
 pub(super) enum WorldCommand {
     Wake(Waiter),
+    /// A reactor source's signal was raised: run its handler.
+    Ready(u64),
     /// Only a pool sends one, and a target without threads has no pool.
     #[cfg_attr(
         all(target_family = "wasm", not(target_feature = "atomics")),
@@ -60,6 +62,7 @@ impl WorldEndpoint {
 
 static NEXT_WORLD_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
 static WORLD_ENDPOINTS: LazyLock<Mutex<HashMap<u64, Weak<WorldEndpoint>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -83,6 +86,11 @@ pub(super) struct World {
     /// adapter.
     main_host: Vec<Box<dyn HostState>>,
     switch_hook: Option<SwitchHook>,
+    /// The reactor's sources by id; a handler is out of its slot while it
+    /// runs, so it may add or remove sources.
+    sources: HashMap<u64, Option<Box<dyn FnMut()>>>,
+    /// Sources raised since the last turn, in order, each once.
+    ready_sources: VecDeque<u64>,
 }
 
 /// Runs on a task's world before its first turn, whichever language spawned
@@ -107,6 +115,8 @@ impl World {
             timers: BinaryHeap::new(),
             main_host: Vec::new(),
             switch_hook: None,
+            sources: HashMap::new(),
+            ready_sources: VecDeque::new(),
         }
     }
 
@@ -219,8 +229,12 @@ fn with_world<R>(f: impl FnOnce(&mut World) -> R) -> R {
     WORLD.with(|slot| f(slot.borrow_mut().get_or_insert_with(World::new)))
 }
 
+/// `None` when this thread has no world, or is tearing its locals down.
 fn try_with_world<R>(f: impl FnOnce(&mut World) -> R) -> Option<R> {
-    WORLD.with(|slot| slot.borrow_mut().as_mut().map(f))
+    WORLD
+        .try_with(|slot| slot.borrow_mut().as_mut().map(f))
+        .ok()
+        .flatten()
 }
 
 /// Whether this thread owns a world. A thread that does not is foreign: it
@@ -494,7 +508,47 @@ fn drain_commands() {
                 with_world(|world| world.wake_claimed(waiter));
             }
             WorldCommand::Spawn { id, placed } => install(id, placed.into_record()),
+            WorldCommand::Ready(source) => with_world(|world| {
+                if world.sources.contains_key(&source) && !world.ready_sources.contains(&source) {
+                    world.ready_sources.push_back(source);
+                }
+            }),
         }
+    }
+}
+
+/// Register a reactor source on this thread's world: its world and id.
+pub(super) fn add_source(handler: Box<dyn FnMut()>) -> (u64, u64) {
+    let id = NEXT_SOURCE_ID.fetch_add(1, Ordering::Relaxed);
+    with_world(|world| {
+        world.sources.insert(id, Some(handler));
+        (world.id, id)
+    })
+}
+
+pub(super) fn remove_source(id: u64) {
+    try_with_world(|world| {
+        world.sources.remove(&id);
+    });
+}
+
+/// Run the handler of every source raised since the last turn, each with
+/// the world unborrowed, and skipped if it was removed meanwhile or is
+/// already running further up this stack.
+fn run_sources() {
+    loop {
+        let Some(id) = with_world(|world| world.ready_sources.pop_front()) else {
+            return;
+        };
+        let Some(mut handler) = with_world(|world| world.sources.get_mut(&id)?.take()) else {
+            continue;
+        };
+        handler();
+        with_world(|world| {
+            if let Some(slot) = world.sources.get_mut(&id) {
+                *slot = Some(handler);
+            }
+        });
     }
 }
 
@@ -661,6 +715,7 @@ pub fn schedule_step() -> bool {
     }
     drain_commands();
     with_world(|world| world.wake_due_timers());
+    run_sources();
     let mut resumed = false;
     let turns = with_world(|world| world.ready.len());
     for _ in 0..turns {

@@ -26,8 +26,7 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 const HUD: &str = include_str!("../fixtures/src/game/hud.wren");
 
-const EXPECTED: &str =
-    "7\n10\nhp: 10\n1 true true true\ntrue\ntrue\n10\ncaught boom\nada\n5\n42\n3\n6\n3 hp\nhp,mp,4\n6.5\n3 10\n";
+const EXPECTED: &str = "7\n10\nhp: 10\n1 true true true\ntrue\ntrue\n10\ncaught boom\nada\n5\n42\n3\n6\n3 hp\nhp,mp,4\n6.5\n3 10\n";
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/hud.hl")
@@ -39,7 +38,7 @@ fn a_haxe_program_imports_a_wren_class() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
     caribou_wren::install().expect("wren_lift takes the table in a fresh process");
 
-    let mut world = World::new(Config {
+    let world = World::new(Config {
         namespaces: vec![Namespace {
             name: "game".to_owned(),
             langs: vec!["haxe".to_owned(), "wren".to_owned()],

@@ -13,6 +13,7 @@
 
 use std::path::PathBuf;
 
+use caribou::registry;
 use caribou::world;
 use wren_lift::runtime::engine::InterpretResult;
 use wren_lift::runtime::vm::VM;
@@ -58,6 +59,8 @@ pub fn load_into(vm: &mut VM, name: &str, path: &PathBuf) -> Result<(), String> 
         }
     }
     publish_module(vm, name).map_err(|e| format!("`{name}`: {e}"))?;
+    // Where it came from, for a source watch.
+    registry::set_source(crate::lang(), name, path.clone());
     Ok(())
 }
 

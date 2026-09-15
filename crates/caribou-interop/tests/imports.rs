@@ -199,7 +199,7 @@ fn a_wren_program_imports_a_haxe_class() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
     caribou_wren::install().expect("wren_lift takes the table in a fresh process");
 
-    let mut world = World::new(Config {
+    let world = World::new(Config {
         namespaces: vec![Namespace {
             name: "game".to_owned(),
             langs: vec!["haxe".to_owned()],

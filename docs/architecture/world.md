@@ -118,23 +118,34 @@ runs the program's `Hatch.onReload` callbacks. `Session::reload` does the
 same with the VM entered. Ash does not reload yet: `Adapter::reload` is an
 error for Haxe.
 
-What triggers a reload is the caller's: the driver's API today; a file
-watch once the reactor exists.
+What triggers a reload is either the driver's call or the world's own
+watch on the sources. `World::watch_sources` looks at the file every
+loaded module came from (`registry::sources`, which a language's loader
+records) on a short interval, from a thread of its own, and when one
+changes it raises a reactor source (see
+[scheduler.md](scheduler.md#the-reactor)) whose handler reloads the
+module on the world's thread, between scheduler turns: wherever the
+program is idle, a `Sys.sleep`, a `Lock` wait, a frame's pacing. A
+module loaded later is watched from then on. A source that no longer
+compiles reloads nothing: the module stays as it was, and the event
+carries the error. A session watches from the moment it opens, and
+`caribou run` says on stderr what reloaded.
 
 ## Events
 
 `World::on(kind, handler)` subscribes a handler to events of a kind;
 `World::raise` raises one. Handlers run on the world's thread, from
 `tick` and at the end of a reload, never from inside a collection or a
-switch. `Reload` is the one kind so far; a task's uncaught error and a
-language's log line come as events with the paths that raise them.
+switch, and with the world unborrowed, so a handler may subscribe,
+raise or reload. `Reload` is the one kind so far, with the error when
+the load failed; a task's uncaught error and a language's log line come
+as events with the paths that raise them.
 
 ## Boundaries of the current implementation
 
 Built so far: the adapter registry, the language table, the namespace
 table, the source roots, the loaders, the driver above, the reload of a
-Wren module and the events. Ash's reload, and a file watch as the
-trigger, are not built. Under a session the program's own loop drives
-the scheduler; the world's events are delivered from `tick` and from a
-reload, so a driver with a loop of its own hears them, and the program's
-loop does when the reactor raises them.
+Wren module, the source watch that triggers it and the events. Ash's
+reload is not built. Under a session the program's own loop drives the
+scheduler, and the world's handlers run from there through the reactor;
+a driver with a loop of its own hears them from `tick` as well.

@@ -131,14 +131,23 @@ contexts inside Wren calls on one thread each resume into their own.
 
 ## The reactor
 
-Not built yet. Today, when no task is ready, the main context blocks in
-`scheduler_idle` on the world's endpoint until a command arrives from
-another world or the next timer is due.
+When no task is ready, the main context blocks in `scheduler_idle` on
+the world's endpoint until a command arrives or the next timer is due.
+The reactor is what sends a command from outside: a *source* is a
+handler the world runs on its main context, between turns, each time
+its signal is raised (`add_source`, `Signal::raise`, `remove_source`).
+The raise may come from any thread, one the runtime never made
+included; it reaches the world as a `Ready` command through the
+endpoint, which wakes the idle wait, and the handler runs at the start
+of the next turn, with no task mid-resume. Raises while a handler runs
+fold into one more run. The world's source watch for hot reload is the
+first source (see [world.md](world.md#reload)).
 
-The reactor will be the world's source of external wakeups beyond that:
-socket readiness, file watches, channels from OS threads. Blocking I/O in
-any language will register with it and park, and the reactor will wake
-the token. The seam for it is marked in `world.rs`.
+A task waiting for the outside is a different thing: it parks on a
+token, and whoever sees the readiness wakes the token, from any thread.
+What is not built yet is the poller that would own socket readiness on
+the world's behalf, so a blocking socket read in any language still
+blocks the OS thread.
 
 ## Preemption and safepoints
 
@@ -191,6 +200,7 @@ adapter's to keep, with one `schedule_step` after spawning.
 
 ## Boundaries of the current implementation
 
-- No reactor. Idle blocks on the endpoint and the timer heap only.
+- No socket poller. Idle blocks on the endpoint and the timer heap; a
+  source's raise reaches it, a socket's readiness does not.
 - The main stack's published probe sits above the callee-saved registers
   krio spills at a switch, as in Ash.
