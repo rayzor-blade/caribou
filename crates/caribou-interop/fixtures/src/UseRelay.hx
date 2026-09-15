@@ -24,5 +24,17 @@ class UseRelay {
 		wren.sort(Reflect.compare);
 		Sys.println(wren.join(","));
 		Sys.println(Relay.guarded());
+		// A Haxe task parked inside a Wren call, its Wren frame's data held
+		// by nothing else, while a Wren cycle runs and the freed memory is
+		// reused.
+		var churned = 0.0;
+		var back = new Lock();
+		Thread.create(function() {
+			churned = Relay.churn(2000);
+			back.release();
+		});
+		Relay.cycle();
+		back.wait();
+		Sys.println(churned);
 	}
 }

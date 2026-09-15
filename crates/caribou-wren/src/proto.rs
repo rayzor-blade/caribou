@@ -69,15 +69,25 @@ pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
     }
     if !vm.is_null() {
         record_for(unsafe { &*vm }.object_class as *mut u8).set_entered(vm);
+        // Wren runs on this thread from here; the view says so to
+        // wren_lift's collector.
+        if unsafe { (*vm).thread.is_safe() } {
+            unsafe { crate::world::view_running(vm) };
+        }
     }
     previous
 }
 
-/// Restore what [`enter_vm`] replaced.
+/// Restore what [`enter_vm`] replaced. A view left for good is safe
+/// again: the embedder may block from here.
 ///
 /// # Safety
 /// `previous` is what the matching `enter_vm` returned.
 pub unsafe fn leave_vm(previous: *mut VM) {
+    let leaving = VM_HERE.with(Cell::get);
+    if !leaving.is_null() && leaving != previous && !unsafe { (*leaving).thread.is_safe() } {
+        unsafe { crate::world::view_safe(leaving) };
+    }
     unsafe { enter_vm(previous) };
 }
 

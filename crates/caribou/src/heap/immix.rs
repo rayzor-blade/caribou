@@ -648,14 +648,18 @@ fn current_mutator_deferred() -> bool {
 
 /// Park a registered mutator at a safepoint. The spill buffer stays in this
 /// frame for the whole wait, so `stopped_sp` describes live memory until the
-/// collector releases the world.
+/// collector releases the world. A hosted collector's stop is answered here
+/// too, through its safepoint hook.
 #[inline(never)]
 pub fn gc_safepoint() {
+    if HOSTED_STOPS.load(Ordering::Acquire) != 0 {
+        safepoint_hook();
+    }
     if !GC_STOP_REQUESTED.load(Ordering::Acquire) {
         return;
     }
     // Only ever reached with a stop pending, so the steady-state cost of this
-    // is the branch above and nothing else.
+    // is the branches above and nothing else.
     TLAB.with(|t| t.polls.fetch_add(1, Ordering::Relaxed));
     if !current_mutator_registered() {
         return;
@@ -736,7 +740,12 @@ pub fn gc_set_blocking(blocking: bool) -> bool {
         record.blocking_depth = record.blocking_depth.saturating_add(1);
         record.stopped_sp = sp;
         record.saved_regs = saved_regs;
+        let outermost = record.blocking_depth == 1;
         MUTATOR_WORLD.changed.notify_all();
+        drop(world);
+        if outermost {
+            blocking_hook(true);
+        }
         return true;
     }
     if world.mutators[index].blocking_depth == 0 {
@@ -765,6 +774,8 @@ pub fn gc_set_blocking(blocking: bool) -> bool {
         world.mutators[index].stopped_sp = 0;
     }
     mark_site(SITE_RUNNING);
+    drop(world);
+    blocking_hook(false);
     true
 }
 
@@ -930,6 +941,55 @@ fn request_fiber_poll() {
 /// host brings the threads it runs to a safepoint, and with `false` once
 /// the collection is over, before the mutators are released.
 static STOP_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Stops of hosted worlds under way: while one is, every safepoint runs
+/// the safepoint hook, so a thread running this heap's own code reaches
+/// the hosted collector's rendezvous there.
+static HOSTED_STOPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static SAFEPOINT_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static BLOCKING_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// A hosted world asked its threads to stop (`on`), or let them go.
+pub fn hosted_stop(on: bool) {
+    if on {
+        HOSTED_STOPS.fetch_add(1, Ordering::AcqRel);
+    } else {
+        HOSTED_STOPS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Install what a safepoint runs while a hosted stop is under way: the
+/// hosted runtime's own safepoint for the calling thread.
+pub fn set_safepoint_hook(f: fn()) {
+    SAFEPOINT_HOOK.store(f as usize, Ordering::Release);
+}
+
+/// Install what the calling thread's outermost blocking region tells a
+/// hosted runtime: `true` on entering, `false` on leaving. A thread in a
+/// blocking region is one the hosted collector may scan where it stands.
+pub fn set_blocking_hook(f: fn(bool)) {
+    BLOCKING_HOOK.store(f as usize, Ordering::Release);
+}
+
+fn safepoint_hook() {
+    let raw = SAFEPOINT_HOOK.load(Ordering::Acquire);
+    if raw != 0 {
+        // SAFETY: only `set_safepoint_hook` writes a non-zero value, and it
+        // writes a `fn()`.
+        let f = unsafe { mem::transmute::<usize, fn()>(raw) };
+        f();
+    }
+}
+
+fn blocking_hook(on: bool) {
+    let raw = BLOCKING_HOOK.load(Ordering::Acquire);
+    if raw != 0 {
+        // SAFETY: only `set_blocking_hook` writes a non-zero value, and it
+        // writes a `fn(bool)`.
+        let f = unsafe { mem::transmute::<usize, fn(bool)>(raw) };
+        f(on);
+    }
+}
 
 /// Install the hosted collector's stop hook, replacing any earlier one.
 pub fn set_stop_hook(f: fn(bool)) {

@@ -6,7 +6,6 @@
 //! two exports the seam keeps for a replacement scheduler, taken from the
 //! hosted ash_std image at install time.
 
-use std::any::Any;
 use std::cell::Cell;
 use std::ffi::c_void;
 use std::sync::OnceLock;
@@ -150,7 +149,7 @@ fn ensure_world_ready() {
 /// attaches its own, with its context, in its first run.
 pub(crate) fn task_born(id: TaskId) {
     ensure_world_ready();
-    if sched::with_host_state(id, |_| ()).is_none() {
+    if sched::with_host_state::<ExcHost, _>(id, |_| ()).is_none() {
         sched::attach_host_state(id, ExcHost::new(std::ptr::null_mut()));
     }
 }
@@ -282,12 +281,7 @@ pub unsafe extern "C" fn current_ctx() -> *mut c_void {
     if !task.is_task() {
         return std::ptr::null_mut();
     }
-    sched::with_host_state(task, |host| {
-        let host: &mut dyn Any = host;
-        host.downcast_ref::<ExcHost>()
-            .map_or(std::ptr::null_mut(), |host| host.ctx)
-    })
-    .unwrap_or(std::ptr::null_mut())
+    sched::with_host_state::<ExcHost, _>(task, |host| host.ctx).unwrap_or(std::ptr::null_mut())
 }
 
 /// The core tells the heap itself when the depth crosses zero, so this

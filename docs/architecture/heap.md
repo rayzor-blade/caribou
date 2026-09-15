@@ -153,27 +153,27 @@ A runtime may keep its own collector over this heap; caribou-wren does. A
 cycle is the two collectors in turn. The hosted collector marks from its
 own roots, and claims what it marked: `claim_for_cycle` marks an object
 exactly as the core's marker would, so the core collection the cycle ends
-with retains it. What it did not mark is dead, and it drops and forgets it
-before that collection — unless another language may still hold it. An
-object another language keeps a stand-in on (the protocol's shadow, see
-[bridge.md](bridge.md#shadows)), and everything it reaches, is left to the
-core: the stand-in is a core object, and its trace marks the object it
-stands for, which the core then traces through the descriptor's hook. The
-core's mark decides; `collect_garbage_then` runs the hosted collector
-between the mark and the sweep, and `is_claimed_start` tells it which of
-those objects the mark reached. The rest die there, before their lines
-return.
+with retains it. What it did not mark is pending, for that collection to
+decide: the hosted collector's roots are its own, but its objects are also
+held by the other languages' stand-ins (the protocol's shadow, see
+[bridge.md](bridge.md#shadows)), by the core's handles, and by frames on
+stacks it cannot place, a fiber of the core's above all. The core's mark
+reaches all of those: a stand-in's trace marks the object it stands for,
+every registered stack is scanned, and a pending object the mark reaches
+is traced through the descriptor's hook, which clears its flag.
+`collect_garbage_then` runs the hosted collector between the mark and the
+sweep, and what is still pending dies there, before its lines return. So
+the hosted collector's marking is a first pass over what it knows; the
+core's collection is the authority on death.
 
 Its objects stay alive across every other core collection through an
 anchor object, whose trace hook marks them all, so no core root needs to
 reach them. Wherever the core does reach one, the object is traced
 precisely through the descriptor's hook.
 
-The core's handles are roots of the hosted cycle too. `for_each_handle`
-gives the addresses live handles root. The hosted collector marks those of
-its objects among them, and everything they reach, before it decides what
-is dead. That is how an embedder holds a hosted object: by a handle. A
-language holds one by its stand-in, which needs none.
+That is how an embedder holds a hosted object: by a handle, which is a
+root of the core's mark. A language holds one by its stand-in, which needs
+none.
 
 The runtime's thread is an ordinary mutator. It registers at the OS's
 stack top and runs in deferred mode, so a collection any other mutator
@@ -205,8 +205,16 @@ A thread the runtime has not stopped is running compiled code, and the
 core cannot reach it; that is what the stop hook is for. The hosted
 runtime has its own way of stopping such a thread, and the hook asks it
 to use it, so every thread passes through the same safe and running
-transitions whichever collector asked. The two worlds are then one
-rendezvous with two ways in.
+transitions whichever collector asked.
+
+The other way round, a thread running the core's own code, or another
+language's, reaches the hosted collector's rendezvous at the core's
+safepoints. The hosted runtime says when it asks its threads to stop
+(`hosted_stop`), and while one such stop is under way every `gc_safepoint`
+runs the safepoint hook, where the adapter makes the thread's view safe
+and holds it. A thread in a blocking region of the core's is safe for the
+hosted collector too: the blocking hook runs at the outermost entry and
+exit. The two worlds are then one rendezvous with two ways in.
 
 ## Locking
 

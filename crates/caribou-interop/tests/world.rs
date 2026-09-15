@@ -1,7 +1,9 @@
 //! One world: a Haxe thread, a Wren fiber and a Wren thread are tasks of
 //! the same scheduler. A wait on either side, a Haxe `Lock` or a Wren
-//! one, lets every other task run, and a Haxe call from a Wren task that
-//! parks inside a `try` still catches what Haxe throws after the park.
+//! one, lets every other task run; a Haxe call from a Wren task that
+//! parks inside a `try` still catches what Haxe throws after the park;
+//! and a Wren call from a Haxe task that parks keeps what its frame holds
+//! through a Wren cycle, though no Wren stack the cycle can place holds it.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -17,7 +19,7 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 const RELAY: &str = include_str!("../fixtures/src/game/relay.wren");
 
-const EXPECTED: &str = "haxe-thread\nwren-fiber,wren-thread\ncaught late2 caught late4\n";
+const EXPECTED: &str = "haxe-thread\nwren-fiber,wren-thread\ncaught late2 caught late4\n2005890\n";
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/relay.hl")
@@ -56,7 +58,7 @@ fn haxe_and_wren_tasks_share_the_world() {
     let errors = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&errors);
     let mut config = VMConfig {
-        execution_mode: ExecutionMode::Interpreter,
+        execution_mode: ExecutionMode::Jit,
         gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());

@@ -787,7 +787,8 @@ pub unsafe extern "C" fn should_collect(heap: *mut c_void) -> bool {
     }
     let polls = rec.polls.load(Ordering::Relaxed).wrapping_add(1);
     rec.polls.store(polls, Ordering::Relaxed);
-    let due = polls & 1023 == 0 && since > 0 && rec.last_cycle.elapsed() >= heap::heartbeat_interval();
+    let due =
+        polls & 1023 == 0 && since > 0 && rec.last_cycle.elapsed() >= heap::heartbeat_interval();
     if due {
         rec.heartbeat.store(true, Ordering::Relaxed);
     }
@@ -806,69 +807,28 @@ pub unsafe extern "C" fn collect_begin(_heap: *mut c_void) {
     unsafe { heap::lock() };
 }
 
-/// Mark every object of `rec` a core handle reaches, and everything
-/// reachable from it, as wren_lift's own marking would have.
-fn mark_held(gc: &ImmixAllocator, rec: &WrenHeap) {
-    let mut gray: Vec<*mut u8> = Vec::new();
-    gc.for_each_handle(|p| {
-        if let Some((start, _)) = unsafe { resolve(gc, rec, p as usize) } {
-            let obj = (start + PREFIX) as *mut u8;
-            if unsafe { mark_allocation(ptr::null_mut(), obj) } {
-                gray.push(obj);
-            }
-        }
-    });
-    drain(&mut gray, mark_gray);
-}
-
-unsafe extern "C" fn mark_gray(child: *mut u8, ctx: *mut c_void) {
-    if unsafe { mark_allocation(ptr::null_mut(), child) } {
-        unsafe { (*(ctx as *mut Vec<*mut u8>)).push(child) };
-    }
-}
-
-/// Flag every unmarked object with a shadow as pending, and everything
-/// unmarked it reaches: what the core's collection decides.
+/// Flag every unmarked object as pending: what wren_lift's marking did
+/// not reach is the core's collection's to decide, from every stack,
+/// cell and handle. True when any is.
 fn flag_pending(rec: &WrenHeap) -> bool {
-    let mut gray: Vec<*mut u8> = Vec::new();
+    let mut any = false;
     for shard in rec.shards.all() {
         for pin in &unsafe { &*shard }.pins {
             let word = bridge_word(pin.start as *mut u8);
             let w = unsafe { *word };
-            if w & (MARKED | PENDING) == 0 && w & !FLAGS != 0 {
+            if w & MARKED == 0 {
                 unsafe { *word = w | PENDING };
-                gray.push((pin.start + PREFIX) as *mut u8);
+                any = true;
             }
         }
     }
-    let any = !gray.is_empty();
-    drain(&mut gray, pend_gray);
     any
-}
-
-unsafe extern "C" fn pend_gray(child: *mut u8, ctx: *mut c_void) {
-    let word = bridge_word(child.wrapping_sub(PREFIX));
-    let w = unsafe { *word };
-    if w & (MARKED | PENDING) == 0 {
-        unsafe { *word = w | PENDING };
-        unsafe { (*(ctx as *mut Vec<*mut u8>)).push(child) };
-    }
-}
-
-/// Trace from every object on `gray` through wren_lift's visitor, `visit`
-/// pushing what it newly flags.
-fn drain(gray: &mut Vec<*mut u8>, visit: Visit) {
-    let trace = wlift_rt_object_trace();
-    while let Some(obj) = gray.pop() {
-        unsafe { trace(obj, visit, gray as *mut Vec<*mut u8> as *mut c_void) };
-    }
 }
 
 pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     let drop_object = wlift_rt_object_drop();
     let mut gc = heap::gc_locked();
     let rec = unsafe { record_mut(heap) };
-    mark_held(&gc, rec);
     let pending = flag_pending(rec);
     let mut live = 0usize;
     let mut freed = 0usize;
@@ -904,11 +864,11 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
         });
     }
     // Marked pins become the core's claims, in address order, and what a
-    // marked adopted instance holds is for the anchor to mark; pending pins
-    // stand for the core to decide; the rest die here.
+    // marked adopted instance holds is for the anchor to mark; the rest
+    // are pending, for the core to decide.
     let held = &mut rec.held;
     for &shard in &shards {
-        unsafe { &mut *shard }.pins.retain(|pin| {
+        for pin in &unsafe { &*shard }.pins {
             let word = bridge_word(pin.start as *mut u8);
             let w = unsafe { *word };
             if w & MARKED != 0 {
@@ -919,14 +879,8 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
                 if w & ADOPTED != 0 {
                     held.push(unsafe { import::held((pin.start + PREFIX) as *mut u8) });
                 }
-                return true;
             }
-            if w & PENDING != 0 {
-                return true;
-            }
-            die(&mut gc, pin, w);
-            false
-        });
+        }
     }
     // The core's collection is the second half of the cycle. It retains
     // the claims, and its trace clears the pending flag of every pending

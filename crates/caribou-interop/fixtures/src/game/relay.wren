@@ -1,8 +1,6 @@
 // The Wren side of the one-world test: on the classpath at
 // game/relay.wren, reached from Haxe as `game.relay.Relay`. Its fibers
-// and threads are tasks of the world Haxe's threads run on. The state is
-// in module variables: a closure in a static method does not see the
-// class's static fields (wren_lift issue 683f3dd).
+// and threads are tasks of the world Haxe's threads run on.
 import "thread" for Thread, Lock
 import "game:Player" for Player
 
@@ -33,6 +31,27 @@ class Relay {
 
   #export = "log() -> List"
   static log() { log }
+
+  // Called from a Haxe task: what this frame holds across the park is
+  // held by nothing else, and a Wren cycle runs meanwhile.
+  #export = "churn(n: Num) -> Num"
+  static churn(n) {
+    var xs = []
+    for (i in 0...n) xs.add([i, "%(i)"])
+    Fiber.sleep(5)
+    var t = 0
+    for (x in xs) t = t + x[0] + x[1].count
+    return t
+  }
+
+  // A cycle of Wren's own, and enough allocation after it to reuse what
+  // it freed.
+  #export = "cycle()"
+  static cycle() {
+    System.gc()
+    var junk = []
+    for (i in 0...4000) junk.add([i, "junk%(i)"])
+  }
 
   // Two Wren tasks, each in a Haxe call that parks inside a Haxe try,
   // their parks interleaved: what each try catches after its park is what

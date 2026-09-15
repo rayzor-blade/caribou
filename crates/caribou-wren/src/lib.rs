@@ -114,8 +114,12 @@ pub fn install() -> Result<(), InstallError> {
     if !unsafe { wlift_rt_install(&table) } {
         return Err(InstallError::Refused);
     }
-    // A stop of the core's world reaches every thread running Wren.
+    // A stop of the core's world reaches every thread running Wren, and
+    // the core's own transitions keep a thread's view safe or running.
     caribou::heap::set_stop_hook(heap::host_stop);
+    caribou::heap::set_safepoint_hook(world::safepoint_hook);
+    caribou::heap::set_blocking_hook(world::blocking_hook);
+    caribou::sched::add_task_hook(world::task_born);
     INSTALLED.store(true, Ordering::Release);
     Ok(())
 }
@@ -153,6 +157,7 @@ fn table() -> RuntimeVTable {
         thread_stop: Some(heap::thread_stop),
         thread_safe: Some(heap::thread_safe),
         thread_running: Some(heap::thread_running),
+        host_poll: Some(world::host_poll),
         run_guarded: Some(proto::run_guarded),
         world_waiter_new: Some(world::waiter_new),
         world_waiter_discard: Some(world::waiter_discard),

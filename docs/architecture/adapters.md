@@ -202,14 +202,29 @@ gets a view of the program the first time it steps one. The task's
 compiled frames' roots across the switch, so a Haxe call from a Wren
 task parks through it too.
 
-wren_lift's collector needs every thread with a view safe or polling.
-The view is safe while the core runs other tasks on its thread and
-running for a step, without the seam's thread slots hearing of either,
-since the thread is in no wait: `task_step` toggles the view it finds
-safe, and the park, tick and idle of the main program toggle theirs
-around the core's turns, on the thread's own stack. Inside a fiber of the
-core's, whose stack wren_lift's collector cannot place, the view stays
-running.
+wren_lift's collector needs every thread with a view safe or polling,
+and a thread in the core's world is neither by itself: it runs any
+language's tasks and idles in the core. So the view follows the core's
+own transitions, and the seam's thread slots hear nothing of them, since
+the thread is in no wait. It is running while the thread runs, safe in
+the core's blocking regions (the blocking hook), and safe at a core
+safepoint while wren_lift's world asks for a stop (the safepoint hook;
+the `host_poll` slot tells the core of the request, and bumps its poll
+epoch so compiled loops reach one). Each context carries the view's
+state across the core's switches, a `ViewState` host state on every
+task and the main context, so a context parked inside Wren leaves the
+view safe and one resuming into Wren finds it running. `task_step`
+makes a worker's view running for the step, and a view the host's world
+made on a worker goes with the program's last task there. A wait for a
+collection of wren_lift's is one the seam hears of, since the core's
+collector may need the thread meanwhile.
+
+Inside a fiber of the core's, wren_lift's collector scans nothing of the
+thread: it scans only stacks it can place, its own fibers and the
+thread's own stack when the chain of calls ends on it. What only such a
+stack holds is the core's collection's to keep, as everything
+wren_lift's marking did not reach is (see
+[heap.md](heap.md#hosted-collectors)).
 
 ### Threads and isolates
 

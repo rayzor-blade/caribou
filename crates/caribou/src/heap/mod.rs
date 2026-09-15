@@ -18,10 +18,10 @@ pub use immix::{
     gc_guard, gc_lock_held_depth, gc_lock_unwind_to, gc_locked, gc_locked_init, lock, unlock,
     GcGuard, GcRef, HL_GLOBAL_LOCK,
     // Mutators, safepoints and the stop-the-world rendezvous.
-    gc_block_at, gc_safepoint, gc_set_blocking, gc_unblock, mark_site, register_thread,
-    registered_threads, safepoint, set_poll_request_hook, set_stack_top, set_stop_hook,
-    unregister_thread, SITE_ENTER_BLOCKING, SITE_LEAVE_BLOCKING, SITE_LOCK_CONDVAR,
-    SITE_LOCK_INNER, SITE_RUNNING,
+    gc_block_at, gc_safepoint, gc_set_blocking, gc_unblock, hosted_stop, mark_site,
+    register_thread, registered_threads, safepoint, set_blocking_hook, set_poll_request_hook,
+    set_safepoint_hook, set_stack_top, set_stop_hook, unregister_thread, SITE_ENTER_BLOCKING,
+    SITE_LEAVE_BLOCKING, SITE_LOCK_CONDVAR, SITE_LOCK_INNER, SITE_RUNNING,
     SITE_SAFEPOINT_WORLD_LOCK, SITE_SCHEDULER_IDLE, SITE_TLAB_REFILL,
     // Roots.
     add_scan_root, clear_scan_roots, gc_add_persistent, gc_remove_persistent, register_root,

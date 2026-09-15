@@ -245,7 +245,8 @@ pub(super) struct TaskRecord {
     pub(super) run_state: RunState,
     pub(super) resume_cause: ResumeCause,
     pub(super) gc_blocking_depth: u32,
-    pub(super) host: Option<Box<dyn HostState>>,
+    /// One per adapter that keeps state around the task's turns.
+    pub(super) host: Vec<Box<dyn HostState>>,
     /// Not yet resumed: the task hook runs before the first turn.
     pub(super) fresh: bool,
     /// A stackless body's own way of suspending from inside its step.
@@ -259,7 +260,7 @@ impl TaskRecord {
             run_state: RunState::Runnable,
             resume_cause: ResumeCause::Scheduled,
             gc_blocking_depth: 0,
-            host: None,
+            host: Vec::new(),
             fresh: true,
             suspend: None,
         }

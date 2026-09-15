@@ -2,6 +2,7 @@
 //! heap live in a thread-local; other threads reach it only through its
 //! endpoint.
 
+use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
@@ -78,8 +79,9 @@ pub(super) struct World {
     ready: VecDeque<TaskId>,
     /// Earliest deadline first: `(deadline, wait token, task)`.
     timers: BinaryHeap<Reverse<(Instant, u64, TaskId)>>,
-    /// Swapped out while a task runs and back in when it yields.
-    main_host: Option<Box<dyn HostState>>,
+    /// Swapped out while a task runs and back in when it yields; one per
+    /// adapter.
+    main_host: Vec<Box<dyn HostState>>,
     switch_hook: Option<SwitchHook>,
 }
 
@@ -103,7 +105,7 @@ impl World {
             tasks: HashMap::new(),
             ready: VecDeque::new(),
             timers: BinaryHeap::new(),
-            main_host: None,
+            main_host: Vec::new(),
             switch_hook: None,
         }
     }
@@ -373,29 +375,49 @@ pub fn park_pending() -> bool {
     ACTIVE.with(|active| active.get().is_some_and(|task| task.pending_park.is_some()))
 }
 
-/// Attach the state the scheduler swaps around `id`'s turns; `NONE` is the
-/// main context. Returns what was attached before.
-pub fn attach_host_state(id: TaskId, state: Box<dyn HostState>) -> Option<Box<dyn HostState>> {
-    with_world(|world| {
-        if id.is_task() {
-            world.tasks.get_mut(&id)?.host.replace(state)
-        } else {
-            world.main_host.replace(state)
-        }
-    })
+fn type_of(state: &dyn HostState) -> std::any::TypeId {
+    let any: &dyn Any = state;
+    any.type_id()
 }
 
-/// Borrow the host state attached to `id` (`NONE` for the main context).
-/// `None` when nothing is attached or the task is gone. Not available from
-/// inside a swap.
-pub fn with_host_state<R>(id: TaskId, f: impl FnOnce(&mut dyn HostState) -> R) -> Option<R> {
+/// Attach state the scheduler swaps around `id`'s turns; `NONE` is the
+/// main context. Each adapter's state is its own type: one of the same
+/// type already attached is replaced and returned, and states of other
+/// types stay beside it.
+pub fn attach_host_state(id: TaskId, state: Box<dyn HostState>) -> Option<Box<dyn HostState>> {
+    let kind = type_of(&*state);
     with_world(|world| {
-        let slot = if id.is_task() {
+        let slot: &mut Vec<Box<dyn HostState>> = if id.is_task() {
             &mut world.tasks.get_mut(&id)?.host
         } else {
             &mut world.main_host
         };
-        slot.as_deref_mut().map(f)
+        match slot.iter_mut().find(|s| type_of(&***s) == kind) {
+            Some(existing) => Some(std::mem::replace(existing, state)),
+            None => {
+                slot.push(state);
+                None
+            }
+        }
+    })
+}
+
+/// Borrow the state of type `T` attached to `id` (`NONE` for the main
+/// context). `None` when none is attached or the task is gone. Not
+/// available from inside a swap.
+pub fn with_host_state<T: HostState, R>(id: TaskId, f: impl FnOnce(&mut T) -> R) -> Option<R> {
+    with_world(|world| {
+        let slot: &mut Vec<Box<dyn HostState>> = if id.is_task() {
+            &mut world.tasks.get_mut(&id)?.host
+        } else {
+            &mut world.main_host
+        };
+        slot.iter_mut()
+            .find_map(|s| {
+                let any: &mut dyn Any = &mut **s;
+                any.downcast_mut::<T>()
+            })
+            .map(f)
     })
 }
 
@@ -476,26 +498,29 @@ fn drain_commands() {
     }
 }
 
-/// Swap a task's host state (`NONE`: the main context's). The object is
-/// out of its slot for the call, so the world stays borrowable.
+/// Swap a task's host states (`NONE`: the main context's). They are out
+/// of their slot for the calls, so the world stays borrowable.
 fn swap_host(id: TaskId, swap_in: bool) {
-    let taken = with_world(|world| {
+    let mut taken: Vec<Box<dyn HostState>> = with_world(|world| {
         if id.is_task() {
-            world.tasks.get_mut(&id)?.host.take()
+            Some(std::mem::take(&mut world.tasks.get_mut(&id)?.host))
         } else {
-            world.main_host.take()
+            Some(std::mem::take(&mut world.main_host))
         }
-    });
-    let Some(mut host) = taken else {
+    })
+    .unwrap_or_default();
+    if taken.is_empty() {
         return;
-    };
-    if swap_in {
-        host.swap_in();
-    } else {
-        host.swap_out();
+    }
+    for host in &mut taken {
+        if swap_in {
+            host.swap_in();
+        } else {
+            host.swap_out();
+        }
     }
     with_world(|world| {
-        let slot = if id.is_task() {
+        let slot: &mut Vec<Box<dyn HostState>> = if id.is_task() {
             match world.tasks.get_mut(&id) {
                 Some(record) => &mut record.host,
                 None => return,
@@ -503,8 +528,8 @@ fn swap_host(id: TaskId, swap_in: bool) {
         } else {
             &mut world.main_host
         };
-        if slot.is_none() {
-            *slot = Some(host);
+        if slot.is_empty() {
+            *slot = taken;
         }
     });
 }
