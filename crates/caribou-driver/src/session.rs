@@ -2,8 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use caribou::bridge;
+use caribou::bundle;
 use caribou::error::Error;
 use caribou::registry;
 use caribou::report::Report;
@@ -44,7 +45,8 @@ impl Default for Options {
 }
 
 /// A program loaded into a world with every resident language, ready to
-/// run. One per process: the runtimes' seams are process-wide.
+/// run, from its file and the project around it or from a bundle. One
+/// per process: the runtimes' seams are process-wide.
 pub struct Session {
     world: World,
     program: Program,
@@ -53,8 +55,9 @@ pub struct Session {
 }
 
 impl Session {
-    /// Open the program at `path`: install both seams, load it, build the
-    /// world from what it imports and where the project keeps its
+    /// Open the program at `path`, a `.hl` or a bundle: install both
+    /// seams, load it, build the world from what it imports and where
+    /// the project keeps its modules, or from the bundle's manifest and
     /// modules, publish its classes, and make the Wren VM its modules
     /// load into.
     pub fn open(path: &Path, options: Options) -> Result<Session> {
@@ -65,15 +68,42 @@ impl Session {
         // makes the heap.
         caribou_ash::install().map_err(|e| anyhow!("ash: {e}"))?;
         caribou_wren::install().map_err(|e| anyhow!("wren_lift: {e}"))?;
-        let mut program = caribou_ash::load(
-            path,
-            AshOptions {
-                mode: options.mode,
-                args: options.args,
-                ..AshOptions::default()
-            },
-        )?;
-
+        let ash_options = AshOptions {
+            mode: options.mode,
+            args: options.args,
+            ..AshOptions::default()
+        };
+        let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        if bundle::looks_like(&bytes) {
+            let bundle = bundle::load(&bytes).with_context(|| path.display().to_string())?;
+            let entry = bundle
+                .entry()
+                .ok_or_else(|| anyhow!("{} carries no entry module", path.display()))?;
+            if entry.lang != "haxe" || entry.format != "hl" {
+                return Err(anyhow!(
+                    "{} starts with {} {} `{}`; only a haxe hl program starts a session",
+                    path.display(),
+                    entry.lang,
+                    entry.format,
+                    entry.name
+                ));
+            }
+            let program = caribou_ash::load_bytes(&entry.data, path, ash_options)?;
+            let config = Config {
+                name: bundle.manifest.name.clone(),
+                namespaces: bundle.manifest.namespaces.clone(),
+                roots: Vec::new(),
+            };
+            return Self::finish(
+                program,
+                config,
+                Some(&bundle),
+                options.wren_mode,
+                options.report,
+            );
+        }
+        drop(bytes);
+        let program = caribou_ash::load(path, ash_options)?;
         let roots = if options.roots.is_empty() {
             project::roots(path)
         } else {
@@ -84,24 +114,41 @@ impl Session {
             .into_iter()
             .map(|(namespace, _)| namespace)
             .collect();
-        let world = World::new(Config {
+        let config = Config {
             namespaces: project::namespaces(&roots, &imported),
             roots,
             ..Config::default()
-        });
+        };
+        Self::finish(program, config, None, options.wren_mode, options.report)
+    }
+
+    /// The world around a loaded program: the adapters, the bundle's
+    /// modules when there is one, else a watch on the sources, the
+    /// program's classes published, and the Wren VM.
+    fn finish(
+        mut program: Program,
+        config: Config,
+        bundle: Option<&bundle::Bundle>,
+        wren_mode: ExecutionMode,
+        report: bool,
+    ) -> Result<Session> {
+        let world = World::new(config);
         world
             .register(Box::new(caribou_ash::Runtime::new()))
             .map_err(|e| anyhow!("registering haxe: {e}"))?;
         world
             .register(Box::new(caribou_wren::Runtime::new()))
             .map_err(|e| anyhow!("registering wren: {e}"))?;
+        match bundle {
+            Some(bundle) => world.install(bundle).map_err(|e| anyhow!(e))?,
+            // A module's file edited while the program runs reloads it.
+            None => world.watch_sources(),
+        }
         // The program's classes are what the other languages import.
         program.publish()?;
-        // A module's file edited while the program runs reloads it.
-        world.watch_sources();
 
         let mut config = VMConfig {
-            execution_mode: options.wren_mode,
+            execution_mode: wren_mode,
             gc_strategy: GcStrategy::Immix,
             ..VMConfig::default()
         };
@@ -110,14 +157,14 @@ impl Session {
         // Every Wren fiber on a stack of its own: the core scans them as
         // it scans its own tasks' (see `caribou_wren::install`).
         vm.krio_fiber_active = true;
-        if options.report {
+        if report {
             caribou_wren::report::count_entries(&mut vm);
         }
         Ok(Session {
             world,
             program,
             vm,
-            report_wanted: options.report,
+            report_wanted: report,
         })
     }
 

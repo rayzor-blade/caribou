@@ -72,6 +72,20 @@ impl Adapter for Runtime {
         }
     }
 
+    /// A Wren module from a bundle: its source, staged for its first use.
+    fn install(&self, _lang: LangId, section: &caribou::bundle::Section) -> Result<(), String> {
+        if section.format != "source" {
+            return Err(format!(
+                "wren does not read the format `{}`",
+                section.format
+            ));
+        }
+        let source = String::from_utf8(section.data.clone())
+            .map_err(|_| "the module's source is not UTF-8".to_owned())?;
+        project::stage(&section.name, source);
+        Ok(())
+    }
+
     /// Reload `module` in the VM entered on this thread.
     fn reload(&self, _lang: LangId, module: &str) -> Result<(), String> {
         let vm = proto::current_vm();

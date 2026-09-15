@@ -33,6 +33,16 @@ pub trait Adapter: 'static {
         let _ = module;
         Err(format!("{} does not reload", language_name(lang)))
     }
+    /// Take a module of `lang` from a bundle: `section.format` says what
+    /// its bytes are, in the language's own terms, and the language
+    /// refuses a format it does not read. Installed means the module
+    /// loads from these bytes when the program first uses it, as it
+    /// would from a file under a root. `Err` when the language does not
+    /// install, or the section is not its to read.
+    fn install(&self, lang: LangId, section: &crate::bundle::Section) -> Result<(), String> {
+        let _ = section;
+        Err(format!("{} does not install modules", language_name(lang)))
+    }
 }
 
 /// What a world tells its subscribers.
@@ -308,6 +318,28 @@ impl World {
         });
         self.deliver();
         result
+    }
+
+    /// Install every module a bundle carries but its entry, each through
+    /// the adapter of its language; the entry is the driver's to load.
+    /// The bundle's namespaces are the world's own (`Config`).
+    pub fn install(&self, bundle: &crate::bundle::Bundle) -> Result<(), String> {
+        let entry = &bundle.manifest.entry;
+        for section in bundle.modules() {
+            if section.lang == entry.lang && section.name == entry.module {
+                continue;
+            }
+            let lang = self
+                .language(&section.lang)
+                .ok_or_else(|| format!("no language `{}` is registered", section.lang))?;
+            let adapter = self
+                .adapter_for(lang)
+                .ok_or_else(|| format!("no adapter serves {}", section.lang))?;
+            adapter
+                .install(lang, section)
+                .map_err(|e| format!("{}:{}: {e}", section.lang, section.name))?;
+        }
+        Ok(())
     }
 
     /// Watch the files the loaded modules came from, and reload a module

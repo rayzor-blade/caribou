@@ -24,6 +24,7 @@ design proposal, and work in progress lives in git-bug.
 | [Haxe imports a Wren class](architecture/haxe-imports.md) | The build macro, declaring types, the emitted class, binding the natives, cells, how a Wren object is held by Haxe. |
 | [World and driver](architecture/world.md) | Adapters and languages, startup, the driver and its project layout, the run report, events. |
 | [Linking](architecture/linking.md) | A member at link time: the symbol, the C signature, each AOT's half, what stays at run time. |
+| [Bundle](architecture/bundle.md) | A program and its modules in one file: what is in it, building, opening. |
 
 [interop.md](interop.md) is the companion for a program's author: what a
 program writes and what it can expect.

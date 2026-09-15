@@ -20,15 +20,15 @@ creates, and the language a module section in a bundle belongs to.
 
 `Adapter` supplies:
 
-- its language names;
-- `load(source: ModuleSource) -> ModuleId`, taking bytecode, source text
-  or a blob in the adapter's own format;
-- `lookup(module, name) -> Option<Callable>`;
-- `call(callable, args: &[Value]) -> Result<Value, Error>`, through the
-  bridge;
-- `reload(module)`, returning a plan for the registry to apply;
-- the per-task `HostState` it wants attached when the world spawns a task
-  on its behalf.
+- its language names, and takes the ids the world assigned;
+- `reload(lang, module)`, loading a module afresh in place (below);
+- `install(lang, section)`, taking a module of its language from a
+  bundle (see [bundle.md](bundle.md)).
+
+Lookup and call go through the registry and the bridge, not the
+adapter: what a language publishes is what the others reach. The host
+state an adapter keeps per task and per stack it attaches through the
+scheduler's hooks (see [scheduler.md](scheduler.md)).
 
 ## Startup and the frame loop
 
@@ -55,8 +55,9 @@ endpoint, timers and, once it exists, the reactor.
 around one Haxe program.
 
 Opening a session installs both seams, loads the program, and reads its
-`caribou` natives for the namespaces it imports (`Program::imports`). The
-project's layout is the configuration. The source roots are the class
+`caribou` natives for the namespaces it imports (`Program::imports`); a
+bundle carries the namespaces and the modules instead (see
+[bundle.md](bundle.md)). The project's layout is the configuration. The source roots are the class
 paths of the `.hxml` files in the working directory and beside the
 program; else `src` under them, when it exists; else the directories
 themselves (`project::roots`). Every directory under a root is a
@@ -145,7 +146,7 @@ as events with the paths that raise them.
 
 Built so far: the adapter registry, the language table, the namespace
 table, the source roots, the loaders, the driver above, the reload of a
-Wren module, the source watch that triggers it and the events. Ash's
-reload is not built. Under a session the program's own loop drives the
+Wren module, the source watch that triggers it, the events, and a
+session from a bundle. Ash's reload is not built. Under a session the program's own loop drives the
 scheduler, and the world's handlers run from there through the reactor;
 a driver with a loop of its own hears them from `tick` as well.

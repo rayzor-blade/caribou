@@ -151,6 +151,56 @@ fn sys_init(file: &Path, program_args: &[String]) -> Result<()> {
     Ok(())
 }
 
+/// The modules a program imports from other languages, read from the
+/// natives of its bytecode as decoded (`BytecodeDecoder::decode`): what
+/// a build reads without loading the program.
+pub fn imports_of(bytecode: &DecodedBytecode) -> Result<Vec<(String, String)>> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for native in bytecode
+        .natives
+        .iter()
+        .filter(|n| n.lib == crate::import::LIB && !crate::import::is_operation(&n.name))
+    {
+        let (namespace, module, _, _) = crate::import::parse(&native.name).ok_or_else(|| {
+            anyhow!(
+                "`{}` does not name a member of a published class",
+                native.name
+            )
+        })?;
+        let pair = (namespace, module);
+        if !out.contains(&pair) {
+            out.push(pair);
+        }
+    }
+    Ok(out)
+}
+
+/// Ash's standard library up for the program at `path`, with the seam
+/// installed first when `install`: into the linked library, or the one
+/// beside a program that has HDLLs, which ash loads in the same call.
+fn bring_up(path: &Path, install: bool) -> Result<()> {
+    if install {
+        if native_lib::choose_std_linkage(path) {
+            crate::install()?;
+        } else {
+            install_into_sibling_runtime()?;
+        }
+    }
+    native_lib::init_std_library()?;
+    Ok(())
+}
+
+/// `imports_of` for the program file at `path`, decoded and not loaded.
+/// Decoding needs ash's standard library up, so it comes up as `load`
+/// brings it, seam first: for a build, in a process that runs no
+/// program or runs this one.
+pub fn imports_in(path: &Path) -> Result<Vec<(String, String)>> {
+    bring_up(path, true)?;
+    let bytecode =
+        BytecodeDecoder::decode(path).with_context(|| format!("decoding {}", path.display()))?;
+    imports_of(&bytecode)
+}
+
 /// Print Ash's profile, when `ASH_PROFILE` asked for one: what `finish`
 /// does, for a host that keeps its program and ends some other way.
 pub fn profile_report() {
@@ -236,19 +286,26 @@ pub fn load(path: &Path, options: Options) -> Result<Program> {
     if !path.exists() {
         bail!("Bytecode file not found: {}", path.display());
     }
+    load_with(path, options, || BytecodeDecoder::decode(path))
+}
+
+/// Load the program `bytes`, as `load` loads a file: `path` is where the
+/// program is, a bundle's, for the libraries beside it, its arguments and
+/// its tier's cache.
+pub fn load_bytes(bytes: &[u8], path: &Path, options: Options) -> Result<Program> {
+    load_with(path, options, || BytecodeDecoder::decode_bytes(bytes))
+}
+
+fn load_with(
+    path: &Path,
+    options: Options,
+    decode: impl FnOnce() -> std::io::Result<DecodedBytecode>,
+) -> Result<Program> {
     ash_core::profile::init();
     ash_core::profile::report_on_termination();
-    let static_std = native_lib::choose_std_linkage(path);
-    if options.install {
-        if static_std {
-            crate::install()?;
-        } else {
-            install_into_sibling_runtime()?;
-        }
-    }
     {
         let _phase = ash_core::profile::scope("init stdlib");
-        native_lib::init_std_library()?;
+        bring_up(path, options.install)?;
     }
 
     // The image ash will run through is the one that had to take the table.
@@ -270,7 +327,7 @@ pub fn load(path: &Path, options: Options) -> Result<Program> {
 
     let bytecode = {
         let _phase = ash_core::profile::scope("decode bytecode");
-        Arc::new(BytecodeDecoder::decode(path)?)
+        Arc::new(decode()?)
     };
     // The bridge's own natives bind first, by name, so no library is
     // looked for under them.
@@ -317,26 +374,7 @@ impl Program {
     /// `(namespace, module)` pairs, read from its natives: what a driver
     /// configures its world from.
     pub fn imports(&self) -> Result<Vec<(String, String)>> {
-        let mut out: Vec<(String, String)> = Vec::new();
-        for native in self
-            .bytecode
-            .natives
-            .iter()
-            .filter(|n| n.lib == crate::import::LIB && !crate::import::is_operation(&n.name))
-        {
-            let (namespace, module, _, _) =
-                crate::import::parse(&native.name).ok_or_else(|| {
-                    anyhow!(
-                        "`{}` does not name a member of a published class",
-                        native.name
-                    )
-                })?;
-            let pair = (namespace, module);
-            if !out.contains(&pair) {
-                out.push(pair);
-            }
-        }
-        Ok(out)
+        imports_of(&self.bytecode)
     }
 
     /// Run the entry point: the static initialisers, then `main`, then the

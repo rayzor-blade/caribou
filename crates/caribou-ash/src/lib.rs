@@ -34,7 +34,9 @@ use caribou::world::Adapter;
 use caribou_abi::LangId;
 
 #[cfg(feature = "runner")]
-pub use program::{Mode, Options, Program, load, publish_module};
+pub use program::{
+    Mode, Options, Program, imports_in, imports_of, load, load_bytes, publish_module,
+};
 pub use proto::{construct, is_constructor, lang, unwrap, wrap};
 pub use wrenref::{
     foreign_ref, unwrap_foreign, wrap_foreign, wrenref_as_abstract, wrenref_from_abstract,

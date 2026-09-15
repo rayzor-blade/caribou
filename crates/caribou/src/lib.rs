@@ -7,6 +7,7 @@
 pub use caribou_abi as abi;
 
 pub mod bridge;
+pub mod bundle;
 pub mod cell;
 pub mod describe;
 pub mod diag;

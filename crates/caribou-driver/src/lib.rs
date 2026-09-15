@@ -8,8 +8,10 @@
 //! own classes, and runs the program; every other language's module loads
 //! on first use, when the program that uses it is running. Nothing is
 //! configured: the project's layout is the configuration. [`run`] is the
-//! whole thing in one call.
+//! whole thing in one call. A bundle ([`bundle`]) is the program and its
+//! modules in one file, opened the same way.
 
+pub mod bundle;
 pub mod project;
 pub mod session;
 
