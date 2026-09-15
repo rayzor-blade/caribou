@@ -83,6 +83,36 @@ whichever fires first wins, and the other is cancelled. A stackless task
 cannot yield from inside `park`. It calls `request_park`, returns
 `Pending`, and reads `resume_cause` when it is next stepped.
 
+## Another runtime's tasks
+
+A runtime with a scheduler of its own puts its tasks on the world rather
+than beside it. wren_lift is the first: its `Fiber.spawn`, `Fiber.sleep`,
+`Lock`, `Channel` and `Thread` keep their front, and the world behind them
+is the core's, through the World slots of its seam (see
+[adapters.md](adapters.md#the-world)).
+
+Such a task is stepped by the scheduler on its own stack, like a stackless
+one, but its step runs on a stack the runtime made and switches itself:
+`spawn_task(task, suspend)` takes the runtime's own switch as the task's
+`Suspend`, so `park` and `yield_now` work from inside the step as on a
+fiber, and the step returns `Pending` when they do. A park the runtime
+asks for itself is `request_park` followed by its own switch. Either way
+the world parks the task when the step returns, and finishes the wait's
+registration when it wakes the task, so `resume_cause` is all the task
+reads on its next step. `spawn_task_on_pool` places one on the least
+loaded world, as `spawn_fiber_on_pool` places a fiber.
+
+A runtime that carries a wait token as the number alone binds it to the
+calling context when it uses it: `adopt(token)` gives the waiter for the
+task that is about to park on it, `wake_token` wakes by token, and
+`notified_before_park` finds a wake that came first.
+
+Host state is per task whoever spawned it. `add_task_hook` registers a
+function the world runs before a task's first turn; Ash attaches its
+exception state there, so a Haxe call from a Wren task that parks inside
+a `try` keeps its traps to itself. A task Ash spawns attaches its own,
+with its context, in its first run, and that replaces the hook's.
+
 ## The reactor
 
 Not built yet. Today, when no task is ready, the main context blocks in
@@ -130,7 +160,8 @@ An adapter provides three things:
 
 - a way to build a task from its own callable (a Haxe closure, a Wren
   fiber object, a Zyntax function), rooting that callable itself;
-- the per-task host state the scheduler swaps;
+- the per-task host state the scheduler swaps, attached from the task hook
+  for every task and from its own tasks' first run;
 - a switch hook, if it keeps interpreter roots to publish.
 
 It uses `spawn`, `spawn_fiber`, `park`, `wake`, `yield_now`,

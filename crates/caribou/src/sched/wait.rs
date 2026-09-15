@@ -42,7 +42,7 @@ impl Waiter {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum WaitStatus {
+pub(super) enum WaitStatus {
     Waiting,
     Notified,
     TimedOut,
@@ -137,12 +137,67 @@ fn wait_status(token: u64) -> Option<WaitStatus> {
         .map(|registration| registration.status)
 }
 
-fn finish_wait(token: u64) -> Option<WaitStatus> {
+pub(super) fn finish_wait(token: u64) -> Option<WaitStatus> {
     WAIT_REGISTRY
         .lock()
         .unwrap()
         .remove(&token)
         .map(|registration| registration.status)
+}
+
+/// The waiter registered under `token`, if it is still registered.
+pub fn waiter_for(token: u64) -> Option<Waiter> {
+    WAIT_REGISTRY
+        .lock()
+        .unwrap()
+        .get(&token)
+        .map(|registration| Waiter {
+            world: registration.world,
+            task: registration.task,
+            token,
+        })
+}
+
+/// `token`'s waiter bound to the calling context, for a runtime that
+/// carries only the token and may park it on a task other than the one
+/// that made it. A wake that reached the old binding stands as notified
+/// and is found before the park.
+pub fn adopt(token: u64) -> Option<Waiter> {
+    let mut waiters = WAIT_REGISTRY.lock().unwrap();
+    let registration = waiters.get_mut(&token)?;
+    registration.world = world::try_world_id().unwrap_or(0);
+    registration.task = world::current_task();
+    Some(Waiter {
+        world: registration.world,
+        task: registration.task,
+        token,
+    })
+}
+
+/// [`wake`] by token alone.
+pub fn wake_token(token: u64) -> bool {
+    waiter_for(token).is_some_and(wake)
+}
+
+/// Whether `token` was notified before its park; consumed when so.
+/// `None` for a token that is not registered.
+pub fn notified_before_park(token: u64) -> Option<bool> {
+    match wait_status(token)? {
+        WaitStatus::Notified => {
+            finish_wait(token);
+            Some(true)
+        }
+        WaitStatus::Waiting => Some(false),
+        WaitStatus::TimedOut => {
+            finish_wait(token);
+            Some(false)
+        }
+    }
+}
+
+/// Forget a token that will not be parked on.
+pub fn discard(token: u64) {
+    finish_wait(token);
 }
 
 /// Block until the waiter is notified or the deadline passes. On a task:
@@ -175,7 +230,12 @@ fn park_task(waiter: Waiter, deadline: Option<Instant>) -> bool {
         can_suspend,
         "park on a stackless task: record the wait with request_park and return Suspension::Pending"
     );
-    world::suspend_current();
+    if !world::suspend_current() {
+        // The task's own switch could not leave from here: it waits in
+        // place, and stays the running task meanwhile.
+        world::clear_pending_park();
+        return park_polling(waiter, deadline);
+    }
     let notified = world::resume_cause() == ResumeCause::Notified
         || wait_status(waiter.token) == Some(WaitStatus::Notified);
     finish_wait(waiter.token);
@@ -219,6 +279,12 @@ fn park_main(waiter: Waiter, deadline: Option<Instant>) -> bool {
 
 fn park_foreign(waiter: Waiter, deadline: Option<Instant>) -> bool {
     trace("park-foreign", waiter.token, deadline.is_some() as u64);
+    park_polling(waiter, deadline)
+}
+
+/// Poll the registration until it resolves: for a thread with no fiber to
+/// yield, and a task that could not switch away.
+fn park_polling(waiter: Waiter, deadline: Option<Instant>) -> bool {
     loop {
         heap::gc_safepoint();
         match wait_status(waiter.token) {

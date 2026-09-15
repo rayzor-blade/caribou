@@ -66,4 +66,15 @@ class Player {
 		for (x in xs) t += x;
 		return t;
 	}
+
+	/** Parks the calling task inside a try, then throws: what is caught
+		says whether the trap chain survived the park. */
+	public static function napThenThrow(ms:Float):String {
+		try {
+			Sys.sleep(ms / 1000);
+			throw "late" + ms;
+		} catch (e:String) {
+			return "caught " + e;
+		}
+	}
 }

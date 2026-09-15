@@ -9,6 +9,9 @@
 //! cycle; the two slots it fills for a host, `object_trace` and `object_drop`,
 //! are left to it.
 //!
+//! The world slots (`world.rs`) put wren_lift's tasks and waits on the
+//! core's scheduler, so a Wren fiber or thread is a task beside Haxe's.
+//!
 //! The other half is the bridge (`proto.rs`): the object protocol every Wren
 //! object answers through the descriptor in its prefix, the conversions
 //! between wren_lift's values and the core's, and the VM the entries run on.
@@ -24,6 +27,7 @@ mod proto;
 pub mod publish;
 pub mod report;
 pub mod types;
+mod world;
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -121,8 +125,9 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Every memory, stack, thread and run slot filled; `object_trace`,
-/// `object_drop` and `host_stop` stay wren_lift's.
+/// Every memory, stack, thread, run and world slot filled; `object_trace`,
+/// `object_drop`, `host_stop`, `task_step` and `task_suspend` stay
+/// wren_lift's.
 fn table() -> RuntimeVTable {
     RuntimeVTable {
         heap_new: Some(heap::heap_new),
@@ -149,6 +154,19 @@ fn table() -> RuntimeVTable {
         thread_safe: Some(heap::thread_safe),
         thread_running: Some(heap::thread_running),
         run_guarded: Some(proto::run_guarded),
+        world_waiter_new: Some(world::waiter_new),
+        world_waiter_discard: Some(world::waiter_discard),
+        world_wake: Some(world::wake),
+        world_waiter_ready: Some(world::waiter_ready),
+        world_park_request: Some(world::park_request),
+        world_park_pending: Some(world::park_pending),
+        world_resume_woken: Some(world::resume_woken),
+        world_park_drive: Some(world::park_drive),
+        world_spawn: Some(world::spawn),
+        world_tick: Some(world::tick),
+        world_idle: Some(world::idle),
+        world_live: Some(world::live),
+        world_workers: Some(world::workers),
         ..RuntimeVTable::new()
     }
 }
@@ -201,9 +219,9 @@ mod tests {
     use wren_lift::runtime::vm::{VM, VMConfig};
 
     /// The header is one word; every word after it is a slot of the
-    /// host's until the last three, which are wren_lift's.
+    /// host's but the five that are wren_lift's.
     #[test]
-    fn every_memory_slot_is_filled_and_wren_lifts_three_are_not() {
+    fn every_slot_is_filled_but_wren_lifts_five() {
         let table = table();
         assert_eq!(table.version, RT_VERSION);
         assert_eq!(table.size as usize, std::mem::size_of::<RuntimeVTable>());
@@ -213,12 +231,13 @@ mod tests {
         let raw = unsafe {
             std::slice::from_raw_parts(&table as *const RuntimeVTable as *const usize, words)
         };
-        for (i, word) in raw.iter().enumerate().skip(1).take(words - 4) {
-            assert_ne!(*word, 0, "slot {i} is None");
-        }
+        let empty = raw.iter().skip(1).filter(|word| **word == 0).count();
+        assert_eq!(empty, 5);
         assert!(table.object_trace.is_none());
         assert!(table.object_drop.is_none());
         assert!(table.host_stop.is_none());
+        assert!(table.task_step.is_none());
+        assert!(table.task_suspend.is_none());
     }
 
     #[test]

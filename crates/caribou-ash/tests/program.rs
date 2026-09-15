@@ -76,15 +76,23 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
             .map(|f| f.name.as_str())
             .collect::<Vec<_>>(),
         [
-            "spawned", "onHit", "twice", "apply", "spawnAt", "party", "scores", "total"
+            "spawned",
+            "onHit",
+            "twice",
+            "apply",
+            "spawnAt",
+            "party",
+            "scores",
+            "total",
+            "napThenThrow"
         ],
         "static fields and static methods are all fields of the companion"
     );
     assert!(companion.proto.is_empty());
     assert_eq!(
         companion.bindings.len(),
-        14,
-        "the constructor and six statics, a field index and a findex each: {:?}",
+        16,
+        "the constructor and seven statics, a field index and a findex each: {:?}",
         companion.bindings
     );
     // Publishing before the start is allowed: the interpreter registers

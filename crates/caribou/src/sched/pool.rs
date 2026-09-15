@@ -6,7 +6,7 @@ use std::cell::Cell;
 
 use krio_core::TaskId;
 
-pub(super) type SendBody = Box<dyn FnOnce() + Send + 'static>;
+pub(super) use super::task::Placed;
 
 thread_local! {
     static POOL_WORKER: Cell<bool> = const { Cell::new(false) };
@@ -26,7 +26,7 @@ mod threaded {
 
     use krio_core::TaskId;
 
-    use super::SendBody;
+    use super::Placed;
     use crate::heap;
     use crate::sched::trace;
     use crate::sched::world::{self, WorldCommand, WorldEndpoint};
@@ -164,29 +164,25 @@ mod threaded {
     }
 
     /// Hand one task to one worker, and count it against that worker.
-    fn assign(worker: &WorldEndpoint, id: TaskId, index: usize, stack_size: usize, body: SendBody) {
+    fn assign(worker: &WorldEndpoint, id: TaskId, index: usize, placed: Placed) {
         worker.assigned.fetch_add(1, Ordering::AcqRel);
         trace("dispatch", id.0, index as u64);
-        worker.push(WorldCommand::Spawn {
-            id,
-            stack_size,
-            body,
-        });
+        worker.push(WorldCommand::Spawn { id, placed });
     }
 
     /// Rotate the starting point so equal loads do not favour lane zero,
     /// then take the least-loaded worker.
     #[cfg(not(target_family = "wasm"))]
-    pub(super) fn dispatch(id: TaskId, stack_size: usize, body: SendBody) -> Result<(), SendBody> {
+    pub(super) fn dispatch(id: TaskId, placed: Placed) -> Result<(), Placed> {
         let Some(pool) = worker_pool() else {
-            return Err(body);
+            return Err(placed);
         };
         let workers = pool
             .workers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if workers.is_empty() {
-            return Err(body);
+            return Err(placed);
         }
         let start = pool.next.fetch_add(1, Ordering::Relaxed) % workers.len();
         let index = (0..workers.len())
@@ -196,7 +192,7 @@ mod threaded {
             })
             .map(|offset| (start + offset) % workers.len())
             .unwrap_or(start);
-        assign(&workers[index], id, index, stack_size, body);
+        assign(&workers[index], id, index, placed);
         Ok(())
     }
 
@@ -207,9 +203,9 @@ mod threaded {
     /// with the agent as it starts rather than after it reports ready, so
     /// N thread creations overlap instead of queueing.
     #[cfg(target_family = "wasm")]
-    pub(super) fn dispatch(id: TaskId, stack_size: usize, body: SendBody) -> Result<(), SendBody> {
+    pub(super) fn dispatch(id: TaskId, placed: Placed) -> Result<(), Placed> {
         let Some(pool) = worker_pool() else {
-            return Err(body);
+            return Err(placed);
         };
         let workers = pool
             .workers
@@ -219,7 +215,7 @@ mod threaded {
             .iter()
             .position(|worker| worker.assigned.load(Ordering::Acquire) == 0)
         {
-            assign(&workers[index], id, index, stack_size, body);
+            assign(&workers[index], id, index, placed);
             return Ok(());
         }
         let at = workers.len();
@@ -229,7 +225,7 @@ mod threaded {
         trace("dispatch", id.0, at as u64);
         // The body stays reachable from here until the agent takes it, so a
         // host that gives no more threads hands it back to run locally.
-        let slot: Arc<Mutex<Option<SendBody>>> = Arc::new(Mutex::new(Some(body)));
+        let slot: Arc<Mutex<Option<Placed>>> = Arc::new(Mutex::new(Some(placed)));
         let agent_slot = Arc::clone(&slot);
         let spawned = std::thread::Builder::new()
             .name(format!("caribou-world-{at}"))
@@ -238,11 +234,7 @@ mod threaded {
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take()
-                    .map(|body| WorldCommand::Spawn {
-                        id,
-                        stack_size,
-                        body,
-                    });
+                    .map(|placed| WorldCommand::Spawn { id, placed });
                 worker_main(None, first)
             });
         match spawned {
@@ -257,8 +249,8 @@ mod threaded {
 }
 
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-pub(super) fn dispatch(id: TaskId, stack_size: usize, body: SendBody) -> Result<(), SendBody> {
-    threaded::dispatch(id, stack_size, body)
+pub(super) fn dispatch(id: TaskId, placed: Placed) -> Result<(), Placed> {
+    threaded::dispatch(id, placed)
 }
 
 /// Whether `spawn_fiber_on_pool` may place a task off the calling world.
@@ -269,6 +261,18 @@ pub fn has_worker_pool() -> bool {
     cfg!(target_family = "wasm") || threaded::configured_worker_count() != 0
 }
 
+/// Worker worlds a task may be placed on. Reads the configuration only,
+/// as [`has_worker_pool`] does.
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub fn worker_count() -> usize {
+    threaded::configured_worker_count()
+}
+
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+pub fn worker_count() -> usize {
+    0
+}
+
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub fn has_worker_pool() -> bool {
     false
@@ -276,7 +280,7 @@ pub fn has_worker_pool() -> bool {
 
 /// No threads to make a pool from; the spawning world runs the task.
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
-pub(super) fn dispatch(id: TaskId, stack_size: usize, body: SendBody) -> Result<(), SendBody> {
-    let _ = (id, stack_size);
-    Err(body)
+pub(super) fn dispatch(id: TaskId, placed: Placed) -> Result<(), Placed> {
+    let _ = id;
+    Err(placed)
 }

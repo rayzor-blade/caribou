@@ -1,0 +1,9 @@
+# The Haxe program of the one-world test: its threads and the Wren
+# module's fibers and threads share the world. Rebuild with
+# `haxe relay.hxml` (Haxe 4.3.6) from this directory; relay.hl is
+# checked in.
+-cp src
+-lib caribou
+-main UseRelay
+game.Player
+-hl relay.hl

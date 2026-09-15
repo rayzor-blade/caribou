@@ -144,6 +144,17 @@ fn ensure_world_ready() {
     sched::set_switch_hook(switch_bridge);
 }
 
+/// Before a task's first turn, whichever language spawned it: the
+/// exception state is swapped around every task, so a Haxe call from a
+/// task of another language keeps its traps to itself. A task ash spawns
+/// attaches its own, with its context, in its first run.
+pub(crate) fn task_born(id: TaskId) {
+    ensure_world_ready();
+    if sched::with_host_state(id, |_| ()).is_none() {
+        sched::attach_host_state(id, ExcHost::new(std::ptr::null_mut()));
+    }
+}
+
 // ── Threads ─────────────────────────────────────────────────────────────
 
 /// The OS thread running the program; claimed by the first asker if

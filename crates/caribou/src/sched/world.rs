@@ -11,8 +11,10 @@ use std::time::Instant;
 
 use krio_core::{Task, TaskId};
 
-use super::task::{Body, HostState, ResumeCause, RunState, SwitchHook, TaskRecord};
-use super::wait::{Waiter, claim_timeout};
+use super::task::{
+    Body, HostState, Placed, ResumeCause, RunState, Suspend, SwitchHook, TaskRecord,
+};
+use super::wait::{Waiter, claim_timeout, finish_wait};
 use super::{pool, preempt, trace};
 use crate::heap;
 
@@ -26,8 +28,7 @@ pub(super) enum WorldCommand {
     )]
     Spawn {
         id: TaskId,
-        stack_size: usize,
-        body: Box<dyn FnOnce() + Send + 'static>,
+        placed: Placed,
     },
 }
 
@@ -82,6 +83,10 @@ pub(super) struct World {
     switch_hook: Option<SwitchHook>,
 }
 
+/// Runs on a task's world before its first turn, whichever language spawned
+/// it: where an adapter attaches the host state it keeps for every task.
+static TASK_HOOK: Mutex<Vec<fn(TaskId)>> = Mutex::new(Vec::new());
+
 impl World {
     fn new() -> Self {
         static HOOK: std::sync::Once = std::sync::Once::new();
@@ -128,6 +133,9 @@ impl World {
         }
         record.run_state = RunState::Runnable;
         record.resume_cause = ResumeCause::Notified;
+        // The cause carries the outcome from here; a task that parked by
+        // request alone reads nothing else.
+        finish_wait(waiter.token());
         self.enqueue_ready(waiter.task());
         true
     }
@@ -154,6 +162,7 @@ impl World {
             }
             record.run_state = RunState::Runnable;
             record.resume_cause = ResumeCause::TimedOut;
+            finish_wait(token);
             self.enqueue_ready(id);
         }
     }
@@ -192,6 +201,7 @@ struct ActiveTask {
     pending_park: Option<ParkRequest>,
     gc_blocking_depth: u32,
     can_suspend: bool,
+    suspend: Option<Suspend>,
 }
 
 thread_local! {
@@ -266,17 +276,17 @@ fn next_task_id() -> TaskId {
     TaskId(NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed))
 }
 
-fn install(id: TaskId, body: Body) {
+fn install(id: TaskId, record: TaskRecord) {
     trace("install", id.0, try_world_id().unwrap_or(0));
     with_world(|world| {
-        world.tasks.insert(id, TaskRecord::new(body));
+        world.tasks.insert(id, record);
         world.enqueue_ready(id);
     });
 }
 
-fn spawn_local(id: TaskId, body: Body) -> TaskId {
+fn spawn_local(id: TaskId, record: TaskRecord) -> TaskId {
     with_world(|world| world.endpoint.assigned.fetch_add(1, Ordering::AcqRel));
-    install(id, body);
+    install(id, record);
     id
 }
 
@@ -287,7 +297,7 @@ pub fn spawn_fiber(stack_size: usize, body: impl FnOnce() + 'static) -> TaskId {
     let id = next_task_id();
     preempt::task_created();
     trace("create", id.0, 0);
-    spawn_local(id, Body::fiber(stack_size, Box::new(body)))
+    spawn_local(id, TaskRecord::new(Body::fiber(stack_size, Box::new(body))))
 }
 
 /// A stackless task on this world: the scheduler calls `step` on its own
@@ -296,20 +306,71 @@ pub fn spawn(task: Box<dyn Task>) -> TaskId {
     let id = next_task_id();
     preempt::task_created();
     trace("create", id.0, 1);
-    spawn_local(id, Body::Stackless(task))
+    spawn_local(id, TaskRecord::new(Body::Stackless(task)))
+}
+
+/// A task the scheduler steps on its own stack, whose step runs on a
+/// stack of the task's runtime's making: `suspend` is that runtime's own
+/// switch, so `park` and `yield_now` work from inside the step as they do
+/// on a fiber, and the step returns `Pending` when they do.
+pub fn spawn_task(task: Box<dyn Task>, suspend: Option<Suspend>) -> TaskId {
+    let id = next_task_id();
+    preempt::task_created();
+    trace("create", id.0, 1);
+    let mut record = TaskRecord::new(Body::Stackless(task));
+    record.suspend = suspend;
+    spawn_local(id, record)
 }
 
 /// A stackful task on whichever world is least loaded, chosen now and
 /// never changed: this world when there is no pool.
 pub fn spawn_fiber_on_pool(stack_size: usize, body: impl FnOnce() + Send + 'static) -> TaskId {
+    let body: Box<dyn FnOnce() + Send + 'static> = Box::new(body);
+    place(Placed::Fiber { stack_size, body })
+}
+
+/// [`spawn_task`] on whichever world is least loaded, as
+/// [`spawn_fiber_on_pool`] places a fiber.
+pub fn spawn_task_on_pool(
+    task: Box<dyn Task + Send + 'static>,
+    suspend: Option<Suspend>,
+) -> TaskId {
+    place(Placed::Task { task, suspend })
+}
+
+fn place(placed: Placed) -> TaskId {
     let id = next_task_id();
     preempt::task_created();
     trace("create", id.0, 2);
-    let body: Box<dyn FnOnce() + Send + 'static> = Box::new(body);
-    match pool::dispatch(id, stack_size, body) {
+    match pool::dispatch(id, placed) {
         Ok(()) => id,
-        Err(body) => spawn_local(id, Body::fiber(stack_size, body)),
+        Err(placed) => spawn_local(id, placed.into_record()),
     }
+}
+
+/// Add a hook that runs on a task's world before the task's first turn,
+/// for every task whichever language spawned it. An adapter attaches the
+/// host state it keeps per task there; one attached from inside the
+/// task's own run replaces it.
+pub fn add_task_hook(hook: fn(TaskId)) {
+    TASK_HOOK.lock().unwrap().push(hook);
+}
+
+/// krio's id of the stack this runs on, whichever runtime made it; 0 on
+/// the thread's own stack.
+#[cfg(not(target_family = "wasm"))]
+pub fn current_stack() -> u64 {
+    krio_fiber::current_fiber_id().unwrap_or(0)
+}
+
+#[cfg(target_family = "wasm")]
+pub fn current_stack() -> u64 {
+    0
+}
+
+/// Whether the running task has a park recorded for when it yields.
+pub fn park_pending() -> bool {
+    ACTIVE.with(|active| active.get().is_some_and(|task| task.pending_park.is_some()))
 }
 
 /// Attach the state the scheduler swaps around `id`'s turns; `NONE` is the
@@ -363,9 +424,22 @@ pub(super) fn set_pending_park(waiter: Waiter, deadline: Option<Instant>) -> boo
     })
 }
 
-/// Suspend the running task back to its world's turn.
+/// Suspend the running task back to its world's turn: through the task's
+/// own switch when it has one, else krio's. False when the task could not
+/// suspend from where this was called.
+pub(super) fn suspend_current() -> bool {
+    let own = ACTIVE.with(|active| active.get().and_then(|task| task.suspend));
+    match own {
+        Some(suspend) => suspend(),
+        None => {
+            suspend_stack();
+            true
+        }
+    }
+}
+
 #[cfg(not(target_family = "wasm"))]
-pub(super) fn suspend_current() {
+fn suspend_stack() {
     krio_fiber::yield_now();
 }
 
@@ -373,10 +447,20 @@ pub(super) fn suspend_current() {
 /// so library code far from the scheduler suspends the same way. Without
 /// one installed a yield returns at once: run-to-completion, not deadlock.
 #[cfg(target_family = "wasm")]
-pub(super) fn suspend_current() {
+fn suspend_stack() {
     if krio_fiber::has_suspender() {
         krio_fiber::yield_now();
     }
+}
+
+/// Take back the running task's park request: it waits in place instead.
+pub(super) fn clear_pending_park() {
+    ACTIVE.with(|active| {
+        if let Some(mut task) = active.get() {
+            task.pending_park = None;
+            active.set(Some(task));
+        }
+    });
 }
 
 fn drain_commands() {
@@ -387,11 +471,7 @@ fn drain_commands() {
             WorldCommand::Wake(waiter) => {
                 with_world(|world| world.wake_claimed(waiter));
             }
-            WorldCommand::Spawn {
-                id,
-                stack_size,
-                body,
-            } => install(id, Body::fiber(stack_size, body)),
+            WorldCommand::Spawn { id, placed } => install(id, placed.into_record()),
         }
     }
 }
@@ -431,7 +511,19 @@ fn swap_host(id: TaskId, swap_in: bool) {
 
 /// One task's turn. `false` if it was not runnable after all.
 fn resume_task(id: TaskId) -> bool {
-    let Some((mut body, cause, depth, hook)) = with_world(|world| {
+    let fresh = with_world(|world| {
+        let record = world.tasks.get_mut(&id)?;
+        (record.run_state == RunState::Runnable)
+            .then(|| std::mem::replace(&mut record.fresh, false))
+    });
+    if fresh == Some(true) {
+        // With no borrow held: a hook attaches host state.
+        let hooks: Vec<fn(TaskId)> = TASK_HOOK.lock().unwrap().clone();
+        for hook in hooks {
+            hook(id);
+        }
+    }
+    let Some((mut body, cause, depth, hook, suspend)) = with_world(|world| {
         let record = world.tasks.get_mut(&id)?;
         if record.run_state != RunState::Runnable {
             return None;
@@ -439,7 +531,13 @@ fn resume_task(id: TaskId) -> bool {
         let body = record.body.take()?;
         record.run_state = RunState::Running;
         let cause = std::mem::replace(&mut record.resume_cause, ResumeCause::Scheduled);
-        Some((body, cause, record.gc_blocking_depth, world.switch_hook))
+        Some((
+            body,
+            cause,
+            record.gc_blocking_depth,
+            world.switch_hook,
+            record.suspend,
+        ))
     }) else {
         return false;
     };
@@ -454,7 +552,8 @@ fn resume_task(id: TaskId) -> bool {
             resume_cause: cause,
             pending_park: None,
             gc_blocking_depth: depth,
-            can_suspend: body.can_suspend(),
+            can_suspend: body.can_suspend() || suspend.is_some(),
+            suspend,
         }));
     });
     if let Some(hook) = hook {
@@ -480,37 +579,37 @@ fn resume_task(id: TaskId) -> bool {
     swap_host(id, false);
     swap_host(TaskId::NONE, true);
 
-    let removed =
-        with_world(|world| {
-            let record = world.tasks.get_mut(&id)?;
-            record.gc_blocking_depth = active.gc_blocking_depth;
-            if suspension.is_done() {
-                let _ = world.endpoint.assigned.try_update(
-                    Ordering::AcqRel,
-                    Ordering::Acquire,
-                    |n| Some(n.saturating_sub(1)),
-                );
-                return world.tasks.remove(&id);
-            }
-            // A recorded wait parks the task whatever it returned; without
-            // one, `Pending` is a yield, since nothing could wake it.
-            match active.pending_park {
-                Some(request) => {
-                    debug_assert_eq!(request.waiter.task(), id);
-                    record.run_state = RunState::Waiting(request.waiter.token());
-                    if let Some(deadline) = request.deadline {
-                        world
-                            .timers
-                            .push(Reverse((deadline, request.waiter.token(), id)));
-                    }
-                }
-                None => {
-                    record.run_state = RunState::Runnable;
-                    world.enqueue_ready(id);
+    let removed = with_world(|world| {
+        let record = world.tasks.get_mut(&id)?;
+        record.gc_blocking_depth = active.gc_blocking_depth;
+        if suspension.is_done() {
+            let _ = world
+                .endpoint
+                .assigned
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                    Some(n.saturating_sub(1))
+                });
+            return world.tasks.remove(&id);
+        }
+        // A recorded wait parks the task whatever it returned; without
+        // one, `Pending` is a yield, since nothing could wake it.
+        match active.pending_park {
+            Some(request) => {
+                debug_assert_eq!(request.waiter.task(), id);
+                record.run_state = RunState::Waiting(request.waiter.token());
+                if let Some(deadline) = request.deadline {
+                    world
+                        .timers
+                        .push(Reverse((deadline, request.waiter.token(), id)));
                 }
             }
-            None
-        });
+            None => {
+                record.run_state = RunState::Runnable;
+                world.enqueue_ready(id);
+            }
+        }
+        None
+    });
     if let Some(record) = removed {
         trace("remove", id.0, 0);
         preempt::task_removed();
@@ -632,7 +731,9 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
 pub fn yield_now() {
     let can_suspend = ACTIVE.with(|active| active.get().map(|task| task.can_suspend));
     match can_suspend {
-        Some(true) => suspend_current(),
+        Some(true) => {
+            suspend_current();
+        }
         Some(false) => {}
         None => {
             if has_world() {

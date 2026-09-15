@@ -180,21 +180,53 @@ sees as it sees an abort. The adapter's own entries into compiled code
 that lands puts the thread's JIT state back to what it was at entry
 (`JitMark`), since the compiled frames between are gone.
 
+### The world
+
+wren_lift's scheduler has the same shape as the core's: worlds, tasks,
+wait tokens, a pool. Under the adapter there is one world, the core's.
+The seam's World slots (`world.rs`) take wren_lift's waits and tasks:
+a token is the core's, bound to whoever parks on it; a `Fiber.spawn` is
+a task of the calling world and a `Thread.create` one of the least
+loaded worker world, and `Fiber.tick`, `Fiber.idle` and the park of the
+main program drive the core's turns. So a Wren fiber waiting on a lock a
+Haxe thread releases lets every other task run, and the reverse (see
+[scheduler.md](scheduler.md#another-runtimes-tasks)).
+
+A Wren task is a context wren_lift makes, holding the program, the
+closure until the fiber exists and the fiber after. The core steps it
+through wren_lift's `task_step`, one run of the fiber to its next park
+or yield, on the world it was placed on; the fiber is made there, since
+a fiber runs on the thread that made it, and a worker of the core's pool
+gets a view of the program the first time it steps one. The task's
+`Suspend` is wren_lift's own switch (`task_suspend`), which keeps the
+compiled frames' roots across the switch, so a Haxe call from a Wren
+task parks through it too.
+
+wren_lift's collector needs every thread with a view safe or polling.
+The view is safe while the core runs other tasks on its thread and
+running for a step, without the seam's thread slots hearing of either,
+since the thread is in no wait: `task_step` toggles the view it finds
+safe, and the park, tick and idle of the main program toggle theirs
+around the core's turns, on the thread's own stack. Inside a fiber of the
+core's, whose stack wren_lift's collector cannot place, the view stays
+running.
+
 ### Threads and isolates
 
-wren_lift's `Thread` runs tasks on a pool of workers over the program's
-heap, and `Isolate` runs a whole VM on a thread of its own. Both tell
-the seam when a thread starts running Wren and when it stops, and the
-adapter makes each a core mutator for that span, as it does the thread
-that made the heap. wren_lift's world knows when a thread is safe, in a
-wait or a native call, and tells the seam with the stack pointer and
-register range it published; the adapter maps that onto the core's
-blocking region, so the core's collector scans the thread where it
-stands and does not wait for it, and holds it when it runs again while
-a collection is under way (see [heap.md](heap.md#collection)). The
-core's stop hook goes the other way: the adapter answers it by
-wren_lift's own stop, which holds the poll pages unreadable until every
-running thread has faulted into the same safe transition.
+wren_lift's `Thread` runs tasks over the program's heap, on the core's
+pool under the adapter, and `Isolate` runs a whole VM on a thread of its
+own. A thread that starts running Wren tells the seam, as does one that
+stops, and the adapter makes each a core mutator for that span, as it
+does the thread that made the heap. wren_lift's world knows when a
+thread is safe, in a wait or a native call, and tells the seam with the
+stack pointer and register range it published; the adapter maps that
+onto the core's blocking region, so the core's collector scans the
+thread where it stands and does not wait for it, and holds it when it
+runs again while a collection is under way (see
+[heap.md](heap.md#collection)). The core's stop hook goes the other way:
+the adapter answers it by wren_lift's own stop, which holds the poll
+pages unreadable until every running thread has faulted into the same
+safe transition.
 
 A heap record's pins, and the cells Wren holds, are kept per thread, in
 a shard only that thread pushes to. A cycle and the anchor's trace read

@@ -46,6 +46,37 @@ pub(super) enum RunState {
     Waiting(u64),
 }
 
+/// How a task suspends from inside its step when the scheduler cannot
+/// switch its stack itself: a runtime's own switch for a fiber it made.
+/// False when it could not suspend from where it was called.
+pub type Suspend = fn() -> bool;
+
+/// A body on its way to another world: what `spawn_fiber_on_pool` and
+/// `spawn_task_on_pool` send, made into a [`Body`] where it lands.
+pub(super) enum Placed {
+    Fiber {
+        stack_size: usize,
+        body: Box<dyn FnOnce() + Send + 'static>,
+    },
+    Task {
+        task: Box<dyn Task + Send + 'static>,
+        suspend: Option<Suspend>,
+    },
+}
+
+impl Placed {
+    pub(super) fn into_record(self) -> TaskRecord {
+        match self {
+            Placed::Fiber { stack_size, body } => TaskRecord::new(Body::fiber(stack_size, body)),
+            Placed::Task { task, suspend } => {
+                let mut record = TaskRecord::new(Body::Stackless(task));
+                record.suspend = suspend;
+                record
+            }
+        }
+    }
+}
+
 /// A task body: a krio fiber with its own stack, or a state machine the
 /// scheduler steps on its own stack. Where the host cannot switch stacks
 /// there is only the second kind.
@@ -215,6 +246,10 @@ pub(super) struct TaskRecord {
     pub(super) resume_cause: ResumeCause,
     pub(super) gc_blocking_depth: u32,
     pub(super) host: Option<Box<dyn HostState>>,
+    /// Not yet resumed: the task hook runs before the first turn.
+    pub(super) fresh: bool,
+    /// A stackless body's own way of suspending from inside its step.
+    pub(super) suspend: Option<Suspend>,
 }
 
 impl TaskRecord {
@@ -225,6 +260,8 @@ impl TaskRecord {
             resume_cause: ResumeCause::Scheduled,
             gc_blocking_depth: 0,
             host: None,
+            fresh: true,
+            suspend: None,
         }
     }
 }
