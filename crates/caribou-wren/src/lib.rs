@@ -110,6 +110,8 @@ pub fn install() -> Result<(), InstallError> {
     if !unsafe { wlift_rt_install(&table) } {
         return Err(InstallError::Refused);
     }
+    // A stop of the core's world reaches every thread running Wren.
+    caribou::heap::set_stop_hook(heap::host_stop);
     INSTALLED.store(true, Ordering::Release);
     Ok(())
 }
@@ -119,8 +121,8 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
-/// Every memory slot filled; `object_trace` and `object_drop` stay
-/// wren_lift's.
+/// Every memory, stack, thread and run slot filled; `object_trace`,
+/// `object_drop` and `host_stop` stay wren_lift's.
 fn table() -> RuntimeVTable {
     RuntimeVTable {
         heap_new: Some(heap::heap_new),
@@ -142,6 +144,10 @@ fn table() -> RuntimeVTable {
         stack_new: Some(heap::stack_new),
         stack_suspended: Some(heap::stack_suspended),
         stack_drop: Some(heap::stack_drop),
+        thread_start: Some(heap::thread_start),
+        thread_stop: Some(heap::thread_stop),
+        thread_safe: Some(heap::thread_safe),
+        thread_running: Some(heap::thread_running),
         run_guarded: Some(proto::run_guarded),
         ..RuntimeVTable::new()
     }
@@ -194,10 +200,10 @@ mod tests {
     use wren_lift::runtime::rt::{RT_VERSION, wlift_rt_installed};
     use wren_lift::runtime::vm::{VM, VMConfig};
 
-    /// The header is one word; every word after it is a memory slot until the
-    /// last two, which are wren_lift's.
+    /// The header is one word; every word after it is a slot of the
+    /// host's until the last three, which are wren_lift's.
     #[test]
-    fn every_memory_slot_is_filled_and_wren_lifts_two_are_not() {
+    fn every_memory_slot_is_filled_and_wren_lifts_three_are_not() {
         let table = table();
         assert_eq!(table.version, RT_VERSION);
         assert_eq!(table.size as usize, std::mem::size_of::<RuntimeVTable>());
@@ -207,11 +213,12 @@ mod tests {
         let raw = unsafe {
             std::slice::from_raw_parts(&table as *const RuntimeVTable as *const usize, words)
         };
-        for (i, word) in raw.iter().enumerate().skip(1).take(words - 3) {
+        for (i, word) in raw.iter().enumerate().skip(1).take(words - 4) {
             assert_ne!(*word, 0, "slot {i} is None");
         }
         assert!(table.object_trace.is_none());
         assert!(table.object_drop.is_none());
+        assert!(table.host_stop.is_none());
     }
 
     #[test]

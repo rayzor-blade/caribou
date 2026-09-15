@@ -180,6 +180,27 @@ sees as it sees an abort. The adapter's own entries into compiled code
 that lands puts the thread's JIT state back to what it was at entry
 (`JitMark`), since the compiled frames between are gone.
 
+### Threads and isolates
+
+wren_lift's `Thread` runs tasks on a pool of workers over the program's
+heap, and `Isolate` runs a whole VM on a thread of its own. Both tell
+the seam when a thread starts running Wren and when it stops, and the
+adapter makes each a core mutator for that span, as it does the thread
+that made the heap. wren_lift's world knows when a thread is safe, in a
+wait or a native call, and tells the seam with the stack pointer and
+register range it published; the adapter maps that onto the core's
+blocking region, so the core's collector scans the thread where it
+stands and does not wait for it, and holds it when it runs again while
+a collection is under way (see [heap.md](heap.md#collection)). The
+core's stop hook goes the other way: the adapter answers it by
+wren_lift's own stop, which holds the poll pages unreadable until every
+running thread has faulted into the same safe transition.
+
+A heap record's pins, and the cells Wren holds, are kept per thread, in
+a shard only that thread pushes to. A cycle and the anchor's trace read
+every shard, with every other thread at rest, so no allocation takes a
+lock for them.
+
 ### The VM an entry runs on
 
 The Wren entries run on a VM, and `install` cannot know which. Whoever

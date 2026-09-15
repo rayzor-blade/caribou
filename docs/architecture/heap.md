@@ -111,7 +111,10 @@ Collections stop the world. A mutator enters the rendezvous at a safepoint:
 every allocation slow path, the blocking primitives, and whatever the
 scheduler polls. Compiled loops reach a safepoint through the poll hook.
 When the collector needs the world stopped, it calls the function installed
-with `set_poll_request_hook`, and the scheduler bumps its epoch in answer.
+with `set_poll_request_hook`, and the scheduler bumps its epoch in answer;
+then the one installed with `set_stop_hook`, by which a hosted runtime
+drives its own threads to a safepoint, and calls it again with `false`
+once the world is released.
 
 Marking is conservative from the roots. It follows every word that resolves
 to an allocation, except through objects whose kind says otherwise: a
@@ -190,6 +193,20 @@ thread parks only at a safepoint, which is its poll, its allocation, or any
 slot that takes the GC lock, and its runtime completes every write to an
 object between two of those. So no object is mid-write while the thread is
 parked.
+
+A hosted runtime with threads of its own makes each a mutator the same
+way, for as long as it runs the runtime's code. Its own world already
+knows when a thread is safe, in a wait or a native call, and that maps
+onto the core's blocking region: `gc_block_at(sp, extra)` is the entry a
+runtime that has already published the thread's stack pointer uses, with
+a second range for the registers it saved when it stopped a compiled
+loop, and `gc_unblock` holds the thread while a collection is under way.
+A thread the runtime has not stopped is running compiled code, and the
+core cannot reach it; that is what the stop hook is for. The hosted
+runtime has its own way of stopping such a thread, and the hook asks it
+to use it, so every thread passes through the same safe and running
+transitions whichever collector asked. The two worlds are then one
+rendezvous with two ways in.
 
 ## Locking
 

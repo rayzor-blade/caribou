@@ -12,15 +12,16 @@ mod immix;
 pub use desc::{CORE_MARK, DropFn, TraceFn, TypeDesc, is_descriptor};
 pub use immix::{
     // Allocation.
-    alloc_gen, alloc_with_finalizer, allocation_size, gc_alloc, is_allocation_start, mark_size,
-    out_of_memory, zalloc, Finalizer, ImmixAllocator, Tracer, GC,
+    alloc_gen, alloc_with_finalizer, allocation_size, gc_alloc, is_allocation_start,
+    is_traced_allocation, mark_size, out_of_memory, zalloc, Finalizer, ImmixAllocator, Tracer, GC,
     // The reentrant GC lock.
     gc_guard, gc_lock_held_depth, gc_lock_unwind_to, gc_locked, gc_locked_init, lock, unlock,
     GcGuard, GcRef, HL_GLOBAL_LOCK,
     // Mutators, safepoints and the stop-the-world rendezvous.
-    gc_safepoint, gc_set_blocking, mark_site, register_thread, registered_threads, safepoint,
-    set_poll_request_hook, set_stack_top, unregister_thread, SITE_ENTER_BLOCKING,
-    SITE_LEAVE_BLOCKING, SITE_LOCK_CONDVAR, SITE_LOCK_INNER, SITE_RUNNING,
+    gc_block_at, gc_safepoint, gc_set_blocking, gc_unblock, mark_site, register_thread,
+    registered_threads, safepoint, set_poll_request_hook, set_stack_top, set_stop_hook,
+    unregister_thread, SITE_ENTER_BLOCKING, SITE_LEAVE_BLOCKING, SITE_LOCK_CONDVAR,
+    SITE_LOCK_INNER, SITE_RUNNING,
     SITE_SAFEPOINT_WORLD_LOCK, SITE_SCHEDULER_IDLE, SITE_TLAB_REFILL,
     // Roots.
     add_scan_root, clear_scan_roots, gc_add_persistent, gc_remove_persistent, register_root,

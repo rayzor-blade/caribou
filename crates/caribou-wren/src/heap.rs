@@ -43,8 +43,8 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use caribou::cell;
@@ -108,15 +108,13 @@ pub struct WrenHeap {
     /// Word zero of every object of this heap. First, so the object's
     /// descriptor address is the record's.
     desc: TypeDesc,
-    /// Core starts of every allocation wren_lift has not reclaimed.
-    pins: Vec<Pin>,
+    /// Core starts of every allocation wren_lift has not reclaimed, and
+    /// the cells Wren holds through their views, by the thread that made
+    /// or took them.
+    shards: Shards,
     /// What the claimed adopted instances hold, for the anchor to mark in
     /// the collection a cycle ends with: a claimed object is not traced.
     held: Vec<*const u8>,
-    /// The cells Wren holds through their views: no pins, so the anchor
-    /// retains them by this list outside a cycle, and `collect_end` claims
-    /// the ones the cycle marked and lets the rest go.
-    views: Vec<usize>,
     /// The thread the heap was minted on, which its VM runs on.
     thread: u64,
     /// The VM entered on that thread for this heap (`proto::enter_vm`),
@@ -133,8 +131,9 @@ pub struct WrenHeap {
     /// another mutator's collections did to the shared trigger meanwhile.
     trigger: AtomicUsize,
     /// `should_collect` calls since the last cycle; the heartbeat reads the
-    /// clock on every 1024th.
+    /// clock on every 1024th, and `heartbeat` stands once it is due.
     polls: AtomicU64,
+    heartbeat: AtomicBool,
     /// When the last cycle closed.
     last_cycle: Instant,
     /// wren_lift has dropped every object and `heap_drop` is under way: the
@@ -144,7 +143,7 @@ pub struct WrenHeap {
     /// and is collecting: the anchor has nothing to add.
     claimed: bool,
     live_bytes: usize,
-    allocated_bytes: usize,
+    allocated_bytes: AtomicUsize,
     freed_bytes: usize,
     freed_objects: usize,
     /// How many cycles this record has run.
@@ -168,6 +167,59 @@ pub struct WrenHeap {
 struct Pin {
     start: usize,
     size: u32,
+}
+
+/// What one thread allocates on a record and holds through views: the
+/// pins, and the cells Wren holds, no pins, so the anchor retains them by
+/// this list outside a cycle and `collect_end` claims the ones the cycle
+/// marked and lets the rest go. Pushed by that thread alone; a cycle and
+/// the anchor's trace read every shard while every other thread is at
+/// rest, so neither takes a lock.
+#[derive(Default)]
+struct Shard {
+    pins: Vec<Pin>,
+    views: Vec<usize>,
+}
+
+/// A record's shards, one per thread that has allocated on it, and each
+/// thread's way to its own: a cache by record, since a record is never
+/// freed and its address never reused.
+#[derive(Default)]
+struct Shards(Mutex<Vec<*mut Shard>>);
+
+unsafe impl Send for Shards {}
+unsafe impl Sync for Shards {}
+
+thread_local! {
+    static MY_SHARDS: RefCell<Vec<(usize, *mut Shard)>> = const { RefCell::new(Vec::new()) };
+}
+
+impl Shards {
+    /// The calling thread's shard on the record at `rec`, made on first
+    /// need. Written through by its thread alone, and read by a cycle
+    /// or a trace while the thread is at rest, so a write through it
+    /// is sound on the thread that asked.
+    #[inline]
+    fn mine(&self, rec: usize) -> *mut Shard {
+        MY_SHARDS.with(|mine| {
+            let found = mine
+                .borrow()
+                .iter()
+                .find(|(r, _)| *r == rec)
+                .map(|&(_, s)| s);
+            found.unwrap_or_else(|| {
+                let fresh = Box::into_raw(Box::new(Shard::default()));
+                self.0.lock().unwrap_or_else(|e| e.into_inner()).push(fresh);
+                mine.borrow_mut().push((rec, fresh));
+                fresh
+            })
+        })
+    }
+
+    /// Every shard, for a cycle or a trace with every thread at rest.
+    fn all(&self) -> Vec<*mut Shard> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 impl WrenHeap {
@@ -413,11 +465,14 @@ unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
         }
         return;
     }
-    for pin in &rec.pins {
-        tracer.mark(pin.start as *const u8);
-    }
-    for &view in &rec.views {
-        tracer.mark(view as *const u8);
+    for shard in rec.shards.all() {
+        let shard = unsafe { &*shard };
+        for pin in &shard.pins {
+            tracer.mark(pin.start as *const u8);
+        }
+        for &view in &shard.views {
+            tracer.mark(view as *const u8);
+        }
     }
 }
 
@@ -455,20 +510,20 @@ pub unsafe extern "C" fn heap_new() -> *mut c_void {
     let mut gc = heap::gc_locked_init();
     let rec = Box::into_raw(Box::new(WrenHeap {
         desc: unsafe { ptr::read(&raw const WREN_DESC) },
-        pins: Vec::new(),
+        shards: Shards::default(),
         held: Vec::new(),
-        views: Vec::new(),
         thread: heap::thread_token(),
         entered: AtomicPtr::new(ptr::null_mut()),
         anchor: Handle::NULL,
         bytes_since_cycle: AtomicUsize::new(0),
         trigger: AtomicUsize::new(gc.trigger_threshold()),
         polls: AtomicU64::new(0),
+        heartbeat: AtomicBool::new(false),
         last_cycle: Instant::now(),
         closing: AtomicBool::new(false),
         claimed: false,
         live_bytes: 0,
-        allocated_bytes: 0,
+        allocated_bytes: AtomicUsize::new(0),
         freed_bytes: 0,
         freed_objects: 0,
         cycles: 0,
@@ -502,8 +557,10 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     rec.closing.store(true, Ordering::Relaxed);
     let mut gc = heap::gc_locked_init();
     import::forget_classes(rec);
-    for pin in &rec.pins {
-        gc.forget_allocation(pin.start as *const u8);
+    for shard in rec.shards.all() {
+        for pin in &unsafe { &*shard }.pins {
+            gc.forget_allocation(pin.start as *const u8);
+        }
     }
     let anchor = gc.handle_get(rec.anchor);
     gc.forget_allocation(anchor);
@@ -539,11 +596,12 @@ unsafe fn alloc_with(heap: *mut c_void, size: usize, flags: usize) -> *mut u8 {
     }
     let start = p as usize;
     unsafe { bridge_word(p).write(flags) };
-    rec.pins.push(Pin {
+    let pin = Pin {
         start,
         size: reserved.min(u32::MAX as usize) as u32,
-    });
-    rec.allocated_bytes += reserved;
+    };
+    unsafe { (*rec.shards.mine(heap as usize)).pins.push(pin) };
+    rec.allocated_bytes.fetch_add(reserved, Ordering::Relaxed);
     rec.bytes_since_cycle.fetch_add(reserved, Ordering::Relaxed);
     unsafe { p.add(PREFIX) }
 }
@@ -582,9 +640,8 @@ pub unsafe extern "C" fn mark_allocation(_heap: *mut c_void, ptr: *mut u8) -> bo
 pub(crate) fn hold_view(heap: &WrenHeap, start: *mut u8) {
     let atom = bridge_atom(start);
     if atom.fetch_or(VIEW_HELD, Ordering::AcqRel) & VIEW_HELD == 0 {
-        // The list is the VM thread's, as `pins` is.
-        let rec = heap as *const WrenHeap as *mut WrenHeap;
-        unsafe { (*rec).views.push(start as usize) };
+        let shard = heap.shards.mine(heap as *const WrenHeap as usize);
+        unsafe { (*shard).views.push(start as usize) };
         heap.bytes_since_cycle
             .fetch_add(size_of::<cell::Cell>(), Ordering::Relaxed);
     }
@@ -595,7 +652,9 @@ pub(crate) fn hold_view(heap: &WrenHeap, start: *mut u8) {
 /// objects.
 unsafe fn viewed_cell(gc: &ImmixAllocator, addr: usize) -> Option<(usize, usize)> {
     let (start, size) = gc.allocation_containing(addr)?;
-    let held = unsafe { cell::is_cell(start as *const u8) }
+    // Only a traced allocation has a descriptor at word zero to read.
+    let held = heap::is_traced_allocation(start as *const c_void)
+        && unsafe { cell::is_cell(start as *const u8) }
         && unsafe { *bridge_word(start as *mut u8) } & VIEW_HELD != 0;
     held.then_some((start, size))
 }
@@ -655,6 +714,34 @@ pub unsafe extern "C" fn stack_drop(id: u64) {
     unsafe { heap::gc_unregister_fiber_stack(id) };
 }
 
+// A thread that runs Wren is a core mutator in deferred mode for as long
+// as it does, as a thread that mints a heap is; a thread safe in
+// wren_lift's world is in a blocking region of the core's, which the
+// collector does not wait for and scans where it stands, and one running
+// again is held while a collection is under way.
+pub unsafe extern "C" fn thread_start() {
+    enter_thread();
+}
+
+pub unsafe extern "C" fn thread_stop() {
+    leave_thread();
+}
+
+pub unsafe extern "C" fn thread_safe(sp: usize, extra_lo: usize, extra_hi: usize) {
+    heap::gc_block_at(sp, (extra_lo, extra_hi));
+}
+
+pub unsafe extern "C" fn thread_running() {
+    heap::gc_unblock();
+}
+
+/// The core's stop, to every thread running Wren: wren_lift holds its
+/// pages unreadable, so a compiled loop faults and passes through safe
+/// and running, where the core holds it.
+pub(crate) fn host_stop(on: bool) {
+    unsafe { wren_lift::runtime::rt::wlift_rt_host_stop()(on) };
+}
+
 /// Have `object_drop` run for the plain allocation at `ptr` once a cycle
 /// finds it dead, as for a raw one: its plain bit is cleared, which is
 /// all the sweep consults. False when `ptr` is not a plain allocation of
@@ -692,10 +779,19 @@ pub unsafe extern "C" fn should_collect(heap: *mut c_void) -> bool {
     {
         return true;
     }
-    // Only this thread writes the counter: a plain increment, no RMW.
+    // The heartbeat: the clock is read on every 1024th poll, and a beat
+    // stands until the cycle it asks for, since the answer is asked for
+    // more than once on the way to one.
+    if rec.heartbeat.load(Ordering::Relaxed) {
+        return true;
+    }
     let polls = rec.polls.load(Ordering::Relaxed).wrapping_add(1);
     rec.polls.store(polls, Ordering::Relaxed);
-    polls & 1023 == 0 && since > 0 && rec.last_cycle.elapsed() >= heap::heartbeat_interval()
+    let due = polls & 1023 == 0 && since > 0 && rec.last_cycle.elapsed() >= heap::heartbeat_interval();
+    if due {
+        rec.heartbeat.store(true, Ordering::Relaxed);
+    }
+    due
 }
 
 /// Parks first if another mutator asked for the world: that collection runs
@@ -735,12 +831,14 @@ unsafe extern "C" fn mark_gray(child: *mut u8, ctx: *mut c_void) {
 /// unmarked it reaches: what the core's collection decides.
 fn flag_pending(rec: &WrenHeap) -> bool {
     let mut gray: Vec<*mut u8> = Vec::new();
-    for pin in &rec.pins {
-        let word = bridge_word(pin.start as *mut u8);
-        let w = unsafe { *word };
-        if w & (MARKED | PENDING) == 0 && w & !FLAGS != 0 {
-            unsafe { *word = w | PENDING };
-            gray.push((pin.start + PREFIX) as *mut u8);
+    for shard in rec.shards.all() {
+        for pin in &unsafe { &*shard }.pins {
+            let word = bridge_word(pin.start as *mut u8);
+            let w = unsafe { *word };
+            if w & (MARKED | PENDING) == 0 && w & !FLAGS != 0 {
+                unsafe { *word = w | PENDING };
+                gray.push((pin.start + PREFIX) as *mut u8);
+            }
         }
     }
     let any = !gray.is_empty();
@@ -788,43 +886,48 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
         freed += pin.size as usize;
         dead += 1;
     };
+    let shards = rec.shards.all();
     // A viewed cell the cycle marked is the core's claim too, its trace
     // keeping what it holds; one the cycle did not reach leaves the list,
     // for the core to decide.
-    rec.views.retain(|&start| {
-        let word = bridge_word(start as *mut u8);
-        let w = unsafe { *word };
-        if w & MARKED != 0 {
-            unsafe { *word = w & !MARKED };
-            live += gc.claim_start(start as *const u8).unwrap_or(0);
-            return true;
-        }
-        unsafe { *word = w & !VIEW_HELD };
-        false
-    });
+    for &shard in &shards {
+        unsafe { &mut *shard }.views.retain(|&start| {
+            let word = bridge_word(start as *mut u8);
+            let w = unsafe { *word };
+            if w & MARKED != 0 {
+                unsafe { *word = w & !MARKED };
+                live += gc.claim_start(start as *const u8).unwrap_or(0);
+                return true;
+            }
+            unsafe { *word = w & !VIEW_HELD };
+            false
+        });
+    }
     // Marked pins become the core's claims, in address order, and what a
     // marked adopted instance holds is for the anchor to mark; pending pins
     // stand for the core to decide; the rest die here.
     let held = &mut rec.held;
-    rec.pins.retain(|pin| {
-        let word = bridge_word(pin.start as *mut u8);
-        let w = unsafe { *word };
-        if w & MARKED != 0 {
-            unsafe { *word = w & !MARKED };
-            live += gc
-                .claim_start(pin.start as *const u8)
-                .expect("a pin is an allocation start");
-            if w & ADOPTED != 0 {
-                held.push(unsafe { import::held((pin.start + PREFIX) as *mut u8) });
+    for &shard in &shards {
+        unsafe { &mut *shard }.pins.retain(|pin| {
+            let word = bridge_word(pin.start as *mut u8);
+            let w = unsafe { *word };
+            if w & MARKED != 0 {
+                unsafe { *word = w & !MARKED };
+                live += gc
+                    .claim_start(pin.start as *const u8)
+                    .expect("a pin is an allocation start");
+                if w & ADOPTED != 0 {
+                    held.push(unsafe { import::held((pin.start + PREFIX) as *mut u8) });
+                }
+                return true;
             }
-            return true;
-        }
-        if w & PENDING != 0 {
-            return true;
-        }
-        die(&mut gc, pin, w);
-        false
-    });
+            if w & PENDING != 0 {
+                return true;
+            }
+            die(&mut gc, pin, w);
+            false
+        });
+    }
     // The core's collection is the second half of the cycle. It retains
     // the claims, and its trace clears the pending flag of every pending
     // object it reaches; between its mark and its sweep the rest die. A
@@ -832,27 +935,30 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     // claim made outside a collection is withdrawn.
     let before = heap::collections();
     rec.claimed = true;
-    let pins = &mut rec.pins;
     gc.collect_garbage_then(|gc| {
         if !pending {
             return;
         }
-        pins.retain(|pin| {
-            let w = unsafe { *bridge_word(pin.start as *mut u8) };
-            if w & PENDING == 0 {
-                return true;
-            }
-            die(gc, pin, w);
-            false
-        });
+        for &shard in &shards {
+            unsafe { &mut *shard }.pins.retain(|pin| {
+                let w = unsafe { *bridge_word(pin.start as *mut u8) };
+                if w & PENDING == 0 {
+                    return true;
+                }
+                die(gc, pin, w);
+                false
+            });
+        }
     });
     rec.claimed = false;
     rec.held.clear();
     if heap::collections() == before {
-        for pin in &rec.pins {
-            let word = bridge_word(pin.start as *mut u8);
-            unsafe { *word &= !PENDING };
-            gc.unclaim(pin.start as *const u8);
+        for &shard in &shards {
+            for pin in &unsafe { &*shard }.pins {
+                let word = bridge_word(pin.start as *mut u8);
+                unsafe { *word &= !PENDING };
+                gc.unclaim(pin.start as *const u8);
+            }
         }
     }
     rec.freed_objects += dead;
@@ -862,6 +968,7 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
     rec.freed_bytes += freed;
     rec.bytes_since_cycle.store(0, Ordering::Relaxed);
     rec.polls.store(0, Ordering::Relaxed);
+    rec.heartbeat.store(false, Ordering::Relaxed);
     rec.last_cycle = Instant::now();
     drop(gc);
     unsafe { heap::unlock() };
@@ -871,9 +978,11 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
 pub unsafe extern "C" fn for_each_allocation(heap: *mut c_void, visit: Visit, ctx: *mut c_void) {
     let rec = unsafe { record(heap) };
     let _gc = heap::gc_locked_init();
-    // By index: `visit` may not allocate, so the list cannot grow under it.
-    for i in 0..rec.pins.len() {
-        unsafe { visit((rec.pins[i].start + PREFIX) as *mut u8, ctx) };
+    // `visit` may not allocate, so no shard grows under the walk.
+    for shard in rec.shards.all() {
+        for pin in unsafe { &(*shard).pins } {
+            unsafe { visit((pin.start + PREFIX) as *mut u8, ctx) };
+        }
     }
 }
 
@@ -885,7 +994,7 @@ pub unsafe extern "C" fn stats(heap: *mut c_void, out: *mut RtStats) {
         out.write(RtStats {
             heap_bytes: heap_bytes as usize,
             live_bytes: rec.live_bytes,
-            allocated_bytes: rec.allocated_bytes,
+            allocated_bytes: rec.allocated_bytes.load(Ordering::Relaxed),
             freed_bytes: rec.freed_bytes,
             freed_objects: rec.freed_objects,
         })

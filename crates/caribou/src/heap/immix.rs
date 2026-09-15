@@ -478,6 +478,10 @@ struct MutatorRecord {
     stack_top: usize,
     stopped_sp: usize,
     saved_regs: [usize; CALLEE_SAVED_WORDS],
+    /// A range to scan beside the stack while blocking: registers a
+    /// hosted runtime saved elsewhere when it stopped the thread
+    /// (`gc_block_at`); empty otherwise.
+    extra: (usize, usize),
     blocking_depth: u32,
     parked: bool,
     scan_ranges: Vec<(usize, usize)>,
@@ -540,6 +544,7 @@ fn register_current_mutator(stack_top: usize, role: &'static str) {
             stack_top,
             stopped_sp: 0,
             saved_regs: [0; CALLEE_SAVED_WORDS],
+            extra: (0, 0),
             blocking_depth: 0,
             parked: false,
             scan_ranges: Vec::new(),
@@ -763,6 +768,69 @@ pub fn gc_set_blocking(blocking: bool) -> bool {
     true
 }
 
+/// Enter a blocking region on behalf of the calling thread with its stack
+/// standing at `sp`, which need not be near this frame: a hosted runtime
+/// stopping a thread from a signal handler on another stack says where the
+/// interrupted stack stands, and `extra` where it saved the interrupted
+/// registers. Nothing is spilled here, and the thread does not park: a
+/// blocking thread is one the collector scans where it stands and does not
+/// wait for. `gc_unblock` leaves the region.
+pub fn gc_block_at(sp: usize, extra: (usize, usize)) -> bool {
+    if !current_mutator_registered() {
+        return false;
+    }
+    mark_site(SITE_ENTER_BLOCKING);
+    let thread = thread_self_fast();
+    let mut world = MUTATOR_WORLD.state.lock().unwrap();
+    let Some(record) = world.mutators.iter_mut().find(|m| m.thread == thread) else {
+        return false;
+    };
+    record.blocking_depth = record.blocking_depth.saturating_add(1);
+    record.stopped_sp = sp;
+    record.saved_regs = [0; CALLEE_SAVED_WORDS];
+    record.extra = extra;
+    MUTATOR_WORLD.changed.notify_all();
+    true
+}
+
+/// Leave the region `gc_block_at` entered. A collection under way holds
+/// the thread here first, with the stack and registers as they were
+/// recorded, since this frame may not be on the thread's stack.
+pub fn gc_unblock() -> bool {
+    if !current_mutator_registered() {
+        return false;
+    }
+    mark_site(SITE_LEAVE_BLOCKING);
+    let thread = thread_self_fast();
+    let mut world = MUTATOR_WORLD.state.lock().unwrap();
+    let Some(index) = world.mutators.iter().position(|m| m.thread == thread) else {
+        return false;
+    };
+    if world.mutators[index].blocking_depth == 0 {
+        return false;
+    }
+    world.mutators[index].blocking_depth -= 1;
+    if world.mutators[index].blocking_depth != 0 {
+        return true;
+    }
+    if world.stop_requested && world.collector != thread {
+        world.mutators[index].parked = true;
+        MUTATOR_WORLD.changed.notify_all();
+        while world.stop_requested {
+            world = MUTATOR_WORLD.changed.wait(world).unwrap();
+        }
+        if let Some(record) = world.mutators.iter_mut().find(|m| m.thread == thread) {
+            record.parked = false;
+        }
+    }
+    if let Some(record) = world.mutators.iter_mut().find(|m| m.thread == thread) {
+        record.stopped_sp = 0;
+        record.extra = (0, 0);
+    }
+    mark_site(SITE_RUNNING);
+    true
+}
+
 struct StoppedWorld {
     snapshots: Vec<MutatorSnapshot>,
     requested: bool,
@@ -776,6 +844,9 @@ impl Drop for StoppedWorld {
         if !self.requested {
             return;
         }
+        // The host lets its threads go first: one released here would
+        // run into the host's stop again otherwise.
+        stop_hook(false);
         let mut world = MUTATOR_WORLD.state.lock().unwrap();
         world.stop_requested = false;
         world.collector = 0;
@@ -854,6 +925,36 @@ fn request_fiber_poll() {
     }
 }
 
+/// A hosted collector's answer to a stop of the world, installed by
+/// [`set_stop_hook`]: called with `true` when a stop is requested, so the
+/// host brings the threads it runs to a safepoint, and with `false` once
+/// the collection is over, before the mutators are released.
+static STOP_HOOK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Install the hosted collector's stop hook, replacing any earlier one.
+pub fn set_stop_hook(f: fn(bool)) {
+    STOP_HOOK.store(f as usize, Ordering::Release);
+}
+
+fn stop_hook(on: bool) {
+    let raw = STOP_HOOK.load(Ordering::Acquire);
+    if raw != 0 {
+        // SAFETY: only `set_stop_hook` writes a non-zero value, and it
+        // writes a `fn(bool)`.
+        let f = unsafe { mem::transmute::<usize, fn(bool)>(raw) };
+        f(on);
+    }
+}
+
+/// `ranges`, as `(start, size)` pairs, with `[extra.0, extra.1)` added
+/// when it is not empty.
+fn with_extra(extra: (usize, usize), mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    if extra.1 > extra.0 {
+        ranges.push((extra.0, extra.1 - extra.0));
+    }
+    ranges
+}
+
 fn stop_mutator_world() -> StoppedWorld {
     let collector = thread_self_fast();
     let mut world = MUTATOR_WORLD.state.lock().unwrap();
@@ -867,6 +968,7 @@ fn stop_mutator_world() -> StoppedWorld {
             record.polls_at_stop = read_polls(record.polls);
         }
         request_fiber_poll();
+        stop_hook(true);
         // A mutator may already be sleeping in the GC-lock slow path. Wake it
         // so it can observe the stop request and publish its stack.
         GC_LOCK.wake_for_world_stop();
@@ -979,12 +1081,8 @@ fn stop_mutator_world() -> StoppedWorld {
     let snapshots = world
         .mutators
         .iter()
-        .map(|m| MutatorSnapshot {
-            thread: m.thread,
-            stack_top: m.stack_top,
-            stack_sp: m.stopped_sp,
-            saved_regs: m.saved_regs,
-            scan_ranges: match m.scan_live {
+        .map(|m| {
+            let ranges = match m.scan_live {
                 // SAFETY: the mutator is stopped, and it owns this table for
                 // as long as it is registered. A stop only lands at a
                 // safepoint, never between an entry's write and the length
@@ -998,7 +1096,14 @@ fn stop_mutator_world() -> StoppedWorld {
                         .collect()
                 },
                 _ => m.scan_ranges.clone(),
-            },
+            };
+            MutatorSnapshot {
+                thread: m.thread,
+                stack_top: m.stack_top,
+                stack_sp: m.stopped_sp,
+                saved_regs: m.saved_regs,
+                scan_ranges: with_extra(m.extra, ranges),
+            }
         })
         .collect();
     StoppedWorld {
@@ -2111,6 +2216,21 @@ pub fn is_allocation_start(ptr: *const c_void) -> bool {
     }
     let index = (addr - r.base) / ALLOC_QUANTUM;
     unsafe { (*r.objects.add(index)).load(Ordering::Relaxed) & !OBJECT_KIND_MASK != 0 }
+}
+
+/// Whether the allocation starting at `ptr` is traced through a
+/// descriptor at its word zero: what makes that word safe to read as one.
+pub fn is_traced_allocation(ptr: *const c_void) -> bool {
+    let Some(r) = RESERVATION.get() else {
+        return false;
+    };
+    let addr = ptr as usize;
+    if addr < r.base || addr >= r.base + r.len || addr % ALLOC_QUANTUM != 0 {
+        return false;
+    }
+    let index = (addr - r.base) / ALLOC_QUANTUM;
+    let code = unsafe { (*r.objects.add(index)).load(Ordering::Relaxed) };
+    code & !OBJECT_KIND_MASK != 0 && code & OBJECT_KIND_MASK == OBJECT_KIND_TRACED
 }
 
 /// Depth of the current thread's hold on the GC lock (0 = not held).
