@@ -6,6 +6,8 @@ import "game:Player" for Player
 
 var log = []
 var lock = Lock.new()
+var innerResult = null
+var innerDone = Lock.new()
 
 class Relay {
   // A fiber that sleeps and a thread that runs at once, each logging
@@ -51,6 +53,25 @@ class Relay {
     System.gc()
     var junk = []
     for (i in 0...4000) junk.add([i, "junk%(i)"])
+  }
+
+  // A task parked inside a Haxe try on its own stack while this run, on
+  // the thread's own stack, throws from Haxe: each stack's traps are its
+  // own, so the throw lands on this run's guard, not the task's try.
+  #export = "nested()"
+  static nested() {
+    Fiber.spawn {
+      innerResult = Player.withTry(Fn.new { Fiber.sleep(2) })
+      innerDone.release()
+    }
+    Fiber.tick(0)
+    Player.explodeNow()
+  }
+
+  #export = "finish() -> String"
+  static finish() {
+    innerDone.wait()
+    return innerResult
   }
 
   // Two Wren tasks, each in a Haxe call that parks inside a Haxe try,

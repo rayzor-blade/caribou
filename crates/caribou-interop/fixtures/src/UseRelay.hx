@@ -28,13 +28,30 @@ class UseRelay {
 		// by nothing else, while a Wren cycle runs and the freed memory is
 		// reused.
 		var churned = 0.0;
+		var churned2 = 0.0;
 		var back = new Lock();
 		Thread.create(function() {
 			churned = Relay.churn(2000);
 			back.release();
 		});
+		// A second task inside the same Wren call, parked beside the first:
+		// each resumes into the run it was in.
+		Thread.create(function() {
+			churned2 = Relay.churn(1000);
+			back.release();
+		});
 		Relay.cycle();
 		back.wait();
-		Sys.println(churned);
+		back.wait();
+		Sys.println(churned + " " + churned2);
+		// A Haxe throw on this stack while a task is parked inside a Haxe
+		// try on another.
+		try {
+			Relay.nested();
+			Sys.println("no throw");
+		} catch (e:String) {
+			Sys.println("caught " + e);
+		}
+		Sys.println(Relay.finish());
 	}
 }

@@ -585,7 +585,15 @@ fn resume_task(id: TaskId) -> bool {
         hook(TaskId::NONE, id);
     }
 
+    // A fiber's turn is a switch of stacks from the thread's own.
+    let stack = body.stack();
+    if let Some(stack) = stack {
+        super::stack::switch_stack(0, stack);
+    }
     let suspension = body.step(id);
+    if let Some(stack) = stack {
+        super::stack::switch_stack(stack, 0);
+    }
 
     // Invariant: the suspended stack is published before the hook, which
     // may publish interpreter roots and honour a pending collection.

@@ -75,29 +75,28 @@ fn deadline_from(timeout_ns: u64) -> Option<Instant> {
     (timeout_ns != RT_NO_TIMEOUT).then(|| Instant::now() + Duration::from_nanos(timeout_ns))
 }
 
-// ── Per-task state ──────────────────────────────────────────────────────
+// ── Per-stack and per-task state ────────────────────────────────────────
 
-/// What the scheduler swaps around a task's turns: the exception state ash
-/// keeps in thread-local cells, and the context `thread_create` was handed.
-/// The swap is symmetric, so entering and leaving are the same exchange.
+/// What the scheduler swaps around a stack's turns: the exception state
+/// ash keeps in thread-local cells. A trap is a frame, so the chain is the
+/// stack's, whichever task or fiber of whichever language runs on it. The
+/// swap is symmetric, so entering and leaving are the same exchange.
 struct ExcHost {
     trap: *mut TrapContext,
     exc: *mut vdynamic,
-    ctx: *mut c_void,
 }
 
 impl ExcHost {
-    fn new(ctx: *mut c_void) -> Box<Self> {
+    fn new() -> Box<Self> {
         Box::new(Self {
             trap: std::ptr::null_mut(),
             exc: std::ptr::null_mut(),
-            ctx,
         })
     }
 
     fn swap(&mut self) {
         // SAFETY: both cells are this thread's, and the scheduler calls this
-        // only on the thread that runs the task.
+        // only on the thread that runs the stack.
         unsafe { (hooks().exc_swap)(&mut self.trap, &mut self.exc) };
     }
 }
@@ -110,6 +109,18 @@ impl HostState for ExcHost {
     fn swap_out(&mut self) {
         self.swap();
     }
+}
+
+/// What a task keeps: the context `thread_create` was handed, for
+/// `current_ctx`. Nothing to swap.
+struct AshTask {
+    ctx: *mut c_void,
+}
+
+impl HostState for AshTask {
+    fn swap_in(&mut self) {}
+
+    fn swap_out(&mut self) {}
 }
 
 /// The core's hook, per world: hands ash's registered hook the switch as
@@ -139,19 +150,30 @@ fn ensure_world_ready() {
         return;
     }
     WORLD_READY.with(|ready| ready.set(true));
-    sched::attach_host_state(TaskId::NONE, ExcHost::new(std::ptr::null_mut()));
+    sched::attach_stack_host_state(0, ExcHost::new());
     sched::set_switch_hook(switch_bridge);
 }
 
-/// Before a task's first turn, whichever language spawned it: the
-/// exception state is swapped around every task, so a Haxe call from a
-/// task of another language keeps its traps to itself. A task ash spawns
-/// attaches its own, with its context, in its first run.
+/// Before a task's first turn, whichever language spawned it: the world
+/// is ready, and the task has a context slot. A task ash spawns fills it
+/// in its first run.
 pub(crate) fn task_born(id: TaskId) {
     ensure_world_ready();
-    if sched::with_host_state::<ExcHost, _>(id, |_| ()).is_none() {
-        sched::attach_host_state(id, ExcHost::new(std::ptr::null_mut()));
+    if sched::with_host_state::<AshTask, _>(id, |_| ()).is_none() {
+        sched::attach_host_state(
+            id,
+            Box::new(AshTask {
+                ctx: std::ptr::null_mut(),
+            }),
+        );
     }
+}
+
+/// Before a stack's first turn on a thread, whichever runtime made it: a
+/// fresh exception state, so a Haxe try on one stack is never the live
+/// chain on another.
+pub(crate) fn stack_born(stack: u64) {
+    sched::attach_stack_host_state(stack, ExcHost::new());
 }
 
 // ── Threads ─────────────────────────────────────────────────────────────
@@ -217,7 +239,12 @@ pub unsafe extern "C" fn thread_create(
     let ctx = ctx as usize;
     let run = move || {
         ensure_world_ready();
-        sched::attach_host_state(sched::current_task(), ExcHost::new(ctx as *mut c_void));
+        sched::attach_host_state(
+            sched::current_task(),
+            Box::new(AshTask {
+                ctx: ctx as *mut c_void,
+            }),
+        );
         // SAFETY: `body` and `ctx` are what ash handed `thread_create`.
         unsafe { body(ctx as *mut c_void) };
     };
@@ -281,7 +308,7 @@ pub unsafe extern "C" fn current_ctx() -> *mut c_void {
     if !task.is_task() {
         return std::ptr::null_mut();
     }
-    sched::with_host_state::<ExcHost, _>(task, |host| host.ctx).unwrap_or(std::ptr::null_mut())
+    sched::with_host_state::<AshTask, _>(task, |host| host.ctx).unwrap_or(std::ptr::null_mut())
 }
 
 /// The core tells the heap itself when the depth crosses zero, so this

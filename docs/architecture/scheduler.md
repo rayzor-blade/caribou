@@ -46,15 +46,25 @@ turns when it blocks or when the driver ticks the world. A task never
 drives a turn; it yields.
 
 Host state is a `HostState` object an adapter attaches to a task with
-`attach_host_state`, or to the main context under `TaskId::NONE`. Ash
-keeps its trap chain and pending exception there; Zyntax will keep its
-effect handler stack. Around each resume the scheduler:
+`attach_host_state`, or to the main context under `TaskId::NONE`; each
+adapter's state is its own type, and a task carries one of each. What
+belongs to a stack rather than a task, Ash's trap chain and pending
+exception above all, since a trap is a frame, is attached to the stack
+instead (`attach_stack_host_state`, by krio's id, 0 the thread's own),
+and swapped on every switch of stacks on the thread (`switch_stack`): the
+world's own, around a fiber task's turn, and a hosted runtime's own
+`Fiber.call` and `yield`, told through its adapter. An adapter attaches
+to a stack it first sees from the stack hook (`add_stack_hook`). The
+bridge's count of guards on the stack goes with it. Zyntax will keep its
+effect handler stack the same way. Around each resume the scheduler:
 
 1. swaps the main context's state out and the task's in;
-2. steps the task;
-3. publishes the task's suspended stack pointer to the heap;
-4. runs the world's switch hook;
-5. swaps the task's state out and the main context's back in.
+2. switches from the thread's stack to the task's, when it has one;
+3. steps the task;
+4. switches back;
+5. publishes the task's suspended stack pointer to the heap;
+6. runs the world's switch hook;
+7. swaps the task's state out and the main context's back in.
 
 The switch hook (`set_switch_hook`, one per world) runs only after the
 stack pointer is published, because a hook that publishes interpreter
@@ -107,11 +117,17 @@ calling context when it uses it: `adopt(token)` gives the waiter for the
 task that is about to park on it, `wake_token` wakes by token, and
 `notified_before_park` finds a wake that came first.
 
-Host state is per task whoever spawned it. `add_task_hook` registers a
-function the world runs before a task's first turn; Ash attaches its
-exception state there, so a Haxe call from a Wren task that parks inside
-a `try` keeps its traps to itself. A task Ash spawns attaches its own,
-with its context, in its first run, and that replaces the hook's.
+Host state is per task and per stack whoever spawned or made them.
+`add_task_hook` registers a function the world runs before a task's
+first turn, and `add_stack_hook` one for a stack's first turn on a
+thread: Ash attaches its exception state to every stack there, so a Haxe
+call from a Wren task that parks inside a `try` keeps its traps to
+itself, and so does a Haxe try open on a Wren fiber while another fiber
+of the same task runs. The Wren adapter attaches to every task and the
+main context the view's safe state and the run the context is in (the
+fiber, its error state, the JIT's per-thread state), which wren_lift
+sets aside and takes up again (`VM::set_aside`, `take_up`) so two
+contexts inside Wren calls on one thread each resume into their own.
 
 ## The reactor
 
@@ -160,8 +176,9 @@ An adapter provides three things:
 
 - a way to build a task from its own callable (a Haxe closure, a Wren
   fiber object, a Zyntax function), rooting that callable itself;
-- the per-task host state the scheduler swaps, attached from the task hook
-  for every task and from its own tasks' first run;
+- the per-task and per-stack host state the scheduler swaps, attached from
+  the task and stack hooks for every task and stack and from its own
+  tasks' first run;
 - a switch hook, if it keeps interpreter roots to publish.
 
 It uses `spawn`, `spawn_fiber`, `park`, `wake`, `yield_now`,

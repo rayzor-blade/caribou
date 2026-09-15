@@ -712,6 +712,13 @@ pub unsafe extern "C" fn stack_suspended(id: u64, sp: usize) {
 
 pub unsafe extern "C" fn stack_drop(id: u64) {
     unsafe { heap::gc_unregister_fiber_stack(id) };
+    caribou::sched::forget_stack(id);
+}
+
+/// A switch of stacks inside a Wren run: the state the adapters keep per
+/// stack goes with it, Ash's trap chain above all.
+pub unsafe extern "C" fn stack_switch(from: u64, to: u64) {
+    caribou::sched::switch_stack(from, to);
 }
 
 // A thread that runs Wren is a core mutator in deferred mode for as long

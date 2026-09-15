@@ -11,7 +11,9 @@
 //!
 //! Around each turn the scheduler publishes the suspended stack pointers
 //! to the heap and swaps the task's [`HostState`] into the thread's live
-//! cells; the [`SwitchHook`] runs after the publish. [`park`] and [`wake`]
+//! cells, and the state of the stack the task runs on ([`switch_stack`],
+//! which a hosted runtime's own switches go through too); the
+//! [`SwitchHook`] runs after the publish. [`park`] and [`wake`]
 //! are the one blocking primitive; locks, conditions and sleeps are built
 //! on them. Compiled loops poll [`POLL_EPOCH`], which a timer bumps while
 //! tasks exist and the collector bumps when it wants the world stopped.
@@ -22,6 +24,7 @@
 
 mod pool;
 mod preempt;
+mod stack;
 mod task;
 mod wait;
 mod world;
@@ -30,6 +33,9 @@ pub use krio_core::{Suspension, Task, TaskId};
 
 pub use pool::{has_worker_pool, is_pool_worker, worker_count};
 pub use preempt::{POLL_EPOCH, any_live_tasks, poll_epoch_address, request_poll};
+pub use stack::{
+    add_stack_hook, attach_stack_host_state, forget_stack, switch_stack, with_stack_host_state,
+};
 pub use task::{DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspend, SwitchHook};
 pub use wait::{
     Waiter, adopt, discard, new_waiter, notified_before_park, park, request_park, sleep_until,

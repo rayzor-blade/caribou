@@ -67,6 +67,21 @@ class Player {
 		return t;
 	}
 
+	/** Runs `f`, which may park or yield, inside a try, then throws: what is
+		caught says whether the trap chain survived. */
+	public static function withTry(f:Void->Void):String {
+		try {
+			f();
+			throw "later";
+		} catch (e:String) {
+			return "caught " + e;
+		}
+	}
+
+	public static function explodeNow():Void {
+		throw "boom";
+	}
+
 	/** Parks the calling task inside a try, then throws: what is caught
 		says whether the trap chain survived the park. */
 	public static function napThenThrow(ms:Float):String {

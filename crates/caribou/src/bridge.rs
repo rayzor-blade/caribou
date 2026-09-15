@@ -116,22 +116,44 @@ pub type Guard = unsafe extern "C-unwind" fn(
 /// The one guard a process has: one language leaves by a long jump.
 static GUARD: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
 
-/// What a thread knows about the runs it is in.
+/// What a thread knows about the runs it is in: the runs on the stack it
+/// runs, since a guard is a frame. The scheduler swaps it on a switch of
+/// stacks (`switch_runs`).
 struct Runs {
-    /// How many guards the thread is under.
+    /// How many guards the stack is under.
     guarded: Cell<u32>,
     /// The site of the innermost run entered without a guard, for a
     /// crossing inside it to mark, else null.
     entry: Cell<*const CallSite>,
+    /// The runs of the other stacks of this thread, by stack.
+    others: RefCell<HashMap<u64, (u32, *const CallSite)>>,
 }
 
 thread_local! {
-    static RUNS: Runs = const {
-        Runs {
-            guarded: Cell::new(0),
-            entry: Cell::new(ptr::null()),
-        }
+    static RUNS: Runs = Runs {
+        guarded: Cell::new(0),
+        entry: Cell::new(ptr::null()),
+        others: RefCell::new(HashMap::new()),
     };
+}
+
+/// The thread is switching from stack `from` to stack `to`: the runs are
+/// `to`'s from here, none for a stack not seen before.
+pub(crate) fn switch_runs(from: u64, to: u64) {
+    RUNS.with(|r| {
+        let mut others = r.others.borrow_mut();
+        others.insert(from, (r.guarded.get(), r.entry.get()));
+        let (guarded, entry) = others.remove(&to).unwrap_or((0, ptr::null()));
+        r.guarded.set(guarded);
+        r.entry.set(entry);
+    });
+}
+
+/// The stack `id` is gone, its runs with it.
+pub(crate) fn forget_runs(id: u64) {
+    RUNS.with(|r| {
+        r.others.borrow_mut().remove(&id);
+    });
 }
 
 /// Register the guard for the language that leaves its code by a long

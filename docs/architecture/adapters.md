@@ -177,8 +177,15 @@ stack, and is raised on the VM as a runtime error, which `Fiber.try`
 sees as it sees an abort. The adapter's own entries into compiled code
 (a direct send, an `invoke`, a `call`, a constructor) go through
 `bridge::enter`, under the guard when the entry site wants it. A throw
-that lands puts the thread's JIT state back to what it was at entry
-(`JitMark`), since the compiled frames between are gone.
+that lands puts the thread's JIT state and the interpreter's live
+register files on the stack back to what they were at entry
+(`JitMark`), since the frames between are gone.
+
+wren_lift tells the seam of every switch of stacks it makes itself, a
+`Fiber.call` into a fiber with a stack of its own and the return from
+it (`stack_switch`), and the adapter hands it to the core, so what the
+adapters keep per stack goes with it (see
+[scheduler.md](scheduler.md#the-scheduler-loop)).
 
 ### The world
 
@@ -213,7 +220,11 @@ the `host_poll` slot tells the core of the request, and bumps its poll
 epoch so compiled loops reach one). Each context carries the view's
 state across the core's switches, a `ViewState` host state on every
 task and the main context, so a context parked inside Wren leaves the
-view safe and one resuming into Wren finds it running. `task_step`
+view safe and one resuming into Wren finds it running; and each carries
+the run it is in the same way (`WrenActivation`): the fiber, its error
+state and the JIT's per-thread state are one set per view, so a context
+sets its run aside when the thread switches away (`VM::set_aside`) and
+takes it up on the way back, its roots the view's meanwhile. `task_step`
 makes a worker's view running for the step, and a view the host's world
 made on a worker goes with the program's last task there. A wait for a
 collection of wren_lift's is one the seam hears of, since the core's

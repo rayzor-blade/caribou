@@ -84,6 +84,8 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
             "party",
             "scores",
             "total",
+            "withTry",
+            "explodeNow",
             "napThenThrow"
         ],
         "static fields and static methods are all fields of the companion"
@@ -91,8 +93,8 @@ fn a_started_program_publishes_its_classes_and_the_bridge_drives_them() {
     assert!(companion.proto.is_empty());
     assert_eq!(
         companion.bindings.len(),
-        16,
-        "the constructor and seven statics, a field index and a findex each: {:?}",
+        20,
+        "the constructor and nine statics, a field index and a findex each: {:?}",
         companion.bindings
     );
     // Publishing before the start is allowed: the interpreter registers

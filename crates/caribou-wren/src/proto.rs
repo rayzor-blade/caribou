@@ -246,7 +246,8 @@ fn raise_core(kind: ErrorKind, message: &str) -> u8 {
 // Guarded runs
 // ---------------------------------------------------------------------------
 
-/// What the thread keeps for compiled code across a run, put back when a
+/// What the thread keeps for compiled code across a run, and the
+/// interpreter's live register files on this stack, put back when a
 /// throw lands in the guard and the frames between are gone.
 struct JitMark {
     ctx: wren_lift::codegen::runtime_fns::JitContext,
@@ -254,17 +255,22 @@ struct JitMark {
     frames: usize,
     depth: u32,
     disabled: bool,
+    stack: u64,
+    live_regs: usize,
 }
 
 impl JitMark {
     fn take() -> JitMark {
         let j = unsafe { &*wren_lift::codegen::runtime_fns::jit_state() };
+        let stack = caribou::sched::current_stack();
         JitMark {
             ctx: j.ctx,
             roots: j.roots.len(),
             frames: j.frames.len(),
             depth: j.depth,
             disabled: j.disabled,
+            stack,
+            live_regs: wren_lift::runtime::live_regs::count_on(stack),
         }
     }
 
@@ -275,6 +281,7 @@ impl JitMark {
         j.frames.truncate(self.frames);
         j.depth = self.depth;
         j.disabled = self.disabled;
+        wren_lift::runtime::live_regs::truncate_on(self.stack, self.live_regs);
         vm.pending_fiber_action = None;
     }
 }

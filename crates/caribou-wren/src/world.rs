@@ -150,14 +150,44 @@ impl HostState for ViewState {
     }
 }
 
+/// The run of the view a context is in, set aside while another context
+/// runs on the thread: the fiber, its error state and the JIT's
+/// per-thread state are the view's one set, and each context has its
+/// own. A context that never ran Wren sets aside a run in nothing, and
+/// takes that up again.
+struct WrenActivation {
+    aside: Option<u64>,
+}
+
+impl HostState for WrenActivation {
+    fn swap_out(&mut self) {
+        let vm = view();
+        if !vm.is_null() {
+            self.aside = Some(unsafe { (*vm).set_aside() });
+        }
+    }
+
+    fn swap_in(&mut self) {
+        if let Some(id) = self.aside.take() {
+            let vm = view();
+            if !vm.is_null() {
+                unsafe { (*vm).take_up(id) };
+            }
+        }
+    }
+}
+
 /// Before a task's first turn, whichever language spawned it: the task
-/// and, once per world, the main context carry the view's state.
+/// and, once per world, the main context carry the view's state and the
+/// run they are in.
 pub(crate) fn task_born(id: TaskId) {
     if !MAIN_READY.with(|c| c.replace(true)) {
         sched::attach_host_state(TaskId::NONE, Box::new(ViewState { running: false }));
+        sched::attach_host_state(TaskId::NONE, Box::new(WrenActivation { aside: None }));
     }
     if sched::with_host_state::<ViewState, _>(id, |_| ()).is_none() {
         sched::attach_host_state(id, Box::new(ViewState { running: false }));
+        sched::attach_host_state(id, Box::new(WrenActivation { aside: None }));
     }
 }
 

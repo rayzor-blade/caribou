@@ -111,6 +111,16 @@ impl Body {
         }
     }
 
+    /// The stack a fiber body runs on, by krio's id; none for a body the
+    /// scheduler steps on its own stack.
+    pub(super) fn stack(&self) -> Option<u64> {
+        match self {
+            #[cfg(not(target_family = "wasm"))]
+            Body::Stackful(task) => Some(task.gc_id),
+            Body::Stackless(_) => None,
+        }
+    }
+
     pub(super) fn step(&mut self, id: TaskId) -> Suspension {
         match self {
             #[cfg(not(target_family = "wasm"))]
@@ -235,6 +245,7 @@ impl Drop for StackfulTask {
         // Before the fiber frees its stack.
         // SAFETY: registered in `new`; nothing publishes it after this.
         unsafe { heap::gc_unregister_fiber_stack(self.gc_id) };
+        super::stack::forget_stack(self.gc_id);
     }
 }
 

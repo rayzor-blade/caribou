@@ -19,7 +19,8 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 const RELAY: &str = include_str!("../fixtures/src/game/relay.wren");
 
-const EXPECTED: &str = "haxe-thread\nwren-fiber,wren-thread\ncaught late2 caught late4\n2005890\n";
+const EXPECTED: &str = "haxe-thread\nwren-fiber,wren-thread\ncaught late2 caught late4\n\
+                        2005890 502390\ncaught boom\ncaught later\n";
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/relay.hl")
