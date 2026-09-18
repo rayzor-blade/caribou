@@ -16,25 +16,24 @@ Each supported language runtime acts as an adapter layer over this core. In typi
 
 This documentation specifies the current implementation and system architecture as built. For architectural decision records and conceptual background, refer to the design proposals; active tasks and tracked issues are maintained in `git-bug`.
 
-## The pages
+## Documentation Pages
 
-| Page | What it covers |
+| Page | Scope |
 |---|---|
-| [Heap](architecture/heap.md) | The Immix collector: memory, allocation kinds, type descriptors, roots, collection, hosted collectors, locking. |
-| [Scheduler](architecture/scheduler.md) | Worlds and tasks, the loop, parking, preemption, multiple worlds, what an adapter provides. |
-| [Bridge](architecture/bridge.md) | Values at the boundary, the object protocol, symbols, errors, typed dispatch, calls, call sites, guards, cells and shadows, diagnostics. |
-| [Adapters](architecture/adapters.md) | How a Haxe object and a Wren object answer the protocol, calling into Haxe under a trap or a guard, Wren dispatch, fibers and runs, functions crossing either way. |
-| [Registry](architecture/registry.md) | Interfaces and namespaces, and what Ash and WrenLift publish. |
-| [Wren imports a Haxe class](architecture/wren-imports.md) | Resolving and installing, a call, lifetime. |
-| [Haxe imports a Wren class](architecture/haxe-imports.md) | The build macro, declaring types, the emitted class, binding the natives, cells, how a Wren object is held by Haxe. |
-| [World and driver](architecture/world.md) | Adapters and languages, startup, the driver and its project layout, the run report, events. |
-| [Linking](architecture/linking.md) | A member at link time: the symbol, the C signature, each AOT's half, what stays at run time. |
-| [Bundle](architecture/bundle.md) | A program and its modules in one file: what is in it, building, opening. |
-| [Plugins](architecture/plugins.md) | Native code on the shared ABI: writing one, loading, a plugin as a language of its own. |
-| [Zyntax](architecture/zyntax.md) | Zyntax frontends as languages: snapshots and grammars under the roots, modules published from the typed AST and the HIR. |
+| [Heap & Memory Management](architecture/heap.md) | The Immix collector: memory layout, allocation kinds, type descriptors, the root set, the collection cycle, hosted collectors, and locking. |
+| [Scheduler & Task Model](architecture/scheduler.md) | Worlds and tasks, the scheduler loop, parking, guest runtime tasks, the reactor, preemption, multiple worlds, and the adapter contract. |
+| [Object Protocol & Call Bridge](architecture/bridge.md) | Values at the boundary, the object protocol, symbols, errors, typed dispatch, calls, call sites, guards, cells and shadows, and diagnostics. |
+| [Runtime Adapters](architecture/adapters.md) | How Haxe and Wren objects implement the protocol, calling into Haxe under a trap or a guard, Wren dispatch, fibers and runs, and functions crossing in either direction. |
+| [Module Registry & Namespaces](architecture/registry.md) | Interfaces and namespaces, and what Ash and WrenLift publish. |
+| [Wren Imports of Haxe Classes](architecture/wren-imports.md) | Resolution and installation, the call path, and object lifetime. |
+| [Haxe Imports of Wren Classes](architecture/haxe-imports.md) | The build macro, type declarations, the emitted class, native binding, cells, and how Haxe holds Wren objects. |
+| [World & Driver](architecture/world.md) | Adapters and languages, startup, the driver and its project layout, the run report, reload, and events. |
+| [Link-Time Binding](architecture/linking.md) | A member at link time: the symbol, the C signature, each AOT's half, and what remains at run time. |
+| [Bundle Format & Deployment](architecture/bundle.md) | A program and its modules in one file: contents, building, and opening. |
+| [Native Plugins & The Shared ABI](architecture/plugins.md) | Native code on the shared ABI: writing a plugin, loading, plugins as languages, objects, strings, the host table, and hatch packages. |
+| [Zyntax](architecture/zyntax.md) | Zyntax frontends as languages: snapshots and grammars under the roots, and modules published from the typed AST and the HIR. |
 
-[interop.md](interop.md) is the companion for a program's author: what a
-program writes and what it can expect.
+[interop.md](interop.md) is the companion reference for program authors: what a program writes and what behavior it can expect.
 
 ## Runtime Virtualization & The Seam Model
 

@@ -1,26 +1,19 @@
-# Plugins
+# Native Plugins & The Shared ABI
 
-A plugin is native code every hosted language reaches the same way: a
-dynamic library on the shared ABI (`caribou_abi`), whose table names its
-functions, the class each hangs in, and their signatures. A language sees
-of a plugin what the driver loaded and nothing more; no language reaches
-a plugin by a path of its own.
+## Overview
 
-Each language's own native libraries keep working for that language,
-unconverted: a Haxe program's `hdll`s beside it, as ash loads them; a
-Wren module's hatch packages with their plugins, as wren_lift loads
-them (below). What one language gets that way, another reaches through
-the bridge, by importing the class that wraps it. A caribou plugin is
-what every language reaches directly.
+A plugin is native code that every hosted language reaches the same way: a dynamic library built on the shared ABI (`caribou_abi`). The library exports a table that names its functions, the class each function belongs to, and their signatures. A language sees exactly what the driver loaded and nothing more. No language reaches a plugin through a path of its own.
 
-## Writing one
+**Language-native libraries:** Each language's own native libraries keep working for that language, without conversion:
 
-A plugin's crate depends on `caribou_abi` and nothing else of caribou,
-and is a `cdylib`. Its functions are ordinary Rust items, `extern "C"`
-over the types the ABI tags cover, and a class is a type whose
-associated functions hang in it; so the crate reads, and the tooling
-sees it, as any Rust module does. One `plugin!` invocation then names
-what is exported, by signature, the way a header declares it:
+* A Haxe program's `hdll` libraries next to it, loaded by Ash.
+* A Wren module's hatch packages and their plugins, loaded by WrenLift (see below).
+
+What one language gets this way, another language can reach through the bridge by importing the class that wraps it. A Caribou plugin is what every language reaches directly.
+
+## Writing a Plugin
+
+A plugin crate depends on `caribou_abi` and nothing else from Caribou, and builds as a `cdylib`. Its functions are ordinary Rust items: `extern "C"` functions over the types the ABI tags cover. A class is a type whose associated functions belong to it. The crate reads, and the tooling treats it, like any other Rust module. One `plugin!` invocation then declares what is exported, by signature, the way a header file would:
 
 ```rust
 pub extern "C" fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
@@ -47,142 +40,74 @@ caribou_abi::plugin! {
 }
 ```
 
-A function outside any class is a static of a class named after the
-plugin (`Math`). Each declaration is checked against the item it names,
-as a coercion to the declared function pointer type, so a signature
-that drifts does not compile. The macro reads each type's tag off the
-`Param` and `Returned` traits: `u8`, `u16`, `i32`, `i64`, `f32`, `f64`,
-`bool`, `()` and `Value` by their tags; `Text` as a string; `&T` and
-`&mut T` of a declared class as an object of it, borrowed for the call,
-which makes the function an instance method when it is the first
-parameter; `Box<T>` as a new object of the class, owned by the core from
-then on. A static `new` returning its own class is the class's
-constructor. The macro writes the `SymbolDesc` table, the class table
-with a finalizer per class (the `Box` dropped), the `PluginInfo`, and
-the two symbols every plugin exports: `caribou_abi_version`, which a
-core compares with its own before it binds anything, and
-`caribou_plugin_entry`, which takes the core's table (below) and returns
-the plugin's.
+**Declaration rules:**
+
+* A function outside any class becomes a static method of a class named after the plugin (`Math`).
+* Each declaration is checked against the item it names by coercing the item to the declared function pointer type. A signature that does not match the item does not compile.
+* The macro reads each type's tag from the `Param` and `Returned` traits. `u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`, `()`, and `Value` map to their tags. `Text` is a string. `&T` and `&mut T` of a declared class are an object of that class, borrowed for the call; when such a parameter comes first, the function is an instance method. `Box<T>` is a new object of the class, owned by the core from then on.
+* A static `new` that returns its own class is the class's constructor.
+
+**Generated code:** The macro writes the `SymbolDesc` table, the class table with one finalizer per class (which drops the `Box`), the `PluginInfo`, and the two symbols every plugin exports: `caribou_abi_version`, which a core compares with its own version before binding anything, and `caribou_plugin_entry`, which receives the core's table (see below) and returns the plugin's.
 
 ## Loading
 
-`caribou_plugin::load` opens a library, refuses one of another ABI
-version, and reads its table; `load_dir` opens every library in a
-directory that exports the entry, passing over the ones that do not.
-The driver loads the plugins in `plugins/` beside a program before it
-starts: the project's layout is the configuration. A bundle carries
-them as native library sections (see [bundle.md](bundle.md)), and a
-session from a bundle loads those.
+`caribou_plugin::load` opens a library, rejects it if it was built against a different ABI version, and reads its table. `load_dir` opens every library in a directory that exports the entry point and skips the ones that do not. The driver loads the plugins in `plugins/` next to a program before the program starts. The project's layout is the configuration. A bundle carries plugins as native library sections (see [bundle.md](bundle.md)), and a session started from a bundle loads those.
 
-## A language of its own
+## Plugins as Languages
 
-The plugin adapter (`caribou_plugin::Runtime`) registers one language
-per plugin, named after it. So every plugin has a namespace with nothing
-configured, and a Wren program writes `import "math:Math" for Math` the
-way it imports any language's class. A Haxe program writes `import
-math.Math`: the build macro describes the libraries in `plugins/` beside
-the compiler's output (`caribou describe` reads a plugin as it reads a
-Wren module, one module per class) and emits a class for each, under the
-plugin's name as the package, with the same natives a Wren class gets;
-the driver's namespaces cover the plugins beside the program, so the
-natives bind by name at run time. An instance method of a plugin class
-is a typed target the Haxe adapter calls with the object first, where a
-Wren object's member is sent to the object for its own dispatch; the
-faces the macro emits are not published as Haxe classes, being another
-language's.
+The plugin adapter (`caribou_plugin::Runtime`) registers one language per plugin, named after the plugin. Every plugin therefore has a namespace without any configuration:
 
-The table publishes to the registry as one module per class, named
-after the class, with the class's functions as its methods. Every target
-is a `Callable::Typed` whose signature is an `hl_type` of kind `HFUN`
-built from the tags, one object per distinct signature for the process,
-and the plugin's language has a typed dispatcher: it reads the
-signature's kinds, passes each `Value` as the word of its kind, an
-integer as itself, a float as its bits, a bool as 0 or 1, a `DYN` as the
-value's bits, calls through `ash_native_call`'s generated table, and
-reads the result back the same way. Nothing is boxed. A value a kind
-cannot take is a `Type` error naming the argument; a signature the table
-does not cover is an error too.
+* **Wren:** `import "math:Math" for Math`, the same way it imports any other language's class.
+* **Haxe:** `import math.Math`. The build macro describes the libraries in `plugins/` next to the compiler output (`caribou describe` reads a plugin the same way it reads a Wren module, producing one module per class) and emits a class for each, using the plugin's name as the package. The emitted class gets the same natives a Wren class gets. The driver's namespaces cover the plugins next to the program, so the natives bind by name at run time. An instance method of a plugin class is a typed target that the Haxe adapter calls with the object as the first argument, whereas a Wren object's member is sent to the object for Wren's own dispatch. The faces the macro emits are not published as Haxe classes, because they belong to another language.
+
+**Publishing and dispatch:** The table is published to the registry as one module per class, named after the class, with the class's functions as its methods. Every target is a `Callable::Typed` whose signature is an `hl_type` of kind `HFUN` built from the tags. There is one signature object per distinct signature in the process. The plugin's language has a typed dispatcher: it reads the signature's kinds, passes each `Value` as the word for its kind (an integer as itself, a float as its bits, a bool as 0 or 1, a `DYN` as the value's bits), calls through `ash_native_call`'s generated table, and reads the result back the same way. Nothing is boxed. A value that a kind cannot represent produces a `Type` error that names the argument. A signature the table does not cover is also an error.
 
 ## Objects
 
-An instance of a plugin class is a core object of the class's
-descriptor, two words: the descriptor and the payload the constructor's
-`Box` gave. The descriptor, one per class for the process, is the
-class's identity: it carries the class's type name (`math.Vec2`), so a
-language installs its class for the object as it does for any
-published type, and Wren's `Vec2.new(3, 4)` gives an instance that
-adopts the object and `v is Vec2` holds; its drop hook runs the
-plugin's finalizer when the object dies, on the sweep, so the payload
-lives exactly as long as anything holds the object. The object's
-protocol answers its type name, identity for `equals` and `hash`, and
-`unwrap_native` with the payload; the plugin's own functions are what
-reach it, through the classes the languages installed.
+An instance of a plugin class is a core object with the class's descriptor. It is two words: the descriptor and the payload that the constructor's `Box` produced.
 
-In a signature an object parameter or result is typed by the
-descriptor itself, which is an `hl_type` at word zero: the dispatcher
-sees a descriptor where a scalar kind would be, takes the argument's
-object, through the cell another language holds it by, checks that its
-descriptor is that one, and passes the payload; an object of another
-class, or no object, is a `Type` error naming the class. A result that
-is a descriptor's is wrapped as a new object, or null for a null
-pointer. So a plugin never reads memory that is not its own, and never
-sees the core's object.
+* **Identity:** The descriptor, one per class per process, is the class's identity. It carries the class's type name (`math.Vec2`), so a language installs its class for the object the same way it does for any published type. In Wren, `Vec2.new(3, 4)` produces an instance that adopts the object, and `v is Vec2` is true.
+* **Lifetime:** The descriptor's drop hook runs the plugin's finalizer when the object dies, during the sweep. The payload therefore lives exactly as long as something holds the object.
+* **Protocol:** The object answers its type name, uses identity for `equals` and `hash`, and returns the payload from `unwrap_native`. The plugin's own functions are what operate on it, through the classes the languages installed.
+
+**Typed object parameters:** In a signature, an object parameter or result is typed by the descriptor itself, which is an `hl_type` at word zero. When the dispatcher sees a descriptor where a scalar kind would be, it takes the argument's object (through the cell another language holds it by), checks that the object's descriptor matches, and passes the payload. An object of another class, or a non-object, produces a `Type` error that names the expected class. A result typed by a descriptor is wrapped as a new object, or becomes null for a null pointer. A plugin therefore never reads memory that is not its own, and never sees the core's object.
 
 ## Strings
 
-A string crosses as a `Text`, one word: the address of the core string
-itself, whose header the ABI spells as `TextData` (the core's word, the
-length in bytes, the UTF-8 after). A `Text` parameter is the string the
-caller passed, which every language's adapter hands over as a core
-string already, borrowed for the call and read as a `str`; a value that
-is not a string is a `Type` error, as a wrong scalar is. A `Text` result
-is one the plugin made with `Text::new`, which asks the core for it;
-the dispatcher hands the word back as the value it is. Nothing is
-copied at the crossing, and the plugin never writes a header.
+A string crosses as a `Text`, which is one word: the address of the core string itself. The ABI describes the string's header as `TextData`: the core's own word, the length in bytes, and then the UTF-8 bytes. A `Text` parameter is the string the caller passed. Every language's adapter hands strings over as core strings already, so the plugin borrows it for the call and reads it as a `str`. A value that is not a string produces a `Type` error, the same as a wrong scalar. A `Text` result is one the plugin created with `Text::new`, which asks the core to allocate it. The dispatcher passes the word back as the value it is. Nothing is copied at the crossing, and the plugin never writes a header itself.
 
-## The host
+## The Host Table
 
-`caribou_plugin_entry` is handed the core's table, `host::Host`, and
-the macro keeps it; `caribou_abi::host` is the plugin's side of it, plain
-functions the tooling sees. Through it a plugin makes a string
-(`text`), calls a value it was given (`call`, whose `Err` is the error
-value the call raised), and raises: `raise` makes an error of a kind
-with a message pending, `raise_value` makes an error a call handed back
-pending, and in either case the plugin function returns, its result
-ignored, and its caller sees the error, as it sees one raised by any
-language. A value a plugin holds across calls goes in a `Kept`: a handle
-the collector honours until the `Kept` drops, since a bare `Value` in the
-plugin's own memory is invisible to the collector. So a plugin object
-that keeps a callback keeps a `Kept` of it, and calls it with `call`
-when its moment comes; the function may be Wren's or Haxe's, and what
-it raises comes back to the plugin to hand on or handle. Every entry of
-the table is called on the caller's thread inside the plugin function
-the dispatcher is calling; a plugin has no thread of its own to call
-from.
+`caribou_plugin_entry` receives the core's table, `host::Host`, and the macro stores it. `caribou_abi::host` is the plugin's side of the table: plain functions that the tooling can see. Through it, a plugin can:
 
-## Hatch packages
+* **Create strings** with `text`.
+* **Call values it was given** with `call`. The `Err` case is the error value the call raised.
+* **Raise errors.** `raise` creates an error of a given kind with a message and marks it pending. `raise_value` marks an error value that a call returned as pending. In both cases the plugin function then returns, its result is ignored, and its caller sees the error the same way it sees an error raised by any language.
+* **Keep values across calls** in a `Kept`. A `Kept` is a handle that the collector honors until the `Kept` is dropped. A bare `Value` stored in the plugin's own memory is invisible to the collector. A plugin object that keeps a callback stores it in a `Kept` and invokes it with `call` when needed. The function can come from Wren or from Haxe, and anything it raises comes back to the plugin to handle or pass on.
 
-A project's Wren modules depend on hatch packages the way a hatch
-workspace does: a `hatchfile` at a root, with `[dependencies]`. The
-driver resolves each as `hatch` does (`wren_lift::hatch::
-resolve_dependency_bytes`: a path dependency built from its workspace,
-a version from the cache `hatch install` fills), and what those depend
-on, each once, and stages every package in the VM as wren_lift stages
-them (`stage_hatch_modules`): its modules wait for their first
-`import "@hatch:noise"`, its native libraries are registered, and
-wren_lift opens them itself. A package's plugin calls the host through
-the `wlift_plugin_*` symbols, which it resolves against the process
-that opened it; the binaries here export their symbols
-(`.cargo/config.toml`) so that process can be `caribou`. Nothing in the
-package, the plugin or wren_lift knows caribou is there. A bundle
-carries each package whole, a module section of format `hatch` under
-the package's name, and a session from it stages them the same way
-(`caribou_wren::hatch`).
+Every entry in the table is called on the caller's thread, inside the plugin function the dispatcher is calling. A plugin has no thread of its own to call from.
 
-## Boundaries of the current implementation
+## Hatch Packages
 
-Built: the header macro, loading, the adapter, scalar, `DYN` and string
-parameters and results, classes with instances, the host table with kept
-values, calls and errors, discovery beside the program, Wren and Haxe
-reaching a plugin, plugins shipped in a bundle, hatch packages for
-Wren. Not built: byte buffers.
+A project's Wren modules depend on hatch packages the same way a hatch workspace does: with a `hatchfile` at a root that has a `[dependencies]` section.
+
+* **Resolution:** The driver resolves each dependency the way `hatch` does (`wren_lift::hatch::resolve_dependency_bytes`): a path dependency is built from its workspace, and a version dependency comes from the cache that `hatch install` fills. Transitive dependencies are resolved as well, each once.
+* **Staging:** Each package is staged in the VM the way WrenLift stages it (`stage_hatch_modules`). Its modules wait for their first `import "@hatch:noise"`, its native libraries are registered, and WrenLift opens them itself.
+* **Symbol resolution:** A package's plugin calls the host through the `wlift_plugin_*` symbols, which it resolves against the process that opened it. The binaries in this repository export their symbols (`.cargo/config.toml`) so that process can be `caribou`. Nothing in the package, the plugin, or WrenLift knows that Caribou is involved.
+* **Bundles:** A bundle carries each package whole, as a module section with format `hatch` under the package's name. A session started from the bundle stages the packages the same way (`caribou_wren::hatch`).
+
+## Current Implementation Boundaries
+
+**Implemented:**
+
+* The header macro, loading, and the adapter.
+* Scalar, `DYN`, and string parameters and results.
+* Classes with instances.
+* The host table: kept values, calls, and errors.
+* Discovery next to the program, and plugins shipped in a bundle.
+* Wren and Haxe calling into a plugin.
+* Hatch packages for Wren.
+
+**Not yet implemented:**
+
+* Byte buffers across the ABI.

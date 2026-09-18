@@ -1,29 +1,28 @@
-# Interop conventions
+# Interoperability Reference
 
-How the languages of a Caribou program see each other. This is the
-reference for what a program writes and what it can expect; the
-mechanism behind each rule is in [architecture.md](architecture.md).
+## Overview
 
-## Running a program
+This document describes how the languages in a Caribou program see each other. It is the reference for what a program can write and what behavior it can expect. The mechanisms behind each rule are described in [architecture.md](architecture.md).
 
-From the project directory:
+## Running a Program
+
+Run a program from the project directory:
 
 ```sh
 caribou run bin/game.hl
 ```
 
-The project's layout is the configuration. The source roots are the
-class paths of the `.hxml` files in the directory and beside the
-program, or `src` when there is no `.hxml`. Every directory under a root
-is a namespace, and so is every namespace the program imports. A module
-of another language loads the first time the program uses it. An
-embedder does the same through `caribou_driver::Session`.
+The project's layout is the configuration:
 
-## Namespaces and modules
+* The source roots are the class paths of the `.hxml` files in the current directory and next to the program. If there is no `.hxml`, the root is `src`.
+* Every directory under a root is a namespace, and so is every namespace the program imports.
+* A module from another language loads the first time the program uses it.
 
-A program reaches another language's module through a namespace. The
-driver derives the namespaces from the project; an embedder building its
-own world configures them:
+An embedder gets the same behavior through `caribou_driver::Session`.
+
+## Namespaces & Modules
+
+A program reaches another language's module through a namespace. The driver derives the namespaces from the project layout. An embedder that builds its own world configures them explicitly:
 
 ```rust
 World::new(Config {
@@ -36,22 +35,16 @@ World::new(Config {
 })
 ```
 
-- A namespace covers one or more languages, in the order given. A module
-  name is looked up in each language in turn.
-- With `modules` set, only the listed modules resolve through the
-  namespace. With `None`, every module of its languages does.
-- Every registered language is also a namespace under its own name, with
-  no configuration: `haxe:game.Player` and `wren:hud` always resolve.
-- A module is addressable by its own name and, when its name begins with
-  the namespace's name and a dot, by the remainder. So `game:Player` finds
-  the Haxe module `game.Player`, and `game:hud` finds the Wren module
-  `hud`.
+**Resolution rules:**
 
-A Haxe module is one class, named after it: `game.Player`. A Wren module
-is a file, named as the VM loaded it: `hud`, or `ui/hud` for a file in a
-directory, with `/` as Wren spells an import.
+* A namespace covers one or more languages, in the order given. A module name is looked up in each language in turn.
+* When `modules` is set, only the listed modules resolve through the namespace. When it is `None`, every module of the namespace's languages resolves.
+* Every registered language is also a namespace under its own name, with no configuration. `haxe:game.Player` and `wren:hud` always resolve.
+* A module is addressable by its own name. If its name starts with the namespace's name followed by a dot, it is also addressable by the remainder. `game:Player` finds the Haxe module `game.Player`, and `game:hud` finds the Wren module `hud`.
 
-## Wren using Haxe
+A Haxe module is one class, named after it: `game.Player`. A Wren module is a file, named as the VM loaded it: `hud`, or `ui/hud` for a file in a subdirectory, using `/` as Wren does in imports.
+
+## Wren Using Haxe
 
 ```wren
 import "game:Player" for Player
@@ -69,34 +62,25 @@ class Hero is Player {
 }
 ```
 
-- Every class of the Haxe program is published, except the runtime's own
-  under `hl.` and `haxe.`, class companions, and `String`, which crosses
-  as a value.
-- The constructor is `new` with the constructor's arity.
-- A static method is a static of the same name and arity.
-- A field is a getter and a setter of its name: `p.hp` and `p.hp = 70`.
-- An instance method is a method of its name and arity. Haxe has no
-  overloads, so there is exactly one of each name.
-- A Wren class may extend an imported class. Its constructor calls
-  `super(...)` with the Haxe constructor's arguments.
-- A Haxe throw inside a call aborts the fiber with the exception's
-  message. So does an argument Haxe cannot take, such as a string where an
-  `Int` is declared. `Fiber.try` sees the message.
-- A static field is a static getter and setter of its name:
-  `Player.spawned` and `Player.spawned = 0` read and write the field where
-  Haxe keeps it, on the class object.
-- A Haxe object is an instance of the imported class, and the same
-  instance each time it crosses while Wren holds it, so Wren `==` works
-  on it; an instance going back to Haxe is the object it stands for.
-- A Haxe array is a Wren `Sequence`: `xs.count`, `xs[i]`, `xs[i] = v`,
-  `for (x in xs)`, `xs.toList` and the rest of `Sequence` work on it,
-  reading and writing the array where Haxe keeps it. Going back to Haxe
-  it is the same array.
+**What is published:**
 
-## Haxe using Wren
+* Every class of the Haxe program is published, except the runtime's own classes under `hl.` and `haxe.`, class companions, and `String`, which crosses as a value.
+* The constructor becomes `new` with the constructor's arity.
+* A static method becomes a static method with the same name and arity.
+* A field becomes a getter and a setter of the same name: `p.hp` and `p.hp = 70`.
+* An instance method becomes a method with the same name and arity. Haxe has no overloading, so there is exactly one member per name.
+* A static field becomes a static getter and setter: `Player.spawned` and `Player.spawned = 0` read and write the field where Haxe stores it, on the class object.
 
-A program adds `-lib caribou` and puts its Wren modules on the classpath.
-Nothing else is declared.
+**Behavior:**
+
+* A Wren class can extend an imported class. Its constructor calls `super(...)` with the Haxe constructor's arguments.
+* A Haxe exception thrown inside a call aborts the fiber with the exception's message. An argument that Haxe cannot accept, such as a string where an `Int` is declared, does the same. `Fiber.try` receives the message.
+* A Haxe object appears as an instance of the imported class. It is the same instance every time it crosses while Wren holds it, so Wren's `==` works on it. An instance that goes back to Haxe is the original object.
+* A Haxe array appears as a Wren `Sequence`. `xs.count`, `xs[i]`, `xs[i] = v`, `for (x in xs)`, `xs.toList`, and the rest of `Sequence` work on it and operate on the array where Haxe stores it. Going back to Haxe, it is the same array.
+
+## Haxe Using Wren
+
+A program adds `-lib caribou` and puts its Wren modules on the classpath. Nothing else needs to be declared.
 
 ```
 src/
@@ -114,75 +98,65 @@ h.score = 10;
 var b = Hud.best(h, Hud.make(1));
 ```
 
-### Where a module lands
+### Module Placement
 
-The file's path is its package, as for a Haxe module.
+The file's path determines its package, as it does for a Haxe module.
 
-| File | Haxe package | Namespace | Wren module |
+| File | Haxe Package | Namespace | Wren Module |
 |---|---|---|---|
 | `src/game/hud.wren` | `game.hud` | `game` | `hud` |
 | `src/game/ui/hud.wren` | `game.ui.hud` | `game` | `ui/hud` |
 | `src/hud.wren` | `wren.hud` | `wren` | `hud` |
 
-The first directory under the classpath is the namespace the runtime
-resolves the module through; the rest is the module's name. The runtime
-must load the module under that name, and the world's namespace must
-list `wren`. A file at the classpath root is under Wren's own namespace.
+The first directory under the classpath is the namespace the runtime resolves the module through. The rest of the path is the module's name. The runtime must load the module under that name, and the world's namespace must include `wren`. A file at the classpath root is placed under Wren's own namespace.
 
-### What a class gets
+### Emitted Members
 
-Every Wren class of the module becomes a Haxe class of the same name.
+Every Wren class in the module becomes a Haxe class with the same name.
 
-| Wren member | Haxe member |
+| Wren Member | Haxe Member |
 |---|---|
 | `construct new(a, b)` | `new Hud(a, b)` |
-| any other `construct name(...)` | `static function name(...):Hud` |
+| Any other `construct name(...)` | `static function name(...):Hud` |
 | `name(a, b)` | `function name(a, b)` |
-| `name` | property `name` with a getter |
-| `name=(v)` | property `name` with a setter |
+| `name` | Property `name` with a getter |
+| `name=(v)` | Property `name` with a setter |
 | `static name(...)` | `static function name(...)` |
-| `static name` | static property `name` with a getter |
-| `static name=(v)` | static property `name` with a setter |
-| operators, `[...]`, `[...]=(...)` | not exported |
+| `static name` | Static property `name` with a getter |
+| `static name=(v)` | Static property `name` with a setter |
+| Operators, `[...]`, `[...]=(...)` | Not exported |
 
-- Parameters are `Dynamic` and results are `Dynamic` unless the member
-  says otherwise (next section) or the runtime can tell.
-- Two members of one name and different arities cannot both be one Haxe
-  method. The second keeps its name with the arity appended.
-- A subclass gets its superclass's members from the same module, but is
-  not a Haxe subclass of it: every emitted class extends `caribou.Ref`.
-- A member takes at most sixteen parameters, as in Wren.
+* Parameters and results are `Dynamic` unless the member declares a type (see the next section) or the runtime can infer one.
+* Two members with the same name and different arities cannot both become one Haxe method. The second one keeps its name with the arity appended.
+* A subclass receives its superclass's members from the same module, but it is not a Haxe subclass of it. Every emitted class extends `caribou.Ref`.
+* A member takes at most sixteen parameters, as in Wren.
 
-### Export signatures
+### Export Signatures
 
-A Wren member says what it exposes in one attribute:
+A Wren member declares what it exposes with one attribute:
 
 ```wren
 #export = "add(n: Num) -> Num"
 add(n) { _score = _score + n }
 ```
 
-The value is a signature:
+The attribute value is a signature:
 
 | Form | Member |
 |---|---|
-| `name(a: T, b) -> R` | method, static or constructor |
-| `name -> R` | getter |
-| `name=(v: T)` | setter |
+| `name(a: T, b) -> R` | Method, static, or constructor |
+| `name -> R` | Getter |
+| `name=(v: T)` | Setter |
 
-- `name` is the name Haxe sees. It may differ from Wren's: the member is
-  exported under it, and the runtime still calls the Wren method.
-- One entry per Wren parameter, in order. `a` names it, `a: T` also types
-  it, `_: T` types it and keeps the source's name. Types match by
-  position, so the runtime reads the same attribute off the running
-  class.
-- `-> R` types the result. Without it, the result is what inference gives.
-- The attribute must fit its member: the same shape, and one entry per
-  parameter. Otherwise the description is refused with the reason.
-- The attribute is optional. Without it a member is exported under its
-  own name, with the source's parameter names.
+**Rules:**
 
-Type names are Wren's own, or a class of the same module:
+* `name` is the name Haxe sees. It can differ from the Wren name. The member is exported under it, and the runtime still calls the Wren method.
+* There is one entry per Wren parameter, in order. `a` names the parameter, `a: T` also types it, and `_: T` types it while keeping the name from the source. Types match by position, so the runtime can read the same attribute from the running class.
+* `-> R` types the result. Without it, the result type comes from inference.
+* The attribute must match its member: the same shape, and one entry per parameter. Otherwise the description fails with an error that explains why.
+* The attribute is optional. Without it, a member is exported under its own name with the parameter names from the source.
+
+Type names are Wren's own names, or a class from the same module:
 
 | In `#export` | Registry | Haxe |
 |---|---|---|
@@ -193,126 +167,82 @@ Type names are Wren's own, or a class of the same module:
 | `Fn` | `Fun` | `Dynamic` |
 | `Fn(Num, Hud) -> Bool` | `Function` | `(Float, Hud) -> Bool` |
 | `Null`, as a result | `Void` | `Void` |
-| a class of the module | `Object("module.Class")` | that class |
-| a class a namespaced import brings in, `import "swarm:Entity" for Entity` | `Object` of that class | that class: the Haxe class, or the class emitted for the Wren module |
-| anything else, or nothing | `Dyn` | `Dynamic` |
+| A class of the module | `Object("module.Class")` | That class |
+| A class from a namespaced import, `import "swarm:Entity" for Entity` | `Object` of that class | That class: the Haxe class, or the class emitted for the Wren module |
+| Anything else, or nothing | `Dyn` | `Dynamic` |
 
-A function type spells its parameters' types and its result's, each any
-type of this table; `Fn()` takes nothing, and a missing `-> Type` gives
-`Dynamic`.
+A function type lists its parameter types and its result type, each drawn from this table. `Fn()` takes no arguments, and a missing `-> Type` means `Dynamic`.
 
-A result declared `Null` is dropped at the crossing. A method called for
-its effect wants one: a Wren body answers with its last expression's
-value, and a `Dynamic` result boxes a number on every call.
+A result declared `Null` is dropped at the crossing. Declare `Null` on a method that is called only for its side effects: a Wren body returns the value of its last expression, and a `Dynamic` result boxes a number on every call.
 
 ### Inference
 
-A result needs no `#export` when the runtime can tell it from the body.
-It runs wren_lift's own inference and takes:
+A result type needs no `#export` when the runtime can infer it from the body. The runtime runs WrenLift's own inference and uses:
 
-- a literal: `count { 0 }` is `Num`, `flag { true }` is `Bool`;
-- an interpolation: `"%(prefix): %(_score)"` is `String`;
-- a constructor call: `Hud.new(0)` is `Hud`;
-- a field whose assignments are typed, or another method's result.
+* A literal: `count { 0 }` is `Num`, `flag { true }` is `Bool`.
+* An interpolation: `"%(prefix): %(_score)"` is `String`.
+* A constructor call: `Hud.new(0)` is `Hud`.
+* A field whose assignments are typed, or another method's result.
 
-Parameters are only ever declared: they are where inference starts. A
-field assigned from an untyped parameter is `Dyn`, and so is every result
-built on it.
+Parameters are never inferred; they are only declared, and they are where inference starts. A field assigned from an untyped parameter is `Dyn`, and so is every result built from it.
 
 ### Values
 
-| Wren | crossing | Haxe |
+| Wren | Crossing | Haxe |
 |---|---|---|
-| `Num` | by value | `Float` (an `Int` on the way in becomes a `Num`) |
-| `Bool` | by value | `Bool` |
-| `String` | by value, copied | `String` |
+| `Num` | By value | `Float` (an `Int` going into Wren becomes a `Num`) |
+| `Bool` | By value | `Bool` |
+| `String` | By value, copied | `String` |
 | `null` | | `null` |
-| an object | by reference | the class emitted for it, else `caribou.Ref` |
-| a `List` | by reference | `caribou.Sequence<Dynamic>` over it |
-| a Haxe object coming back | by reference | the same Haxe object |
+| An object | By reference | The class emitted for it, otherwise `caribou.Ref` |
+| A `List` | By reference | `caribou.Sequence<Dynamic>` over it |
+| A Haxe object coming back | By reference | The same Haxe object |
 
-- A Wren object reaching Haxe twice is the same Haxe object, and a Haxe
-  object of an emitted class going into Wren is the Wren object it
-  stands for. Haxe `==` works.
-- A Wren list reaches Haxe as a `caribou.Sequence`: `xs.length`, `xs[i]`,
-  `xs[i] = v` and `for (x in xs)` reach the list where Wren keeps it, so
-  both sides see one list, and it goes back as itself. `toArray()` copies
-  it when a Haxe array is wanted. A Haxe `Array<T>` is a `Sequence<T>` as
-  it is, so a Haxe array goes where a `List` is declared, and Wren walks
-  it where Haxe keeps it.
-- The Haxe object keeps the Wren object alive. Wren's collector sees
-  what Haxe holds.
-- A Wren abort inside a call is thrown into Haxe as a `String` with the
-  message. A Haxe exception that crossed into Wren and comes back is
-  rethrown as itself.
+* A Wren object that reaches Haxe twice is the same Haxe object. A Haxe object of an emitted class that goes into Wren is the Wren object it represents. Haxe's `==` works.
+* A Wren list reaches Haxe as a `caribou.Sequence`. `xs.length`, `xs[i]`, `xs[i] = v`, and `for (x in xs)` operate on the list where Wren stores it, so both sides see one list, and it goes back as itself. `toArray()` copies it when a Haxe array is needed. A Haxe `Array<T>` is already a `Sequence<T>`, so a Haxe array can be passed where a `List` is declared, and Wren iterates over it where Haxe stores it.
+* The Haxe object keeps the Wren object alive. Wren's collector sees what Haxe holds.
+* A Wren abort inside a call is thrown into Haxe as a `String` containing the message. A Haxe exception that crossed into Wren and comes back is rethrown as the original exception.
 
-## Functions and callbacks
+## Functions & Callbacks
 
-A function crosses by reference, keeps its captured environment, and
-comes home as itself.
+A function crosses by reference, keeps its captured environment, and comes back as itself.
 
 ```wren
 // Wren gives Haxe functions: a typed parameter, an untyped one, and a
-// static Haxe keeps and fires later from its own code.
+// static that Haxe keeps and calls later from its own code.
 Player.twice(Fn.new {|x| x * 3 }, 2)
 Player.apply(Fn.new {|s| s + "!" }, "hi")
 Player.onHit = Fn.new {|d| System.print("hit for %(d)") }
 ```
 
 ```haxe
-// Haxe gives Wren functions, which Wren calls as any Fn.
+// Haxe gives Wren functions, which Wren calls like any Fn.
 Hud.onTick(function(n:Dynamic):Dynamic return n * 2);
 Hud.twice(function(x:Float):Float return x + 1, 1);
 ```
 
-- A Wren `Fn` arrives in Haxe as a real function value: `cb(3)` calls
-  it, `Reflect.isFunction` says so, and a parameter or field declared
-  `Int -> Void` takes it. Read back by Wren, it is the same `Fn`. Where
-  the member declares the function's type, `adder() -> Fn(Num) -> Num`,
-  the value is a function of that type, `Float -> Float`, and Haxe calls
-  it as one of its own, nothing boxed on the way. Declared `Fn`, it is
-  the variadic function `Reflect.makeVarArgs` makes, and a call boxes its
-  arguments.
-- A Haxe function arrives in Wren as an object answering `call(...)` with
-  up to eight arguments and `arity`, as a `Fn` does. It is not a `Fn`:
-  `cb is Fn` is false.
-- A throw inside a callback propagates as any call does: a Haxe throw
-  aborts the Wren fiber with its message, a Wren abort is thrown into
-  Haxe as a `String`. A result Haxe has no form for is `null`.
-- The callee keeps the function alive for as long as it holds it, the
-  same as for objects.
-- A Wren function belongs to its VM. Called on another VM, or once its VM
-  is gone, it raises "belongs to another Wren VM" instead of running. A
-  Haxe static that holds a Wren callback must be cleared before that VM
-  goes; in a project there is one VM for the program's life.
-- `#export = "onTick(cb: Fn)"` maps to `Dynamic` in Haxe; `cb: Fn(Num)`
-  to `Float -> Void`.
+* A Wren `Fn` arrives in Haxe as a real function value: `cb(3)` calls it, `Reflect.isFunction` returns true, and a parameter or field declared `Int -> Void` accepts it. Read back by Wren, it is the same `Fn`. When the member declares the function's type, such as `adder() -> Fn(Num) -> Num`, the value is a function of that type (`Float -> Float`), and Haxe calls it as one of its own without boxing. When the member declares only `Fn`, the value is the variadic function that `Reflect.makeVarArgs` produces, and each call boxes its arguments.
+* A Haxe function arrives in Wren as an object that answers `call(...)` with up to eight arguments and `arity`, like a `Fn` does. It is not a `Fn`: `cb is Fn` is false.
+* An exception inside a callback propagates the same way as in any call. A Haxe throw aborts the Wren fiber with its message, and a Wren abort is thrown into Haxe as a `String`. A result that Haxe has no representation for becomes `null`.
+* The callee keeps the function alive for as long as it holds it, the same as for objects.
+* A Wren function belongs to its VM. If it is called on another VM, or after its VM is gone, it raises "belongs to another Wren VM" instead of running. A Haxe static that holds a Wren callback must be cleared before that VM goes away. In a project there is one VM for the program's lifetime.
+* `#export = "onTick(cb: Fn)"` maps to `Dynamic` in Haxe. `cb: Fn(Num)` maps to `Float -> Void`.
 
-## Static state
+## Static State
 
-State a class keeps for itself is shared by reference, never copied:
-every access goes through the owner, so a read sees the latest write
-from either language and a write lands in the owner's storage.
+State that a class keeps for itself is shared by reference and never copied. Every access goes through the owner, so a read sees the latest write from either language, and a write lands in the owner's storage.
 
-- A Haxe `static var` is a static field of the class. Wren reads and
-  writes it as `Player.spawned`.
-- A Wren class keeps static state behind a static getter and setter,
-  `static count { __count }` and `static count=(v) { __count = v }`,
-  which Haxe sees as one static property, `Hud.count`.
-- A Wren module-level `var` belongs to no class. Another Wren module
-  imports it by name; Haxe does not see it.
+* A Haxe `static var` is a static field of the class. Wren reads and writes it as `Player.spawned`.
+* A Wren class keeps static state behind a static getter and setter, `static count { __count }` and `static count=(v) { __count = v }`. Haxe sees these as one static property, `Hud.count`.
+* A Wren module-level `var` belongs to no class. Another Wren module imports it by name. Haxe does not see it.
 
-## Names the runtime binds
+## Native Names
 
-A program never writes these, but they are the contract between the
-emitted Haxe class and the runtime, and they appear in a `.hl`'s native
-table and in errors.
+A program never writes these names, but they are the contract between the emitted Haxe class and the runtime. They appear in a `.hl` file's native table and in error messages.
 
-Each member of an emitted class is a native of the `caribou` library
-named `namespace:module.Class.signature`, where the signature is the
-member's Wren signature:
+Each member of an emitted class is a native of the `caribou` library named `namespace:module.Class.signature`, where the signature is the member's Wren signature:
 
-| Member | Native name |
+| Member | Native Name |
 |---|---|
 | `add(n)` | `game:hud.Hud.add(_)` |
 | `score` | `game:hud.Hud.score` |
@@ -320,13 +250,8 @@ member's Wren signature:
 | `static best(a, b)` | `game:hud.Hud.static:best(_,_)` |
 | `construct new(score)` | `game:hud.Hud.construct:new(_)` |
 
-The name is the whole binding. Nothing has to be published before the
-program starts, and a module published again answers the next call.
+The name is the entire binding. Nothing needs to be published before the program starts, and a module that is published again answers the next call.
 
-## Describing a module
+## Describing a Module
 
-`caribou describe src/game/hud.wren` prints the module's
-interface as JSON: the classes, their members with kind, Wren signature,
-parameter names and types, and result type. It is what the Haxe library
-reads, and it is the same shape the runtime publishes to the registry
-when the module loads, so the two cannot disagree.
+`caribou describe src/game/hud.wren` prints the module's interface as JSON: the classes, their members with kind, Wren signature, parameter names and types, and result type. `caribou describe src` prints the same for every module of every language under the root, each with its file path. This is what the Haxe library reads. It has the same shape the runtime publishes to the registry when the module loads, so the two cannot disagree.

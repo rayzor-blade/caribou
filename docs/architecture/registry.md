@@ -1,152 +1,79 @@
-# Module registry
+# Module Registry & Namespaces
 
-`caribou::registry` is where one language's classes become visible to
-another. An adapter that loads a module publishes its interface. The
-adapter answering another language's import reads that interface and
-installs a class of its own that targets the bridge. Nothing is generated.
-Each compiler binds the imported class where it binds its own.
+## Overview
+
+`caribou::registry` is how one language's classes become visible to another. When an adapter loads a module, it publishes the module's interface to the registry. When another language imports that module, its adapter reads the interface and installs a class of its own that calls into the bridge. No code is generated. Each compiler binds the imported class in the same place it binds its own classes.
 
 ## Interfaces
 
-An `Interface` describes one module of one language: its `lang`, its
-`module` name in that language's own terms (`game.Player` for Haxe), and
-its classes.
+An `Interface` describes one module of one language: its `lang`, its `module` name in that language's own terms (for example `game.Player` for Haxe), and its classes.
 
-A `ClassIface` has:
+A `ClassIface` contains:
 
-- the class's simple name;
-- its `type_name`, what the language calls the type, and what an instance
-  reports through the protocol's `type_name` message;
-- its superclass;
-- its fields, with their types;
-- its static fields, and a `class_object` they are read and written on;
-- its methods and its constructor.
+* The class's simple name.
+* Its `type_name`: the name the language uses for the type, and the name an instance reports through the protocol's `type_name` message.
+* Its superclass.
+* Its fields, with their types.
+* Its static fields, plus a `class_object` that the static fields are read from and written to.
+* Its methods and its constructor.
 
-A `MethodIface` has a name, a static flag, parameter and return types, and
-the `Callable` the bridge invokes for it. An instance method's callable
-takes the receiver first. A static's takes only its parameters. A
-constructor's takes the constructor's parameters and returns the new
-object. Types are `TypeRef`s: `Void`, `Bool`, `Int`, `Float`, `Str`,
-`Object(type name)`, `Array`, `Dyn` and `Fun`, the terms every language
-can map to.
+A `MethodIface` contains a name, a static flag, the parameter and return types, and the `Callable` the bridge invokes for it. An instance method's callable takes the receiver as its first argument. A static method's callable takes only its parameters. A constructor's callable takes the constructor's parameters and returns the new object. Types are `TypeRef` values: `Void`, `Bool`, `Int`, `Float`, `Str`, `Object(type name)`, `Array`, `Dyn`, and `Fun`. These are the types that every language can map to its own.
 
-`publish(iface)` puts an interface in the process-wide table, replacing an
-earlier one of the same `(lang, module)`, and bumps a generation counter
-a caller can cache against; a reload publishes the module again (see
-[world.md](world.md#reload)). `interface(lang, module)` reads one back.
-`withdraw(lang, module)` takes an interface out again, and the file it
-came from: what a runtime does for its modules as it goes, so nothing
-reaches its callables after. `class_for_type(lang, type_name)` finds the
-class an object belongs to.
-`lookup(namespace, module)` and `lookup_class` resolve an import path
-first. A language may register a loader with `set_loader`;
-`resolve_or_load` and `lookup_class_or_load` ask the namespace's loaders
-in turn when nothing has published a module yet, which is how a module
-loads on first use. A loader that read a module from a file records the
-file with `set_source`, and `sources` lists them, for the world's watch.
+**Registry API:**
+
+* `publish(iface)` stores an interface in the process-wide table, replacing any earlier interface with the same `(lang, module)`, and bumps a generation counter that callers can cache against. A reload publishes the module again (see [world.md](world.md#reload)).
+* `interface(lang, module)` returns a published interface.
+* `withdraw(lang, module)` removes an interface and the source file it came from. A runtime calls this for its modules when it shuts down, so that nothing can reach its callables afterward.
+* `class_for_type(lang, type_name)` finds the class that an object belongs to.
+* `lookup(namespace, module)` and `lookup_class` resolve an import path first, then look up the interface.
+* `set_loader` registers a loader for a language. `resolve_or_load` and `lookup_class_or_load` try the namespace's loaders in turn when no module has been published yet. This is how a module loads on first use. A loader that read a module from a file records the file with `set_source`, and `sources` lists those files for the world's file watcher.
 
 ## Namespaces
 
-An import addresses a module through a namespace, not a language name.
-`import "game:Player"` names the namespace `game` and the module `Player`.
+An import addresses a module through a namespace, not through a language name. `import "game:Player"` names the namespace `game` and the module `Player`.
 
-`World::new` publishes `Config.namespaces` process-wide, the way it
-publishes language names, so an adapter callback with no world handle can
-resolve one. A `Namespace` has a name, the languages it covers and, when
-given, the modules it exposes.
+`World::new` publishes `Config.namespaces` process-wide, the same way it publishes language names, so an adapter callback without a world handle can still resolve a namespace. A `Namespace` has a name, the languages it covers, and optionally the modules it exposes.
 
-A module is addressable in a namespace by its own name. When its name
-begins with the namespace's name and a dot, it is also addressable by the
-remainder. That is how the Haxe package `game` becomes the namespace
-`game`, and `game:Player` reaches `game.Player`. A Wren module in a
-directory is addressable with `/` as well, `game:ui/hud`. Every registered
-language is also a namespace under its own name, so `haxe:game.Player`
-resolves with no configuration.
+**Resolution rules:**
 
-`publish` refuses an interface when a configured namespace holds its
-language and another, and both would answer one import name with a module
-of their own. The error is a `RegisterError`.
+* A module is addressable in a namespace by its own name.
+* If the module's name starts with the namespace's name followed by a dot, the module is also addressable by the remainder. This is how the Haxe package `game` becomes the namespace `game`, and `game:Player` reaches `game.Player`.
+* A Wren module in a subdirectory is addressable with `/`, for example `game:ui/hud`.
+* Every registered language is also a namespace under its own name, with no configuration. `haxe:game.Player` always resolves.
 
-## What Ash publishes
+`publish` rejects an interface when a configured namespace covers its language and another language, and both would answer the same import name with a module of their own. The error is a `RegisterError`.
 
-`caribou_ash::program` loads a `.hl` the way ash's CLI does. The runner
-and the tests share it. `load` installs the seam, initialises ash's
-standard library, decodes the bytecode and builds the interpreter. `start`
-runs the entry point, which is HashLink's entry function: it creates every
-class object and runs the static initialisers before `main`. The
-interpreter registers its closure runner, stub resolver and exception
-hooks only then, so nothing in a program can be called from outside
-before it has started. `publish` walks the decoded types.
+## What Ash Publishes
 
-HashLink's shape is this. An instance type (`game.Player`) carries the
-fields and the instance methods as protos. Its companion (`game.$Player`,
-an `hl.Class`) carries the statics as function-typed fields, bound by its
-binding list to their functions, and binds the inherited `__constructor__`
-field to the constructor.
+`caribou_ash::program` loads a `.hl` file the same way Ash's CLI does. The runner and the tests share this code.
 
-Every published callable is a `Callable::Cell`: the address of the
-function's entry in the module context's `functions_ptrs`, and its
-function type. The entry holds a stub sentinel that `hlp_dyn_call` routes
-to the closure runner, or the compiled entry once the tier has promoted
-the function. Reading it per call is how a caller follows the promotion.
-The interpreter keeps that context private, so it is read off the type of
-a `String` the program allocates through its own `String.__alloc__`, and
-that type is kept for the strings that cross.
+* `load` installs the seam, initializes Ash's standard library, decodes the bytecode, and builds the interpreter.
+* `start` runs the entry point, which is HashLink's entry function. The entry function creates every class object and runs the static initializers before `main`. The interpreter registers its closure runner, stub resolver, and exception hooks only at this point, so nothing in a program can be called from outside before the program has started.
+* `publish` walks the decoded types and publishes them.
 
-A constructor is published as a `Callable::Dynamic`: a small core object
-whose `call` allocates an instance of the type with `hlp_alloc_obj`, wraps
-it, and runs `__constructor__` from its cell on it through the dispatcher.
-So the registry stays free of anything Haxe.
+**HashLink type layout:** An instance type such as `game.Player` carries the fields and the instance methods as protos. Its companion type, `game.$Player` (an `hl.Class`), carries the static methods as function-typed fields, bound to their functions through its binding list, and binds the inherited `__constructor__` field to the constructor.
 
-The companion's own unbound fields are the class's static fields. The
-class's `class_object` is a core object naming the instance type. It finds
-the `hl.Class` instance in the type's global at each use, since the entry
-function makes it after the program publishes, and its `get_member` and
-`set_member` reach the static fields through the Haxe protocol on that
-instance.
+**Callables:** Every published callable is a `Callable::Cell`: the address of the function's entry in the module context's `functions_ptrs`, plus its function type. The entry holds either a stub sentinel, which `hlp_dyn_call` routes to the closure runner, or the compiled entry once the tier has promoted the function. Reading the entry on each call is how a caller follows the promotion. The interpreter keeps the module context private, so the adapter reads it from the type of a `String` that the program allocates through its own `String.__alloc__`, and keeps that type for the strings that cross.
 
-Types under `hl.` and `haxe.`, the companions and `String` are not
-published. There is one module per class, named after it.
+**Constructors:** A constructor is published as a `Callable::Dynamic`: a small core object whose `call` allocates an instance of the type with `hlp_alloc_obj`, wraps it, and runs `__constructor__` on it from its cell through the dispatcher. This keeps the registry free of anything specific to Haxe.
 
-## What WrenLift publishes
+**Static fields:** The companion type's own unbound fields are the class's static fields. The class's `class_object` is a core object that names the instance type. On each use it finds the `hl.Class` instance in the type's global, because the entry function creates that instance after the program publishes. Its `get_member` and `set_member` reach the static fields through the Haxe protocol on that instance.
 
-`caribou_wren::publish_module(vm, "hud")` publishes the classes a loaded
-Wren module defines, under Wren's language and the module's own name.
-Another language reaches them as `wren:hud`, or through a configured
-namespace as `game:hud`.
+Types under `hl.` and `haxe.`, the companion types, and `String` are not published. There is one module per class, named after the class.
 
-Each class is described from what the VM built for it.
+## What WrenLift Publishes
 
-- Its name, and its superclass unless that is Object.
-- Its fields: the names in the VM's layout for the class, inherited ones
-  included, all `Dyn`.
-- Its members, from its method table. The table is a copy of the
-  superclass's plus the class's own, so an entry the class defines is one
-  that differs from the superclass's at the same slot. The entries are
-  Wren signatures: `draw()`, `hit(_)`, `score` for a getter, `score=(_)`
-  for a setter, and under `static:` the class's own side, where a
-  constructor is `static:new(_)`.
-- A getter or setter is published as a `MethodIface` whose `kind()` says
-  so, read from the signature its callable carries, since Wren's getters
-  stand where Haxe has fields.
-- A member's name and types come from its `#export` attribute (see
-  [declaring types](haxe-imports.md#declaring-types)); else it is Wren's
-  name and `Dyn`.
-- Operators and subscripts have no name an importer can spell, and are not
-  published.
+`caribou_wren::publish_module(vm, "hud")` publishes the classes that a loaded Wren module defines, under the Wren language and the module's own name. Another language reaches them as `wren:hud`, or through a configured namespace as `game:hud`.
 
-A class belongs to the module when one of its own methods was compiled in
-it. That leaves out what the module imported and what the adapter
-installed for another language. One constructor is the class's `ctor`,
-`new` when there is one; any other is a static method returning the
-class. The type name an instance reports is `hud.Hud`, kept on the heap
-record so the protocol's `type_name` can answer it.
+Each class is described from what the VM built for it:
 
-Every member's target is a `Callable::WrenMethod`: the class as a core
-value, the signature as a core symbol, and whether the class or the first
-argument receives it. The bridge turns it into an `invoke` of that
-signature through the object protocol. So a call from Haxe is the call
-Wren code would make, dispatched by wren_lift itself, as
-[adapters.md](adapters.md#dispatch) describes. The class stays valid while
-its module does, and the VM must be entered on the calling thread, as for
-any message to a Wren object.
+* **Name and superclass:** The class's name, and its superclass unless the superclass is `Object`.
+* **Fields:** The field names in the VM's layout for the class, including inherited fields. All fields are `Dyn`.
+* **Members:** Taken from the class's method table. The table is a copy of the superclass's table plus the class's own methods, so a method the class defines is one whose entry differs from the superclass's entry at the same slot. Entries are Wren signatures: `draw()`, `hit(_)`, `score` for a getter, `score=(_)` for a setter, and, under `static:`, the class's static side, where a constructor is `static:new(_)`.
+* **Getters and setters:** Published as a `MethodIface` whose `kind()` reports the getter or setter kind, read from the signature its callable carries. Wren getters take the place that fields have in Haxe.
+* **Names and types:** A member's name and types come from its `#export` attribute (see [declaring types](haxe-imports.md#declaring-types)). Without an attribute, the name is Wren's name and the types are `Dyn`.
+* **Operators and subscripts:** These have no name an importer can spell, so they are not published.
+
+**Module membership:** A class belongs to the module if one of its own methods was compiled in that module. This excludes classes the module imported and classes the adapter installed for another language. One constructor becomes the class's `ctor`: `new` if there is one. Any other constructor is published as a static method that returns the class. The type name an instance reports is `hud.Hud`. The adapter stores it on the heap record so that the protocol's `type_name` can return it.
+
+**Targets:** Every member's target is a `Callable::WrenMethod`: the class as a core value, the signature as a core symbol, and a flag that says whether the class or the first argument receives the call. The bridge turns it into an `invoke` of that signature through the object protocol. A call from Haxe is therefore the same call Wren code would make, dispatched by WrenLift itself, as [adapters.md](adapters.md#dispatch) describes. The class stays valid as long as its module does, and the VM must be entered on the calling thread, as for any message to a Wren object.

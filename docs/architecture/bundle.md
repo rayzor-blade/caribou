@@ -1,102 +1,62 @@
-# Bundle
+# Bundle Format & Deployment
 
-A bundle is a program and the modules of every language it uses in one
-file. `caribou build` writes one from a project's layout; `caribou run`
-opens it where it would open the program, and a session from a bundle
-sees what a session from the directory saw. The bundle is what ships:
-a run needs the file and nothing beside it.
+## Overview
 
-## What is in it
+A bundle packages a program and the modules of every language it uses into one file. `caribou build` writes a bundle from a project's layout. `caribou run` opens a bundle the same way it opens a program, and a session started from a bundle sees the same thing a session started from the project directory would see. The bundle is the deployment artifact: a run needs the file and nothing else.
 
-The manifest names the bundle, its entry module and the project's
-namespaces (see [registry.md](registry.md#namespaces)). The entry is
-the module the driver starts, a Haxe `hl` program today. The namespaces
-are what `project::namespaces` gave the world at build time: every
-directory under a root, and every namespace the program imports, each
-over every resident language.
+## Bundle Contents
 
-Then the sections. A *module* section is a language name, the format of
-its bytes, the module's name in its language and the bytes. The format
-is the language's own and versioned by the language, never by the
-bundle: a Haxe program is `hl`; a Wren module is `wlbc@N`, wren_lift's
-compiled form at the version `N` of its serializer, or `source`, which
-the adapter also reads; a hatch package the project depends on is
-`hatch`, whole, under its name (`@hatch:noise`), its own native
-libraries inside it. The bundle versions its framing alone. A *source* section is
-the text a compiled module was built from, under the module's name, for
-the language's diagnostics. A *resource* section is bytes by name. A
-*native library* section is a plugin on the shared ABI, under its file
-name, for the target its format names, `<arch>-<os>` as the standard
-library spells them (`aarch64-macos`); a bundle may carry one per
-target, and a run takes its own target's.
+**Manifest:** The manifest names the bundle, its entry module, and the project's namespaces (see [registry.md](registry.md#namespaces)). The entry is the module the driver starts. Today this is a Haxe `hl` program. The namespaces are what `project::namespaces` gave the world at build time: every directory under a root and every namespace the program imports, each covering every resident language.
 
-The file is the magic `CARIBOU\0`, a version, flags, the manifest, then
-the sections, every integer little-endian and every string and byte
-string length-prefixed (`caribou::bundle`). No flag is defined; a set
-one is refused, so a later bundle that needs something this reader
-lacks fails at once rather than half-runs.
+**Sections:** The manifest is followed by the sections:
+
+* **Module:** A language name, the format of the bytes, the module's name in its language, and the bytes. The format belongs to the language and is versioned by the language, never by the bundle. A Haxe program is `hl`. A Wren module is `wlbc@N` (WrenLift's compiled form, at version `N` of its serializer) or `source`, which the adapter also reads. A hatch package that the project depends on is `hatch`, stored whole under its name (`@hatch:noise`), with its own native libraries inside. The bundle versions only its own framing.
+* **Source:** The text that a compiled module was built from, under the module's name. The language uses it for diagnostics.
+* **Resource:** Bytes stored by name.
+* **Native library:** A plugin on the shared ABI, stored under its file name, for the target that its format names. The target is written `<arch>-<os>` using the standard library's names, for example `aarch64-macos`. A bundle may carry one library per target, and a run takes the one for its own target.
+
+**Wire format:** The file consists of the magic bytes `CARIBOU\0`, a version, flags, the manifest, and then the sections. Every integer is little-endian, and every string and byte string is length-prefixed (`caribou::bundle`). No flag is defined yet. A set flag is rejected, so a future bundle that needs something this reader does not support fails immediately instead of running halfway.
 
 ## Building
 
-`caribou build game.hl` reads the project as `run` does: the roots are
-the class paths of the `.hxml` files (`project::roots`), the imported
-namespaces come from the program's `caribou` natives, read from the
-bytecode without loading it (`caribou_ash::imports_in`), and every
-`.wren` under a root becomes a module section named by its path under
-the root, `game/hud`. Where two roots have a module of one name, the
-first root's is taken, as a run from the directory would take it. The
-Wren modules are compiled (`caribou_wren::project::compile`) on one
-VM, each after the modules it imports by a plain import
-(`import_order`), so a class one module declares is known to the
-modules that use it, and each becomes a `wlbc@N` section with its text
-beside it as a source section. A module
-that does not compile fails the build, naming it. The plugins in
-`plugins/` beside the program, the ones the run from the directory
-loaded, go in as native library sections for the building machine's
-target. The bundle is written beside the program as `game.cb`, or where
-`-o` says.
+`caribou build game.hl` reads the project the same way `run` does:
+
+* **Roots:** The class paths of the `.hxml` files (`project::roots`).
+* **Namespaces:** The imported namespaces come from the program's `caribou` natives, which are read from the bytecode without loading it (`caribou_ash::imports_in`).
+* **Wren modules:** Every `.wren` file under a root becomes a module section, named by its path under the root, for example `game/hud`. If two roots have a module with the same name, the first root's module is used, as it would be in a run from the directory. The Wren modules are compiled on one VM (`caribou_wren::project::compile`), each after the modules it imports with a plain import (`import_order`), so a class one module declares is known to the modules that use it. Each module becomes a `wlbc@N` section, with its text stored next to it as a source section. A module that does not compile fails the build, and the error names the module.
+* **Hatch packages:** The packages that the roots' hatchfiles depend on are stored whole. WrenLift reads its own format, native libraries included.
+* **Plugins:** The plugins in `plugins/` next to the program, which are the ones a run from the directory would load, are stored as native library sections for the building machine's target.
+
+The bundle is written next to the program as `game.cb`, or to the path given with `-o`.
 
 ## Opening
 
-`Session::open` reads the file's first bytes: a bundle is opened as one,
-anything else as a program. From a bundle the program is loaded from
-its section's bytes (`caribou_ash::load_bytes`, ash's
-`BytecodeDecoder::decode_bytes`), with the bundle's path standing for
-the program's: the libraries beside it, its `argv[0]`, its tier's cache.
-The world is made from the manifest's namespaces with no source root,
-and `World::install` hands every other module section to the adapter
-of its language (`Adapter::install`). The Wren adapter *stages* a
-module under its name, compiled or as source: the loader looks among
-the staged modules before the roots, so the module loads on first use
-as it would from a file, by `interpret_bytecode` or `interpret`. A
-module's own plain imports resolve among them the same way, through
-wren_lift's `load_bytecode_fn` beside its `load_module_fn`; a compiled
-module loads what it imports as a source module does. An adapter
-refuses a format it does not read, a `wlbc` of another version
-included, and the open fails then, naming the section.
+`Session::open` reads the first bytes of the file. A bundle is opened as a bundle; anything else is opened as a program.
 
-A source section beside a compiled module is the text it was built
-from: the adapter keeps it with the module, and gives it to the VM as
-the module loads (`interpret_bytecode_with_source`), so a runtime error
-in the module renders its line as it would from a file. The Haxe
-program's own lines come with its bytecode, when it was built with
-debug information.
+**Program loading:** The program is loaded from its section's bytes (`caribou_ash::load_bytes`, which calls Ash's `BytecodeDecoder::decode_bytes`). The bundle's path stands in for the program's path: it determines the libraries next to it, its `argv[0]`, and its tier's cache location. The world is created from the manifest's namespaces with no source root, and `World::install` passes every other module section to the adapter for its language (`Adapter::install`).
 
-A bundle's plugins are its native library sections for the running
-target, not a `plugins/` beside it: a library loads from a file, so each
-is written once under the temporary directory by the hash of its bytes
-and loaded from there, as a program's are loaded from `plugins/`
-(`caribou_driver::bundle::plugins`).
+**Module staging:** The Wren adapter *stages* each module under its name, whether compiled or source. The loader checks the staged modules before the roots, so the module loads on first use as it would from a file, through `interpret_bytecode` or `interpret`. A module's own plain imports resolve among the staged modules the same way, through WrenLift's `load_bytecode_fn` alongside its `load_module_fn`, so a compiled module loads its imports the same way a source module does. A hatch package is held until the VM exists and then staged into it. An adapter rejects a format it cannot read, including a `wlbc` of a different version. The open then fails, and the error names the section.
 
-Nothing is watched: a bundle's modules have no file to change.
-`Session::reload` re-runs a module staged as source from what was
-staged; a compiled one does not reload.
+**Source sections:** A source section next to a compiled module contains the text the module was built from. The adapter keeps the text with the module and passes it to the VM when the module loads (`interpret_bytecode_with_source`), so a runtime error in the module shows its source line as it would when loaded from a file. The Haxe program's own source lines come with its bytecode when it was built with debug information.
 
-## Boundaries of the current implementation
+**Plugins:** A bundle's plugins are its native library sections for the running target, not a `plugins/` directory next to the bundle. A library has to be loaded from a file, so each one is written once to the temporary directory under the hash of its bytes and loaded from there, the same way a program's plugins are loaded from `plugins/` (`caribou_driver::bundle::plugins`).
 
-Built: the format, `build`, opening, Haxe `hl` entries, Wren modules
-compiled or as source, hatch packages, native libraries for the
-building target. Not built: resources reachable from a program, the Api sections (the registry's interfaces beside the modules,
-for a build or an editor that reads the bundle without loading it),
-native libraries for other targets than the building machine's, docs,
-and compression.
+**Reload:** Nothing is watched, because a bundle's modules have no files that could change. `Session::reload` re-runs a module that was staged as source, using the staged text. A compiled module does not reload.
+
+## Current Implementation Boundaries
+
+**Implemented:**
+
+* The format, `build`, and opening.
+* Haxe `hl` entries.
+* Wren modules, compiled or as source.
+* Hatch packages.
+* Native libraries for the building machine's target.
+
+**Not yet implemented:**
+
+* Resources that a program can access.
+* API sections: the registry's interfaces stored next to the modules, for a build or an editor that reads the bundle without loading it.
+* Native libraries for targets other than the building machine's.
+* Zyntax modules and frontends as sections.
+* Documentation sections and compression.
