@@ -761,19 +761,28 @@ pub const fn padded(tags: &[TypeTag]) -> [TypeTag; MAX_PARAMS] {
     out
 }
 
-/// A whole plugin: its name, and its functions, free or under a class.
-/// Each `fn` is written as in Rust, over the types [`Tagged`] covers, and
-/// becomes a C function of that signature; a `class` groups the functions
-/// that hang in one class. The macro writes the table, the entry and the
-/// version symbol, so this is all a plugin's crate holds beside its own
-/// code. Function names are unique across the plugin.
+/// A plugin's table: its name, and the functions it exports, declared
+/// by signature the way a header declares them. The functions are
+/// ordinary items of the crate, `extern "C"` over the types [`Tagged`]
+/// covers; a `class` names a type whose associated functions hang in
+/// that class, and a function outside any class is a static of a class
+/// named after the plugin. Each declaration is checked against the item
+/// it names, so the two cannot drift. The macro writes the table, the
+/// entry and the version symbol.
 ///
 /// ```ignore
+/// pub extern "C" fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
+///
+/// pub struct Vec;
+/// impl Vec {
+///     pub extern "C" fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+/// }
+///
 /// caribou_abi::plugin! {
 ///     name: "math";
-///     fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
+///     fn hypot(f64, f64) -> f64;
 ///     class Vec {
-///         fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+///         fn len3(f64, f64, f64) -> f64;
 ///     }
 /// }
 /// ```
@@ -784,25 +793,25 @@ macro_rules! plugin {
     };
     // A free function.
     (@munch $name:literal [$($acc:tt)*]
-        fn $method:ident ( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)? $body:block
+        fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ;
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* { "" $method ( $($arg : $ty),* ) [$($ret)?] $body }] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* { "" [$method] $method ( $($ty),* ) [$($ret)?] }] $($rest)*);
     };
-    // A class's functions.
+    // A class's functions: the associated functions of the type it names.
     (@munch $name:literal [$($acc:tt)*]
         class $class:ident {
-            $( fn $method:ident ( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)? $body:block )*
+            $( fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ; )*
         }
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* $( { $class $method ( $($arg : $ty),* ) [$($ret)?] $body } )*] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] $($rest)*);
     };
-    // Everything gathered: the functions, the table, the entry.
-    (@munch $name:literal [$( { $class:tt $method:ident ( $($arg:ident : $ty:ty),* ) [$($ret:ty)?] $body:block } )*]) => {
+    // Everything gathered: the checks, the table, the entry.
+    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*]) => {
         $(
-            #[allow(non_snake_case)]
-            extern "C" fn $method ( $($arg : $ty),* ) $(-> $ret)? $body
+            // The item is what the declaration says, or this does not compile.
+            const _: extern "C" fn($($ty),*) $(-> $ret)? = $($path)*;
         )*
 
         static __CARIBOU_SYMBOLS: [$crate::SymbolDesc; $crate::plugin!(@count $($method)*)] = [
@@ -810,9 +819,9 @@ macro_rules! plugin {
                 $crate::SymbolDesc {
                     class: $crate::Str::new($crate::plugin!(@class $class)),
                     method: $crate::Str::new(stringify!($method)),
-                    func: $method as *const ::core::ffi::c_void,
+                    func: $($path)* as *const ::core::ffi::c_void,
                     flags: $crate::sym::STATIC,
-                    param_count: $crate::plugin!(@count $($arg)*) as u8,
+                    param_count: $crate::plugin!(@count $($ty)*) as u8,
                     ret: $crate::plugin!(@tag $($ret)?),
                     params: $crate::padded(&[ $( <$ty as $crate::Tagged>::TAG ),* ]),
                 }

@@ -9,31 +9,40 @@ a plugin by a path of its own.
 ## Writing one
 
 A plugin's crate depends on `caribou_abi` and nothing else of caribou,
-and is a `cdylib`. The whole of it is one `plugin!` invocation beside
-the code it calls:
+and is a `cdylib`. Its functions are ordinary Rust items, `extern "C"`
+over the types the ABI tags cover, and a class is a type whose
+associated functions hang in it; so the crate reads, and the tooling
+sees it, as any Rust module does. One `plugin!` invocation then names
+what is exported, by signature, the way a header declares it:
 
 ```rust
+pub extern "C" fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
+pub extern "C" fn same(v: Value) -> Value { v }
+
+pub struct Vec;
+impl Vec {
+    pub extern "C" fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+}
+
 caribou_abi::plugin! {
     name: "math";
-    fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
-    fn twice(n: i32) -> i32 { n * 2 }
-    fn same(v: Value) -> Value { v }
+    fn hypot(f64, f64) -> f64;
+    fn same(Value) -> Value;
     class Vec {
-        fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+        fn len3(f64, f64, f64) -> f64;
     }
 }
 ```
 
-Each `fn` is written as in Rust and becomes a C function of that
-signature; a `class` groups the functions that hang in one class, and a
-function outside any class is a static of a class named after the
-plugin (`Math`). The macro reads each type's tag off the `Tagged` trait
-(`u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`, `()` and `Value`) and
-writes the `SymbolDesc` table, the `PluginInfo`, and the two symbols
-every plugin exports: `caribou_abi_version`, which a core compares with
-its own before it binds anything, and `caribou_plugin_entry`, which
-returns the table. Function names are unique across a plugin, since
-each is a Rust function.
+A function outside any class is a static of a class named after the
+plugin (`Math`). Each declaration is checked against the item it names,
+as a coercion to the declared function pointer type, so a signature
+that drifts does not compile. The macro reads each type's tag off the
+`Tagged` trait (`u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`, `()`
+and `Value`) and writes the `SymbolDesc` table, the `PluginInfo`, and
+the two symbols every plugin exports: `caribou_abi_version`, which a
+core compares with its own before it binds anything, and
+`caribou_plugin_entry`, which returns the table.
 
 ## Loading
 
@@ -66,7 +75,7 @@ does not cover is an error too.
 
 ## Boundaries of the current implementation
 
-Built: the macro, loading, the adapter, scalar and `DYN` parameters and
+Built: the header macro, loading, the adapter, scalar and `DYN` parameters and
 results, discovery beside the program, Wren reaching a plugin. Not
 built: plugin objects (`TypeTag::OBJ`: a native payload a core cell
 holds through `unwrap_native`, with a finalizer), strings and bytes

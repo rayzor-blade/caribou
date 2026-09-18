@@ -25,8 +25,8 @@ import "math:Math" for Math
 import "math:Vec" for Vec
 System.print(Math.hypot(3, 4))
 System.print(Math.twice(21))
-System.print(Math.isEven(4294967298))
-System.print(Math.isEven(3))
+System.print(Math.is_even(4294967298))
+System.print(Math.is_even(3))
 System.print(Math.bump() + Math.bump())
 System.print(Math.same("as it is"))
 System.print(Math.same([1, 2]).count)
