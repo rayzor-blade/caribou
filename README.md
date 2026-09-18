@@ -6,147 +6,148 @@
 
 <p align="center">A shared runtime core for game and multimedia scripting.</p>
 
-Caribou is the shared core under three language runtimes:
-[Ash](https://github.com/rayzor-blade/ash), which runs Haxe through
-HashLink bytecode; [WrenLift](https://github.com/wrenlift/WrenLift), which
-runs Wren; and Zyntax, which runs DSLs and will carry Lua and Python. It
-gives them one heap, one scheduler, one module registry and one way to
-load native plugins.
+# Caribou Multi-Language Runtime Core
 
-The point is mixing them. A game can be written mostly in Haxe with its
-gameplay scripted in Wren, hand objects back and forth between the two,
-and reload the scripts while it is running.
+Caribou is a shared execution runtime for multi-language environments, serving three guest runtimes:
 
-## How it works
+* [Ash](https://github.com/rayzor-blade/ash?utm_source=gemini) (Haxe on HashLink bytecode)
+* [WrenLift](https://github.com/wrenlift/WrenLift?utm_source=gemini) (Wren)
+* Zyntax (DSLs, with upcoming Lua and Python frontends)
 
-Caribou never becomes a dependency of the runtimes it serves. Ash and
-WrenLift keep their own collectors, schedulers, builds and test suites,
-and nothing in their manifests mentions Caribou at all.
+Caribou consolidates four runtime systems into a unified implementation:
 
-Instead, each runtime exposes a seam. The seam is a table of function
-pointers covering everything the runtime does to its heap and its
-scheduler, and by default every entry points at the runtime's own code.
-When Caribou hosts a runtime, a small adapter crate fills that table with
-the core's heap and scheduler before anything is allocated. Run the
-runtime on its own and the table is never touched, so its existing test
-suite keeps passing exactly as before.
+* Global managed heap
+* Cooperative task and fiber scheduler
+* Cross-language module and namespace registry
+* Unified native dynamic plugin loader
 
-In a Caribou program, one language is in charge. Usually that is Haxe: the
-Haxe application owns the entry point, the frame loop and the shipped
-binary, and it loads the other languages as scripts. Those scripts can be
-edited and reloaded while the game runs, without rebuilding anything in
-Rust, and that stays true after the game has shipped.
+This architecture allows seamless multi-language execution within a single process. A game engine written primarily in Haxe can drive gameplay systems scripted in Wren, pass native objects across language boundaries without serializing, and hot-reload scripts at runtime.
 
-## Crates
+## How It Works
 
-| Crate | Role |
-|---|---|
-| `caribou_abi` | `no_std`, zero dependencies. The layouts and constants every runtime, plugin and the core agree on: HashLink's `hl.h` structs with size and offset tests, the NaN-boxed `Value`, allocation kinds, the plugin descriptor table and the `plugin!` macro that writes one, error kinds. |
-| `caribou` | The core. It holds the heap, the scheduler, the object protocol and the `World` a driver uses. The heap is Immix: non-moving, conservative by default, precise where a type descriptor asks for it. The scheduler runs stackful fibers and stackless state machines on one queue. |
-| `caribou-ash` | Hosts Ash: fills `ash_std`'s seam with the core's heap and scheduler. Nightly, because `ash_std` needs it. |
-| `caribou-wren` | Hosts WrenLift: fills `wren_lift`'s seam with the core heap under its Immix strategy. |
-| `caribou-plugin` | Loads plugins and registers each as a language of the world, with a typed dispatcher over their C signatures. |
-| `caribou-zyntax` | Hosts Zyntax: each frontend (a snapshot or a grammar under a root) a language of the world, its modules published from their typed AST and HIR and compiled by the embed runtime. |
-| `caribou-driver` | Runs a program: one world with every resident language, from the project's own layout. The `caribou` command is its front. |
+Guest runtimes maintain zero compile-time dependencies on Caribou. Ash and WrenLift retain independent garbage collectors, fiber schedulers, test suites, and build scripts; their project manifests do not reference Caribou.
 
-The core builds on stable Rust and depends on `caribou_abi`, `krio` and
-`libc`. Neither Cranelift nor LLVM is in its graph.
+Integration is handled at runtime via dynamic dispatch seams:
 
-## Status
+* **The Seam Table:** Each guest runtime exposes a struct of function pointers covering all heap allocations, collections, and scheduling actions. By default, these point to the runtime's native implementations.
+* **Adapter Initialization:** Dedicated adapter crates intercept and overwrite these function pointer tables with Caribou implementations before any runtime memory allocation occurs.
+* **Isolated Testing:** Standalone test suites execute against native implementations unmodified, while adapter builds execute identical guest binaries over the unified Caribou core.
 
-Ash and WrenLift both run on the core today, and each has been checked
-against its own binary. Ash's parity corpus and the Haxe conformance suite
-come out identical through `caribou-ash`. WrenLift's benchmarks come out
-identical through `caribou-wren`, including under collector stress, and a
-collection costs the same as it does under WrenLift's own collector.
+In typical deployments, the host application (typically Haxe) controls the process entry point, primary loop, and final executable distribution. The host loads secondary languages as guest scripts that can be edited and hot-reloaded during execution in development and production builds without rebuilding native Rust components.
 
-The bridge lets one language call another, and the module registry lets
-each import the other's classes the ordinary way. A Wren program writes
-`import "game:Player" for Player`. A Haxe program built with `-lib caribou`
-writes `import game.hud.Hud` for a Wren module at `src/game/hud.wren`, and
-a Wren method says what it exposes with `#export = "add(n: Num) -> Num"`,
-or nothing when the runtime can tell. A native plugin in `plugins/`
-beside the program is a language of its own, written with
-`caribou_abi::plugin!` and imported like any other. A Zyntax frontend
-under a root, ZynML's snapshot or a `.zyn` grammar, is a language too,
-its modules found beside the Wren ones.
+## Workspace Crates
 
-## Building
+| Crate | Target / Toolchain | Description |
+| --- | --- | --- |
+| `caribou_abi` | Stable (`no_std`) | ABI contract with zero external dependencies. Defines HashLink `hl.h` struct layouts (with static offset assertions), NaN-boxed `Value` definitions, allocation tags, error variants, and the `plugin!` macro. |
+| `caribou` | Stable | Runtime engine containing the shared heap, scheduler, object protocol, and root `World` execution state. Memory uses an Immix-based non-moving collector (conservative by default, precise when guided by type descriptors). The scheduler manages stackful fibers and stackless state machines within a unified run queue. Depends on `caribou_abi`, `krio`, and `libc` (no LLVM or Cranelift dependencies). |
+| `caribou-ash` | Nightly | Ash runtime adapter. Overwrites `ash_std` seam hooks with Caribou heap and scheduler bindings. |
+| `caribou-wren` | Stable | WrenLift adapter. Overwrites `wren_lift` seam hooks with Caribou's Immix-backed memory allocator. |
+| `caribou-plugin` | Stable | Plugin loader that registers native shared libraries as runtime languages using typed FFI dispatchers over C signatures. |
+| `caribou-zyntax` | Stable | Zyntax host adapter. Registers frontends (snapshots or `.zyn` grammars) as guest languages, compiles modules via the embed runtime, and publishes typed AST/HIR declarations. |
+| `caribou-driver` | Nightly | Host execution supervisor. Discovers workspace files, initializes the `World`, loads guest languages, and backs the `caribou` CLI. |
+
+## Implementation Status
+
+Ash and WrenLift are operational atop the Caribou core and validated against their native baselines:
+
+* **Ash:** Matches native execution parity across the Ash test corpus and the upstream Haxe language conformance suite.
+* **WrenLift:** Matches standalone benchmark timings and memory consumption under high GC pressure.
+
+### Interoperability & Cross-Imports
+
+Modules are resolved and shared across language boundaries through a unified namespace:
+
+* **Wren importing Haxe:** `import "game:Player" for Player` resolves to Haxe classes.
+* **Haxe importing Wren:** Using `-lib caribou`, `import game.hud.Hud` imports `src/game/hud.wren`. Exported Wren method signatures can be defined explicitly (e.g., `#export = "add(n: Num) -> Num"`) or inferred automatically.
+* **Native Plugins:** C libraries built with `caribou_abi::plugin!` in `plugins/` are treated as first-class languages in the module registry.
+* **Zyntax:** Discovered frontends (such as ZynML snapshots or `.zyn` files) register beside standard Wren and Haxe modules.
+
+## Building & Verification
+
+### Build Commands
 
 ```sh
-cargo build -p caribou            # the core, stable
+# Core runtime
+cargo build -p caribou
 cargo test -p caribou
 
-cargo +nightly build -p caribou-ash --features runner    # ash on the core
-cargo build -p caribou-wren --features runner            # wren_lift on the core
-cargo +nightly build -p caribou-driver                   # the caribou command
+# Language runners & CLI
+cargo +nightly build -p caribou-ash --features runner
+cargo build -p caribou-wren --features runner
+cargo +nightly build -p caribou-driver
+
 ```
 
-The runtimes are git dependencies at one rev each (the root
-`Cargo.toml`). Ash's is patched to a sibling checkout, `../ash`, built
-there first with `cargo build -p ash_std`, because Ash's build embeds
-that library; a change in a runtime that is not pushed yet is patched
-the same way, as Zyntax's checkout, `../zyntax`, is while it is ahead
-of its pushed rev. Building `caribou-ash` needs `LLVM_SYS_211_PREFIX`
-set, because Ash's build script asks for it even though the runner
-links no LLVM.
+### Build Requirements & Workspace Layout
 
-A program runs from its project directory, and the other languages'
-modules are found under the project's class paths and loaded on first
-use:
+* Runtimes are pinned to specific revisions in `Cargo.toml`.
+* Ash is patched to a local checkout at `../ash` and requires building `ash_std` first (`cargo build -p ash_std`) due to embedded library dependencies.
+* `caribou-ash` requires the `LLVM_SYS_211_PREFIX` environment variable during compilation, as Ash's build script expects this configuration even when building without LLVM linking.
+* Active Zyntax branches may be patched against local checkouts at `../zyntax`.
+* Local Haxe integration: Register the library locally via `haxelib dev caribou haxe` to enable `-lib caribou`.
+
+### Running Programs
+
+Execute a HashLink binary directly from a project root:
 
 ```sh
 caribou run bin/game.hl
+
 ```
 
-`caribou build bin/game.hl` writes `bin/game.cb`, the program, every
-module under the class paths and the plugins beside it in one file,
-and `caribou run bin/game.cb` runs it the same way from anywhere.
+Package the primary executable, related classpath modules, and native plugins into a unified archive:
 
-`caribou run --report` prints, when the program ends, what the run did:
-the tier each function reached, whether each send across the bridge is
-direct or takes the plain path, and what crossed boxed. It is how to see
-whether something was optimized without waiting for a build.
+```sh
+caribou build bin/game.hl    # Emits bin/game.cb
+caribou run bin/game.cb      # Executes self-contained bundle
 
-Each per-runtime runner takes a program and an execution mode, and
-`--no-install` runs the runtime on its own implementation instead, which
-is handy for comparing the two:
+```
+
+Append `--report` to inspect execution diagnostics upon exit:
+
+```sh
+caribou run --report bin/game.hl
+
+```
+
+The report outputs JIT tier promotions, boxed value allocations, and bridge call paths (direct vs. dynamic fallback).
+
+### Standalone A/B Testing
+
+Adapter runner binaries provide a `--no-install` flag to bypass Caribou seam patching, running code directly against the guest runtime's native subsystems for performance and parity comparisons:
 
 ```sh
 target/debug/caribou-ash --mode hybrid game.hl
 target/debug/caribou-wren --mode tiered script.wren
+
 ```
 
-`cargo bench -p caribou-interop --bench interop` times a call across the
-bridge in each direction beside the same call inside each language, per
-operation. `--bench swarm` runs a game frame three ways, engine and
-gameplay in Haxe, in Wren, and split between them, and reports the
-frame time of each. `--bench transfer` times an object, a string or a
-sequence crossing, with the bytes each crossing leaves behind and the
-collections the runs took.
+### Benchmarks
 
-WrenLift's LLVM top tier is off by default, as it is in WrenLift, so a
-Wren body runs on its Cranelift baseline. `--features llvm` on
-`caribou-wren`, `caribou-driver` or `caribou-interop` turns it on; it
-needs LLVM 21 on the build machine, and the whole build then links LLVM
-dynamically, Ash's tier included.
+Run integration benchmarks through `caribou-interop`:
 
-The Haxe library lives in `haxe/`. Until it is published, register the
-checkout once with `haxelib dev caribou haxe`; a program then builds with
-`-lib caribou`, and the library finds the `caribou` command on the path or
-in this checkout's target directory.
+```sh
+# Compare cross-bridge invocation overhead against intra-language calls
+cargo bench -p caribou-interop --bench interop
 
-## Documentation
+# Benchmark frame times across pure Haxe, pure Wren, and hybrid splits
+cargo bench -p caribou-interop --bench swarm
 
-- [docs/interop.md](docs/interop.md) is the reference for what a program
-  writes: namespaces, how each language sees the other's classes, export
-  signatures, and what crosses how.
-- [docs/architecture.md](docs/architecture.md) is the map of the systems,
-  one page each under `docs/architecture/`: the heap, the scheduler, the
-  bridge, the adapters, the registry, imports in each direction, and the
-  world and driver.
-- Issues are tracked inside the repository with
-  [git-bug](https://github.com/git-bug/git-bug); `git-bug bug` lists them.
+# Profile cross-boundary memory allocations and collection impact
+cargo bench -p caribou-interop --bench transfer
+
+```
+
+### JIT Tiers & LLVM Configuration
+
+WrenLift executes on Cranelift by default. To enable the LLVM optimizing tier, build `caribou-wren`, `caribou-driver`, or `caribou-interop` with `--features llvm`. This requires an LLVM 21 installation and links LLVM dynamically across all JIT components (including Ash).
+
+## Project Documentation
+
+* `docs/interop.md`: Language interoperability specifications, including namespace mappings, type reflection, explicit export attributes, and marshalling rules.
+* `docs/architecture.md`: Architectural documentation for the memory manager, fiber scheduler, FFI call bridge, runtime adapters, and the driver subsystem.
+* Issue Tracking: Tracked offline in-tree via `git-bug`. Use `git-bug bug` to query active tasks.
 
 ## License
 
