@@ -218,10 +218,15 @@ name = "ash_native_call"
 version = "0.1.0"
 
 [[package]]
+name = "ash_simd"
+version = "0.1.0"
+
+[[package]]
 name = "ash_std"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash_simd",
  "ash_trace",
  "ash_wasm_runtime",
  "bindgen",
@@ -2725,6 +2730,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=032a722d7b0a0ced786695c25e10d9cb645c48c7#032a722d7b0a0ced786695c25e10d9cb645c48c7"
 dependencies = [
  "libc",
 ]
@@ -2732,6 +2738,7 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.19"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=032a722d7b0a0ced786695c25e10d9cb645c48c7#032a722d7b0a0ced786695c25e10d9cb645c48c7"
 dependencies = [
  "aes-gcm",
  "argon2",

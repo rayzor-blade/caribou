@@ -18,7 +18,7 @@ caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash", features = ["runner"] }
 caribou-wren = { path = "../caribou-wren", features = ["runner"] }
 serde_json = "1"
-wren_lift = { path = "../../../wren_lift" }
+wren_lift = { workspace = true }
 
 [lib]
 crate-type = ["rlib"]

@@ -16,6 +16,27 @@ krio-core = { git = "https://github.com/darmie/krio.git", rev = "286f5e0710e2077
 # Git, not the registry release: the batched compile API is only here.
 beadie = { git = "https://github.com/darmie/beadie", rev = "868d1069eeda1ea162460273869597a9b0866ebf", default-features = false }
 libc = "0.2"
+# The runtimes, each at one rev: what the seams here are built against,
+# ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
+# needs lands there first; while it is not pushed, `[patch]` below points
+# the source at the checkout.
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "7932bb53be9596afb57043bbf6d13925bfbf6bc6" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "7932bb53be9596afb57043bbf6d13925bfbf6bc6" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "7932bb53be9596afb57043bbf6d13925bfbf6bc6", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "7932bb53be9596afb57043bbf6d13925bfbf6bc6", default-features = false }
+wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "032a722d7b0a0ced786695c25e10d9cb645c48c7" }
+
+# ash from the sibling checkout, at the rev above: ash_core's build script
+# embeds the ash_std cdylib from the checkout's own target directory,
+# which a cargo git checkout never has (`cargo build -p ash_std` there
+# first; ash issue a1355d46ae62456f956985d148a68c99c9aa5394ecf50c3f699da13d692024b5).
+# Until ash's build makes that cdylib itself, the git source is patched
+# here; a wren_lift change not yet pushed is patched the same way.
+[patch."https://github.com/rayzor-blade/ash.git"]
+ash_std = { path = "../ash/std" }
+ash_native_call = { path = "../ash/crates/ash_native_call" }
+ash_core = { path = "../ash/crates/ash" }
+ash_interp = { path = "../ash/crates/ash_interp" }
 
 [profile.dev]
 opt-level = 1

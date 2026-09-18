@@ -77,10 +77,13 @@ cargo build -p caribou-wren --features runner            # wren_lift on the core
 cargo +nightly build -p caribou-driver                   # the caribou command
 ```
 
-For now the adapters find their runtimes by path; they will become git
-dependencies once the runtimes are published. Building `caribou-ash` needs
-`LLVM_SYS_211_PREFIX` set, because Ash's build script asks for it even
-though the runner links no LLVM.
+The runtimes are git dependencies at one rev each (the root
+`Cargo.toml`). Ash's is patched to a sibling checkout, `../ash`, built
+there first with `cargo build -p ash_std`, because Ash's build embeds
+that library; a change in either runtime that is not pushed yet is
+patched the same way. Building `caribou-ash` needs `LLVM_SYS_211_PREFIX`
+set, because Ash's build script asks for it even though the runner
+links no LLVM.
 
 A program runs from its project directory, and the other languages'
 modules are found under the project's class paths and loaded on first
