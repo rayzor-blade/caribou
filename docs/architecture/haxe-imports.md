@@ -64,6 +64,11 @@ inference the LSP hover runs, and takes the result of a literal, an
 interpolation, a constructor call, a field or another method from it.
 Parameters are only ever declared; they are where the inference starts.
 
+A plugin's classes are emitted the same way, from the libraries in
+`plugins/` beside the compiler's output: one module per class under the
+plugin's name as the package, `math.Vec2` (see
+[plugins.md](plugins.md)).
+
 ## The emitted class
 
 An emitted class extends the emitted class of its Wren superclass when

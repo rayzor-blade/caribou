@@ -78,18 +78,60 @@ class Bridge {
 			}
 			walk(cp, [], found);
 		}
-		if (found.length == 0) {
+		var plugins = pluginLibraries();
+		if (found.length == 0 && plugins.length == 0) {
 			return;
 		}
 		modules = found;
-		var described:Array<ModuleDesc> = haxe.Json.parse(describe(found.map(f -> f.path)));
-		for (i in 0...found.length) {
-			var f = found[i];
-			var doc = described[i];
-			for (c in doc.classes) {
-				define(f, doc.classes, c);
+		if (found.length > 0) {
+			var described:Array<ModuleDesc> = haxe.Json.parse(describe(found.map(f -> f.path)));
+			for (i in 0...found.length) {
+				var f = found[i];
+				var doc = described[i];
+				for (c in doc.classes) {
+					define(f, doc.classes, c);
+				}
 			}
 		}
+		// A plugin is a language of its own, named after it, with one
+		// module per class: `plugins/math.dylib` beside the program gives
+		// `math.Vec2`.
+		if (plugins.length > 0) {
+			var described:Array<ModuleDesc> = haxe.Json.parse(describe(plugins));
+			for (doc in described) {
+				var f = {path: "", namespace: doc.lang, module: doc.module, pack: [doc.lang]};
+				modules.push(f);
+				for (c in doc.classes) {
+					define(f, doc.classes, c);
+				}
+			}
+		}
+	}
+
+	/** The plugin libraries beside the program: `plugins/` under the
+		directory the compiler writes the program to. */
+	static function pluginLibraries():Array<String> {
+		var output = haxe.macro.Compiler.getOutput();
+		if (output == null || output == "") {
+			return [];
+		}
+		var dir = haxe.io.Path.join([haxe.io.Path.directory(output), "plugins"]);
+		if (!FileSystem.isDirectory(dir)) {
+			return [];
+		}
+		var extension = switch (Sys.systemName()) {
+			case "Windows": "dll";
+			case "Mac": "dylib";
+			default: "so";
+		}
+		var libraries = [];
+		for (entry in FileSystem.readDirectory(dir)) {
+			if (haxe.io.Path.extension(entry) == extension) {
+				libraries.push(haxe.io.Path.join([dir, entry]));
+			}
+		}
+		libraries.sort(Reflect.compare);
+		return libraries;
 	}
 
 	static function walk(dir:String, rel:Array<String>, out:Array<Found>):Void {

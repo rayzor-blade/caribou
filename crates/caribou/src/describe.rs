@@ -149,11 +149,12 @@ fn field(f: &crate::registry::FieldIface) -> FieldDesc {
 }
 
 /// A member's spelling: the signature its callable carries when it has
-/// one, else its name.
+/// one, else its name with its arity in the same spelling, `dot(_,_)`,
+/// which is what the bridge is asked for.
 fn signature_of(m: &crate::registry::MethodIface) -> String {
     match m.target {
         crate::protocol::Callable::WrenMethod { signature, .. } => signature.name().to_owned(),
-        _ => m.name.clone(),
+        _ => format!("{}({})", m.name, vec!["_"; m.params.len()].join(",")),
     }
 }
 

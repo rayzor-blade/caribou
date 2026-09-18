@@ -1,0 +1,8 @@
+# The Haxe program of the plugin test: it uses the plugin the build
+# macro found in plugins/ beside the output. Rebuild with
+# `haxe plugin.hxml` (Haxe 4.3.6) from this directory, with the math
+# plugin's library in plugins/; plugin.hl is checked in.
+-cp src
+-lib caribou
+-main UsePlugin
+-hl plugin.hl

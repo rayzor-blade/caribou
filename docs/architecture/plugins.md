@@ -70,8 +70,17 @@ the configuration.
 The plugin adapter (`caribou_plugin::Runtime`) registers one language
 per plugin, named after it. So every plugin has a namespace with nothing
 configured, and a Wren program writes `import "math:Math" for Math` the
-way it imports any language's class; a Haxe program will write `import
-math.Math` once the build macro describes plugins.
+way it imports any language's class. A Haxe program writes `import
+math.Math`: the build macro describes the libraries in `plugins/` beside
+the compiler's output (`caribou describe` reads a plugin as it reads a
+Wren module, one module per class) and emits a class for each, under the
+plugin's name as the package, with the same natives a Wren class gets;
+the driver's namespaces cover the plugins beside the program, so the
+natives bind by name at run time. An instance method of a plugin class
+is a typed target the Haxe adapter calls with the object first, where a
+Wren object's member is sent to the object for its own dispatch; the
+faces the macro emits are not published as Haxe classes, being another
+language's.
 
 The table publishes to the registry as one module per class, named
 after the class, with the class's functions as its methods. Every target
@@ -114,8 +123,7 @@ sees the core's object.
 
 Built: the header macro, loading, the adapter, scalar and `DYN`
 parameters and results, classes with instances, discovery beside the
-program, Wren reaching a plugin. Not built: strings and bytes (`BYTES`),
-the Haxe side at build time (the macro describing a plugin and emitting
-its externs), a host API a plugin keeps a core value through across
-calls, plugins from a bundle's native library sections, and wren_lift's
-own plugins on this ABI.
+program, Wren and Haxe reaching a plugin. Not built: strings and bytes
+(`BYTES`), a host API a plugin keeps a core value through across calls,
+plugins from a bundle's native library sections, and wren_lift's own
+plugins on this ABI.

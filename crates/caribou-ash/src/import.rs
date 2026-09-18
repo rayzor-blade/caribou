@@ -435,8 +435,15 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
             continue;
         }
         let name = format!("{}.{}.{}", s.namespace, s.module.replace('/', "."), s.class);
+        // A module of one class named as the class is that class: a
+        // plugin's, `math.Vec2`.
         let index = bytecode
             .type_index_of(&name)
+            .or_else(|| {
+                (s.module == s.class)
+                    .then(|| bytecode.type_index_of(&format!("{}.{}", s.namespace, s.class)))
+                    .flatten()
+            })
             .ok_or_else(|| anyhow!("the program declares `{}` but no class `{name}`", s.name))?;
         by_class.insert(key, interpreter.c_type_of(index) as usize);
     }
@@ -655,11 +662,44 @@ fn inherited_static(iface: &Interface, index: usize, member: Symbol) -> Option<C
     })
 }
 
+/// Whether `m` is the member a native asks for by the Wren-spelled
+/// `symbol`: a Wren method by its own signature, any other by its name
+/// and arity spelled the same way, `dot(_,_)`.
+fn answers(m: &registry::MethodIface, symbol: Symbol) -> bool {
+    match m.target {
+        Callable::WrenMethod { signature, .. } => signature == symbol,
+        _ => {
+            let asked = symbol.name();
+            let (name, params) = asked.split_once('(').unwrap_or((asked, ""));
+            let arity = params
+                .trim_end_matches(')')
+                .split(',')
+                .filter(|p| !p.is_empty())
+                .count();
+            m.name == name && m.params.len() == arity
+        }
+    }
+}
+
 fn static_member(class: &ClassIface, member: Symbol) -> Option<&registry::MethodIface> {
-    class.methods.iter().find(|m| {
-        m.is_static
-            && matches!(m.target, caribou::protocol::Callable::WrenMethod { signature, .. } if signature == member)
-    })
+    class
+        .methods
+        .iter()
+        .find(|m| m.is_static && answers(m, member))
+}
+
+/// The instance member `member` of the slot's class, when its target is
+/// one the bridge calls with the receiver first rather than sends to
+/// the object: a plugin's, typed. A Wren object's members go through the
+/// object, so its own dispatch finds an override.
+fn typed_instance_member(s: &Slot) -> Result<Option<Callable>, String> {
+    let (iface, index) = published(s)?;
+    Ok(iface.classes[index]
+        .methods
+        .iter()
+        .find(|m| !m.is_static && answers(m, s.member))
+        .map(|m| m.target)
+        .filter(|target| !matches!(target, Callable::WrenMethod { .. })))
 }
 
 /// A record word as a value, by the kind the program declared for it
@@ -762,7 +802,25 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
         }
         Kind::Method => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
-            .and_then(|target| bridge::invoke_at(target, s.member, &s.site, args, haxe)),
+            .and_then(|object| {
+                // A typed member takes the object as its first argument;
+                // any other is sent to the object.
+                match typed_instance_member(s).map_err(|m| proto::error_value(&s.name, &m))? {
+                    Some(target) => {
+                        let mut with_self = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
+                        if args.len() + 1 > MAX_ARGS {
+                            return Err(proto::error_value(&s.name, "too many arguments"));
+                        }
+                        with_self[0].write(object);
+                        for (slot, &a) in with_self[1..].iter_mut().zip(args) {
+                            slot.write(a);
+                        }
+                        let with_self = unsafe { with_self[..args.len() + 1].assume_init_ref() };
+                        bridge::call_at(target, &s.site, with_self, haxe, &s.name)
+                    }
+                    None => bridge::invoke_at(object, s.member, &s.site, args, haxe),
+                }
+            }),
         Kind::Get => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| bridge::get_at(target, s.member, &s.site, haxe)),

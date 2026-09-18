@@ -5,14 +5,16 @@
 //! own; without any, `src` under those directories when it exists, else
 //! the directories themselves. A namespace is a directory under a root
 //! (`src/game` is `game`), or one the program imports, and every
-//! namespace covers every resident language, Haxe first.
+//! namespace covers every resident language, Haxe first, the plugins
+//! beside the program last.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use caribou::registry::Namespace;
 
-/// The languages a project's namespaces cover, in lookup order.
+/// The languages a project's namespaces cover, in lookup order, before
+/// the plugins beside the program.
 pub const LANGUAGES: [&str; 2] = ["haxe", "wren"];
 
 /// The class paths an `.hxml` declares, relative to its directory.
@@ -69,8 +71,9 @@ pub fn roots(program: &Path) -> Vec<PathBuf> {
 }
 
 /// The namespaces of a project: each directory under a root, and each
-/// name in `imported`, every one over every resident language.
-pub fn namespaces(roots: &[PathBuf], imported: &[String]) -> Vec<Namespace> {
+/// name in `imported`, every one over every resident language, the
+/// plugins named in `plugins` after the runtimes.
+pub fn namespaces(roots: &[PathBuf], imported: &[String], plugins: &[String]) -> Vec<Namespace> {
     let mut names: BTreeSet<String> = imported.iter().cloned().collect();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -90,7 +93,11 @@ pub fn namespaces(roots: &[PathBuf], imported: &[String]) -> Vec<Namespace> {
         .into_iter()
         .map(|name| Namespace {
             name,
-            langs: LANGUAGES.iter().map(|l| (*l).to_owned()).collect(),
+            langs: LANGUAGES
+                .iter()
+                .map(|l| (*l).to_owned())
+                .chain(plugins.iter().cloned())
+                .collect(),
             modules: None,
         })
         .collect()
@@ -115,10 +122,10 @@ mod tests {
 
         let found = roots(&dir.join("game.hl"));
         assert_eq!(found, vec![dir.join("src"), dir.join("lib")]);
-        let namespaces = namespaces(&found, &["net".to_owned()]);
+        let namespaces = namespaces(&found, &["net".to_owned()], &["gfx".to_owned()]);
         let names: Vec<&str> = namespaces.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["game", "net", "ui"]);
-        assert_eq!(namespaces[0].langs, ["haxe", "wren"]);
+        assert_eq!(namespaces[0].langs, ["haxe", "wren", "gfx"]);
 
         // Without an hxml: `src` under the program's directory when there
         // is one, beside whatever the working directory gives.

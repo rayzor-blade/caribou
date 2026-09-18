@@ -124,8 +124,9 @@ impl Session {
             .into_iter()
             .map(|(namespace, _)| namespace)
             .collect();
+        let plugin_names: Vec<String> = plugins.iter().map(|p| p.name().to_owned()).collect();
         let config = Config {
-            namespaces: project::namespaces(&roots, &imported),
+            namespaces: project::namespaces(&roots, &imported, &plugin_names),
             roots,
             ..Config::default()
         };

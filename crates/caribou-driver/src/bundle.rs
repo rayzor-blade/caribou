@@ -25,7 +25,18 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
         .into_iter()
         .map(|(namespace, _)| namespace)
         .collect();
-    let namespaces = project::namespaces(roots, &imported);
+    // The plugins beside the program are the ones its namespaces cover.
+    let plugins: Vec<String> = caribou_plugin::load_dir(
+        &program
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("plugins"),
+    )
+    .map_err(|e| anyhow!("{e}"))?
+    .iter()
+    .map(|p| p.name().to_owned())
+    .collect();
+    let namespaces = project::namespaces(roots, &imported, &plugins);
     let mut sections = vec![Section {
         kind: SectionKind::Module,
         lang: "haxe".to_owned(),

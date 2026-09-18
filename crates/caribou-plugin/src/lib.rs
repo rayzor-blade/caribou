@@ -180,6 +180,24 @@ pub fn load_dir(dir: &Path) -> Result<Vec<Plugin>, Error> {
     Ok(out)
 }
 
+/// The plugin at `path` as data, for a build step: one module per class,
+/// under the plugin's name as the language. Loads the plugin into a world
+/// of this thread's, as running it would.
+pub fn describe(path: &Path) -> Result<Vec<caribou::describe::ModuleDesc>, Error> {
+    let plugin = load(path)?;
+    let name = plugin.name.clone();
+    let world = caribou::world::World::new(caribou::world::Config::default());
+    let lang = world
+        .register(Box::new(Runtime::new(vec![plugin])))
+        .map_err(|e| Error::NotAPlugin(path.to_owned(), e.to_string()))?[0];
+    let mut modules: Vec<caribou::describe::ModuleDesc> = registry::interfaces_of(lang)
+        .iter()
+        .map(|iface| caribou::describe::ModuleDesc::of(iface, &name))
+        .collect();
+    modules.sort_by(|a, b| a.module.cmp(&b.module));
+    Ok(modules)
+}
+
 /// The adapter: every loaded plugin as a language of the world.
 pub struct Runtime {
     plugins: Vec<Plugin>,

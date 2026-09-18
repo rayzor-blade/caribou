@@ -2,7 +2,7 @@
 //!
 //!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]
 //!     caribou build <program.hl> [-o <out.cb>]
-//!     caribou describe <module.wren>...
+//!     caribou describe <module.wren | plugin library>...
 //!
 //! `run` runs a program with every resident language, from the project
 //! directory: the other languages' modules are found under the project's
@@ -11,7 +11,8 @@
 //! paths in one file, run the same way anywhere. `--report` prints, when
 //! the program ends, what the run did: the tier each function reached
 //! and how each send across the bridge went. `describe` prints the
-//! modules' interfaces as JSON, for a build step.
+//! modules' interfaces as JSON, for a build step; a plugin library's
+//! classes come one module each.
 
 use std::path::PathBuf;
 use std::process;
@@ -19,7 +20,7 @@ use std::process;
 use caribou_ash::Mode;
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.cb>]\n       caribou describe <module.wren>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.cb>]\n       caribou describe <module.wren | plugin library>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -81,6 +82,15 @@ fn describe(files: &[String]) -> Result<(), String> {
     }
     let mut modules = Vec::with_capacity(files.len());
     for file in files {
+        let path = std::path::Path::new(file);
+        // A plugin library: its classes, one module each.
+        if path
+            .extension()
+            .is_some_and(|e| e == std::env::consts::DLL_EXTENSION)
+        {
+            modules.extend(caribou_plugin::describe(path).map_err(|e| e.to_string())?);
+            continue;
+        }
         let source =
             std::fs::read_to_string(file).map_err(|e| format!("cannot read '{file}': {e}"))?;
         let name = std::path::Path::new(file)

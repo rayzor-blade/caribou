@@ -248,6 +248,9 @@ fn method_names(bytecode: &DecodedBytecode) -> HashMap<i32, String> {
         let Some(obj) = ty.obj.as_ref().filter(|o| publishable(&o.name)) else {
             continue;
         };
+        if is_face(types, index) {
+            continue;
+        }
         if let Some(own) = chain(types, index).first() {
             for p in &own.proto {
                 names
@@ -491,6 +494,15 @@ fn publishable(name: &str) -> bool {
         || name == "String")
 }
 
+/// Whether the class at `index` is a face the build macro emitted for
+/// another language's class, under `caribou.Ref`: another language's to
+/// publish, not this program's.
+fn is_face(types: &[HLType], index: usize) -> bool {
+    chain(types, index)
+        .iter()
+        .any(|obj| obj.name == crate::import::REF_CLASS)
+}
+
 /// The companion's name: `game.$Player` for `game.Player`.
 fn companion_name(name: &str) -> String {
     match name.rsplit_once('.') {
@@ -590,7 +602,7 @@ pub fn publish_module(
         let Some(obj) = ty.obj.as_ref() else {
             continue;
         };
-        if !publishable(&obj.name) {
+        if !publishable(&obj.name) || is_face(types, index) {
             continue;
         }
 
