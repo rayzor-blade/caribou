@@ -9,6 +9,9 @@ description = "Shared runtime core: heap, fibers, module registry, hot reload"
 # The version ash, wren_lift and zyntax use: one rendering engine and one look
 # for every report in a process.
 ariadne = "0.5.1"
+# Calls a native by a signature known at run time; one generated match,
+# no dependencies of its own.
+ash_native_call = { workspace = true }
 caribou_abi = { workspace = true }
 krio-core = { workspace = true }
 krio-fiber = { workspace = true }

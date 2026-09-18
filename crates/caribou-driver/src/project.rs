@@ -72,8 +72,9 @@ pub fn roots(program: &Path) -> Vec<PathBuf> {
 
 /// The namespaces of a project: each directory under a root, and each
 /// name in `imported`, every one over every resident language, the
-/// plugins named in `plugins` after the runtimes.
-pub fn namespaces(roots: &[PathBuf], imported: &[String], plugins: &[String]) -> Vec<Namespace> {
+/// languages named in `others` (plugins, Zyntax frontends) after the
+/// runtimes.
+pub fn namespaces(roots: &[PathBuf], imported: &[String], others: &[String]) -> Vec<Namespace> {
     let mut names: BTreeSet<String> = imported.iter().cloned().collect();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
@@ -96,7 +97,7 @@ pub fn namespaces(roots: &[PathBuf], imported: &[String], plugins: &[String]) ->
             langs: LANGUAGES
                 .iter()
                 .map(|l| (*l).to_owned())
-                .chain(plugins.iter().cloned())
+                .chain(others.iter().cloned())
                 .collect(),
             modules: None,
         })

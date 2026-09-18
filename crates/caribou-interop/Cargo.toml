@@ -21,6 +21,9 @@ caribou-ash = { path = "../caribou-ash", features = ["runner"] }
 caribou-driver = { path = "../caribou-driver" }
 caribou-wren = { path = "../caribou-wren" }
 caribou-plugin = { path = "../caribou-plugin" }
+caribou-zyntax = { path = "../caribou-zyntax" }
+# ZynML's snapshot, the Zyntax frontend of the tests.
+zynml = { workspace = true }
 ash_std = { workspace = true }
 wren_lift = { workspace = true }
 

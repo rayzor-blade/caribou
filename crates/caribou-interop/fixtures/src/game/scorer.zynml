@@ -1,0 +1,31 @@
+// A Zyntax module of the interop tests, in ZynML: reached from Wren as
+// `import "game:scorer" for Scorer`.
+def score(hits: i64, misses: i64): i64 {
+    return hits * 10 - misses * 3
+}
+
+def weight(hits: f64, factor: f64): f64 {
+    return hits * factor + 0.5
+}
+
+def perfect(hits: i64, total: i64): bool {
+    return hits == total
+}
+
+// The string as it came: the library's concatenation needs ZynML's
+// plugins, which the tests do not carry.
+def echo(name: String): String {
+    return name
+}
+
+struct Point {
+    x: f64,
+    y: f64
+}
+
+impl Point {
+    def new(x: f64, y: f64): Point { return Point { x: x, y: y } }
+    def len(self): f64 { return self.x * self.x + self.y * self.y }
+    def origin(): Point { return Point { x: 0.0, y: 0.0 } }
+    def area(w: f64, h: f64): f64 { return w * h }
+}

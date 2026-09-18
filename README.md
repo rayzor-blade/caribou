@@ -46,6 +46,7 @@ Rust, and that stays true after the game has shipped.
 | `caribou-ash` | Hosts Ash: fills `ash_std`'s seam with the core's heap and scheduler. Nightly, because `ash_std` needs it. |
 | `caribou-wren` | Hosts WrenLift: fills `wren_lift`'s seam with the core heap under its Immix strategy. |
 | `caribou-plugin` | Loads plugins and registers each as a language of the world, with a typed dispatcher over their C signatures. |
+| `caribou-zyntax` | Hosts Zyntax: each frontend (a snapshot or a grammar under a root) a language of the world, its modules published from their typed AST and HIR and compiled by the embed runtime. |
 | `caribou-driver` | Runs a program: one world with every resident language, from the project's own layout. The `caribou` command is its front. |
 
 The core builds on stable Rust and depends on `caribou_abi`, `krio` and
@@ -66,8 +67,9 @@ writes `import game.hud.Hud` for a Wren module at `src/game/hud.wren`, and
 a Wren method says what it exposes with `#export = "add(n: Num) -> Num"`,
 or nothing when the runtime can tell. A native plugin in `plugins/`
 beside the program is a language of its own, written with
-`caribou_abi::plugin!` and imported like any other. What is not there
-yet: the Zyntax adapter.
+`caribou_abi::plugin!` and imported like any other. A Zyntax frontend
+under a root, ZynML's snapshot or a `.zyn` grammar, is a language too,
+its modules found beside the Wren ones.
 
 ## Building
 
@@ -83,8 +85,9 @@ cargo +nightly build -p caribou-driver                   # the caribou command
 The runtimes are git dependencies at one rev each (the root
 `Cargo.toml`). Ash's is patched to a sibling checkout, `../ash`, built
 there first with `cargo build -p ash_std`, because Ash's build embeds
-that library; a change in either runtime that is not pushed yet is
-patched the same way. Building `caribou-ash` needs `LLVM_SYS_211_PREFIX`
+that library; a change in a runtime that is not pushed yet is patched
+the same way, as Zyntax's checkout, `../zyntax`, is while it is ahead
+of its pushed rev. Building `caribou-ash` needs `LLVM_SYS_211_PREFIX`
 set, because Ash's build script asks for it even though the runner
 links no LLVM.
 

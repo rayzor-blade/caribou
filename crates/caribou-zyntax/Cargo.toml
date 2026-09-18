@@ -1,0 +1,19 @@
+[package]
+name = "caribou-zyntax"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Hosts Zyntax on the caribou core: HIR modules from any Zyntax frontend, published to the world"
+
+# Stable, as the core is.
+
+[dependencies]
+caribou = { path = "../caribou" }
+caribou_abi = { workspace = true }
+zyntax_compiler = { workspace = true }
+zyntax_embed = { workspace = true }
+zyntax_typed_ast = { workspace = true }
+
+[dev-dependencies]
+# ZynML's snapshot, the frontend of the tests.
+zynml = { workspace = true }

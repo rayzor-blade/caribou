@@ -122,7 +122,7 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
 
 /// Every `.wren` under `dir`, as `(module name, path)`: the path under
 /// `root` without the extension, `game/hud`.
-fn wren_modules(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
+pub fn wren_modules(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<()> {
     let entries = std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))?;
     for entry in entries {
         let path = entry?.path();

@@ -17,6 +17,13 @@ pub struct ModuleDesc {
     pub lang: String,
     pub module: String,
     pub classes: Vec<ClassDesc>,
+    /// The file the module came from, when it was described from a
+    /// directory.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -125,6 +132,7 @@ impl ModuleDesc {
         ModuleDesc {
             lang: lang.to_owned(),
             module: iface.module.clone(),
+            path: None,
             classes: iface
                 .classes
                 .iter()

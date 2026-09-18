@@ -80,6 +80,7 @@ pub fn describe_source(module: &str, source: &str) -> Result<ModuleDesc, String>
     Ok(ModuleDesc {
         lang: LANG.to_owned(),
         module: module.to_owned(),
+        path: None,
         classes: classes
             .iter()
             .map(|c| describe_class(c, module, &classes_here, interner, &env))

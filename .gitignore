@@ -3,3 +3,4 @@
 .DS_Store
 # The math plugin's library, copied beside the plugin fixture to build it.
 crates/caribou-interop/fixtures/plugins/
+crates/caribou-interop/fixtures/src/zynml.zsnap

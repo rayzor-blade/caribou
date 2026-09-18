@@ -2,7 +2,7 @@
 //!
 //!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]
 //!     caribou build <program.hl> [-o <out.cb>]
-//!     caribou describe <module.wren | plugin library>...
+//!     caribou describe <module.wren | plugin library | root directory>...
 //!
 //! `run` runs a program with every resident language, from the project
 //! directory: the other languages' modules are found under the project's
@@ -20,7 +20,7 @@ use std::process;
 use caribou_ash::Mode;
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.cb>]\n       caribou describe <module.wren | plugin library>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.cb>]\n       caribou describe <module.wren | plugin library | root directory>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -83,6 +83,12 @@ fn describe(files: &[String]) -> Result<(), String> {
     let mut modules = Vec::with_capacity(files.len());
     for file in files {
         let path = std::path::Path::new(file);
+        // A root: every module under it, of every language, with its
+        // path.
+        if path.is_dir() {
+            modules.extend(describe_root(path)?);
+            continue;
+        }
         // A plugin library: its classes, one module each.
         if path
             .extension()
@@ -105,6 +111,26 @@ fn describe(files: &[String]) -> Result<(), String> {
     let json = serde_json::to_string_pretty(&modules).map_err(|e| e.to_string())?;
     println!("{json}");
     Ok(())
+}
+
+/// The modules under `root`: Wren's from their source, and those of the
+/// Zyntax frontends at the root as they publish.
+fn describe_root(root: &std::path::Path) -> Result<Vec<caribou::describe::ModuleDesc>, String> {
+    let mut modules = Vec::new();
+    let mut wren = Vec::new();
+    caribou_driver::bundle::wren_modules(root, root, &mut wren).map_err(|e| e.to_string())?;
+    wren.sort();
+    for (_, path) in wren {
+        let source = std::fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("module");
+        let mut desc = caribou_wren::describe::describe_source(name, &source)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        desc.path = Some(path.to_string_lossy().into_owned());
+        modules.push(desc);
+    }
+    modules.extend(caribou_zyntax::describe(root)?);
+    Ok(modules)
 }
 
 fn main() {

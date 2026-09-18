@@ -10,7 +10,8 @@ import sys.io.Process;
 private typedef ModuleDesc = {
 	lang:String,
 	module:String,
-	classes:Array<ClassDesc>
+	classes:Array<ClassDesc>,
+	?path:String
 }
 
 private typedef ClassDesc = {
@@ -44,53 +45,52 @@ private typedef Found = {
 	for the other languages' modules and emits a class for each class they
 	define, under the package the file's path spells, as for a Haxe module:
 	`src/game/hud.wren` gives `game.hud.Hud`, so `import game.hud.Hud` and
-	`new Hud(3)` are all a program writes. The first directory is the
-	namespace the runtime resolves the module through (`game`), and the
-	rest is the module's name (`hud`); a file at the classpath root is
-	under the language's own namespace. Every member is a native the
-	runtime binds by name when the program loads. Names and types come from
-	the module's own declarations: for Wren, an
-	`#export = "add(n: Num) -> Num"` attribute on a member, and wren_lift's
-	inference for a result it can tell.
+	`new Hud(3)` are all a program writes; `src/game/scorer.zynml`, with
+	the ZynML snapshot at the root, gives `game.scorer.Scorer` the same
+	way. The first directory is the namespace the runtime resolves the
+	module through (`game`), and the rest is the module's name (`hud`); a
+	file at the classpath root is under the language's own namespace.
+	Every member is a native the runtime binds by name when the program
+	loads. Names and types come from the module's own declarations: for
+	Wren, an `#export = "add(n: Num) -> Num"` attribute on a member, and
+	wren_lift's inference for a result it can tell; for a Zyntax language,
+	the module's HIR.
 
-	The runtime describes its own modules: the `caribou` command, found on
-	the path or in the target directory of the checkout this library is
-	part of.
+	The runtime describes its own modules: `caribou describe <root>` on
+	each classpath, the command found on the path or in the target
+	directory of the checkout this library is part of.
 **/
 class Bridge {
 	#if macro
 	/** The library every emitted native names. */
 	static inline var LIB = "caribou";
 
-	/** The namespace of a module at a classpath root: the language's own. */
-	static inline var DEFAULT_NAMESPACE = "wren";
-
-	/** Every Wren module found, for a type that names a class of another. */
+	/** Every module found, for a type that names a class of another. */
 	static var modules:Array<Found> = [];
 
 	public static function use():Void {
-		var found = [];
+		var found:Array<Found> = [];
+		var docs:Array<ModuleDesc> = [];
 		for (cp in Context.getClassPath()) {
 			// The project's own paths are relative; the standard library's
 			// is absolute.
 			if (cp == "" || haxe.io.Path.isAbsolute(cp) || !FileSystem.isDirectory(cp)) {
 				continue;
 			}
-			walk(cp, [], found);
+			var described:Array<ModuleDesc> = haxe.Json.parse(describe([cp]));
+			for (doc in described) {
+				found.push(place(cp, doc));
+				docs.push(doc);
+			}
 		}
 		var plugins = pluginLibraries();
 		if (found.length == 0 && plugins.length == 0) {
 			return;
 		}
 		modules = found;
-		if (found.length > 0) {
-			var described:Array<ModuleDesc> = haxe.Json.parse(describe(found.map(f -> f.path)));
-			for (i in 0...found.length) {
-				var f = found[i];
-				var doc = described[i];
-				for (c in doc.classes) {
-					define(f, doc.classes, c);
-				}
+		for (i in 0...found.length) {
+			for (c in docs[i].classes) {
+				define(found[i], docs[i].classes, c);
 			}
 		}
 		// A plugin is a language of its own, named after it, with one
@@ -134,27 +134,26 @@ class Bridge {
 		return libraries;
 	}
 
-	static function walk(dir:String, rel:Array<String>, out:Array<Found>):Void {
-		for (entry in FileSystem.readDirectory(dir)) {
-			if (entry.charAt(0) == ".") {
-				continue;
-			}
-			var path = haxe.io.Path.join([dir, entry]);
-			if (FileSystem.isDirectory(path)) {
-				walk(path, rel.concat([entry]), out);
-			} else if (haxe.io.Path.extension(entry) == "wren") {
-				var stem = haxe.io.Path.withoutExtension(entry);
-				var segments = rel.concat([stem]);
-				var namespace = rel.length > 0 ? rel[0] : DEFAULT_NAMESPACE;
-				var module = rel.length > 0 ? rel.slice(1).concat([stem]).join("/") : stem;
-				out.push({
-					path: path,
-					namespace: namespace,
-					module: module,
-					pack: rel.length > 0 ? segments : [DEFAULT_NAMESPACE].concat(segments)
-				});
-			}
+	/** Where a described module of classpath `cp` lands: by its file's
+		path under the root, the first directory the namespace and the
+		rest the module; a file at the root is under its language's own
+		namespace. */
+	static function place(cp:String, doc:ModuleDesc):Found {
+		var rel = haxe.io.Path.normalize(doc.path);
+		var base = haxe.io.Path.normalize(cp);
+		if (StringTools.startsWith(rel, base + "/")) {
+			rel = rel.substr(base.length + 1);
 		}
+		var segments = haxe.io.Path.withoutExtension(rel).split("/");
+		var stem = segments.pop();
+		var namespace = segments.length > 0 ? segments[0] : doc.lang;
+		var module = segments.length > 0 ? segments.slice(1).concat([stem]).join("/") : stem;
+		return {
+			path: doc.path,
+			namespace: namespace,
+			module: module,
+			pack: segments.length > 0 ? segments.concat([stem]) : [doc.lang, stem]
+		};
 	}
 
 	/** The `caribou` command: on the path, else the latest built in the

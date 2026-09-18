@@ -10,6 +10,4 @@ description = "Loads native plugins on the shared ABI and publishes their symbol
 [dependencies]
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
-# Calls a native by the signature its descriptor gives, with no boxing.
-ash_native_call = { workspace = true }
 libloading = "0.8"

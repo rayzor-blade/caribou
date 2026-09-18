@@ -100,6 +100,7 @@ impl Session {
                 program,
                 config,
                 plugins,
+                Vec::new(),
                 Some(&bundle),
                 options.wren_mode,
                 options.report,
@@ -126,13 +127,31 @@ impl Session {
             .into_iter()
             .map(|(namespace, _)| namespace)
             .collect();
-        let plugin_names: Vec<String> = plugins.iter().map(|p| p.name().to_owned()).collect();
         // The hatch packages the roots' hatchfiles depend on, for Wren.
         for package in caribou_wren::hatch::dependencies(&roots).map_err(|e| anyhow!(e))? {
             caribou_wren::hatch::hold(package);
         }
+        // The Zyntax frontends under the roots, each a language; their
+        // `.zrtl` plugins sit in `plugins/` beside the program too.
+        let plugin_dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("plugins");
+        let frontends = caribou_zyntax::Frontend::files_in(&roots)
+            .iter()
+            .map(|file| {
+                caribou_zyntax::Frontend::file(file)
+                    .map(|f| f.with_plugin_dir(plugin_dir.clone()))
+                    .map_err(|e| anyhow!(e))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let others: Vec<String> = plugins
+            .iter()
+            .map(|p| p.name().to_owned())
+            .chain(frontends.iter().map(|f| f.name().to_owned()))
+            .collect();
         let config = Config {
-            namespaces: project::namespaces(&roots, &imported, &plugin_names),
+            namespaces: project::namespaces(&roots, &imported, &others),
             roots,
             ..Config::default()
         };
@@ -140,6 +159,7 @@ impl Session {
             program,
             config,
             plugins,
+            frontends,
             None,
             options.wren_mode,
             options.report,
@@ -154,6 +174,7 @@ impl Session {
         mut program: Program,
         config: Config,
         plugins: Vec<caribou_plugin::Plugin>,
+        frontends: Vec<caribou_zyntax::Frontend>,
         bundle: Option<&bundle::Bundle>,
         wren_mode: ExecutionMode,
         report: bool,
@@ -169,6 +190,11 @@ impl Session {
             world
                 .register(Box::new(caribou_plugin::Runtime::new(plugins)))
                 .map_err(|e| anyhow!("registering the plugins: {e}"))?;
+        }
+        if !frontends.is_empty() {
+            world
+                .register(Box::new(caribou_zyntax::Runtime::new(frontends)))
+                .map_err(|e| anyhow!("registering the zyntax frontends: {e}"))?;
         }
         match bundle {
             Some(bundle) => world.install(bundle).map_err(|e| anyhow!(e))?,

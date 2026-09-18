@@ -1,0 +1,9 @@
+# The Haxe program of the Zyntax test: it uses the ZynML module the build
+# macro found under the classpath root beside the ZynML snapshot. Rebuild
+# with `haxe zynml.hxml` (Haxe 4.3.6) from this directory, with
+# src/zynml.zsnap present (a run of the zyntax tests writes it);
+# zynml.hl is checked in.
+-cp src
+-lib caribou
+-main UseZynml
+-hl zynml.hl
