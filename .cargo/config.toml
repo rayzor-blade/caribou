@@ -1,0 +1,8 @@
+# A hatch package's plugin resolves its `wlift_plugin_*` calls against
+# the process that opened it, so the binaries here export their symbols
+# as wren_lift's own do.
+[target.'cfg(target_os = "macos")']
+rustflags = ["-C", "link-arg=-Wl,-export_dynamic"]
+
+[target.'cfg(all(unix, not(target_os = "macos")))']
+rustflags = ["-C", "link-arg=-Wl,--export-dynamic"]

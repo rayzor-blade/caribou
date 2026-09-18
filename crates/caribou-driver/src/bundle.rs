@@ -72,6 +72,17 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
             data: bytes,
         });
     }
+    // The hatch packages the roots depend on, whole: wren_lift reads its
+    // own form, native libraries included.
+    for package in caribou_wren::hatch::dependencies(roots).map_err(|e| anyhow!(e))? {
+        sections.push(Section {
+            kind: SectionKind::Module,
+            lang: "wren".to_owned(),
+            format: "hatch".to_owned(),
+            name: package.name,
+            data: package.bytes,
+        });
+    }
     // The text beside each, for the errors a module raises at run time.
     for (module, source) in sources {
         sections.push(Section {

@@ -20,8 +20,9 @@ its bytes, the module's name in its language and the bytes. The format
 is the language's own and versioned by the language, never by the
 bundle: a Haxe program is `hl`; a Wren module is `wlbc@N`, wren_lift's
 compiled form at the version `N` of its serializer, or `source`, which
-the adapter also reads; a `.hatch` package comes when a project depends
-on one. The bundle versions its framing alone. A *source* section is
+the adapter also reads; a hatch package the project depends on is
+`hatch`, whole, under its name (`@hatch:noise`), its own native
+libraries inside it. The bundle versions its framing alone. A *source* section is
 the text a compiled module was built from, under the module's name, for
 the language's diagnostics. A *resource* section is bytes by name. A
 *native library* section is a plugin on the shared ABI, under its file
@@ -94,9 +95,8 @@ staged; a compiled one does not reload.
 ## Boundaries of the current implementation
 
 Built: the format, `build`, opening, Haxe `hl` entries, Wren modules
-compiled or as source, native libraries for the building target. Not
-built: `.hatch` packages as sections, resources reachable from a
-program, the Api sections (the registry's interfaces beside the modules,
+compiled or as source, hatch packages, native libraries for the
+building target. Not built: resources reachable from a program, the Api sections (the registry's interfaces beside the modules,
 for a build or an editor that reads the bundle without loading it),
 native libraries for other targets than the building machine's, docs,
 and compression.

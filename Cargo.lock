@@ -503,6 +503,7 @@ dependencies = [
  "caribou",
  "caribou_abi",
  "serde_json",
+ "toml",
  "wren_lift",
 ]
 

@@ -21,6 +21,7 @@ caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
 # The version wren_lift uses.
 serde_json = { version = "1", optional = true }
+toml = "0.8"
 wren_lift = { workspace = true }
 
 [lib]

@@ -20,6 +20,7 @@
 //! `publish` puts a Wren module's own classes there for another language.
 
 pub mod describe;
+pub mod hatch;
 mod heap;
 pub mod import;
 pub mod project;
@@ -82,6 +83,14 @@ impl Adapter for Runtime {
             project::stage_text(&section.name, text);
             return Ok(());
         }
+        // A hatch package is staged whole, by the VM, once there is one.
+        if section.format == "hatch" {
+            hatch::hold(hatch::Package {
+                name: section.name.clone(),
+                bytes: section.data.clone(),
+            });
+            return Ok(());
+        }
         let staged = match section.format.as_str() {
             "source" => project::Staged::Source(
                 String::from_utf8(section.data.clone())
@@ -92,7 +101,7 @@ impl Adapter for Runtime {
             }
             format => {
                 return Err(format!(
-                    "wren does not read the format `{format}`; this build reads source and {}",
+                    "wren does not read the format `{format}`; this build reads source, hatch and {}",
                     *project::WLBC
                 ));
             }

@@ -1,0 +1,8 @@
+# The hatch test's project: what its Wren modules depend on, in the form
+# `hatch` reads.
+name    = "hatch-test"
+version = "0.1.0"
+entry   = "main"
+
+[dependencies]
+"@hatch:greet" = { path = "../greet" }

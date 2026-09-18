@@ -6,6 +6,13 @@ functions, the class each hangs in, and their signatures. A language sees
 of a plugin what the driver loaded and nothing more; no language reaches
 a plugin by a path of its own.
 
+Each language's own native libraries keep working for that language,
+unconverted: a Haxe program's `hdll`s beside it, as ash loads them; a
+Wren module's hatch packages with their plugins, as wren_lift loads
+them (below). What one language gets that way, another reaches through
+the bridge, by importing the class that wraps it. A caribou plugin is
+what every language reaches directly.
+
 ## Writing one
 
 A plugin's crate depends on `caribou_abi` and nothing else of caribou,
@@ -153,10 +160,29 @@ the table is called on the caller's thread inside the plugin function
 the dispatcher is calling; a plugin has no thread of its own to call
 from.
 
+## Hatch packages
+
+A project's Wren modules depend on hatch packages the way a hatch
+workspace does: a `hatchfile` at a root, with `[dependencies]`. The
+driver resolves each as `hatch` does (`wren_lift::hatch::
+resolve_dependency_bytes`: a path dependency built from its workspace,
+a version from the cache `hatch install` fills), and what those depend
+on, each once, and stages every package in the VM as wren_lift stages
+them (`stage_hatch_modules`): its modules wait for their first
+`import "@hatch:noise"`, its native libraries are registered, and
+wren_lift opens them itself. A package's plugin calls the host through
+the `wlift_plugin_*` symbols, which it resolves against the process
+that opened it; the binaries here export their symbols
+(`.cargo/config.toml`) so that process can be `caribou`. Nothing in the
+package, the plugin or wren_lift knows caribou is there. A bundle
+carries each package whole, a module section of format `hatch` under
+the package's name, and a session from it stages them the same way
+(`caribou_wren::hatch`).
+
 ## Boundaries of the current implementation
 
 Built: the header macro, loading, the adapter, scalar, `DYN` and string
 parameters and results, classes with instances, the host table with kept
 values, calls and errors, discovery beside the program, Wren and Haxe
-reaching a plugin, plugins shipped in a bundle. Not built: byte
-buffers, and wren_lift's own plugins on this ABI.
+reaching a plugin, plugins shipped in a bundle, hatch packages for
+Wren. Not built: byte buffers.

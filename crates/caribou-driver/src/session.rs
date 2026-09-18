@@ -127,6 +127,10 @@ impl Session {
             .map(|(namespace, _)| namespace)
             .collect();
         let plugin_names: Vec<String> = plugins.iter().map(|p| p.name().to_owned()).collect();
+        // The hatch packages the roots' hatchfiles depend on, for Wren.
+        for package in caribou_wren::hatch::dependencies(&roots).map_err(|e| anyhow!(e))? {
+            caribou_wren::hatch::hold(package);
+        }
         let config = Config {
             namespaces: project::namespaces(&roots, &imported, &plugin_names),
             roots,
@@ -184,6 +188,7 @@ impl Session {
         // Every Wren fiber on a stack of its own: the core scans them as
         // it scans its own tasks' (see `caribou_wren::install`).
         vm.krio_fiber_active = true;
+        caribou_wren::hatch::stage(&mut vm).map_err(|e| anyhow!(e))?;
         if report {
             caribou_wren::report::count_entries(&mut vm);
         }
