@@ -19,17 +19,23 @@ what is exported, by signature, the way a header declares it:
 pub extern "C" fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
 pub extern "C" fn same(v: Value) -> Value { v }
 
-pub struct Vec;
-impl Vec {
-    pub extern "C" fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+pub struct Vec2 { x: f64, y: f64 }
+impl Vec2 {
+    pub extern "C" fn new(x: f64, y: f64) -> Box<Vec2> { Box::new(Vec2 { x, y }) }
+    pub extern "C" fn len(this: &Vec2) -> f64 { this.x.hypot(this.y) }
+    pub extern "C" fn scale(this: &mut Vec2, k: f64) { this.x *= k; this.y *= k; }
+    pub extern "C" fn dot(this: &Vec2, other: &Vec2) -> f64 { this.x * other.x + this.y * other.y }
 }
 
 caribou_abi::plugin! {
     name: "math";
     fn hypot(f64, f64) -> f64;
     fn same(Value) -> Value;
-    class Vec {
-        fn len3(f64, f64, f64) -> f64;
+    class Vec2 {
+        fn new(f64, f64) -> Box<Vec2>;
+        fn len(&Vec2) -> f64;
+        fn scale(&mut Vec2, f64);
+        fn dot(&Vec2, &Vec2) -> f64;
     }
 }
 ```
@@ -38,11 +44,17 @@ A function outside any class is a static of a class named after the
 plugin (`Math`). Each declaration is checked against the item it names,
 as a coercion to the declared function pointer type, so a signature
 that drifts does not compile. The macro reads each type's tag off the
-`Tagged` trait (`u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`, `()`
-and `Value`) and writes the `SymbolDesc` table, the `PluginInfo`, and
-the two symbols every plugin exports: `caribou_abi_version`, which a
-core compares with its own before it binds anything, and
-`caribou_plugin_entry`, which returns the table.
+`Param` and `Returned` traits: `u8`, `u16`, `i32`, `i64`, `f32`, `f64`,
+`bool`, `()` and `Value` by their tags; `&T` and `&mut T` of a declared
+class as an object of it, borrowed for the call, which makes the
+function an instance method when it is the first parameter; `Box<T>` as
+a new object of the class, owned by the core from then on. A static
+`new` returning its own class is the class's constructor. The macro
+writes the `SymbolDesc` table, the class table with a finalizer per
+class (the `Box` dropped), the `PluginInfo`, and the two symbols every
+plugin exports: `caribou_abi_version`, which a core compares with its
+own before it binds anything, and `caribou_plugin_entry`, which returns
+the tables.
 
 ## Loading
 
@@ -73,12 +85,37 @@ reads the result back the same way. Nothing is boxed. A value a kind
 cannot take is a `Type` error naming the argument; a signature the table
 does not cover is an error too.
 
+## Objects
+
+An instance of a plugin class is a core object of the class's
+descriptor, two words: the descriptor and the payload the constructor's
+`Box` gave. The descriptor, one per class for the process, is the
+class's identity: it carries the class's type name (`math.Vec2`), so a
+language installs its class for the object as it does for any
+published type, and Wren's `Vec2.new(3, 4)` gives an instance that
+adopts the object and `v is Vec2` holds; its drop hook runs the
+plugin's finalizer when the object dies, on the sweep, so the payload
+lives exactly as long as anything holds the object. The object's
+protocol answers its type name, identity for `equals` and `hash`, and
+`unwrap_native` with the payload; the plugin's own functions are what
+reach it, through the classes the languages installed.
+
+In a signature an object parameter or result is typed by the
+descriptor itself, which is an `hl_type` at word zero: the dispatcher
+sees a descriptor where a scalar kind would be, takes the argument's
+object, through the cell another language holds it by, checks that its
+descriptor is that one, and passes the payload; an object of another
+class, or no object, is a `Type` error naming the class. A result that
+is a descriptor's is wrapped as a new object, or null for a null
+pointer. So a plugin never reads memory that is not its own, and never
+sees the core's object.
+
 ## Boundaries of the current implementation
 
-Built: the header macro, loading, the adapter, scalar and `DYN` parameters and
-results, discovery beside the program, Wren reaching a plugin. Not
-built: plugin objects (`TypeTag::OBJ`: a native payload a core cell
-holds through `unwrap_native`, with a finalizer), strings and bytes
-(`BYTES`), the Haxe side at build time (the macro describing a plugin
-and emitting its externs), plugins from a bundle's native library
-sections, and wren_lift's own plugins on this ABI.
+Built: the header macro, loading, the adapter, scalar and `DYN`
+parameters and results, classes with instances, discovery beside the
+program, Wren reaching a plugin. Not built: strings and bytes (`BYTES`),
+the Haxe side at build time (the macro describing a plugin and emitting
+its externs), a host API a plugin keeps a core value through across
+calls, plugins from a bundle's native library sections, and wren_lift's
+own plugins on this ABI.

@@ -1,8 +1,10 @@
 //! A native plugin on the shared ABI: loaded by the driver's crate,
 //! registered as a language of the world under its own name, its table
 //! published as classes, and reached from Wren by the ordinary import.
-//! Scalars cross by kind, a value as itself, and a wrong argument or
-//! another ABI version is an error, not a call.
+//! Scalars cross by kind, a value as itself, an instance of a plugin
+//! class as the object the core holds its payload by, and a wrong
+//! argument is an error, not a call. An object nothing holds is released
+//! through the plugin's finalizer.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -34,6 +36,28 @@ System.print(Vec.len3(1, 2, 2))
 System.print(Fiber.new { Math.twice("no") }.try())
 "#;
 
+/// A class with instances: constructed, sent to, passed to another of
+/// its own, compared, and refused where another class is expected.
+const OBJECTS: &str = r#"
+import "math:Vec2" for Vec2
+var v = Vec2.new(3, 4)
+System.print(v.len())
+v.scale(2)
+System.print(v.len())
+System.print(v.dot(Vec2.new(1, 0)))
+System.print(v.unit().len())
+System.print(v is Vec2)
+System.print(v == v)
+System.print(Fiber.new { v.dot(5) }.try())
+for (i in 0...100) Vec2.new(i, i)
+System.print(Vec2.live() >= 2)
+"#;
+
+const LIVE: &str = r#"
+import "math:Vec2" for Vec2
+System.print(Vec2.live() < 10)
+"#;
+
 #[test]
 fn a_plugin_is_a_language_wren_imports() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
@@ -43,7 +67,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 6);
+    assert_eq!(math.symbols().len(), 12);
     let hypot = math
         .symbols()
         .iter()
@@ -53,6 +77,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(hypot.params[0], TypeTag::F64);
     assert_eq!(hypot.ret, TypeTag::F64);
     assert_eq!(ABI_VERSION, 1);
+    assert_eq!(math.classes().len(), 2);
 
     let world = World::new(Config::default());
     world
@@ -69,6 +94,12 @@ fn a_plugin_is_a_language_wren_imports() {
     // Its classes are published under its own namespace.
     assert!(registry::lookup_class("math", "Math", "Math").is_some());
     assert!(registry::lookup_class("math", "Vec", "Vec").is_some());
+    let (iface, index) = registry::lookup_class("math", "Vec2", "Vec2").expect("published");
+    assert!(
+        iface.classes[index].ctor.is_some(),
+        "new is the constructor"
+    );
+    assert_eq!(iface.classes[index].type_name, "math.Vec2");
 
     let errors = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&errors);
@@ -91,5 +122,29 @@ fn a_plugin_is_a_language_wren_imports() {
         output,
         "5\n42\ntrue\nfalse\n3\nas it is\n2\n3\nargument 1 of the plugin function cannot be a caribou.Str\n"
     );
+
+    vm.output_buffer = Some(String::new());
+    let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("objects", OBJECTS));
+    let output = vm.take_output();
+    assert_eq!(
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
+    );
+    assert_eq!(
+        output,
+        "5\n10\n6\n1\ntrue\ntrue\nargument 2 of the plugin function must be a math.Vec2, not a number\ntrue\n"
+    );
+    // The temporaries die with Wren's cycle and the core's collection
+    // that ends it: their instances go, then the cells they held the
+    // objects by, then the objects, through the plugin's finalizer.
+    caribou_wren::with_vm(&mut vm, |vm| vm.collect_garbage());
+    caribou::heap::major();
+    vm.output_buffer = Some(String::new());
+    let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("live", LIVE));
+    let output = vm.take_output();
+    assert_eq!(result, InterpretResult::Success, "{:?}", errors.borrow());
+    assert_eq!(output, "true\n");
     drop(vm);
 }

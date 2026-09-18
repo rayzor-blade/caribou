@@ -1,6 +1,6 @@
 //! The `math` plugin of the interop tests: free functions, which land on
-//! a class named after the plugin, and a class of its own, over scalars
-//! and one value passed as it is.
+//! a class named after the plugin; a class of statics; and a class whose
+//! instances cross, over scalars and one value passed as it is.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -36,6 +36,49 @@ impl Vec {
     }
 }
 
+/// How many `Vec2` the plugin has out: what the core has not dropped yet.
+static LIVE: AtomicI32 = AtomicI32::new(0);
+
+pub struct Vec2 {
+    x: f64,
+    y: f64,
+}
+
+impl Vec2 {
+    pub extern "C" fn new(x: f64, y: f64) -> Box<Vec2> {
+        LIVE.fetch_add(1, Ordering::Relaxed);
+        Box::new(Vec2 { x, y })
+    }
+
+    pub extern "C" fn len(this: &Vec2) -> f64 {
+        this.x.hypot(this.y)
+    }
+
+    pub extern "C" fn scale(this: &mut Vec2, k: f64) {
+        this.x *= k;
+        this.y *= k;
+    }
+
+    pub extern "C" fn dot(this: &Vec2, other: &Vec2) -> f64 {
+        this.x * other.x + this.y * other.y
+    }
+
+    pub extern "C" fn unit(this: &Vec2) -> Box<Vec2> {
+        let n = Self::len(this);
+        Self::new(this.x / n, this.y / n)
+    }
+
+    pub extern "C" fn live() -> i32 {
+        LIVE.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for Vec2 {
+    fn drop(&mut self) {
+        LIVE.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 caribou_abi::plugin! {
     name: "math";
     fn hypot(f64, f64) -> f64;
@@ -45,5 +88,13 @@ caribou_abi::plugin! {
     fn same(Value) -> Value;
     class Vec {
         fn len3(f64, f64, f64) -> f64;
+    }
+    class Vec2 {
+        fn new(f64, f64) -> Box<Vec2>;
+        fn len(&Vec2) -> f64;
+        fn scale(&mut Vec2, f64);
+        fn dot(&Vec2, &Vec2) -> f64;
+        fn unit(&Vec2) -> Box<Vec2>;
+        fn live() -> i32;
     }
 }

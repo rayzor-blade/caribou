@@ -8,6 +8,9 @@
 
 #[cfg(test)]
 extern crate std;
+// For the `Box` a plugin returns an object as: the type alone, nothing
+// allocated here.
+extern crate alloc;
 
 use core::ffi::{c_char, c_int, c_uint, c_void};
 
@@ -635,7 +638,7 @@ impl Str {
     /// # Safety
     /// `ptr` must point at `len` bytes of UTF-8 that outlive the returned
     /// borrow.
-    pub unsafe fn as_str<'a>(self) -> &'a str {
+    pub const unsafe fn as_str<'a>(self) -> &'a str {
         if self.len == 0 {
             return "";
         }
@@ -689,8 +692,16 @@ pub mod sym {
     pub const EFFECTFUL: u32 = 1 << 3;
 }
 
+/// No class: what a parameter or result that is not an object carries in
+/// [`SymbolDesc::param_classes`] and [`SymbolDesc::ret_class`].
+pub const NO_CLASS: u8 = u8::MAX;
+
 /// One entry in a plugin's table: a native function, where it hangs in a
-/// class namespace, and its typed signature.
+/// class namespace, and its typed signature. A parameter or result
+/// tagged [`TypeTag::OBJ`] names its class by index into the plugin's
+/// [`ClassDesc`] table; a result of a class is a new object of it, owned
+/// by the core from then on, and a parameter of one is borrowed for the
+/// call.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct SymbolDesc {
@@ -702,10 +713,25 @@ pub struct SymbolDesc {
     pub param_count: u8,
     pub ret: TypeTag,
     pub params: [TypeTag; MAX_PARAMS],
+    pub ret_class: u8,
+    pub param_classes: [u8; MAX_PARAMS],
 }
 
 unsafe impl Sync for SymbolDesc {}
 unsafe impl Send for SymbolDesc {}
+
+/// A class of a plugin whose instances cross: what the core calls to
+/// release one it no longer holds. The payload is the plugin's memory;
+/// the core reads nothing of it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClassDesc {
+    pub name: Str,
+    pub drop: Option<unsafe extern "C" fn(*mut c_void)>,
+}
+
+unsafe impl Sync for ClassDesc {}
+unsafe impl Send for ClassDesc {}
 
 /// What `caribou_plugin_entry` returns. The core reads `abi_version` first
 /// and binds nothing on a mismatch.
@@ -715,6 +741,8 @@ pub struct PluginInfo {
     pub name: Str,
     pub symbols: *const SymbolDesc,
     pub symbol_count: usize,
+    pub classes: *const ClassDesc,
+    pub class_count: usize,
 }
 
 unsafe impl Sync for PluginInfo {}
@@ -724,17 +752,39 @@ unsafe impl Send for PluginInfo {}
 // Writing a plugin
 // ---------------------------------------------------------------------------
 
-/// A Rust type a plugin function takes or returns, and the tag it crosses
-/// as: what [`plugin!`] reads off a signature.
-pub trait Tagged {
+/// A type of a plugin whose instances cross: named in the plugin's class
+/// table, implemented by [`plugin!`] for each `class` it declares.
+pub trait PluginClass {
+    const NAME: &'static str;
+}
+
+/// A Rust type a plugin function takes, and how it crosses: a scalar or a
+/// `Value` by its tag; `&T` or `&mut T` of a [`PluginClass`] as an object
+/// of that class, borrowed for the call.
+pub trait Param {
     const TAG: TypeTag;
+    /// The class's name for an object, else `None`.
+    const CLASS: Option<&'static str> = None;
+}
+
+/// A Rust type a plugin function returns: a scalar or a `Value` by its
+/// tag; `Box<T>` of a [`PluginClass`] as a new object of that class, owned
+/// by the core from then on.
+pub trait Returned {
+    const TAG: TypeTag;
+    const CLASS: Option<&'static str> = None;
 }
 
 macro_rules! tagged {
     ($($ty:ty => $tag:expr),* $(,)?) => {
-        $(impl Tagged for $ty {
-            const TAG: TypeTag = $tag;
-        })*
+        $(
+            impl Param for $ty {
+                const TAG: TypeTag = $tag;
+            }
+            impl Returned for $ty {
+                const TAG: TypeTag = $tag;
+            }
+        )*
     };
 }
 
@@ -750,6 +800,21 @@ tagged! {
     Value => TypeTag::DYN,
 }
 
+impl<T: PluginClass> Param for &T {
+    const TAG: TypeTag = TypeTag::OBJ;
+    const CLASS: Option<&'static str> = Some(T::NAME);
+}
+
+impl<T: PluginClass> Param for &mut T {
+    const TAG: TypeTag = TypeTag::OBJ;
+    const CLASS: Option<&'static str> = Some(T::NAME);
+}
+
+impl<T: PluginClass> Returned for alloc::boxed::Box<T> {
+    const TAG: TypeTag = TypeTag::OBJ;
+    const CLASS: Option<&'static str> = Some(T::NAME);
+}
+
 /// `tags` at the front of a full parameter list, for a [`SymbolDesc`].
 pub const fn padded(tags: &[TypeTag]) -> [TypeTag; MAX_PARAMS] {
     let mut out = [TypeTag::VOID; MAX_PARAMS];
@@ -761,58 +826,129 @@ pub const fn padded(tags: &[TypeTag]) -> [TypeTag; MAX_PARAMS] {
     out
 }
 
+/// `classes` at the front of a full list, [`NO_CLASS`] after.
+pub const fn padded_classes(classes: &[u8]) -> [u8; MAX_PARAMS] {
+    let mut out = [NO_CLASS; MAX_PARAMS];
+    let mut i = 0;
+    while i < classes.len() {
+        out[i] = classes[i];
+        i += 1;
+    }
+    out
+}
+
+const fn same_str(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < a.len() {
+        if a[i] != b[i] {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// The index of the class named `class` in `table`, [`NO_CLASS`] for
+/// none; a class a signature names but the plugin never declared is a
+/// compile-time error.
+pub const fn class_index(table: &[ClassDesc], class: Option<&str>) -> u8 {
+    let Some(class) = class else {
+        return NO_CLASS;
+    };
+    let mut i = 0;
+    while i < table.len() {
+        if same_str(unsafe { table[i].name.as_str() }, class) {
+            return i as u8;
+        }
+        i += 1;
+    }
+    panic!("a signature names a class the plugin does not declare")
+}
+
+/// The finalizer [`plugin!`] writes for a class: the box the constructor
+/// returned, dropped.
+///
+/// # Safety
+/// `p` is a payload a `Box<T>` returned to the core, freed once.
+pub unsafe extern "C" fn drop_boxed<T>(p: *mut c_void) {
+    drop(unsafe { alloc::boxed::Box::from_raw(p as *mut T) });
+}
+
 /// A plugin's table: its name, and the functions it exports, declared
 /// by signature the way a header declares them. The functions are
-/// ordinary items of the crate, `extern "C"` over the types [`Tagged`]
-/// covers; a `class` names a type whose associated functions hang in
-/// that class, and a function outside any class is a static of a class
-/// named after the plugin. Each declaration is checked against the item
-/// it names, so the two cannot drift. The macro writes the table, the
+/// ordinary items of the crate, `extern "C"` over the types [`Param`] and
+/// [`Returned`] cover; a `class` names a type whose associated functions
+/// hang in that class, and whose instances cross as objects when a
+/// signature takes `&T`/`&mut T` or returns `Box<T>`; a function outside
+/// any class is a static of a class named after the plugin. Each
+/// declaration is checked against the item it names, so the two cannot
+/// drift. The macro writes the tables, the finalizer of each class, the
 /// entry and the version symbol.
 ///
 /// ```ignore
 /// pub extern "C" fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
 ///
-/// pub struct Vec;
-/// impl Vec {
-///     pub extern "C" fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+/// pub struct Vec2 { x: f64, y: f64 }
+/// impl Vec2 {
+///     pub extern "C" fn new(x: f64, y: f64) -> Box<Vec2> { Box::new(Vec2 { x, y }) }
+///     pub extern "C" fn len(this: &Vec2) -> f64 { this.x.hypot(this.y) }
 /// }
 ///
 /// caribou_abi::plugin! {
 ///     name: "math";
 ///     fn hypot(f64, f64) -> f64;
-///     class Vec {
-///         fn len3(f64, f64, f64) -> f64;
+///     class Vec2 {
+///         fn new(f64, f64) -> Box<Vec2>;
+///         fn len(&Vec2) -> f64;
 ///     }
 /// }
 /// ```
 #[macro_export]
 macro_rules! plugin {
     (name: $name:literal ; $($rest:tt)*) => {
-        $crate::plugin!(@munch $name [] $($rest)*);
+        $crate::plugin!(@munch $name [] [] $($rest)*);
     };
     // A free function.
-    (@munch $name:literal [$($acc:tt)*]
+    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*]
         fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ;
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* { "" [$method] $method ( $($ty),* ) [$($ret)?] }] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* { "" [$method] $method ( $($ty),* ) [$($ret)?] }] [$($classes)*] $($rest)*);
     };
-    // A class's functions: the associated functions of the type it names.
-    (@munch $name:literal [$($acc:tt)*]
+    // A class: its type, and the associated functions that hang in it.
+    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*]
         class $class:ident {
             $( fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ; )*
         }
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] [$($classes)* $class] $($rest)*);
     };
-    // Everything gathered: the checks, the table, the entry.
-    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*]) => {
+    // Everything gathered: the checks, the tables, the entry.
+    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*] [$($declared:ident)*]) => {
+        $(
+            impl $crate::PluginClass for $declared {
+                const NAME: &'static str = stringify!($declared);
+            }
+        )*
+
         $(
             // The item is what the declaration says, or this does not compile.
             const _: extern "C" fn($($ty),*) $(-> $ret)? = $($path)*;
         )*
+
+        static __CARIBOU_CLASSES: [$crate::ClassDesc; $crate::plugin!(@count $($declared)*)] = [
+            $(
+                $crate::ClassDesc {
+                    name: $crate::Str::new(stringify!($declared)),
+                    drop: Some($crate::drop_boxed::<$declared>),
+                }
+            ),*
+        ];
 
         static __CARIBOU_SYMBOLS: [$crate::SymbolDesc; $crate::plugin!(@count $($method)*)] = [
             $(
@@ -820,10 +956,14 @@ macro_rules! plugin {
                     class: $crate::Str::new($crate::plugin!(@class $class)),
                     method: $crate::Str::new(stringify!($method)),
                     func: $($path)* as *const ::core::ffi::c_void,
-                    flags: $crate::sym::STATIC,
+                    flags: $crate::plugin!(@flags $($ty),*),
                     param_count: $crate::plugin!(@count $($ty)*) as u8,
                     ret: $crate::plugin!(@tag $($ret)?),
-                    params: $crate::padded(&[ $( <$ty as $crate::Tagged>::TAG ),* ]),
+                    params: $crate::padded(&[ $( <$ty as $crate::Param>::TAG ),* ]),
+                    ret_class: $crate::class_index(&__CARIBOU_CLASSES, $crate::plugin!(@ret_class $($ret)?)),
+                    param_classes: $crate::padded_classes(&[
+                        $( $crate::class_index(&__CARIBOU_CLASSES, <$ty as $crate::Param>::CLASS) ),*
+                    ]),
                 }
             ),*
         ];
@@ -833,6 +973,8 @@ macro_rules! plugin {
             name: $crate::Str::new($name),
             symbols: __CARIBOU_SYMBOLS.as_ptr(),
             symbol_count: __CARIBOU_SYMBOLS.len(),
+            classes: __CARIBOU_CLASSES.as_ptr(),
+            class_count: __CARIBOU_CLASSES.len(),
         };
 
         #[unsafe(no_mangle)]
@@ -847,8 +989,16 @@ macro_rules! plugin {
     };
     (@class "") => { "" };
     (@class $class:ident) => { stringify!($class) };
-    (@tag) => { <() as $crate::Tagged>::TAG };
-    (@tag $ret:ty) => { <$ret as $crate::Tagged>::TAG };
+    (@tag) => { <() as $crate::Returned>::TAG };
+    (@tag $ret:ty) => { <$ret as $crate::Returned>::TAG };
+    (@ret_class) => { None };
+    (@ret_class $ret:ty) => { <$ret as $crate::Returned>::CLASS };
+    // An instance method takes its receiver first: a function whose first
+    // parameter is an object of a class is one; anything else is static.
+    (@flags) => { $crate::sym::STATIC };
+    (@flags $first:ty $(, $ty:ty)*) => {
+        if <$first as $crate::Param>::CLASS.is_some() { 0 } else { $crate::sym::STATIC }
+    };
     (@count $($x:tt)*) => { <[()]>::len(&[ $( $crate::plugin!(@unit $x) ),* ]) };
     (@unit $x:tt) => { () };
 }
@@ -1001,12 +1151,16 @@ mod tests {
             param_count: 0,
             ret: TypeTag::I32,
             params: [TypeTag::VOID; MAX_PARAMS],
+            ret_class: NO_CLASS,
+            param_classes: [NO_CLASS; MAX_PARAMS],
         }];
         static INFO: PluginInfo = PluginInfo {
             abi_version: ABI_VERSION,
             name: Str::new("gpu"),
             symbols: SYMS.as_ptr(),
             symbol_count: SYMS.len(),
+            classes: core::ptr::null(),
+            class_count: 0,
         };
         assert_eq!(INFO.abi_version, 1);
         assert_eq!(unsafe { INFO.name.as_str() }, "gpu");
