@@ -1,0 +1,15 @@
+[package]
+name = "caribou-plugin"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Loads native plugins on the shared ABI and publishes their symbols to the world"
+
+# Stable, as the core is.
+
+[dependencies]
+caribou = { path = "../caribou" }
+caribou_abi = { workspace = true }
+# Calls a native by the signature its descriptor gives, with no boxing.
+ash_native_call = { workspace = true }
+libloading = "0.8"

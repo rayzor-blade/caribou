@@ -721,6 +721,130 @@ unsafe impl Sync for PluginInfo {}
 unsafe impl Send for PluginInfo {}
 
 // ---------------------------------------------------------------------------
+// Writing a plugin
+// ---------------------------------------------------------------------------
+
+/// A Rust type a plugin function takes or returns, and the tag it crosses
+/// as: what [`plugin!`] reads off a signature.
+pub trait Tagged {
+    const TAG: TypeTag;
+}
+
+macro_rules! tagged {
+    ($($ty:ty => $tag:expr),* $(,)?) => {
+        $(impl Tagged for $ty {
+            const TAG: TypeTag = $tag;
+        })*
+    };
+}
+
+tagged! {
+    () => TypeTag::VOID,
+    u8 => TypeTag::UI8,
+    u16 => TypeTag::UI16,
+    i32 => TypeTag::I32,
+    i64 => TypeTag::I64,
+    f32 => TypeTag::F32,
+    f64 => TypeTag::F64,
+    bool => TypeTag::BOOL,
+    Value => TypeTag::DYN,
+}
+
+/// `tags` at the front of a full parameter list, for a [`SymbolDesc`].
+pub const fn padded(tags: &[TypeTag]) -> [TypeTag; MAX_PARAMS] {
+    let mut out = [TypeTag::VOID; MAX_PARAMS];
+    let mut i = 0;
+    while i < tags.len() {
+        out[i] = tags[i];
+        i += 1;
+    }
+    out
+}
+
+/// A whole plugin: its name, and its functions, free or under a class.
+/// Each `fn` is written as in Rust, over the types [`Tagged`] covers, and
+/// becomes a C function of that signature; a `class` groups the functions
+/// that hang in one class. The macro writes the table, the entry and the
+/// version symbol, so this is all a plugin's crate holds beside its own
+/// code. Function names are unique across the plugin.
+///
+/// ```ignore
+/// caribou_abi::plugin! {
+///     name: "math";
+///     fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
+///     class Vec {
+///         fn len3(x: f64, y: f64, z: f64) -> f64 { (x * x + y * y + z * z).sqrt() }
+///     }
+/// }
+/// ```
+#[macro_export]
+macro_rules! plugin {
+    (name: $name:literal ; $($rest:tt)*) => {
+        $crate::plugin!(@munch $name [] $($rest)*);
+    };
+    // A free function.
+    (@munch $name:literal [$($acc:tt)*]
+        fn $method:ident ( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)? $body:block
+        $($rest:tt)*
+    ) => {
+        $crate::plugin!(@munch $name [$($acc)* { "" $method ( $($arg : $ty),* ) [$($ret)?] $body }] $($rest)*);
+    };
+    // A class's functions.
+    (@munch $name:literal [$($acc:tt)*]
+        class $class:ident {
+            $( fn $method:ident ( $($arg:ident : $ty:ty),* $(,)? ) $(-> $ret:ty)? $body:block )*
+        }
+        $($rest:tt)*
+    ) => {
+        $crate::plugin!(@munch $name [$($acc)* $( { $class $method ( $($arg : $ty),* ) [$($ret)?] $body } )*] $($rest)*);
+    };
+    // Everything gathered: the functions, the table, the entry.
+    (@munch $name:literal [$( { $class:tt $method:ident ( $($arg:ident : $ty:ty),* ) [$($ret:ty)?] $body:block } )*]) => {
+        $(
+            #[allow(non_snake_case)]
+            extern "C" fn $method ( $($arg : $ty),* ) $(-> $ret)? $body
+        )*
+
+        static __CARIBOU_SYMBOLS: [$crate::SymbolDesc; $crate::plugin!(@count $($method)*)] = [
+            $(
+                $crate::SymbolDesc {
+                    class: $crate::Str::new($crate::plugin!(@class $class)),
+                    method: $crate::Str::new(stringify!($method)),
+                    func: $method as *const ::core::ffi::c_void,
+                    flags: $crate::sym::STATIC,
+                    param_count: $crate::plugin!(@count $($arg)*) as u8,
+                    ret: $crate::plugin!(@tag $($ret)?),
+                    params: $crate::padded(&[ $( <$ty as $crate::Tagged>::TAG ),* ]),
+                }
+            ),*
+        ];
+
+        static __CARIBOU_INFO: $crate::PluginInfo = $crate::PluginInfo {
+            abi_version: $crate::ABI_VERSION,
+            name: $crate::Str::new($name),
+            symbols: __CARIBOU_SYMBOLS.as_ptr(),
+            symbol_count: __CARIBOU_SYMBOLS.len(),
+        };
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn caribou_abi_version() -> u32 {
+            $crate::ABI_VERSION
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn caribou_plugin_entry() -> *const $crate::PluginInfo {
+            &__CARIBOU_INFO
+        }
+    };
+    (@class "") => { "" };
+    (@class $class:ident) => { stringify!($class) };
+    (@tag) => { <() as $crate::Tagged>::TAG };
+    (@tag $ret:ty) => { <$ret as $crate::Tagged>::TAG };
+    (@count $($x:tt)*) => { <[()]>::len(&[ $( $crate::plugin!(@unit $x) ),* ]) };
+    (@unit $x:tt) => { () };
+}
+
+// ---------------------------------------------------------------------------
 // Tests. Every number comes from hl.h; changing one is an ABI break.
 // ---------------------------------------------------------------------------
 

@@ -457,6 +457,7 @@ dependencies = [
  "anyhow",
  "caribou",
  "caribou-ash",
+ "caribou-plugin",
  "caribou-wren",
  "caribou_abi",
  "serde_json",
@@ -471,10 +472,28 @@ dependencies = [
  "caribou",
  "caribou-ash",
  "caribou-driver",
+ "caribou-plugin",
  "caribou-wren",
  "caribou_abi",
  "libc",
  "wren_lift",
+]
+
+[[package]]
+name = "caribou-plugin"
+version = "0.1.0"
+dependencies = [
+ "ash_native_call",
+ "caribou",
+ "caribou_abi",
+ "libloading",
+]
+
+[[package]]
+name = "caribou-plugin-math"
+version = "0.1.0"
+dependencies = [
+ "caribou_abi",
 ]
 
 [[package]]

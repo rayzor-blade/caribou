@@ -1,0 +1,13 @@
+[package]
+name = "caribou-plugin-math"
+version.workspace = true
+edition.workspace = true
+publish = false
+description = "A plugin for the interop tests: a few functions on the shared ABI"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# A plugin depends on the ABI crate and nothing else of caribou.
+caribou_abi = { workspace = true }

@@ -73,6 +73,15 @@ impl Session {
             args: options.args,
             ..AshOptions::default()
         };
+        // The plugins beside the program, in `plugins/`: what the world
+        // grants every language.
+        let plugins = caribou_plugin::load_dir(
+            &path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("plugins"),
+        )
+        .map_err(|e| anyhow!("{e}"))?;
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         if bundle::looks_like(&bytes) {
             let bundle = bundle::load(&bytes).with_context(|| path.display().to_string())?;
@@ -97,6 +106,7 @@ impl Session {
             return Self::finish(
                 program,
                 config,
+                plugins,
                 Some(&bundle),
                 options.wren_mode,
                 options.report,
@@ -119,15 +129,24 @@ impl Session {
             roots,
             ..Config::default()
         };
-        Self::finish(program, config, None, options.wren_mode, options.report)
+        Self::finish(
+            program,
+            config,
+            plugins,
+            None,
+            options.wren_mode,
+            options.report,
+        )
     }
 
-    /// The world around a loaded program: the adapters, the bundle's
-    /// modules when there is one, else a watch on the sources, the
-    /// program's classes published, and the Wren VM.
+    /// The world around a loaded program: the adapters, the plugins as
+    /// languages of their own, the bundle's modules when there is one,
+    /// else a watch on the sources, the program's classes published, and
+    /// the Wren VM.
     fn finish(
         mut program: Program,
         config: Config,
+        plugins: Vec<caribou_plugin::Plugin>,
         bundle: Option<&bundle::Bundle>,
         wren_mode: ExecutionMode,
         report: bool,
@@ -139,6 +158,11 @@ impl Session {
         world
             .register(Box::new(caribou_wren::Runtime::new()))
             .map_err(|e| anyhow!("registering wren: {e}"))?;
+        if !plugins.is_empty() {
+            world
+                .register(Box::new(caribou_plugin::Runtime::new(plugins)))
+                .map_err(|e| anyhow!("registering the plugins: {e}"))?;
+        }
         match bundle {
             Some(bundle) => world.install(bundle).map_err(|e| anyhow!(e))?,
             // A module's file edited while the program runs reloads it.

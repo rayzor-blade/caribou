@@ -41,10 +41,11 @@ Rust, and that stays true after the game has shipped.
 
 | Crate | Role |
 |---|---|
-| `caribou_abi` | `no_std`, zero dependencies. The layouts and constants every runtime, plugin and the core agree on: HashLink's `hl.h` structs with size and offset tests, the NaN-boxed `Value`, allocation kinds, the plugin descriptor table, error kinds. |
+| `caribou_abi` | `no_std`, zero dependencies. The layouts and constants every runtime, plugin and the core agree on: HashLink's `hl.h` structs with size and offset tests, the NaN-boxed `Value`, allocation kinds, the plugin descriptor table and the `plugin!` macro that writes one, error kinds. |
 | `caribou` | The core. It holds the heap, the scheduler, the object protocol and the `World` a driver uses. The heap is Immix: non-moving, conservative by default, precise where a type descriptor asks for it. The scheduler runs stackful fibers and stackless state machines on one queue. |
 | `caribou-ash` | Hosts Ash: fills `ash_std`'s seam with the core's heap and scheduler. Nightly, because `ash_std` needs it. |
 | `caribou-wren` | Hosts WrenLift: fills `wren_lift`'s seam with the core heap under its Immix strategy. |
+| `caribou-plugin` | Loads plugins and registers each as a language of the world, with a typed dispatcher over their C signatures. |
 | `caribou-driver` | Runs a program: one world with every resident language, from the project's own layout. The `caribou` command is its front. |
 
 The core builds on stable Rust and depends on `caribou_abi`, `krio` and
@@ -63,8 +64,10 @@ each import the other's classes the ordinary way. A Wren program writes
 `import "game:Player" for Player`. A Haxe program built with `-lib caribou`
 writes `import game.hud.Hud` for a Wren module at `src/game/hud.wren`, and
 a Wren method says what it exposes with `#export = "add(n: Num) -> Num"`,
-or nothing when the runtime can tell. What is not there yet: hot reload,
-the plugin loader, and the Zyntax adapter.
+or nothing when the runtime can tell. A native plugin in `plugins/`
+beside the program is a language of its own, written with
+`caribou_abi::plugin!` and imported like any other. What is not there
+yet: the Zyntax adapter.
 
 ## Building
 
