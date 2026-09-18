@@ -286,10 +286,13 @@ impl CallSite {
         self.direct.store(f as usize, Ordering::Release);
     }
 
-    /// Forget the direct send; the plain path fills the site again.
+    /// Forget the direct send, and the key with it: `a` and `b` were the
+    /// direct send's own, not what `get` reads back, so the plain path
+    /// fills the site again from nothing.
     #[inline]
     pub fn clear_direct(&self) {
         self.direct.store(0, Ordering::Release);
+        self.key.store(0, Ordering::Release);
     }
 
     /// One more send took the plain path. A load and a store, not a

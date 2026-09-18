@@ -66,8 +66,12 @@ Parameters are only ever declared; they are where the inference starts.
 
 ## The emitted class
 
-Every emitted class extends `caribou.Ref`, whose one field holds the
-object's ref (below). Every member of it is a native of the `caribou`
+An emitted class extends the emitted class of its Wren superclass when
+that is a class of the same module, so `Panel is Hud` is `Panel extends
+Hud` and a Panel is a Hud to Haxe's types; else it extends
+`caribou.Ref`, whose one field holds the object's ref (below): a
+superclass from elsewhere, a Haxe class or another module's, has no
+emitted class to extend. Every member of it is a native of the `caribou`
 library, named for what it reaches: `game:hud.Hud.add(_)`, which is the
 namespace, the module, the class and the member's Wren signature, with
 `static:` before a static's and `construct:` before the constructor's.
@@ -88,10 +92,26 @@ checks its class.
 
 The constructor calls its native with the fresh Haxe object, and the
 native makes the Wren object and binds the two. A named constructor is a
-static factory. A static getter is a static property. A subclass declares
-what it inherits from a superclass of the same module and stands alone
-under `caribou.Ref`, because a Haxe constructor must call its parent's,
-and a Wren subclass's constructor is its own.
+static factory. A static getter is a static property.
+
+A subclass declares its own instance members and no more: a member it
+overrides is reached through the superclass's wrapper, since the native
+sends to the object and Wren's own dispatch finds the override. Its
+statics it declares with its superclasses' of the module, since Haxe
+does not inherit statics and Wren does; each is sent to the subclass's
+own class object, where Wren finds the inherited one. A Haxe constructor
+must call its parent's, and a Wren subclass's constructor is its own, so
+the `super()` of a subclass that constructs itself passes placeholders,
+and the superclass's native binds nothing to an instance of a subclass
+with a constructor of its own. A subclass without one inherits the
+constructor, in Haxe as in Wren: the superclass's native constructs the
+subclass through it, sending the signature to the subclass's class
+object. Both natives tell the case by the fresh object's own class.
+
+Two Wren members of one name and different arities cannot both be one
+Haxe method: the second declared is spelled with its arity appended,
+`draw1`, and one of a name a superclass declares the same way. A static
+and an instance member of one name clash the same way.
 
 ## Binding the natives
 

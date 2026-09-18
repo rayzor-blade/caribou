@@ -68,3 +68,23 @@ class Hud {
   #export = "labelCount() -> Num"
   static labelCount() { __labels.count }
 }
+
+// Subclasses, as Haxe sees them: `Panel extends Hud`. One constructs
+// itself, one inherits the constructor; `label` is overridden.
+class Panel is Hud {
+  construct new(score, title) {
+    super(score)
+    _title = title
+  }
+
+  title { _title }
+
+  label(prefix) { "%(_title) %(prefix): %(score)" }
+
+  #export = "framed(width: Num) -> String"
+  framed(width) { "[%(width)] %(label("w"))" }
+}
+
+class Badge is Hud {
+  badge { "badge %(score)" }
+}

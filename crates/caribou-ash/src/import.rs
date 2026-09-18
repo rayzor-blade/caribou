@@ -220,7 +220,7 @@ fn links(s: &Slot) -> bool {
         let member = match s.kind {
             Kind::Init => class.ctor.as_ref(),
             Kind::Len | Kind::Index | Kind::SetIndex => None,
-            Kind::Static => static_member(class, s.member),
+            Kind::Static => static_in_chain(&iface, index, s.member).map(|(_, m)| m),
             Kind::Method => class.methods.iter().find(|m| {
                 !m.is_static
                     && matches!(m.target, Callable::WrenMethod { signature, .. } if signature == s.member)
@@ -617,6 +617,44 @@ fn published(s: &Slot) -> Result<(Arc<Interface>, usize), String> {
         .ok_or_else(|| format!("{}:{}.{} is not published", s.namespace, s.module, s.class))
 }
 
+/// The static `member` of the class at `index`, or of a superclass of
+/// its module, as Wren inherits statics; with the class it was found on.
+fn static_in_chain(
+    iface: &Interface,
+    index: usize,
+    member: Symbol,
+) -> Option<(&ClassIface, &registry::MethodIface)> {
+    let mut at = &iface.classes[index];
+    for _ in 0..=iface.classes.len() {
+        if let Some(m) = static_member(at, member) {
+            return Some((at, m));
+        }
+        let parent = at.superclass.as_deref()?;
+        at = iface.classes.iter().find(|c| c.name == parent)?;
+    }
+    None
+}
+
+/// `static_in_chain`'s member as what the class at `index` is sent: an
+/// inherited one goes to the class's own class object, where Wren's
+/// dispatch finds it.
+fn inherited_static(iface: &Interface, index: usize, member: Symbol) -> Option<Callable> {
+    let class = &iface.classes[index];
+    let (found_on, m) = static_in_chain(iface, index, member)?;
+    Some(match m.target {
+        Callable::WrenMethod {
+            signature,
+            is_static,
+            ..
+        } if !ptr::eq(found_on, class) => Callable::WrenMethod {
+            class: class.class_object,
+            signature,
+            is_static,
+        },
+        target => target,
+    })
+}
+
 fn static_member(class: &ClassIface, member: Symbol) -> Option<&registry::MethodIface> {
     class.methods.iter().find(|m| {
         m.is_static
@@ -736,42 +774,85 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
         Kind::Static => s
             .target(|| {
                 let (iface, index) = published(s)?;
-                static_member(&iface.classes[index], s.member)
-                    .map(|m| m.target)
-                    .ok_or_else(|| {
-                        format!(
-                            "{}:{}.{} has no static {}",
-                            s.namespace,
-                            s.module,
-                            s.class,
-                            s.member.name()
-                        )
-                    })
+                inherited_static(&iface, index, s.member).ok_or_else(|| {
+                    format!(
+                        "{}:{}.{} has no static {}",
+                        s.namespace,
+                        s.module,
+                        s.class,
+                        s.member.name()
+                    )
+                })
             })
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| bridge::call_at(target, &s.site, args, haxe, &s.name)),
-        Kind::Init => s
-            .target(|| {
-                let (iface, index) = published(s)?;
-                iface.classes[index]
-                    .ctor
-                    .as_ref()
-                    .map(|c| c.target)
-                    .ok_or_else(|| {
-                        format!(
-                            "{}:{}.{} has no constructor",
-                            s.namespace, s.module, s.class
-                        )
-                    })
-            })
-            .map_err(|m| proto::error_value(&s.name, &m))
-            .and_then(|target| bridge::call_at(target, &s.site, args, haxe, &s.name))
-            .map(|obj| {
+        Kind::Init => match unsafe { constructs(s, receiver) } {
+            Err(m) => Err(proto::error_value(&s.name, &m)),
+            // A subclass's own constructor binds the face; this one, its
+            // superclass's, is the `super()` a Haxe constructor must make.
+            Ok(None) => Ok(Value::null()),
+            Ok(Some(target)) => bridge::call_at(target, &s.site, args, haxe, &s.name).map(|obj| {
                 unsafe { bind_face(receiver, wrenref::wrap_foreign(obj)) };
                 Value::null()
             }),
+        },
     };
     result.map_err(proto::throwable)
+}
+
+/// What the constructor native `s` constructs for the fresh Haxe object
+/// `face`: its own class's constructor for an instance of that class;
+/// for an instance of a subclass the program declares, nothing when the
+/// subclass has a constructor of its own, else the subclass through the
+/// constructor it inherits, sent to the subclass's class object.
+///
+/// # Safety
+/// `face` is a live Haxe object.
+unsafe fn constructs(s: &Slot, face: *mut vdynamic) -> Result<Option<Callable>, String> {
+    let (iface, index) = published(s)?;
+    let own = iface.classes[index]
+        .ctor
+        .as_ref()
+        .map(|c| c.target)
+        .ok_or_else(|| {
+            format!(
+                "{}:{}.{} has no constructor",
+                s.namespace, s.module, s.class
+            )
+        })?;
+    let t = unsafe { (*face).t } as usize;
+    let faces = FACES.read().unwrap();
+    let declared = faces
+        .as_ref()
+        .and_then(|f| f.by_class.iter().find(|(_, ty)| **ty == t))
+        .map(|(key, _)| key.clone());
+    drop(faces);
+    let Some((namespace, module, class)) = declared else {
+        return Ok(Some(own));
+    };
+    if (namespace.as_str(), module.as_str(), class.as_str())
+        == (s.namespace.as_str(), s.module.as_str(), s.class.as_str())
+    {
+        return Ok(Some(own));
+    }
+    let (sub_iface, sub_index) = registry::lookup_class_or_load(&namespace, &module, &class)?
+        .ok_or_else(|| format!("{namespace}:{module}.{class} is not published"))?;
+    let sub = &sub_iface.classes[sub_index];
+    if sub.ctor.is_some() {
+        return Ok(None);
+    }
+    match own {
+        Callable::WrenMethod {
+            signature,
+            is_static,
+            ..
+        } => Ok(Some(Callable::WrenMethod {
+            class: sub.class_object,
+            signature,
+            is_static,
+        })),
+        other => Ok(Some(other)),
+    }
 }
 
 /// The one entry behind every native, called by record with the slot

@@ -1,4 +1,6 @@
+import game.hud.Badge;
 import game.hud.Hud;
+import game.hud.Panel;
 
 // The Haxe side of the Haxe-imports-Wren test: `game.hud.Hud` is the class
 // the build macro emitted for wren/hud.wren. The test compares what this
@@ -53,5 +55,18 @@ class UseHud {
 		Sys.println(kept.label("after"));
 		Sys.println(keptFn(4));
 		Sys.println(kept.text);
+	}
+
+	// Subclasses: a Panel is a Hud, constructs itself, and its override
+	// answers through the superclass's member; a Badge inherits the
+	// constructor. A superclass static reaches the subclass.
+	@:keep static function family() {
+		var p = new Panel(5, "top");
+		var h:Hud = p;
+		Sys.println(h.label("x") + " " + p.framed(3) + " " + p.title);
+		Sys.println(h.add(1) + " " + Std.isOfType(h, Panel) + " " + Std.isOfType(p, Hud));
+		var b = new Badge(7);
+		Sys.println(b.badge + " " + b.label("y") + " " + Std.isOfType(b, Hud) + " " + Std.isOfType(b, Panel));
+		Sys.println(Std.isOfType(Panel.make(2), Hud) + " " + (Hud.best(p, b) == b));
 	}
 }

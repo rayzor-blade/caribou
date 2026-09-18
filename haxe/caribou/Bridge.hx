@@ -225,34 +225,80 @@ class Bridge {
 		return macro :Dynamic;
 	}
 
-	/** The class's members with its superclasses' from the same module
-		behind them: each emitted class stands alone under `caribou.Ref`,
-		so what it inherits it declares. A member the class defines hides
-		a superclass's of the same name and kind. */
-	static function flattened(c:ClassDesc, classes:Array<ClassDesc>):Array<MemberDesc> {
-		var members = c.members.copy();
-		var seen = [for (m in members) m.kind + ":" + m.signature => true];
-		var parent = c.superclass;
+	/** The class the emitted one extends: the emitted class of its
+		superclass when that is a class of the same module, else
+		`caribou.Ref`. A superclass from elsewhere, a Haxe class or one of
+		another module, has no emitted class to extend. */
+	static function parentOf(c:ClassDesc, classes:Array<ClassDesc>):Null<ClassDesc> {
+		return c.superclass == null ? null : Lambda.find(classes, x -> x.name == c.superclass);
+	}
+
+	/** The constructor an instance of `c` is made by: its own, else the
+		nearest superclass's of the same module, as Haxe inherits one. */
+	static function constructorOf(c:ClassDesc, classes:Array<ClassDesc>):Null<MemberDesc> {
+		var depth = 0;
+		while (c != null && depth++ <= classes.length) {
+			var own = Lambda.find(c.members, m -> m.kind == "constructor");
+			if (own != null) {
+				return own;
+			}
+			c = parentOf(c, classes);
+		}
+		return null;
+	}
+
+	/** The members `c` declares in Haxe. Instance members are its own,
+		less those an emitted superclass declares: the superclass's wrapper
+		reaches an override through the object's own dispatch. Statics are
+		its own and its emitted superclasses', since Haxe does not inherit
+		statics and Wren does; a static the class defines hides the
+		superclass's of the same signature. */
+	static function declared(c:ClassDesc, classes:Array<ClassDesc>):Array<MemberDesc> {
+		var members = [];
+		var seen = new Map<String, Bool>();
+		for (m in c.members) {
+			seen.set(m.kind + ":" + m.signature, true);
+			members.push(m);
+		}
+		var parent = parentOf(c, classes);
 		var depth = 0;
 		while (parent != null && depth++ < classes.length) {
-			var p = Lambda.find(classes, x -> x.name == parent);
-			if (p == null) {
-				break;
-			}
-			for (m in p.members) {
-				// Constructors are the class's own.
-				if (m.kind == "constructor" || m.kind == "factory") {
+			for (m in parent.members) {
+				var key = m.kind + ":" + m.signature;
+				if (seen.exists(key)) {
 					continue;
 				}
-				var key = m.kind + ":" + m.signature;
-				if (!seen.exists(key)) {
-					seen.set(key, true);
+				seen.set(key, true);
+				if (m.kind == "static" || m.kind == "factory") {
 					members.push(m);
 				}
 			}
-			parent = p.superclass;
+			parent = parentOf(parent, classes);
 		}
-		return members;
+		// What the parent chain declares in Haxe is not declared again.
+		var inherited = new Map<String, Bool>();
+		parent = parentOf(c, classes);
+		depth = 0;
+		while (parent != null && depth++ < classes.length) {
+			for (m in parent.members) {
+				if (m.kind == "method" || m.kind == "getter" || m.kind == "setter") {
+					inherited.set(m.kind + ":" + m.signature, true);
+				}
+			}
+			parent = parentOf(parent, classes);
+		}
+		return members.filter(m -> !inherited.exists(m.kind + ":" + m.signature));
+	}
+
+	/** A placeholder of a type, for a `super()` whose constructor binds
+		nothing: the runtime binds no object to an instance of a subclass
+		that constructs itself. */
+	static function placeholder(t:ComplexType):Expr {
+		return switch (haxe.macro.ComplexTypeTools.toString(t)) {
+			case "Float", "Int": macro 0;
+			case "Bool": macro false;
+			default: macro null;
+		}
 	}
 
 	static function define(f:Found, classes:Array<ClassDesc>, c:ClassDesc):Void {
@@ -265,6 +311,20 @@ class Bridge {
 		var properties = new Map<String, {get:Bool, set:Bool, type:ComplexType}>();
 		var staticProperties = new Map<String, {get:Bool, set:Bool, type:ComplexType}>();
 		var hasConstructor = false;
+		var parent = parentOf(c, classes);
+		var members = declared(c, classes);
+		// The Haxe names the emitted superclasses take: a member of the
+		// same name and another arity is spelled apart from them.
+		var up = parent;
+		var depth = 0;
+		while (up != null && depth++ < classes.length) {
+			for (m in up.members) {
+				if (m.kind == "method" || m.kind == "getter" || m.kind == "setter") {
+					taken.set(m.name, true);
+				}
+			}
+			up = parentOf(up, classes);
+		}
 
 		function native(symbol:String, args:Array<FunctionArg>, ret:ComplexType, name:String):String {
 			// The body is never run: genhl emits the native in its place.
@@ -301,7 +361,7 @@ class Bridge {
 			return candidate;
 		}
 
-		for (m in flattened(c, classes)) {
+		for (m in members) {
 			var arity = m.params.length;
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
@@ -325,16 +385,21 @@ class Bridge {
 			switch (m.kind) {
 				case "constructor" if (!hasConstructor):
 					// `new Hud(3)`: the native makes the foreign object for
-					// the fresh Haxe one and binds the two.
+					// the fresh Haxe one and binds the two. The `super()` of
+					// an emitted superclass takes placeholders: its native
+					// binds nothing to an instance of a subclass that
+					// constructs itself.
 					hasConstructor = true;
 					var init = native(prefix + "construct:" + m.signature, [{name: "self", type: self}].concat(typedArgs(m)), macro :Void, nativeName);
 					var call = [macro this].concat(callArgs);
+					var inherited = parent == null ? null : constructorOf(parent, classes);
+					var supers = inherited == null ? [] : [for (p in inherited.params) placeholder(haxeType(p.ty, pack, classes))];
 					fields.push({
 						name: "new",
 						pos: pos,
 						access: [APublic],
 						kind: FFun({args: typedArgs(m), ret: null, expr: macro {
-							super();
+							super($a{supers});
 							$i{init}($a{call});
 						}})
 					});
@@ -446,7 +511,10 @@ class Bridge {
 				kind: FProp(p.get ? "get" : "never", p.set ? "set" : "never", p.type)
 			});
 		}
-		if (!hasConstructor) {
+		// A class without a constructor of its own inherits its emitted
+		// superclass's, as in Wren; under `caribou.Ref` it has one that
+		// binds nothing, for an instance the runtime binds.
+		if (!hasConstructor && parent == null) {
 			fields.push({
 				name: "new",
 				pos: pos,
@@ -459,7 +527,7 @@ class Bridge {
 			name: c.name,
 			pos: pos,
 			meta: [{name: ":keep", pos: pos}],
-			kind: TDClass({pack: ["caribou"], name: "Ref"}),
+			kind: TDClass(parent == null ? {pack: ["caribou"], name: "Ref"} : {pack: pack, name: parent.name}),
 			fields: fields
 		});
 	}

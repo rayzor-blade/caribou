@@ -115,6 +115,30 @@ fn a_haxe_program_imports_a_wren_class() {
         });
     });
     assert_eq!(output, "after: 10\n12\nscore 10\n");
+
+    // Subclasses: `Panel extends Hud` in Haxe as `Panel is Hud` in Wren.
+    let family = caribou::registry::lookup_class("haxe", "UseHud", "UseHud")
+        .and_then(|(iface, index)| {
+            iface.classes[index]
+                .methods
+                .iter()
+                .find(|m| m.name == "family" && m.is_static)
+                .map(|m| m.target)
+        })
+        .expect("UseHud.family is published");
+    let output = captured(|| {
+        caribou_wren::with_vm(&mut vm, |_| {
+            if let Err(e) = bridge::call(family, &[], caribou_wren::lang()) {
+                panic!("family: {}", unsafe {
+                    caribou::error::Error::message_str(e.as_object().unwrap() as *const _)
+                });
+            }
+        });
+    });
+    assert_eq!(
+        output,
+        "top x: 5 [3] top w: 5 top\n6 true true\nbadge 7 y: 7 true false\ntrue true\n"
+    );
     assert!(errors.take().is_empty());
     program.finish();
 }
