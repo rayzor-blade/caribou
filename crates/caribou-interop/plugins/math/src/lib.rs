@@ -1,10 +1,12 @@
 //! The `math` plugin of the interop tests: free functions, which land on
-//! a class named after the plugin; a class of statics; and a class whose
-//! instances cross, over scalars and one value passed as it is.
+//! a class named after the plugin; a class of statics; a class whose
+//! instances cross, over scalars and one value passed as it is; strings
+//! both ways; a class that keeps a function it was given and calls it;
+//! and errors raised to the caller.
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use caribou_abi::Value;
+use caribou_abi::{ErrorKind, Kept, Text, Value, host};
 
 pub extern "C" fn hypot(a: f64, b: f64) -> f64 {
     a.hypot(b)
@@ -26,6 +28,23 @@ pub extern "C" fn bump() -> i32 {
 
 pub extern "C" fn same(v: Value) -> Value {
     v
+}
+
+pub extern "C" fn shout(s: Text) -> Text {
+    Text::new(&format!("{}!", s.to_uppercase()))
+}
+
+pub extern "C" fn width(s: Text) -> i32 {
+    s.chars().count() as i32
+}
+
+/// A quotient, or an error the caller sees.
+pub extern "C" fn quotient(a: f64, b: f64) -> f64 {
+    if b == 0.0 {
+        host::raise(ErrorKind::Arithmetic, "quotient by zero");
+        return 0.0;
+    }
+    a / b
 }
 
 pub struct Vec;
@@ -79,6 +98,39 @@ impl Drop for Vec2 {
     }
 }
 
+/// A running total that tells a function it was given about each step.
+pub struct Tally {
+    total: f64,
+    on_step: Option<Kept>,
+}
+
+impl Tally {
+    pub extern "C" fn new() -> Box<Tally> {
+        Box::new(Tally { total: 0.0, on_step: None })
+    }
+
+    pub extern "C" fn watch(this: &mut Tally, f: Value) {
+        this.on_step = Some(Kept::new(f));
+    }
+
+    /// The new total, as the watcher answered it, or as it is when there
+    /// is none. An error the watcher raises is the caller's.
+    pub extern "C" fn add(this: &mut Tally, n: f64) -> f64 {
+        this.total += n;
+        if let Some(f) = &this.on_step {
+            match host::call(f.get(), &[Value::number(this.total)]) {
+                Ok(v) => this.total = v.as_number().unwrap_or(this.total),
+                Err(e) => host::raise_value(e),
+            }
+        }
+        this.total
+    }
+
+    pub extern "C" fn label(this: &Tally, name: Text) -> Text {
+        Text::new(&format!("{name}: {}", this.total))
+    }
+}
+
 caribou_abi::plugin! {
     name: "math";
     fn hypot(f64, f64) -> f64;
@@ -86,6 +138,9 @@ caribou_abi::plugin! {
     fn is_even(i64) -> bool;
     fn bump() -> i32;
     fn same(Value) -> Value;
+    fn shout(Text) -> Text;
+    fn width(Text) -> i32;
+    fn quotient(f64, f64) -> f64;
     class Vec {
         fn len3(f64, f64, f64) -> f64;
     }
@@ -96,5 +151,11 @@ caribou_abi::plugin! {
         fn dot(&Vec2, &Vec2) -> f64;
         fn unit(&Vec2) -> Box<Vec2>;
         fn live() -> i32;
+    }
+    class Tally {
+        fn new() -> Box<Tally>;
+        fn watch(&mut Tally, Value);
+        fn add(&mut Tally, f64) -> f64;
+        fn label(&Tally, Text) -> Text;
     }
 }

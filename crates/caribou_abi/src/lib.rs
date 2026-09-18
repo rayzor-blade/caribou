@@ -22,8 +22,13 @@ pub const ABI_VERSION: u32 = 1;
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
 
-/// Every plugin exports `extern "C" fn caribou_plugin_entry() -> *const PluginInfo`.
+/// Every plugin exports `extern "C" fn caribou_plugin_entry(*const host::Host)
+/// -> *const PluginInfo`: the core hands its table in and takes the
+/// plugin's out.
 pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
+
+pub mod host;
+pub use host::{Kept, Text};
 
 /// Which runtime defines a type's semantics. A registry, not an enum: the
 /// core assigns ids at world start, one per adapter and one per Zyntax
@@ -759,8 +764,9 @@ pub trait PluginClass {
 }
 
 /// A Rust type a plugin function takes, and how it crosses: a scalar or a
-/// `Value` by its tag; `&T` or `&mut T` of a [`PluginClass`] as an object
-/// of that class, borrowed for the call.
+/// `Value` by its tag; a [`Text`] as a core string, borrowed for the call;
+/// `&T` or `&mut T` of a [`PluginClass`] as an object of that class,
+/// borrowed for the call.
 pub trait Param {
     const TAG: TypeTag;
     /// The class's name for an object, else `None`.
@@ -768,8 +774,8 @@ pub trait Param {
 }
 
 /// A Rust type a plugin function returns: a scalar or a `Value` by its
-/// tag; `Box<T>` of a [`PluginClass`] as a new object of that class, owned
-/// by the core from then on.
+/// tag; a [`Text`] made by [`host::text`]; `Box<T>` of a [`PluginClass`]
+/// as a new object of that class, owned by the core from then on.
 pub trait Returned {
     const TAG: TypeTag;
     const CLASS: Option<&'static str> = None;
@@ -798,6 +804,7 @@ tagged! {
     f64 => TypeTag::F64,
     bool => TypeTag::BOOL,
     Value => TypeTag::DYN,
+    Text => TypeTag::BYTES,
 }
 
 impl<T: PluginClass> Param for &T {
@@ -887,7 +894,8 @@ pub unsafe extern "C" fn drop_boxed<T>(p: *mut c_void) {
 /// any class is a static of a class named after the plugin. Each
 /// declaration is checked against the item it names, so the two cannot
 /// drift. The macro writes the tables, the finalizer of each class, the
-/// entry and the version symbol.
+/// entry, which keeps the core's table for [`host`], and the version
+/// symbol.
 ///
 /// ```ignore
 /// pub extern "C" fn hypot(a: f64, b: f64) -> f64 { a.hypot(b) }
@@ -983,7 +991,8 @@ macro_rules! plugin {
         }
 
         #[unsafe(no_mangle)]
-        pub extern "C" fn caribou_plugin_entry() -> *const $crate::PluginInfo {
+        pub extern "C" fn caribou_plugin_entry(host: *const $crate::host::Host) -> *const $crate::PluginInfo {
+            $crate::host::install(host);
             &__CARIBOU_INFO
         }
     };

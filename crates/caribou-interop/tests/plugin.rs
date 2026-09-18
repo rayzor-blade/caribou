@@ -34,6 +34,30 @@ System.print(Math.same("as it is"))
 System.print(Math.same([1, 2]).count)
 System.print(Vec.len3(1, 2, 2))
 System.print(Fiber.new { Math.twice("no") }.try())
+System.print(Math.shout("héllo"))
+System.print(Math.width("héllo"))
+System.print(Fiber.new { Math.width(5) }.try())
+System.print(Math.quotient(1, 4))
+System.print(Fiber.new { Math.quotient(1, 0) }.try())
+"#;
+
+/// A class that keeps a function across calls and calls it, and hands
+/// on what the function raises.
+const TALLY: &str = r#"
+import "math:Tally" for Tally
+var t = Tally.new()
+System.print(t.add(2))
+var seen = []
+t.watch(Fn.new {|total|
+  seen.add(total)
+  total * 10
+})
+System.print(t.add(3))
+System.print(t.add(1))
+System.print(seen)
+System.print(t.label("sum"))
+t.watch(Fn.new {|total| Fiber.abort("too much: %(total)") })
+System.print(Fiber.new { t.add(1) }.try())
 "#;
 
 /// A class with instances: constructed, sent to, passed to another of
@@ -67,7 +91,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 12);
+    assert_eq!(math.symbols().len(), 19);
     let hypot = math
         .symbols()
         .iter()
@@ -77,7 +101,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(hypot.params[0], TypeTag::F64);
     assert_eq!(hypot.ret, TypeTag::F64);
     assert_eq!(ABI_VERSION, 1);
-    assert_eq!(math.classes().len(), 2);
+    assert_eq!(math.classes().len(), 3);
 
     let world = World::new(Config::default());
     world
@@ -120,7 +144,17 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(result, InterpretResult::Success, "{:?}", errors.borrow());
     assert_eq!(
         output,
-        "5\n42\ntrue\nfalse\n3\nas it is\n2\n3\nargument 1 of the plugin function cannot be a caribou.Str\n"
+        "5\n42\ntrue\nfalse\n3\nas it is\n2\n3\nargument 1 of the plugin function cannot be a caribou.Str\n\
+         HÉLLO!\n5\nargument 1 of the plugin function cannot be a number\n0.25\nquotient by zero\n"
+    );
+
+    vm.output_buffer = Some(String::new());
+    let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("tally", TALLY));
+    let output = vm.take_output();
+    assert_eq!(result, InterpretResult::Success, "{:?} {output:?}", errors.borrow());
+    assert_eq!(
+        output,
+        "2\n50\n510\n[5, 51]\nsum: 510\ntoo much: 511\n"
     );
 
     vm.output_buffer = Some(String::new());

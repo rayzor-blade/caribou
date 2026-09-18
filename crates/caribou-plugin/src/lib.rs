@@ -1,7 +1,8 @@
 //! Native plugins on the shared ABI (`caribou_abi`): a dynamic library
 //! exporting `caribou_abi_version` and `caribou_plugin_entry`, whose table
 //! names its functions, the class each hangs in, and their signatures by
-//! `TypeTag`.
+//! `TypeTag`. The entry is handed the core's table (`host`), through
+//! which a plugin makes strings, keeps values, calls and raises.
 //!
 //! A plugin is a language of its own to the world: `Runtime` registers one
 //! `LangId` per plugin, named after it, so every plugin has a namespace
@@ -11,8 +12,8 @@
 //! class's symbols; free functions are the statics of a class named after
 //! the plugin. Every target is `Callable::Typed` with an `hl_type` built
 //! from the tags, and the plugin's language dispatches such a call over
-//! `ash_native_call`: scalars by kind, a `DYN` as the `Value` it is, and
-//! nothing boxed.
+//! `ash_native_call`: scalars by kind, a `DYN` as the `Value` it is, a
+//! string as the core string's address, and nothing boxed.
 //!
 //! An instance of a plugin class is a core object of the class's
 //! descriptor holding the plugin's payload: what a constructor's `Box<T>`
@@ -34,9 +35,9 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, RwLock};
 
-use caribou::error::{Error as CoreError, Int64};
+use caribou::error::{Error as CoreError, Int64, Str};
 use caribou::heap::{self, TypeDesc};
-use caribou::protocol::{CallSite, Callable, Protocol, REPLY_OK};
+use caribou::protocol::{CallSite, Callable, Protocol, REPLY_OK, REPLY_RAISED};
 use caribou::registry::{self, ClassIface, Interface, MethodIface, TypeRef};
 use caribou::symbol::{Symbol, intern};
 use caribou::world::Adapter;
@@ -45,10 +46,13 @@ use caribou_abi::hl::{
     self, hl_type, hl_type_detail, hl_type_fun, hl_type_fun_closure, hl_type_fun_closure_type,
 };
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
+use caribou_abi::host::Host;
 use caribou_abi::{
     ABI_VERSION, ABI_VERSION_SYMBOL, ClassDesc, ErrorKind, LangId, NO_CLASS, PLUGIN_ENTRY_SYMBOL,
     PluginInfo, SymbolDesc, TypeTag, Value, sym,
 };
+
+mod host;
 
 /// A loaded plugin: its library stays open for the process, since the
 /// registry holds its function addresses.
@@ -126,10 +130,10 @@ pub fn load(path: &Path) -> Result<Plugin, Error> {
             core: ABI_VERSION,
         });
     }
-    let entry: libloading::Symbol<unsafe extern "C" fn() -> *const PluginInfo> =
+    let entry: libloading::Symbol<unsafe extern "C" fn(*const Host) -> *const PluginInfo> =
         unsafe { library.get(PLUGIN_ENTRY_SYMBOL.as_bytes()) }
             .map_err(|e| Error::NotAPlugin(path.to_owned(), e.to_string()))?;
-    let info = unsafe { entry() };
+    let info = unsafe { entry(&host::HOST) };
     if info.is_null() {
         return Err(Error::NoTable(path.to_owned()));
     }
@@ -466,6 +470,7 @@ fn type_ref(tag: TypeTag) -> TypeRef {
         hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HI64 => TypeRef::Int,
         hl::HF32 | hl::HF64 => TypeRef::Float,
         hl::HBOOL => TypeRef::Bool,
+        hl::HBYTES => TypeRef::Str,
         _ => TypeRef::Dyn,
     }
 }
@@ -564,7 +569,8 @@ fn raise(lang: LangId, message: &str) -> u8 {
 }
 
 /// The word for `v` as an argument of `kind`: an integer as itself, a
-/// float as its bits, a bool as 0 or 1, a `DYN` as the value's bits.
+/// float as its bits, a bool as 0 or 1, a `DYN` as the value's bits, a
+/// `BYTES` as the core string's address, borrowed for the call.
 fn word_of(v: Value, kind: hl::hl_type_kind) -> Option<u64> {
     Some(match kind {
         hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HI64 => Int64::of(v)? as u64,
@@ -577,6 +583,7 @@ fn word_of(v: Value, kind: hl::hl_type_kind) -> Option<u64> {
             .to_bits(),
         hl::HBOOL => u64::from(v.as_bool()?),
         hl::HDYN => v.to_bits(),
+        hl::HBYTES => (unsafe { Str::from_value(v) }?) as u64,
         _ => return None,
     })
 }
@@ -593,6 +600,8 @@ fn value_of(word: i64, kind: hl::hl_type_kind) -> Value {
         hl::HF64 => Value::number(f64::from_bits(word as u64)),
         hl::HBOOL => Value::bool(word & 1 != 0),
         hl::HDYN => Value::from_bits(word as u64),
+        // A text the plugin made through the host, or none.
+        hl::HBYTES if word != 0 => Value::object(word as *const c_void),
         _ => Value::null(),
     }
 }
@@ -682,6 +691,10 @@ unsafe extern "C-unwind" fn dispatch(
             "the plugin function's signature is not one the core can call",
         );
     };
+    // The plugin raised through the host: its result is nothing.
+    if bridge::has_pending() {
+        return REPLY_RAISED;
+    }
     let result = if returns_object {
         wrap(
             unsafe { &*(ret_type as *const TypeDesc) },

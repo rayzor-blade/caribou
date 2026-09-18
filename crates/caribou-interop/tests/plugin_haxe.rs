@@ -2,7 +2,10 @@
 //! macro found the plugin's library in `plugins/` beside the program and
 //! emitted `math.Math` and `math.Vec2`; the session loads the same
 //! library at run time, and every call binds by name through the
-//! registry. A plugin object is a Haxe object of its class.
+//! registry. A plugin object is a Haxe object of its class; a string
+//! crosses each way as a `String`; a Haxe function a plugin keeps is
+//! called from the plugin, and what it throws reaches the Haxe caller,
+//! as does an error the plugin raises.
 
 use std::path::PathBuf;
 
@@ -41,6 +44,7 @@ fn a_haxe_program_reaches_a_plugin() {
     let output = captured(|| session.start().expect("main runs"));
     assert_eq!(
         output,
-        "5\n42\ntrue\n5\n10 6\n1\ntrue true\ncaught Can't cast String to math.Vec2\n"
+        "5\n42\ntrue\n5\n10 6\n1\ntrue true\ncaught Can't cast String to math.Vec2\n\
+         HÉLLO! 5\ncaught quotient by zero\n30 310 [3,31]\nsum: 310\ncaught too much: 311\n"
     );
 }

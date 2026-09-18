@@ -153,6 +153,9 @@ pub struct Str {
 /// at word zero, and a returned borrow does not outlive the object.
 #[allow(clippy::missing_safety_doc)]
 impl Str {
+    /// Where the length lies: what a plugin's `TextData` must agree with.
+    pub const LEN_OFFSET: usize = core::mem::offset_of!(Str, len);
+
     /// The caller must root the result before allocating again.
     pub fn new(s: &str) -> *mut Str {
         let p = Self::alloc(s.len());

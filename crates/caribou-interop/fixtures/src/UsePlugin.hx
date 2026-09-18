@@ -1,4 +1,5 @@
 import math.Math;
+import math.Tally;
 import math.Vec2;
 
 // The Haxe side of the plugin test: `math.Math` and `math.Vec2` are the
@@ -18,6 +19,30 @@ class UsePlugin {
 		// Haxe's own cast refuses another class before the plugin would.
 		try {
 			Sys.println(v.dot((cast "five" : Vec2)));
+		} catch (e:Dynamic) {
+			Sys.println("caught " + e);
+		}
+		// Strings both ways, and an error the plugin raises.
+		Sys.println(Math.shout("héllo") + " " + Math.width("héllo"));
+		try {
+			Sys.println(Math.quotient(1, 0));
+		} catch (e:Dynamic) {
+			Sys.println("caught " + e);
+		}
+		// A plugin object keeps a Haxe function and calls it.
+		var t = new Tally();
+		var seen = [];
+		t.watch(function(total:Float):Float {
+			seen.push(total);
+			return total * 10;
+		});
+		Sys.println(t.add(3) + " " + t.add(1) + " " + seen);
+		Sys.println(t.label("sum"));
+		t.watch(function(total:Float):Float {
+			throw "too much: " + total;
+		});
+		try {
+			t.add(1);
 		} catch (e:Dynamic) {
 			Sys.println("caught " + e);
 		}

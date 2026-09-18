@@ -45,16 +45,17 @@ plugin (`Math`). Each declaration is checked against the item it names,
 as a coercion to the declared function pointer type, so a signature
 that drifts does not compile. The macro reads each type's tag off the
 `Param` and `Returned` traits: `u8`, `u16`, `i32`, `i64`, `f32`, `f64`,
-`bool`, `()` and `Value` by their tags; `&T` and `&mut T` of a declared
-class as an object of it, borrowed for the call, which makes the
-function an instance method when it is the first parameter; `Box<T>` as
-a new object of the class, owned by the core from then on. A static
-`new` returning its own class is the class's constructor. The macro
-writes the `SymbolDesc` table, the class table with a finalizer per
-class (the `Box` dropped), the `PluginInfo`, and the two symbols every
-plugin exports: `caribou_abi_version`, which a core compares with its
-own before it binds anything, and `caribou_plugin_entry`, which returns
-the tables.
+`bool`, `()` and `Value` by their tags; `Text` as a string; `&T` and
+`&mut T` of a declared class as an object of it, borrowed for the call,
+which makes the function an instance method when it is the first
+parameter; `Box<T>` as a new object of the class, owned by the core from
+then on. A static `new` returning its own class is the class's
+constructor. The macro writes the `SymbolDesc` table, the class table
+with a finalizer per class (the `Box` dropped), the `PluginInfo`, and
+the two symbols every plugin exports: `caribou_abi_version`, which a
+core compares with its own before it binds anything, and
+`caribou_plugin_entry`, which takes the core's table (below) and returns
+the plugin's.
 
 ## Loading
 
@@ -119,11 +120,42 @@ is a descriptor's is wrapped as a new object, or null for a null
 pointer. So a plugin never reads memory that is not its own, and never
 sees the core's object.
 
+## Strings
+
+A string crosses as a `Text`, one word: the address of the core string
+itself, whose header the ABI spells as `TextData` (the core's word, the
+length in bytes, the UTF-8 after). A `Text` parameter is the string the
+caller passed, which every language's adapter hands over as a core
+string already, borrowed for the call and read as a `str`; a value that
+is not a string is a `Type` error, as a wrong scalar is. A `Text` result
+is one the plugin made with `Text::new`, which asks the core for it;
+the dispatcher hands the word back as the value it is. Nothing is
+copied at the crossing, and the plugin never writes a header.
+
+## The host
+
+`caribou_plugin_entry` is handed the core's table, `host::Host`, and
+the macro keeps it; `caribou_abi::host` is the plugin's side of it, plain
+functions the tooling sees. Through it a plugin makes a string
+(`text`), calls a value it was given (`call`, whose `Err` is the error
+value the call raised), and raises: `raise` makes an error of a kind
+with a message pending, `raise_value` makes an error a call handed back
+pending, and in either case the plugin function returns, its result
+ignored, and its caller sees the error, as it sees one raised by any
+language. A value a plugin holds across calls goes in a `Kept`: a handle
+the collector honours until the `Kept` drops, since a bare `Value` in the
+plugin's own memory is invisible to the collector. So a plugin object
+that keeps a callback keeps a `Kept` of it, and calls it with `call`
+when its moment comes; the function may be Wren's or Haxe's, and what
+it raises comes back to the plugin to hand on or handle. Every entry of
+the table is called on the caller's thread inside the plugin function
+the dispatcher is calling; a plugin has no thread of its own to call
+from.
+
 ## Boundaries of the current implementation
 
-Built: the header macro, loading, the adapter, scalar and `DYN`
-parameters and results, classes with instances, discovery beside the
-program, Wren and Haxe reaching a plugin. Not built: strings and bytes
-(`BYTES`), a host API a plugin keeps a core value through across calls,
-plugins from a bundle's native library sections, and wren_lift's own
-plugins on this ABI.
+Built: the header macro, loading, the adapter, scalar, `DYN` and string
+parameters and results, classes with instances, the host table with kept
+values, calls and errors, discovery beside the program, Wren and Haxe
+reaching a plugin. Not built: byte buffers, plugins from a bundle's
+native library sections, and wren_lift's own plugins on this ABI.
