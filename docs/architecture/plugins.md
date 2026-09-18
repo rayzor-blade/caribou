@@ -62,9 +62,10 @@ the plugin's.
 `caribou_plugin::load` opens a library, refuses one of another ABI
 version, and reads its table; `load_dir` opens every library in a
 directory that exports the entry, passing over the ones that do not.
-The driver loads the plugins in `plugins/` beside what it opens, a
-program or a bundle, before the program starts: the project's layout is
-the configuration.
+The driver loads the plugins in `plugins/` beside a program before it
+starts: the project's layout is the configuration. A bundle carries
+them as native library sections (see [bundle.md](bundle.md)), and a
+session from a bundle loads those.
 
 ## A language of its own
 
@@ -157,5 +158,5 @@ from.
 Built: the header macro, loading, the adapter, scalar, `DYN` and string
 parameters and results, classes with instances, the host table with kept
 values, calls and errors, discovery beside the program, Wren and Haxe
-reaching a plugin. Not built: byte buffers, plugins from a bundle's
-native library sections, and wren_lift's own plugins on this ABI.
+reaching a plugin, plugins shipped in a bundle. Not built: byte
+buffers, and wren_lift's own plugins on this ABI.

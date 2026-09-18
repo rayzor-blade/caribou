@@ -4,8 +4,7 @@ A bundle is a program and the modules of every language it uses in one
 file. `caribou build` writes one from a project's layout; `caribou run`
 opens it where it would open the program, and a session from a bundle
 sees what a session from the directory saw. The bundle is what ships:
-a run needs the file and nothing beside it but the native libraries the
-program already needed.
+a run needs the file and nothing beside it.
 
 ## What is in it
 
@@ -24,7 +23,11 @@ compiled form at the version `N` of its serializer, or `source`, which
 the adapter also reads; a `.hatch` package comes when a project depends
 on one. The bundle versions its framing alone. A *source* section is
 the text a compiled module was built from, under the module's name, for
-the language's diagnostics. A *resource* section is bytes by name.
+the language's diagnostics. A *resource* section is bytes by name. A
+*native library* section is a plugin on the shared ABI, under its file
+name, for the target its format names, `<arch>-<os>` as the standard
+library spells them (`aarch64-macos`); a bundle may carry one per
+target, and a run takes its own target's.
 
 The file is the magic `CARIBOU\0`, a version, flags, the manifest, then
 the sections, every integer little-endian and every string and byte
@@ -46,8 +49,11 @@ VM, each after the modules it imports by a plain import
 (`import_order`), so a class one module declares is known to the
 modules that use it, and each becomes a `wlbc@N` section with its text
 beside it as a source section. A module
-that does not compile fails the build, naming it. The bundle is written
-beside the program as `game.cb`, or where `-o` says.
+that does not compile fails the build, naming it. The plugins in
+`plugins/` beside the program, the ones the run from the directory
+loaded, go in as native library sections for the building machine's
+target. The bundle is written beside the program as `game.cb`, or where
+`-o` says.
 
 ## Opening
 
@@ -75,6 +81,12 @@ in the module renders its line as it would from a file. The Haxe
 program's own lines come with its bytecode, when it was built with
 debug information.
 
+A bundle's plugins are its native library sections for the running
+target, not a `plugins/` beside it: a library loads from a file, so each
+is written once under the temporary directory by the hash of its bytes
+and loaded from there, as a program's are loaded from `plugins/`
+(`caribou_driver::bundle::plugins`).
+
 Nothing is watched: a bundle's modules have no file to change.
 `Session::reload` re-runs a module staged as source from what was
 staged; a compiled one does not reload.
@@ -82,8 +94,9 @@ staged; a compiled one does not reload.
 ## Boundaries of the current implementation
 
 Built: the format, `build`, opening, Haxe `hl` entries, Wren modules
-compiled or as source. Not built: `.hatch` packages as sections,
-resources reachable from a program, the Api sections (the registry's
-interfaces beside the modules, for a build or an editor that reads the
-bundle without loading it), native libraries per target, docs, and
-compression.
+compiled or as source, native libraries for the building target. Not
+built: `.hatch` packages as sections, resources reachable from a
+program, the Api sections (the registry's interfaces beside the modules,
+for a build or an editor that reads the bundle without loading it),
+native libraries for other targets than the building machine's, docs,
+and compression.

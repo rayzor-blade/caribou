@@ -1,6 +1,7 @@
-//! A session finds the plugins in `plugins/` beside what it opens, a
-//! program or a bundle, and registers them as languages of its world
-//! before the program starts.
+//! A build takes the plugins in `plugins/` beside the program into the
+//! bundle as native libraries for its target, and a session from the
+//! bundle, anywhere, registers them as languages of its world before
+//! the program starts.
 
 use std::path::PathBuf;
 
@@ -13,27 +14,33 @@ use caribou_driver::{Options, Session};
 use caribou_interop::captured;
 
 #[test]
-fn a_session_loads_the_plugins_beside_its_program() {
+fn a_bundle_carries_its_plugins() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
-    let dir = std::env::temp_dir().join(format!("caribou-plugin-session-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(dir.join("plugins")).unwrap();
-    let bundle = caribou_driver::bundle::build(&fixtures.join("hud.hl"), &[fixtures.join("src")])
-        .expect("the project bundles");
-    let program = dir.join("hud.cb");
-    std::fs::write(&program, caribou::bundle::emit(&bundle)).unwrap();
     let library = format!(
         "{}caribou_plugin_math.{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     );
+    std::fs::create_dir_all(fixtures.join("plugins")).unwrap();
     std::fs::copy(
         PathBuf::from(env!("OUT_DIR"))
             .join("plugins/debug")
             .join(&library),
-        dir.join("plugins").join(&library),
+        fixtures.join("plugins").join(&library),
     )
     .unwrap();
+    let bundle = caribou_driver::bundle::build(&fixtures.join("hud.hl"), &[fixtures.join("src")])
+        .expect("the project bundles");
+    assert_eq!(
+        bundle.native_libs(&caribou::bundle::target()).count(),
+        1,
+        "the plugin ships in the bundle"
+    );
+    let dir = std::env::temp_dir().join(format!("caribou-plugin-session-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let program = dir.join("hud.cb");
+    std::fs::write(&program, caribou::bundle::emit(&bundle)).unwrap();
 
     let mut session = Session::open(
         &program,

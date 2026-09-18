@@ -11,7 +11,9 @@
 //! framing only; a module's format is its language's to read and to
 //! refuse. A source is the text a compiled module was built from, for
 //! its language's diagnostics, under the module's name. A resource is
-//! bytes by name, for whoever asks for it.
+//! bytes by name, for whoever asks for it. A native library is a plugin
+//! on the shared ABI, under its file name, for the target its format
+//! names (`aarch64-macos`): a run takes the ones of its own target.
 //!
 //! Wire format, all integers little-endian:
 //!
@@ -36,6 +38,12 @@ use crate::registry::Namespace;
 pub const MAGIC: [u8; 8] = *b"CARIBOU\0";
 pub const VERSION: u32 = 1;
 
+/// The target a native library section is for, as this build names its
+/// own: `<arch>-<os>` from the standard library's constants.
+pub fn target() -> String {
+    format!("{}-{}", std::env::consts::ARCH, std::env::consts::OS)
+}
+
 /// What a section holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -43,13 +51,15 @@ pub enum SectionKind {
     Module = 1,
     Resource = 2,
     Source = 3,
+    NativeLib = 4,
 }
 
 /// One section: for a module, `lang` names the language, `format` the
 /// form of `data` as the language versions it, `name` the module in its
 /// language; for a source, `lang` and the module's `name`, `format`
 /// empty, `data` the text; for a resource, `name` alone, `lang` and
-/// `format` empty.
+/// `format` empty; for a native library, `format` the target, `name`
+/// the file name, `lang` empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub kind: SectionKind,
@@ -85,6 +95,13 @@ impl Bundle {
         self.sections
             .iter()
             .filter(|s| s.kind == SectionKind::Module)
+    }
+
+    /// The native libraries for `target`.
+    pub fn native_libs<'a>(&'a self, target: &'a str) -> impl Iterator<Item = &'a Section> {
+        self.sections
+            .iter()
+            .filter(move |s| s.kind == SectionKind::NativeLib && s.format == target)
     }
 
     /// The entry module's section, when the bundle carries it.
@@ -211,6 +228,7 @@ pub fn load(bytes: &[u8]) -> Result<Bundle, Error> {
             1 => SectionKind::Module,
             2 => SectionKind::Resource,
             3 => SectionKind::Source,
+            4 => SectionKind::NativeLib,
             k => return Err(Error::Kind(k)),
         };
         sections.push(Section {
@@ -335,6 +353,13 @@ mod tests {
                     name: "font.ttf".to_owned(),
                     data: vec![0, 1, 2],
                 },
+                Section {
+                    kind: SectionKind::NativeLib,
+                    lang: String::new(),
+                    format: "aarch64-macos".to_owned(),
+                    name: "libmath.dylib".to_owned(),
+                    data: vec![0xcf, 0xfa, 0xed, 0xfe],
+                },
             ],
         }
     }
@@ -348,6 +373,8 @@ mod tests {
         assert_eq!(back, bundle);
         assert_eq!(back.entry().map(|s| s.name.as_str()), Some("hud"));
         assert_eq!(back.modules().count(), 2);
+        assert_eq!(back.native_libs("aarch64-macos").count(), 1);
+        assert_eq!(back.native_libs("x86_64-windows").count(), 0);
     }
 
     #[test]

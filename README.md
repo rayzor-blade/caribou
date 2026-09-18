@@ -96,9 +96,9 @@ use:
 caribou run bin/game.hl
 ```
 
-`caribou build bin/game.hl` writes `bin/game.cb`, the program and
-every module under the class paths in one file, and `caribou run
-bin/game.cb` runs it the same way from anywhere.
+`caribou build bin/game.hl` writes `bin/game.cb`, the program, every
+module under the class paths and the plugins beside it in one file,
+and `caribou run bin/game.cb` runs it the same way from anywhere.
 
 `caribou run --report` prints, when the program ends, what the run did:
 the tier each function reached, whether each send across the bridge is

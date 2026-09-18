@@ -73,18 +73,11 @@ impl Session {
             args: options.args,
             ..AshOptions::default()
         };
-        // The plugins beside the program, in `plugins/`: what the world
-        // grants every language.
-        let plugins = caribou_plugin::load_dir(
-            &path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("plugins"),
-        )
-        .map_err(|e| anyhow!("{e}"))?;
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         if bundle::looks_like(&bytes) {
             let bundle = bundle::load(&bytes).with_context(|| path.display().to_string())?;
+            // A bundle's plugins are its own native library sections.
+            let plugins = crate::bundle::plugins(&bundle)?;
             let entry = bundle
                 .entry()
                 .ok_or_else(|| anyhow!("{} carries no entry module", path.display()))?;
@@ -113,6 +106,15 @@ impl Session {
             );
         }
         drop(bytes);
+        // The plugins beside the program, in `plugins/`: what the world
+        // grants every language.
+        let plugins = caribou_plugin::load_dir(
+            &path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join("plugins"),
+        )
+        .map_err(|e| anyhow!("{e}"))?;
         let program = caribou_ash::load(path, ash_options)?;
         let roots = if options.roots.is_empty() {
             project::roots(path)

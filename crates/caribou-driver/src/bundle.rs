@@ -25,18 +25,17 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
         .into_iter()
         .map(|(namespace, _)| namespace)
         .collect();
-    // The plugins beside the program are the ones its namespaces cover.
-    let plugins: Vec<String> = caribou_plugin::load_dir(
+    // The plugins beside the program are the ones its namespaces cover,
+    // and they ship in the bundle for this target.
+    let plugins = caribou_plugin::load_dir(
         &program
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("plugins"),
     )
-    .map_err(|e| anyhow!("{e}"))?
-    .iter()
-    .map(|p| p.name().to_owned())
-    .collect();
-    let namespaces = project::namespaces(roots, &imported, &plugins);
+    .map_err(|e| anyhow!("{e}"))?;
+    let plugin_names: Vec<String> = plugins.iter().map(|p| p.name().to_owned()).collect();
+    let namespaces = project::namespaces(roots, &imported, &plugin_names);
     let mut sections = vec![Section {
         kind: SectionKind::Module,
         lang: "haxe".to_owned(),
@@ -83,6 +82,20 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
             data: source.into_bytes(),
         });
     }
+    for plugin in &plugins {
+        let path = plugin.path();
+        sections.push(Section {
+            kind: SectionKind::NativeLib,
+            lang: String::new(),
+            format: caribou::bundle::target(),
+            name: path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or_else(|| anyhow!("{} has no file name", path.display()))?
+                .to_owned(),
+            data: std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+        });
+    }
     Ok(Bundle {
         manifest: Manifest {
             name: name.clone(),
@@ -121,6 +134,37 @@ fn wren_modules(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -> Re
         }
     }
     Ok(())
+}
+
+/// The bundle's plugins for this target, loaded. A library loads from a
+/// file, so each is written under the temporary directory by the hash
+/// of its bytes, once per content; a library already there is loaded as
+/// it is.
+pub fn plugins(bundle: &Bundle) -> Result<Vec<caribou_plugin::Plugin>> {
+    let mut out = Vec::new();
+    for section in bundle.native_libs(&caribou::bundle::target()) {
+        let dir = std::env::temp_dir()
+            .join("caribou-plugins")
+            .join(format!("{:016x}", fnv(&section.data)));
+        let path = dir.join(&section.name);
+        if !path.is_file() {
+            std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
+            // Written whole before it has its name, so a reader never
+            // sees a partial library.
+            let part = dir.join(format!("{}.{}", section.name, std::process::id()));
+            std::fs::write(&part, &section.data).with_context(|| format!("writing {}", part.display()))?;
+            std::fs::rename(&part, &path).with_context(|| format!("placing {}", path.display()))?;
+        }
+        out.push(caribou_plugin::load(&path).map_err(|e| anyhow!("{}: {e}", section.name))?);
+    }
+    Ok(out)
+}
+
+/// FNV-1a over `bytes`.
+fn fnv(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 /// Build the bundle for `program` from its project and write it to
