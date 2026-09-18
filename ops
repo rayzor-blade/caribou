@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1789758980,"nonce":"3fohVb4wWhnxknxwHAjZxhCadA4=","status":2}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1789758980,"nonce":"qhDjkPiy5KUoPnKAASqYv9+xW80=","message":"Closed: increments 1–4 landed (ee5685a, a442e2f, 5268b2c, 1f1a383, dcdff9b, 2ec1da1); increment 5 resolved without a port (7786a5a).","files":null}]}
