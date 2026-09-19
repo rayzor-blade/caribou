@@ -24,6 +24,7 @@
 //! unwinding through Rust; the thrown value becomes a core `Error` with the
 //! exception as its native payload, and the entry answers `Raised`.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -37,7 +38,7 @@ use ash_std::error::{
 use ash_std::fun::hlp_dyn_call;
 use ash_std::obj::{
     hl_get_obj_proto, hlp_alloc_dynamic, hlp_alloc_dynbool, hlp_alloc_obj, hlp_dyn_getp,
-    hlp_dyn_setp, hlp_lookup_find, hlp_obj_has_field,
+    hlp_dyn_setp, hlp_hash_gen, hlp_lookup_find, hlp_obj_has_field,
 };
 use ash_std::strings::hlp_value_to_string;
 use ash_std::types::{hlt_bytes, hlt_dyn, hlt_f64, hlt_i32, hlt_i64};
@@ -1249,10 +1250,29 @@ pub fn is_constructor(callable: Callable) -> bool {
 // Members
 // ---------------------------------------------------------------------------
 
-/// HashLink's field hash of a symbol's name: the symbol carries it.
-#[inline]
+/// HashLink's field hash of a symbol's name, as Ash's name cache holds
+/// it: the base hash, or the next free value above it when another live
+/// name took that one first. Asked of Ash once per symbol on each thread;
+/// a name keeps its hash once the cache holds it, so the copy never goes
+/// stale.
 fn field_hash(name: Symbol) -> i32 {
-    name.hash()
+    // Outside the range `hlp_hash_gen` produces.
+    const UNSET: i32 = i32::MIN;
+    thread_local! {
+        static HASHES: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    }
+    HASHES.with(|hashes| {
+        let mut hashes = hashes.borrow_mut();
+        let id = name.0 as usize;
+        if id >= hashes.len() {
+            hashes.resize(id + 1, UNSET);
+        }
+        if hashes[id] == UNSET {
+            let wide: Vec<uchar> = name.name().encode_utf16().chain([0]).collect();
+            hashes[id] = unsafe { hlp_hash_gen(wide.as_ptr(), true) };
+        }
+        hashes[id]
+    })
 }
 
 /// A declared field of an object type: its byte offset and type, found
@@ -2140,5 +2160,18 @@ mod tests {
         assert_eq!(unwrap(Value::int(3)), None);
         assert_eq!(unwrap(Value::number(1.5)), None);
         assert_eq!(unwrap(Value::bool(true)), None);
+    }
+
+    /// Two names with one base hash get the hashes Ash's cache gave them,
+    /// in the order it saw them, and asking again changes nothing.
+    #[test]
+    fn colliding_names_take_the_hashes_ash_holds() {
+        let first = Symbol::intern("ibkgfmc");
+        let second = Symbol::intern("yzwoeoe");
+        let (a, b) = (field_hash(first), field_hash(second));
+        assert_eq!(a, 495_575_719);
+        assert_eq!(b, a + 1);
+        assert_eq!(field_hash(first), a);
+        assert_eq!(field_hash(second), b);
     }
 }

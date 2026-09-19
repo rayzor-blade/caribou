@@ -48,9 +48,9 @@ Every heap object answers a fixed set of messages through the `Protocol` vtable 
 
 `caribou::symbol` provides one interner per process. `intern` returns a `Symbol` for a name, and `name` returns the name for a `Symbol`. The interner leaks the strings, because a symbol lives for the lifetime of the process.
 
-**Concurrency:** Interning takes a lock; reading does not. Entries live in chunks that are allocated once and never move, indexed by id. The interner hands out an id only after it has written the entry and published the table length past it. Reading `name` or `hash` costs two atomic loads and an index, which is cheap enough for a protocol entry on a hot path.
+**Concurrency:** Interning takes a lock; reading does not. Entries live in chunks that are allocated once and never move, indexed by id. The interner hands out an id only after it has written the entry and published the table length past it. Reading `name` costs two atomic loads and an index, which is cheap enough for a protocol entry on a hot path.
 
-**Hashing:** Each symbol also stores `hash`, which is HashLink's field hash of the name. The hash uses the same loop as Ash's `hlp_hash_gen`: over the UTF-16 code units, `h = 223 * h + unit` in wrapping 32-bit arithmetic, followed by a truncating remainder by `0x1FFFFF7B`. A name therefore hashes to the same value that `hashed_name` holds for it in Ash. HashLink's own table also probes upward when two live names collide; that behavior depends on its cache and is not reproduced here.
+**Runtime keys:** A symbol is an id and a name, nothing more. A runtime that keys its own tables differently derives its key from the name in its adapter. The Ash adapter asks Ash for HashLink's field hash of the name (`hlp_hash_gen`, with the name cached) and keeps the answer per symbol, so the key is the one Ash's own tables hold, including the value Ash moves a name to when two live names collide. See [adapters.md](adapters.md#haxe-objects).
 
 ## Errors
 
