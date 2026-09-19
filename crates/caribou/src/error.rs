@@ -394,8 +394,9 @@ impl TraceFrame {
 
 /// A list of frames with fixed capacity, oldest first; `cap` frames follow
 /// the header. Growing allocates a larger one, so the owner stores whatever
-/// `push` returns.
-#[repr(C)]
+/// `push` returns. Aligned as a frame is, so the first frame starts where
+/// the header ends on a 32-bit target too.
+#[repr(C, align(8))]
 pub struct Trace {
     desc: *const TypeDesc,
     len: usize,
@@ -807,10 +808,12 @@ mod tests {
 
     #[test]
     fn layouts_are_what_the_hooks_assume() {
-        assert_eq!(size_of::<Str>(), 16);
-        assert_eq!(size_of::<Trace>(), 24);
-        assert_eq!(size_of::<TraceFrame>(), 40);
-        assert_eq!(size_of::<Error>(), 48);
+        // A word is a pointer; a `Value` is eight bytes on every target.
+        let word = size_of::<usize>();
+        assert_eq!(size_of::<Str>(), 2 * word);
+        assert_eq!(size_of::<Trace>(), (3 * word).next_multiple_of(8));
+        assert_eq!(size_of::<TraceFrame>(), 24 + (2 * word).next_multiple_of(8));
+        assert_eq!(size_of::<Error>(), 40 + (word).next_multiple_of(8));
         assert_eq!(core::mem::offset_of!(Error, desc), 0);
         assert_eq!(ERROR_DESC.lang, LANG_CORE);
         assert_eq!(unsafe { desc_name(&ERROR_DESC) }, "caribou.Error");

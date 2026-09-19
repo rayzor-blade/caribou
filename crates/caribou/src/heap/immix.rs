@@ -5603,6 +5603,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
     fn tlab_bumps_publish_object_bounds_and_skip_line_tails() {
         if !tlab_enabled() {
             return; // Stress mode intentionally disables this allocation path.
@@ -5741,6 +5742,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
     fn parallel_markers_claim_each_object_once_even_on_the_same_line() {
         let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
         let a = gc.allocate(16).unwrap();
@@ -5790,6 +5792,7 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
+    #[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
     fn collector_rendezvous_with_registered_os_mutator() {
         init();
         let main_stack_anchor = 0usize;

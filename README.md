@@ -140,6 +140,17 @@ cargo bench -p caribou-interop --bench transfer
 
 ```
 
+### The Core on wasm32
+
+The core compiles for `wasm32-unknown-unknown` and `wasm32-wasip1`, and its unit tests run there. The lane uses Ash's wasm host (`ash-wasm-run`, a wasmtime host built from `../ash`) as the runner:
+
+```sh
+cargo test -p caribou --target wasm32-wasip1 --no-run     # prints the .wasm paths
+ash-wasm-run target/wasm32-wasip1/debug/build/caribou/*/out/caribou-*.wasm --test-threads=1
+```
+
+Tests that need a second thread or unwinding are marked ignored on wasm; a wasm module has one thread and aborts on panic. The scheduler's integration tests stay off wasm until fibers there are host-driven.
+
 ### JIT Tiers & LLVM Configuration
 
 WrenLift executes on Cranelift by default. To enable the LLVM optimizing tier, build `caribou-wren`, `caribou-driver`, or `caribou-interop` with `--features llvm`. This requires an LLVM 21 installation and links LLVM dynamically across all JIT components (including Ash).

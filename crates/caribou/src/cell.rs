@@ -762,6 +762,8 @@ mod tests {
     #[test]
     fn one_cell_per_object_while_the_holder_keeps_it() {
         heap::init();
+        // A wasm module's one thread is registered by `init`.
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         heap::gc_register_current_os_thread();
         let (root, cell_hidden, obj_hidden) = held();
         let obj = Value::object(!obj_hidden as *const c_void);
@@ -777,6 +779,7 @@ mod tests {
         scrub_stack();
         heap::major();
         assert_eq!(of(obj, 41), None, "dropped, the cell left the map");
+        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         heap::gc_unregister_current_os_thread();
     }
 

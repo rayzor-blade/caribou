@@ -94,10 +94,12 @@ mod tests {
 
     #[test]
     fn a_descriptor_begins_with_exactly_an_hl_type() {
+        // Four words on every target: the kind and three pointers.
+        let word = size_of::<usize>();
         assert_eq!(offset_of!(TypeDesc, hl), 0);
-        assert_eq!(size_of::<hl_type>(), 32);
-        assert_eq!(offset_of!(TypeDesc, trace), 32);
-        assert_eq!(offset_of!(TypeDesc, drop), 40);
-        assert_eq!(offset_of!(TypeDesc, protocol), 48);
+        assert_eq!(size_of::<hl_type>(), 4 * word);
+        assert_eq!(offset_of!(TypeDesc, trace), 4 * word);
+        assert_eq!(offset_of!(TypeDesc, drop), 5 * word);
+        assert_eq!(offset_of!(TypeDesc, protocol), 6 * word);
     }
 }

@@ -260,6 +260,7 @@ fn current_task_is_none_on_main_and_set_on_task() {
 }
 
 #[test]
+#[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
 fn wake_from_another_thread_reaches_an_idle_world() {
     let waiter_slot = Arc::new(Mutex::new(None));
     let notified = Rc::new(Cell::new(None));
@@ -286,6 +287,7 @@ fn wake_from_another_thread_reaches_an_idle_world() {
 }
 
 #[test]
+#[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
 fn main_context_parks_and_is_woken_by_a_thread() {
     // The main context of a world drives turns while it waits; without a
     // world it would poll like a foreign thread.
@@ -300,6 +302,7 @@ fn main_context_parks_and_is_woken_by_a_thread() {
 }
 
 #[test]
+#[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
 fn foreign_thread_polls_its_token() {
     let woken = Arc::new(AtomicBool::new(false));
     let timed_out = std::thread::spawn(|| {
@@ -329,6 +332,7 @@ fn foreign_thread_polls_its_token() {
 }
 
 #[test]
+#[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
 fn pooled_task_runs_and_wakes_the_spawner() {
     world_id();
     let waiter = new_waiter();
@@ -344,6 +348,7 @@ fn pooled_task_runs_and_wakes_the_spawner() {
 }
 
 #[test]
+#[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
 fn pool_workers_know_themselves() {
     assert!(!is_pool_worker());
     world_id();
