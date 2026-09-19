@@ -1,6 +1,7 @@
-# Tests on every push and pull request: the core and the crates that build
-# on stable, the whole workspace on nightly (caribou-ash needs it for
-# ash_std), and the core's unit tests on wasm32.
+# On every push and pull request: the core and the crates that build on
+# stable, the whole workspace on nightly (caribou-ash needs it for
+# ash_std), rustfmt and clippy over the workspace, and the core's unit
+# tests on wasm32.
 name: CI
 
 on:
@@ -76,6 +77,40 @@ jobs:
       - name: Benches build
         working-directory: caribou
         run: cargo bench -p caribou-interop --no-run
+
+  lint:
+    name: fmt and clippy (nightly, ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caribou
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt, clippy
+      - name: LLVM 21 (libclang for bindgen)
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo apt-get install -y libclang-21-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+      - uses: ./caribou/.github/actions/siblings
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            caribou
+            ash
+      - name: Formatting
+        working-directory: caribou
+        run: cargo fmt --all --check
+      - name: ash_std, which ash_core's build script embeds
+        working-directory: ash
+        run: cargo build -p ash_std
+      - name: Clippy
+        working-directory: caribou
+        run: cargo clippy --workspace --all-targets -- -D warnings
 
   wasm:
     name: core on wasm32 (nightly, ubuntu)

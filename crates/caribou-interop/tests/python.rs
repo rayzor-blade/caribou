@@ -64,7 +64,12 @@ fn a_python_module_is_imported_from_wren() {
     vm.output_buffer = Some(String::new());
     let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("use", USE));
     let output = vm.take_output();
-    assert_eq!(result, InterpretResult::Success, "{:?} {output:?}", errors.borrow());
+    assert_eq!(
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
+    );
     assert_eq!(
         output,
         "64\n5\ntrue\nfalse\ngoal\n2\nargument 1 of the function cannot be a caribou.Str\n"
@@ -76,14 +81,25 @@ fn a_python_module_is_imported_from_wren() {
     let iface = registry::lookup("game", "tally").expect("published");
     let names: Vec<&str> = iface.functions.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(names, ["score", "weight", "perfect", "echo"]);
-    let echo = iface.functions.iter().find(|m| m.name == "echo").expect("echo");
-    assert_eq!((echo.params.clone(), echo.ret.clone()), (vec![TypeRef::Str], TypeRef::Str));
+    let echo = iface
+        .functions
+        .iter()
+        .find(|m| m.name == "echo")
+        .expect("echo");
+    assert_eq!(
+        (echo.params.clone(), echo.ret.clone()),
+        (vec![TypeRef::Str], TypeRef::Str)
+    );
     let names: Vec<&str> = iface.classes.iter().map(|c| c.name.as_str()).collect();
     assert_eq!(names, ["Tally"]);
     let tally = &iface.classes[0];
     assert_eq!(tally.type_name, "python.Tally");
     assert!(tally.ctor.is_some(), "new is the constructor");
-    let methods: Vec<(&str, bool)> = tally.methods.iter().map(|m| (m.name.as_str(), m.is_static)).collect();
+    let methods: Vec<(&str, bool)> = tally
+        .methods
+        .iter()
+        .map(|m| (m.name.as_str(), m.is_static))
+        .collect();
     assert_eq!(methods, [("total", false)]);
     drop(vm);
 }

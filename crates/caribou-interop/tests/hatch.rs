@@ -35,7 +35,10 @@ fn a_hatch_package_is_imported_as_it_is() {
         .iter()
         .find(|s| s.kind == SectionKind::Module && s.format == "hatch")
         .expect("the package is a section");
-    assert_eq!((package.lang.as_str(), package.name.as_str()), ("wren", "@hatch:greet"));
+    assert_eq!(
+        (package.lang.as_str(), package.name.as_str()),
+        ("wren", "@hatch:greet")
+    );
     assert!(wren_lift::hatch::looks_like_hatch(&package.data));
 
     // A session from the bundle stages it: the import finds it.

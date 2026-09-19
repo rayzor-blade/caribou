@@ -55,12 +55,18 @@ fn a_haxe_program_reloads_under_the_world() {
     // from a broker thread, so call until the report lists it.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
-        assert_eq!(call(&mut session, "warm", &[Value::int(20_000)]), Some(840_000));
+        assert_eq!(
+            call(&mut session, "warm", &[Value::int(20_000)]),
+            Some(840_000)
+        );
         let compiled = caribou_ash::report::compiled(session.program());
         if compiled.iter().any(|f| f.name == "UseReload.answer") {
             break;
         }
-        assert!(std::time::Instant::now() < deadline, "answer never compiled: {compiled:?}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "answer never compiled: {compiled:?}"
+        );
     }
     assert_eq!(call(&mut session, "answer", &[]), Some(42));
 
@@ -72,10 +78,16 @@ fn a_haxe_program_reloads_under_the_world() {
 
     // Rebuilt with the constant changed: 41 + 1 becomes 51 + 1.
     let mut edited = BytecodeDecoder::decode(&program).unwrap();
-    let slot = edited.ints.iter().position(|&v| v == 41).expect("the constant");
+    let slot = edited
+        .ints
+        .iter()
+        .position(|&v| v == 41)
+        .expect("the constant");
     edited.ints[slot] = 51;
     rebuild(&program, &edited);
-    session.reload("haxe", "UseReload").expect("the program reloads");
+    session
+        .reload("haxe", "UseReload")
+        .expect("the program reloads");
     assert!(heard.borrow().iter().any(|event| matches!(
         event,
         Event::Reload { module, error: None, .. } if module == "UseReload"
@@ -83,7 +95,10 @@ fn a_haxe_program_reloads_under_the_world() {
     // The compiled body went back to the interpreter, which runs the new
     // one; the tier compiles it again from the new program.
     assert_eq!(call(&mut session, "answer", &[]), Some(52));
-    assert_eq!(call(&mut session, "warm", &[Value::int(20_000)]), Some(1_040_000));
+    assert_eq!(
+        call(&mut session, "warm", &[Value::int(20_000)]),
+        Some(1_040_000)
+    );
     assert_eq!(call(&mut session, "answer", &[]), Some(52));
 
     // A rebuild of another shape is refused, and the program stays.

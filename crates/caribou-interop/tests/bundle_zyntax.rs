@@ -54,7 +54,11 @@ fn a_bundle_carries_its_zyntax_languages() {
         .find(|n| n.name == "game")
         .expect("the game namespace");
     assert!(game.langs.contains(&"zynml".to_owned()), "{:?}", game.langs);
-    assert!(game.langs.contains(&"python".to_owned()), "{:?}", game.langs);
+    assert!(
+        game.langs.contains(&"python".to_owned()),
+        "{:?}",
+        game.langs
+    );
 
     // Written where nothing else is, and opened from there.
     let dir = std::env::temp_dir().join(format!("caribou-bundle-zyntax-{}", std::process::id()));

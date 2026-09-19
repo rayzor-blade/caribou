@@ -66,7 +66,13 @@ pub fn new(callable: Callable, name: &str, arity: Option<usize>) -> Value {
 /// follows its module: after a reload publishes the interface again, a
 /// call reaches what it publishes for the name. Named `module.member`
 /// in the trace.
-pub fn of_module(lang: LangId, module: &str, member: &str, callable: Callable, arity: Option<usize>) -> Value {
+pub fn of_module(
+    lang: LangId,
+    module: &str,
+    member: &str,
+    callable: Callable,
+    arity: Option<usize>,
+) -> Value {
     let origin = Origin {
         lang,
         module: intern(module),
@@ -102,7 +108,12 @@ fn make(callable: Callable, name: &str, arity: Option<usize>, origin: Option<Ori
 /// module's function, what its module publishes now.
 pub fn callable_of(v: Value) -> Option<Callable> {
     let obj = v.as_object()?;
-    if obj.is_null() || !ptr::eq(unsafe { crate::protocol::desc_of(obj as *const u8) }, &FUNCTION_DESC) {
+    if obj.is_null()
+        || !ptr::eq(
+            unsafe { crate::protocol::desc_of(obj as *const u8) },
+            &FUNCTION_DESC,
+        )
+    {
         return None;
     }
     Some(unsafe { current(obj as *mut Function) })
@@ -118,7 +129,10 @@ unsafe fn current(f: *mut Function) -> Callable {
     if f.epoch != epoch {
         if let Some(origin) = f.origin
             && let Some(iface) = registry::interface(origin.lang, origin.module.name())
-            && let Some(m) = iface.functions.iter().find(|m| m.name == origin.member.name())
+            && let Some(m) = iface
+                .functions
+                .iter()
+                .find(|m| m.name == origin.member.name())
         {
             f.callable = m.target;
         }
@@ -141,7 +155,12 @@ unsafe extern "C" fn trace(obj: *mut u8, tracer: *mut Tracer) {
     }
 }
 
-unsafe extern "C-unwind" fn call(obj: *mut u8, args: *const Value, n: usize, out: *mut Value) -> u8 {
+unsafe extern "C-unwind" fn call(
+    obj: *mut u8,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
     let callable = unsafe { current(obj as *mut Function) };
     let f = unsafe { &*(obj as *const Function) };
     let args = if n == 0 {
@@ -248,16 +267,30 @@ mod tests {
         let lang = world.register(Box::new(Fake)).unwrap()[0];
         registry::publish(iface(lang, Callable::Dynamic(Value::int(1)))).unwrap();
 
-        let f = of_module(lang, "fgame/mod", "f", Callable::Dynamic(Value::int(1)), Some(0));
+        let f = of_module(
+            lang,
+            "fgame/mod",
+            "f",
+            Callable::Dynamic(Value::int(1)),
+            Some(0),
+        );
         let plain = new(Callable::Dynamic(Value::int(1)), "plain", Some(0));
         assert_eq!(callable_of(f).and_then(dynamic_int), Some(1));
 
         // Published again, as a reload does, then the epoch moves on.
         registry::publish(iface(lang, Callable::Dynamic(Value::int(2)))).unwrap();
-        assert_eq!(callable_of(f).and_then(dynamic_int), Some(1), "not before the epoch");
+        assert_eq!(
+            callable_of(f).and_then(dynamic_int),
+            Some(1),
+            "not before the epoch"
+        );
         protocol::bump_epoch();
         assert_eq!(callable_of(f).and_then(dynamic_int), Some(2));
-        assert_eq!(callable_of(plain).and_then(dynamic_int), Some(1), "a bare callable stays");
+        assert_eq!(
+            callable_of(plain).and_then(dynamic_int),
+            Some(1),
+            "a bare callable stays"
+        );
 
         // The module gone, the function keeps what it had.
         registry::withdraw(lang, "fgame/mod");

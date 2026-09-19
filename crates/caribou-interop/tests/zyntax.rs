@@ -74,7 +74,12 @@ fn a_zynml_module_is_imported_from_wren() {
     vm.output_buffer = Some(String::new());
     let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("use", USE));
     let output = vm.take_output();
-    assert_eq!(result, InterpretResult::Success, "{:?} {output:?}", errors.borrow());
+    assert_eq!(
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
+    );
     assert_eq!(
         output,
         "64\n5\ntrue\nfalse\nargument 1 of the function cannot be a caribou.Str\ngoal\n"
@@ -82,7 +87,12 @@ fn a_zynml_module_is_imported_from_wren() {
     vm.output_buffer = Some(String::new());
     let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("point", POINT));
     let output = vm.take_output();
-    assert_eq!(result, InterpretResult::Success, "{:?} {output:?}", errors.borrow());
+    assert_eq!(
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
+    );
     assert_eq!(
         output,
         "12\nthe function returns a Zyntax type the core does not pass yet\n"
@@ -91,24 +101,55 @@ fn a_zynml_module_is_imported_from_wren() {
     // Published from the declarations: the module's functions typed by
     // their signatures, as the module's own.
     let iface = registry::lookup("game", "scorer").expect("published");
-    let weight = iface.functions.iter().find(|m| m.name == "weight").expect("weight");
+    let weight = iface
+        .functions
+        .iter()
+        .find(|m| m.name == "weight")
+        .expect("weight");
     assert_eq!(weight.params, vec![TypeRef::Float, TypeRef::Float]);
     assert_eq!(weight.ret, TypeRef::Float);
-    let echo = iface.functions.iter().find(|m| m.name == "echo").expect("echo");
-    assert_eq!((echo.params.clone(), echo.ret.clone()), (vec![TypeRef::Str], TypeRef::Str));
+    let echo = iface
+        .functions
+        .iter()
+        .find(|m| m.name == "echo")
+        .expect("echo");
+    assert_eq!(
+        (echo.params.clone(), echo.ret.clone()),
+        (vec![TypeRef::Str], TypeRef::Str)
+    );
     // The struct, from the typed declarations: fields, a constructor, a
     // method on the instance and statics, each with its Zyntax types.
     let (iface, index) = registry::lookup_class("game", "scorer", "Point").expect("published");
     let point = &iface.classes[index];
     assert_eq!(point.type_name, "zynml.Point");
-    let fields: Vec<(&str, &TypeRef)> = point.fields.iter().map(|f| (f.name.as_str(), &f.ty)).collect();
+    let fields: Vec<(&str, &TypeRef)> = point
+        .fields
+        .iter()
+        .map(|f| (f.name.as_str(), &f.ty))
+        .collect();
     assert_eq!(fields, vec![("x", &TypeRef::Float), ("y", &TypeRef::Float)]);
-    let ctor = point.ctor.as_ref().unwrap_or_else(|| panic!("{:?}", point.methods.iter().map(|m| (m.name.clone(), m.is_static, m.ret.clone(), m.params.clone())).collect::<Vec<_>>()));
+    let ctor = point.ctor.as_ref().unwrap_or_else(|| {
+        panic!(
+            "{:?}",
+            point
+                .methods
+                .iter()
+                .map(|m| (m.name.clone(), m.is_static, m.ret.clone(), m.params.clone()))
+                .collect::<Vec<_>>()
+        )
+    });
     assert_eq!(ctor.ret, TypeRef::Object("zynml.Point".to_owned()));
     let len = point.methods.iter().find(|m| m.name == "len").expect("len");
     assert!(!len.is_static);
-    assert_eq!((len.params.clone(), len.ret.clone()), (vec![], TypeRef::Float));
-    let origin = point.methods.iter().find(|m| m.name == "origin").expect("origin");
+    assert_eq!(
+        (len.params.clone(), len.ret.clone()),
+        (vec![], TypeRef::Float)
+    );
+    let origin = point
+        .methods
+        .iter()
+        .find(|m| m.name == "origin")
+        .expect("origin");
     assert!(origin.is_static);
     assert_eq!(origin.ret, TypeRef::Object("zynml.Point".to_owned()));
     drop(vm);

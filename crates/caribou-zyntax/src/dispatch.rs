@@ -7,11 +7,11 @@
 
 use std::ffi::c_void;
 
+use caribou::bridge;
 use caribou::error::{Error, Str};
 use caribou::native;
 use caribou::protocol::{CallSite, REPLY_OK, REPLY_RAISED};
 use caribou::world::LANG_CORE;
-use caribou::bridge;
 use caribou_abi::hl::{self, hl_type};
 use caribou_abi::{ErrorKind, Value};
 use zyntax_compiler::pool_alloc::zyntax_alloc;

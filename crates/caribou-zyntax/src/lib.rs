@@ -100,7 +100,11 @@ impl Sources<'_> {
     /// The source of the module with these path segments (`["game",
     /// "util"]`) under one of `architectures`' layouts, when there is
     /// one.
-    pub fn module(&self, segments: &[String], architectures: &[ModuleArchitecture]) -> Option<String> {
+    pub fn module(
+        &self,
+        segments: &[String],
+        architectures: &[ModuleArchitecture],
+    ) -> Option<String> {
         match find(segments, architectures, self.staged)? {
             Found::Staged(name) => Some(self.staged[&name].clone()),
             Found::File(path) => std::fs::read_to_string(path).ok(),
@@ -474,7 +478,11 @@ fn find(
 /// without the extension, or the directory's for a package's own file
 /// (`__init__.py`, `mod.rs`, `index.js`). `None` for a file the layout
 /// does not read.
-fn module_of(arch: &ModuleArchitecture, root: &std::path::Path, file: &std::path::Path) -> Option<Vec<String>> {
+fn module_of(
+    arch: &ModuleArchitecture,
+    root: &std::path::Path,
+    file: &std::path::Path,
+) -> Option<Vec<String>> {
     let rel = file.strip_prefix(root).ok()?;
     let mut segments: Vec<String> = rel
         .components()
@@ -483,15 +491,20 @@ fn module_of(arch: &ModuleArchitecture, root: &std::path::Path, file: &std::path
     let last = segments.pop()?;
     let (own_file, extensions): (Option<&str>, Vec<String>) = match arch {
         ModuleArchitecture::DotSeparatedPackages { extension } => (None, vec![extension.clone()]),
-        ModuleArchitecture::RustStyle { extension, mod_file_name } => {
-            (Some(mod_file_name), vec![extension.clone()])
-        }
-        ModuleArchitecture::PythonStyle { extension, init_file_name } => {
-            (Some(init_file_name), vec![extension.clone()])
-        }
+        ModuleArchitecture::RustStyle {
+            extension,
+            mod_file_name,
+        } => (Some(mod_file_name), vec![extension.clone()]),
+        ModuleArchitecture::PythonStyle {
+            extension,
+            init_file_name,
+        } => (Some(init_file_name), vec![extension.clone()]),
         ModuleArchitecture::NodeStyle { extensions, .. } => (
             None,
-            extensions.iter().map(|e| e.trim_start_matches('.').to_owned()).collect(),
+            extensions
+                .iter()
+                .map(|e| e.trim_start_matches('.').to_owned())
+                .collect(),
         ),
         _ => return None,
     };
@@ -563,13 +576,9 @@ impl State {
     /// Publish module `name`'s interface from `declared`, with the
     /// runtime's current code behind each symbol.
     fn publish(&self, lang: LangId, name: &str, declared: publish::Declared) -> Result<(), String> {
-        let iface = publish::interface(
-            lang,
-            self.language.name(),
-            name,
-            declared,
-            &|symbol| self.runtime.function_pointer(symbol),
-        );
+        let iface = publish::interface(lang, self.language.name(), name, declared, &|symbol| {
+            self.runtime.function_pointer(symbol)
+        });
         registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))
     }
 }
@@ -727,7 +736,10 @@ fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .filter(|p| !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')))
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+        })
         .collect();
     entries.sort();
     for path in entries {

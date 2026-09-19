@@ -9,8 +9,7 @@ use std::path::PathBuf;
 use caribou_ash::Mode;
 use caribou_interop::captured;
 
-const EXPECTED: &str =
-    "7\n10\nhp: 10\n1 true true true\ntrue\ntrue\n10\ncaught boom\nada\n5\n42\n3\n6\n3 hp\nhp,mp,4\n6.5\n3 10\n";
+const EXPECTED: &str = "7\n10\nhp: 10\n1 true true true\ntrue\ntrue\n10\ncaught boom\nada\n5\n42\n3\n6\n3 hp\nhp,mp,4\n6.5\n3 10\n";
 
 #[test]
 fn a_project_runs_with_nothing_configured() {

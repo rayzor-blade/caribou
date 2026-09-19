@@ -128,7 +128,10 @@ impl Text {
         }
         unsafe {
             let d = &*self.0;
-            let bytes = core::slice::from_raw_parts((self.0 as *const u8).add(size_of::<TextData>()), d.len);
+            let bytes = core::slice::from_raw_parts(
+                (self.0 as *const u8).add(size_of::<TextData>()),
+                d.len,
+            );
             core::str::from_utf8_unchecked(bytes)
         }
     }
@@ -164,7 +167,10 @@ pub struct Kept {
 
 impl Kept {
     pub fn new(v: Value) -> Kept {
-        Kept { value: v, handle: unsafe { (host().keep)(v) } }
+        Kept {
+            value: v,
+            handle: unsafe { (host().keep)(v) },
+        }
     }
 
     pub fn get(&self) -> Value {

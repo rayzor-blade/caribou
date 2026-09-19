@@ -634,10 +634,16 @@ pub struct Str {
 }
 
 impl Str {
-    pub const EMPTY: Str = Str { ptr: core::ptr::null(), len: 0 };
+    pub const EMPTY: Str = Str {
+        ptr: core::ptr::null(),
+        len: 0,
+    };
 
     pub const fn new(s: &'static str) -> Str {
-        Str { ptr: s.as_ptr(), len: s.len() }
+        Str {
+            ptr: s.as_ptr(),
+            len: s.len(),
+        }
     }
 
     /// # Safety
@@ -1094,7 +1100,15 @@ mod tests {
 
     #[test]
     fn numbers_round_trip_and_never_look_like_tags() {
-        for n in [0.0, -0.0, 1.5, -2.0e300, f64::MIN_POSITIVE, f64::INFINITY, f64::NEG_INFINITY] {
+        for n in [
+            0.0,
+            -0.0,
+            1.5,
+            -2.0e300,
+            f64::MIN_POSITIVE,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
             let v = Value::number(n);
             assert!(v.is_number());
             assert!(!v.is_object() && !v.is_int() && !v.is_null() && !v.is_bool());
@@ -1129,24 +1143,41 @@ mod tests {
 
     #[test]
     fn objects_round_trip_including_bit_47() {
-        for addr in [0x1000usize, 0x0000_7FFF_FFFF_FFF0, 0x0000_8000_0000_0010, 0x0000_FFFF_FFFF_FFF8] {
+        for addr in [
+            0x1000usize,
+            0x0000_7FFF_FFFF_FFF0,
+            0x0000_8000_0000_0010,
+            0x0000_FFFF_FFFF_FFF8,
+        ] {
             let v = Value::object(addr as *const c_void);
             assert!(v.is_object());
             assert!(!v.is_number() && !v.is_int() && !v.is_null());
             let expected = ((addr as u64) << 16) as i64 >> 16;
             assert_eq!(v.as_object().unwrap() as usize as u64, expected as u64);
         }
-        assert_eq!(Value::object(core::ptr::null()).as_object(), Some(core::ptr::null_mut()));
+        assert_eq!(
+            Value::object(core::ptr::null()).as_object(),
+            Some(core::ptr::null_mut())
+        );
     }
 
     #[test]
     fn alloc_kinds_come_from_the_low_bits() {
         use mem::*;
         assert_eq!(AllocKind::from_flags(KIND_DYNAMIC | ZERO), AllocKind::Typed);
-        assert_eq!(AllocKind::from_flags(KIND_RAW | ALIGN_DOUBLE), AllocKind::Raw);
+        assert_eq!(
+            AllocKind::from_flags(KIND_RAW | ALIGN_DOUBLE),
+            AllocKind::Raw
+        );
         assert_eq!(AllocKind::from_flags(KIND_NOPTR), AllocKind::NoPtr);
-        assert_eq!(AllocKind::from_flags(KIND_FINALIZER | ZERO), AllocKind::Finalizer);
-        assert_eq!(AllocKind::from_flags(KIND_DYNAMIC | TRACED), AllocKind::Typed);
+        assert_eq!(
+            AllocKind::from_flags(KIND_FINALIZER | ZERO),
+            AllocKind::Finalizer
+        );
+        assert_eq!(
+            AllocKind::from_flags(KIND_DYNAMIC | TRACED),
+            AllocKind::Typed
+        );
         assert_eq!(TRACED & (KIND_MASK | ALIGN_DOUBLE | ZERO), 0);
     }
 

@@ -149,11 +149,13 @@ fn a_plugin_is_a_language_wren_imports() {
     vm.output_buffer = Some(String::new());
     let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("tally", TALLY));
     let output = vm.take_output();
-    assert_eq!(result, InterpretResult::Success, "{:?} {output:?}", errors.borrow());
     assert_eq!(
-        output,
-        "2\n50\n510\n[5, 51]\nsum: 510\ntoo much: 511\n"
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
     );
+    assert_eq!(output, "2\n50\n510\n[5, 51]\nsum: 510\ntoo much: 511\n");
 
     vm.output_buffer = Some(String::new());
     let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("objects", OBJECTS));

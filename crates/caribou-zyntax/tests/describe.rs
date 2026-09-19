@@ -14,7 +14,12 @@ fn describes_the_modules_under_a_root() {
         .find(|m| m.module == "game/scorer")
         .unwrap_or_else(|| panic!("{modules:?}"));
     assert_eq!(scorer.lang, "zynml");
-    assert!(scorer.path.as_deref().is_some_and(|p| p.ends_with("game/scorer.zynml")));
+    assert!(
+        scorer
+            .path
+            .as_deref()
+            .is_some_and(|p| p.ends_with("game/scorer.zynml"))
+    );
     // The module's functions are its own; the struct is its one class.
     let names: Vec<&str> = scorer.functions.iter().map(|m| m.name.as_str()).collect();
     assert_eq!(names, ["score", "weight", "perfect", "echo"]);
@@ -26,7 +31,7 @@ fn describes_the_modules_under_a_root() {
     let members: Vec<(&str, MemberKind)> = point
         .members
         .iter()
-        .map(|m| (m.name.as_str(), m.kind.clone()))
+        .map(|m| (m.name.as_str(), m.kind))
         .collect();
     assert_eq!(
         members,

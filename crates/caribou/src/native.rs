@@ -9,10 +9,10 @@
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
 
+use caribou_abi::Value;
 use caribou_abi::hl::{
     self, hl_type, hl_type_detail, hl_type_fun, hl_type_fun_closure, hl_type_fun_closure_type,
 };
-use caribou_abi::Value;
 
 use crate::error::{Int64, Str};
 use crate::registry::TypeRef;

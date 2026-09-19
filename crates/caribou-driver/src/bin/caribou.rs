@@ -123,13 +123,19 @@ fn describe_root(root: &std::path::Path) -> Result<Vec<caribou::describe::Module
     for (_, path) in wren {
         let source = std::fs::read_to_string(&path)
             .map_err(|e| format!("cannot read '{}': {e}", path.display()))?;
-        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("module");
+        let name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("module");
         let mut desc = caribou_wren::describe::describe_source(name, &source)
             .map_err(|e| format!("{}: {e}", path.display()))?;
         desc.path = Some(path.to_string_lossy().into_owned());
         modules.push(desc);
     }
-    modules.extend(caribou_zyntax::describe(root, caribou_driver::project::python(&[root]))?);
+    modules.extend(caribou_zyntax::describe(
+        root,
+        caribou_driver::project::python(&[root]),
+    )?);
     Ok(modules)
 }
 

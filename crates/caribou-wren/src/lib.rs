@@ -426,10 +426,7 @@ mod tests {
             "{grew} collections completed for {majors} forced"
         );
         // Its own trigger, under a shared one the other thread kept resetting.
-        assert!(
-            stats.collections >= 1,
-            "the VM ran no cycle of its own"
-        );
+        assert!(stats.collections >= 1, "the VM ran no cycle of its own");
         assert!(stats.objects_freed > 0);
     }
 
@@ -456,11 +453,7 @@ mod tests {
             "#,
         );
         assert_eq!(result, InterpretResult::Success);
-        assert_eq!(
-            vm.gc.stats().collections,
-            0,
-            "a cycle ran before the idle"
-        );
+        assert_eq!(vm.gc.stats().collections, 0, "a cycle ran before the idle");
 
         let result = vm.interpret(
             "idle",

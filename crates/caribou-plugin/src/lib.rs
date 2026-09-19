@@ -35,15 +35,15 @@ use std::path::{Path, PathBuf};
 
 use caribou::error::Error as CoreError;
 use caribou::heap::{self, TypeDesc};
-use caribou::protocol::{CallSite, Callable, Protocol, REPLY_OK, REPLY_RAISED};
 use caribou::native;
+use caribou::protocol::{CallSite, Callable, Protocol, REPLY_OK, REPLY_RAISED};
 use caribou::registry::{self, ClassIface, Interface, MethodIface, TypeRef};
 use caribou::symbol::{Symbol, intern};
 use caribou::world::Adapter;
 use caribou::{bridge, cell};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
-use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::host::Host;
+use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::{
     ABI_VERSION, ABI_VERSION_SYMBOL, ClassDesc, ErrorKind, LangId, NO_CLASS, PLUGIN_ENTRY_SYMBOL,
     PluginInfo, SymbolDesc, TypeTag, Value, sym,

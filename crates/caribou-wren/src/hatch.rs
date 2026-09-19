@@ -55,7 +55,11 @@ pub fn dependencies(roots: &[impl AsRef<Path>]) -> Result<Vec<Package>, String> 
     Ok(out)
 }
 
-fn resolve_into(root: &Path, manifest: &wh::Manifest, out: &mut Vec<Package>) -> Result<(), String> {
+fn resolve_into(
+    root: &Path,
+    manifest: &wh::Manifest,
+    out: &mut Vec<Package>,
+) -> Result<(), String> {
     for (name, dep) in &manifest.dependencies {
         if out.iter().any(|p| &p.name == name) {
             continue;

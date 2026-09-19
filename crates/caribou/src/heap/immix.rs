@@ -2271,7 +2271,7 @@ pub fn is_allocation_start(ptr: *const c_void) -> bool {
         return false;
     };
     let addr = ptr as usize;
-    if addr < r.base || addr >= r.base + r.len || addr % ALLOC_QUANTUM != 0 {
+    if addr < r.base || addr >= r.base + r.len || !addr.is_multiple_of(ALLOC_QUANTUM) {
         return false;
     }
     let index = (addr - r.base) / ALLOC_QUANTUM;
@@ -2285,7 +2285,7 @@ pub fn is_traced_allocation(ptr: *const c_void) -> bool {
         return false;
     };
     let addr = ptr as usize;
-    if addr < r.base || addr >= r.base + r.len || addr % ALLOC_QUANTUM != 0 {
+    if addr < r.base || addr >= r.base + r.len || !addr.is_multiple_of(ALLOC_QUANTUM) {
         return false;
     }
     let index = (addr - r.base) / ALLOC_QUANTUM;
@@ -2741,10 +2741,10 @@ impl Tracer<'_> {
 fn mark_threads() -> usize {
     static N: OnceLock<usize> = OnceLock::new();
     *N.get_or_init(|| {
-        if let Ok(v) = std::env::var("ASH_GC_MARK_THREADS") {
-            if let Ok(n) = v.parse::<usize>() {
-                return n.max(1);
-            }
+        if let Ok(v) = std::env::var("ASH_GC_MARK_THREADS")
+            && let Ok(n) = v.parse::<usize>()
+        {
+            return n.max(1);
         }
         // N-1, so the machine keeps a core for everything that is not marking.
         // One thread on wasm, where the parallel marker is not compiled.
@@ -4394,15 +4394,15 @@ impl ImmixAllocator {
             let mut live = Vec::new();
             for &block in &used_block_addrs {
                 for q in block / ALLOC_QUANTUM..(block + BLOCK_SIZE) / ALLOC_QUANTUM {
-                    if self.heap.objects[q].load(Ordering::Relaxed) & OBJECT_MARK != 0 {
-                        if let Some(object) = allocation_at(
+                    if self.heap.objects[q].load(Ordering::Relaxed) & OBJECT_MARK != 0
+                        && let Some(object) = allocation_at(
                             &self.blocks,
                             &self.heap.alloc_sizes,
                             &self.heap.objects,
                             q * ALLOC_QUANTUM,
-                        ) {
-                            live.push(object);
-                        }
+                        )
+                    {
+                        live.push(object);
                     }
                 }
             }
@@ -4635,29 +4635,29 @@ impl ImmixAllocator {
         // Second half of the detector: pointers into a freed block from retained
         // objects marked live this cycle. Dead objects are skipped; stale pointers
         // in garbage are expected. Diagnosis only.
-        if !freed.is_empty() {
-            if let Some(objects) = &audit_objects {
-                let base = self.heap.memory.as_ptr() as usize;
-                let seq = GC_STATS.collections.load(Ordering::Relaxed) + 1;
-                let in_freed = |w: usize| -> bool {
-                    if w < base || w >= base + self.heap.memory.len {
-                        return false;
+        if !freed.is_empty()
+            && let Some(objects) = &audit_objects
+        {
+            let base = self.heap.memory.as_ptr() as usize;
+            let seq = GC_STATS.collections.load(Ordering::Relaxed) + 1;
+            let in_freed = |w: usize| -> bool {
+                if w < base || w >= base + self.heap.memory.len {
+                    return false;
+                }
+                let off = (w - base) & !(BLOCK_SIZE - 1);
+                freed.contains(&off)
+            };
+            for &(offset, size) in objects {
+                let lo = base + offset;
+                let mut p = lo;
+                while p + WORD <= lo + size {
+                    let w = unsafe { *(p as *const usize) };
+                    if in_freed(w) {
+                        eprintln!(
+                            "[gc-audit] #{seq} live object word @{p:#x} points into freed block ({w:#x})"
+                        );
                     }
-                    let off = (w - base) & !(BLOCK_SIZE - 1);
-                    freed.contains(&off)
-                };
-                for &(offset, size) in objects {
-                    let lo = base + offset;
-                    let mut p = lo;
-                    while p + WORD <= lo + size {
-                        let w = unsafe { *(p as *const usize) };
-                        if in_freed(w) {
-                            eprintln!(
-                                "[gc-audit] #{seq} live object word @{p:#x} points into freed block ({w:#x})"
-                            );
-                        }
-                        p += WORD;
-                    }
+                    p += WORD;
                 }
             }
         }
@@ -5603,7 +5603,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
+    #[cfg_attr(
+        all(target_family = "wasm", not(target_feature = "atomics")),
+        ignore = "needs threads"
+    )]
     fn tlab_bumps_publish_object_bounds_and_skip_line_tails() {
         if !tlab_enabled() {
             return; // Stress mode intentionally disables this allocation path.
@@ -5742,7 +5745,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
+    #[cfg_attr(
+        all(target_family = "wasm", not(target_feature = "atomics")),
+        ignore = "needs threads"
+    )]
     fn parallel_markers_claim_each_object_once_even_on_the_same_line() {
         let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
         let a = gc.allocate(16).unwrap();
@@ -5792,7 +5798,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
-    #[cfg_attr(all(target_family = "wasm", not(target_feature = "atomics")), ignore = "needs threads")]
+    #[cfg_attr(
+        all(target_family = "wasm", not(target_feature = "atomics")),
+        ignore = "needs threads"
+    )]
     fn collector_rendezvous_with_registered_os_mutator() {
         init();
         let main_stack_anchor = 0usize;

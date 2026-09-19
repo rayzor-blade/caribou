@@ -59,7 +59,13 @@ fn a_zynml_module_reloads_under_a_haxe_program() {
     );
     let area = |session: &mut Session| {
         session
-            .call("game", "scorer", "Point", "area", &[Value::number(3.0), Value::number(4.0)])
+            .call(
+                "game",
+                "scorer",
+                "Point",
+                "area",
+                &[Value::number(3.0), Value::number(4.0)],
+            )
             .expect("area runs")
             .as_number()
     };
@@ -75,7 +81,9 @@ fn a_zynml_module_reloads_under_a_haxe_program() {
     let doubled = source.replace("return w * h }", "return w * h * 2.0 }");
     assert_ne!(doubled, source);
     std::fs::write(&module, &doubled).unwrap();
-    session.reload("game", "scorer").expect("the module reloads");
+    session
+        .reload("game", "scorer")
+        .expect("the module reloads");
     assert!(heard.borrow().iter().any(|event| matches!(
         event,
         Event::Reload { module, error: None, .. } if module == "game/scorer"
@@ -107,7 +115,9 @@ fn a_zynml_module_reloads_under_a_haxe_program() {
     };
     assert_eq!(run(&mut session, "use", USE_TALLY), "64\n");
     std::fs::write(&tally, tally_source.replace("hits * 10 -", "hits * 100 -")).unwrap();
-    session.reload("game", "tally").expect("the Python module reloads");
+    session
+        .reload("game", "tally")
+        .expect("the Python module reloads");
     assert_eq!(run(&mut session, "again", HELD), "694\n");
     let _ = std::fs::remove_dir_all(&roots);
 }

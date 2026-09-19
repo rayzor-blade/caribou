@@ -12,10 +12,10 @@
 
 use std::path::Path;
 
-use caribou_zyntax::{Language, Sources};
 use caribou_zyntax::zyntax_embed::{
     Collector, ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
 };
+use caribou_zyntax::{Language, Sources};
 
 /// The frontend: name `python`, modules laid out as Python lays them out.
 pub struct Python;

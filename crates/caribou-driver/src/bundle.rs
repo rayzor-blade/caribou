@@ -52,7 +52,8 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
     let mut frontends: Vec<(Frontend, Section)> = Vec::new();
     for file in Frontend::files_in(roots) {
         let bytes = Frontend::snapshot_bytes(&file).map_err(|e| anyhow!(e))?;
-        let frontend = Frontend::snapshot(&bytes).map_err(|e| anyhow!("{}: {e}", file.display()))?;
+        let frontend =
+            Frontend::snapshot(&bytes).map_err(|e| anyhow!("{}: {e}", file.display()))?;
         let section = Section {
             kind: SectionKind::Language,
             lang: frontend.name().to_owned(),
@@ -153,7 +154,8 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
                     lang: frontend.name().to_owned(),
                     format: caribou_zyntax::SOURCE.to_owned(),
                     name: module.clone(),
-                    data: std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+                    data: std::fs::read(&path)
+                        .with_context(|| format!("reading {}", path.display()))?,
                 });
                 staged.push(module);
             }
@@ -163,7 +165,11 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
         .iter()
         .map(|p| (String::new(), p.path().to_owned()))
         .collect();
-    libs.extend(zrtl_plugins(&plugin_dir)?.into_iter().map(|p| ("zyntax".to_owned(), p)));
+    libs.extend(
+        zrtl_plugins(&plugin_dir)?
+            .into_iter()
+            .map(|p| ("zyntax".to_owned(), p)),
+    );
     for (lang, path) in libs {
         sections.push(Section {
             kind: SectionKind::NativeLib,
@@ -255,7 +261,8 @@ pub fn native_libs(bundle: &Bundle) -> Result<PathBuf> {
         // Written whole before it has its name, so a reader never sees
         // a partial library.
         let part = dir.join(format!("{}.{}", section.name, std::process::id()));
-        std::fs::write(&part, &section.data).with_context(|| format!("writing {}", part.display()))?;
+        std::fs::write(&part, &section.data)
+            .with_context(|| format!("writing {}", part.display()))?;
         std::fs::rename(&part, &path).with_context(|| format!("placing {}", path.display()))?;
     }
     Ok(dir)

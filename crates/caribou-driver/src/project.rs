@@ -94,7 +94,10 @@ pub fn builtin(lang: &str) -> Option<caribou_zyntax::Frontend> {
 /// The Zyntax frontends of a project: the frontend files under `roots`,
 /// each with `plugin_dir` for its `.zrtl` plugins, and the languages
 /// that parse on their own when a root holds their files.
-pub fn frontends(roots: &[PathBuf], plugin_dir: &Path) -> anyhow::Result<Vec<caribou_zyntax::Frontend>> {
+pub fn frontends(
+    roots: &[PathBuf],
+    plugin_dir: &Path,
+) -> anyhow::Result<Vec<caribou_zyntax::Frontend>> {
     let mut frontends = caribou_zyntax::Frontend::files_in(roots)
         .iter()
         .map(|file| {

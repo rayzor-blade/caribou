@@ -25,7 +25,10 @@ pub struct ModuleDesc {
     )]
     pub path: Option<String>,
     /// The functions the module itself owns, each a `Static` member.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
     pub functions: Vec<MemberDesc>,
 }
 

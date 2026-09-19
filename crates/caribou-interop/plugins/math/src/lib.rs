@@ -106,7 +106,10 @@ pub struct Tally {
 
 impl Tally {
     pub extern "C" fn new() -> Box<Tally> {
-        Box::new(Tally { total: 0.0, on_step: None })
+        Box::new(Tally {
+            total: 0.0,
+            on_step: None,
+        })
     }
 
     pub extern "C" fn watch(this: &mut Tally, f: Value) {

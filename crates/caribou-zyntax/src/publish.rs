@@ -13,9 +13,9 @@ use caribou::protocol::Callable;
 use caribou::registry::{ClassIface, FieldIface, Interface, MethodIface, TypeRef};
 use caribou_abi::LangId;
 use caribou_abi::hl::{self, hl_type};
+use std::collections::HashMap;
 use zyntax_compiler::hir::{HirFunction, HirType};
 use zyntax_embed::HirModule;
-use std::collections::HashMap;
 
 use zyntax_embed::{ExportedSymbol, SymbolKind};
 use zyntax_typed_ast::type_registry::{PrimitiveType, Type, TypeId, TypeRegistry};
