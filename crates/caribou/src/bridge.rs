@@ -329,16 +329,38 @@ unsafe fn ret_kind(fun: *const hl_type_fun) -> hl_type_kind {
 /// How an argument travels on the C ABI: an integer-class register or slot,
 /// or a floating-point one. Every integer-class argument shares a register
 /// whatever its width, so `i32`, `bool` and a `Value` are one class.
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Class {
     I,
     F,
 }
 
+/// How an argument travels on wasm, where a function's type names each
+/// parameter's width exactly: an `i32` (`HI32`, `HBOOL`), an `i64` (a
+/// `Value`), or an `f64`. A call through a pointer of another type traps.
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Class {
+    I32,
+    I64,
+    F,
+}
+
+#[cfg(not(target_family = "wasm"))]
 #[derive(Clone, Copy)]
 enum Ret {
     Void,
     Int,
+    Float,
+}
+
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy)]
+enum Ret {
+    Void,
+    I32,
+    I64,
     Float,
 }
 
@@ -357,8 +379,44 @@ enum Raw {
     Float(f64),
 }
 
+/// The class of an integer-kind argument (`HI32`, `HBOOL`) and of a `Value`.
+#[cfg(not(target_family = "wasm"))]
+const INT_CLASS: Class = Class::I;
+#[cfg(not(target_family = "wasm"))]
+const DYN_CLASS: Class = Class::I;
+#[cfg(target_family = "wasm")]
+const INT_CLASS: Class = Class::I32;
+#[cfg(target_family = "wasm")]
+const DYN_CLASS: Class = Class::I64;
+
+/// The return class of a kind the dispatcher marshals, else `None`.
+fn ret_class(kind: hl_type_kind) -> Option<Ret> {
+    #[cfg(not(target_family = "wasm"))]
+    let ret = match kind {
+        hl::HVOID => Ret::Void,
+        hl::HI32 | hl::HBOOL | hl::HDYN => Ret::Int,
+        hl::HF64 => Ret::Float,
+        _ => return None,
+    };
+    #[cfg(target_family = "wasm")]
+    let ret = match kind {
+        hl::HVOID => Ret::Void,
+        hl::HI32 | hl::HBOOL => Ret::I32,
+        hl::HDYN => Ret::I64,
+        hl::HF64 => Ret::Float,
+        _ => return None,
+    };
+    Some(ret)
+}
+
 macro_rules! slot_ty {
     (I) => {
+        i64
+    };
+    (I32) => {
+        i32
+    };
+    (I64) => {
         i64
     };
     (F) => {
@@ -372,6 +430,12 @@ macro_rules! slot_arg {
     (I, $it:ident) => {
         $it.next().unwrap().int
     };
+    (I32, $it:ident) => {
+        $it.next().unwrap().int as i32
+    };
+    (I64, $it:ident) => {
+        $it.next().unwrap().int
+    };
     (F, $it:ident) => {
         $it.next().unwrap().float
     };
@@ -380,6 +444,7 @@ macro_rules! slot_arg {
 /// One arm per argument-class tuple and return class: the C function type
 /// the callee is transmuted to. Positional, so it holds on every native ABI
 /// the core runs on.
+#[cfg(not(target_family = "wasm"))]
 macro_rules! call_by_class {
     ($func:expr, $ret:expr, $slots:expr, $classes:expr; $( [ $( $c:ident ),* ] )* ) => {{
         let mut it = $slots.iter();
@@ -392,6 +457,41 @@ macro_rules! call_by_class {
                     Some(Raw::Void)
                 }
                 ([$(Class::$c),*], Ret::Int) => {
+                    let f: unsafe extern "C-unwind" fn($(slot_ty!($c)),*) -> i64 =
+                        unsafe { core::mem::transmute($func) };
+                    Some(Raw::Int(unsafe { f($(slot_arg!($c, it)),*) }))
+                }
+                ([$(Class::$c),*], Ret::Float) => {
+                    let f: unsafe extern "C-unwind" fn($(slot_ty!($c)),*) -> f64 =
+                        unsafe { core::mem::transmute($func) };
+                    Some(Raw::Float(unsafe { f($(slot_arg!($c, it)),*) }))
+                }
+            )*
+            _ => None,
+        }
+    }};
+}
+
+/// The same table for wasm, one arm per exact function type: each
+/// parameter at its own width, and the result too.
+#[cfg(target_family = "wasm")]
+macro_rules! call_by_class {
+    ($func:expr, $ret:expr, $slots:expr, $classes:expr; $( [ $( $c:ident ),* ] )* ) => {{
+        let mut it = $slots.iter();
+        match ($classes, $ret) {
+            $(
+                ([$(Class::$c),*], Ret::Void) => {
+                    let f: unsafe extern "C-unwind" fn($(slot_ty!($c)),*) =
+                        unsafe { core::mem::transmute($func) };
+                    unsafe { f($(slot_arg!($c, it)),*) };
+                    Some(Raw::Void)
+                }
+                ([$(Class::$c),*], Ret::I32) => {
+                    let f: unsafe extern "C-unwind" fn($(slot_ty!($c)),*) -> i32 =
+                        unsafe { core::mem::transmute($func) };
+                    Some(Raw::Int(i64::from(unsafe { f($(slot_arg!($c, it)),*) })))
+                }
+                ([$(Class::$c),*], Ret::I64) => {
                     let f: unsafe extern "C-unwind" fn($(slot_ty!($c)),*) -> i64 =
                         unsafe { core::mem::transmute($func) };
                     Some(Raw::Int(unsafe { f($(slot_arg!($c, it)),*) }))
@@ -436,7 +536,7 @@ unsafe extern "C-unwind" fn core_dispatch(
         ));
     }
     let args = unsafe { core::slice::from_raw_parts(args, nargs) };
-    let mut classes = [Class::I; CORE_MAX_ARGS];
+    let mut classes = [INT_CLASS; CORE_MAX_ARGS];
     let mut slots = [Slot { int: 0 }; CORE_MAX_ARGS];
     for (i, &arg) in args.iter().enumerate() {
         let kind = unsafe { arg_kind(fun, i) };
@@ -444,14 +544,14 @@ unsafe extern "C-unwind" fn core_dispatch(
             hl::HI32 => arg
                 .as_int()
                 .or_else(|| arg.as_number().map(|n| n as i32))
-                .map(|n| (Class::I, Slot { int: n as i64 })),
-            hl::HBOOL => arg.as_bool().map(|b| (Class::I, Slot { int: b as i64 })),
+                .map(|n| (INT_CLASS, Slot { int: n as i64 })),
+            hl::HBOOL => arg.as_bool().map(|b| (INT_CLASS, Slot { int: b as i64 })),
             hl::HF64 => arg
                 .as_number()
                 .or_else(|| arg.as_int().map(f64::from))
                 .map(|n| (Class::F, Slot { float: n })),
             hl::HDYN => Some((
-                Class::I,
+                DYN_CLASS,
                 Slot {
                     int: arg.to_bits() as i64,
                 },
@@ -481,20 +581,16 @@ unsafe extern "C-unwind" fn core_dispatch(
         }
     }
     let ret_kind = unsafe { ret_kind(fun) };
-    let ret = match ret_kind {
-        hl::HVOID => Ret::Void,
-        hl::HI32 | hl::HBOOL | hl::HDYN => Ret::Int,
-        hl::HF64 => Ret::Float,
-        _ => {
-            return raise(Error::new(
-                ErrorKind::Type,
-                &format!("return kind {ret_kind} is not one the core dispatcher marshals"),
-                LANG_CORE,
-            ));
-        }
+    let Some(ret) = ret_class(ret_kind) else {
+        return raise(Error::new(
+            ErrorKind::Type,
+            &format!("return kind {ret_kind} is not one the core dispatcher marshals"),
+            LANG_CORE,
+        ));
     };
     let classes = &classes[..nargs];
     let slots = &slots[..nargs];
+    #[cfg(not(target_family = "wasm"))]
     let raw = call_by_class!(func, ret, slots, classes;
         []
         [I] [F]
@@ -502,6 +598,24 @@ unsafe extern "C-unwind" fn core_dispatch(
         [I, I, I] [I, I, F] [I, F, I] [I, F, F] [F, I, I] [F, I, F] [F, F, I] [F, F, F]
         [I, I, I, I] [I, I, I, F] [I, I, F, I] [I, I, F, F] [I, F, I, I] [I, F, I, F] [I, F, F, I] [I, F, F, F]
         [F, I, I, I] [F, I, I, F] [F, I, F, I] [F, I, F, F] [F, F, I, I] [F, F, I, F] [F, F, F, I] [F, F, F, F]
+    );
+    #[cfg(target_family = "wasm")]
+    let raw = call_by_class!(func, ret, slots, classes;
+        []
+        [I32] [I64] [F]
+        [I32, I32] [I32, I64] [I32, F] [I64, I32] [I64, I64] [I64, F] [F, I32] [F, I64] [F, F]
+        [I32, I32, I32] [I32, I32, I64] [I32, I32, F] [I32, I64, I32] [I32, I64, I64] [I32, I64, F] [I32, F, I32] [I32, F, I64] [I32, F, F]
+        [I64, I32, I32] [I64, I32, I64] [I64, I32, F] [I64, I64, I32] [I64, I64, I64] [I64, I64, F] [I64, F, I32] [I64, F, I64] [I64, F, F]
+        [F, I32, I32] [F, I32, I64] [F, I32, F] [F, I64, I32] [F, I64, I64] [F, I64, F] [F, F, I32] [F, F, I64] [F, F, F]
+        [I32, I32, I32, I32] [I32, I32, I32, I64] [I32, I32, I32, F] [I32, I32, I64, I32] [I32, I32, I64, I64] [I32, I32, I64, F] [I32, I32, F, I32] [I32, I32, F, I64] [I32, I32, F, F]
+        [I32, I64, I32, I32] [I32, I64, I32, I64] [I32, I64, I32, F] [I32, I64, I64, I32] [I32, I64, I64, I64] [I32, I64, I64, F] [I32, I64, F, I32] [I32, I64, F, I64] [I32, I64, F, F]
+        [I32, F, I32, I32] [I32, F, I32, I64] [I32, F, I32, F] [I32, F, I64, I32] [I32, F, I64, I64] [I32, F, I64, F] [I32, F, F, I32] [I32, F, F, I64] [I32, F, F, F]
+        [I64, I32, I32, I32] [I64, I32, I32, I64] [I64, I32, I32, F] [I64, I32, I64, I32] [I64, I32, I64, I64] [I64, I32, I64, F] [I64, I32, F, I32] [I64, I32, F, I64] [I64, I32, F, F]
+        [I64, I64, I32, I32] [I64, I64, I32, I64] [I64, I64, I32, F] [I64, I64, I64, I32] [I64, I64, I64, I64] [I64, I64, I64, F] [I64, I64, F, I32] [I64, I64, F, I64] [I64, I64, F, F]
+        [I64, F, I32, I32] [I64, F, I32, I64] [I64, F, I32, F] [I64, F, I64, I32] [I64, F, I64, I64] [I64, F, I64, F] [I64, F, F, I32] [I64, F, F, I64] [I64, F, F, F]
+        [F, I32, I32, I32] [F, I32, I32, I64] [F, I32, I32, F] [F, I32, I64, I32] [F, I32, I64, I64] [F, I32, I64, F] [F, I32, F, I32] [F, I32, F, I64] [F, I32, F, F]
+        [F, I64, I32, I32] [F, I64, I32, I64] [F, I64, I32, F] [F, I64, I64, I32] [F, I64, I64, I64] [F, I64, I64, F] [F, I64, F, I32] [F, I64, F, I64] [F, I64, F, F]
+        [F, F, I32, I32] [F, F, I32, I64] [F, F, I32, F] [F, F, I64, I32] [F, F, I64, I64] [F, F, I64, F] [F, F, F, I32] [F, F, F, I64] [F, F, F, F]
     );
     let Some(raw) = raw else {
         return protocol::REPLY_UNSUPPORTED;
@@ -1443,6 +1557,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(not(panic = "unwind"), ignore = "needs unwinding")]
     fn a_panicking_entry_becomes_an_internal_error() {
         let _lock = locked();
         let p = probe(PANICS);
