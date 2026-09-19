@@ -1,7 +1,8 @@
-# The interop benchmarks, nightly and on demand, with the tables in the
-# run's summary and the raw output kept as an artifact. A shared runner's
-# numbers move with its load; they show a trend, not a measurement to
-# compare with a quiet machine's.
+# The interop benchmarks, nightly and on demand, on macOS arm64 and Linux
+# x86_64 and arm64, with the tables in the run's summary and the raw
+# output kept as an artifact. A shared runner's numbers move with its
+# load; they show a trend, not a measurement to compare with a quiet
+# machine's.
 name: Bench
 
 on:
@@ -19,14 +20,24 @@ env:
 
 jobs:
   bench:
-    name: interop benches (macos-15)
-    runs-on: macos-15
+    name: interop benches (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
     steps:
       - uses: actions/checkout@v4
         with:
           path: caribou
       - uses: dtolnay/rust-toolchain@nightly
+      - name: LLVM 21 (libclang for bindgen)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo apt-get install -y libclang-21-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:
@@ -64,6 +75,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bench-${{ github.sha }}
+          name: bench-${{ matrix.os }}-${{ github.sha }}
           path: caribou/bench-out
           retention-days: 90
