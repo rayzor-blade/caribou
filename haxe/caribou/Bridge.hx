@@ -11,7 +11,11 @@ private typedef ModuleDesc = {
 	lang:String,
 	module:String,
 	classes:Array<ClassDesc>,
-	?path:String
+	?path:String,
+	/** The functions the module itself owns. Haxe imports types, so
+		these are not emitted: a class the module declares is what Haxe
+		reaches. */
+	?functions:Array<MemberDesc>
 }
 
 private typedef ClassDesc = {

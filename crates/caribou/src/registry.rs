@@ -130,12 +130,18 @@ pub struct ClassIface {
     pub class_object: Value,
 }
 
-/// One module's boundary.
+/// One module's boundary: its classes, and the functions the module
+/// itself owns, for a language whose modules export functions (a Python
+/// module's `def`s, a Zyntax module's free functions). Each language
+/// imports them in its own form: a Wren module variable, a Haxe
+/// module-level field. A module function's `target` takes only its
+/// parameters, as a static's does.
 #[derive(Clone, Debug)]
 pub struct Interface {
     pub lang: LangId,
     pub module: String,
     pub classes: Vec<ClassIface>,
+    pub functions: Vec<MethodIface>,
 }
 
 // A `Callable` holds code and type pointers of the publishing language's
@@ -494,6 +500,7 @@ mod tests {
                 ctor: None,
                 class_object: Value::null(),
             }],
+            functions: Vec::new(),
         }
     }
 

@@ -127,6 +127,7 @@ pub fn publish_module(vm: &VM, module: &str) -> Result<Arc<Interface>, PublishEr
         lang: wren_lang(),
         module: module.to_owned(),
         classes,
+        functions: Vec::new(),
     };
     registry::publish(iface.clone()).map_err(PublishError::Refused)?;
     let mut exports = rec.exports().borrow_mut();

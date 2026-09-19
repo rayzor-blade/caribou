@@ -44,7 +44,8 @@ In typical deployments, the host application (typically Haxe) controls the proce
 | `caribou-ash` | Nightly | Ash runtime adapter. Overwrites `ash_std` seam hooks with Caribou heap and scheduler bindings. |
 | `caribou-wren` | Stable | WrenLift adapter. Overwrites `wren_lift` seam hooks with Caribou's Immix-backed memory allocator. |
 | `caribou-plugin` | Stable | Plugin loader that registers native shared libraries as runtime languages using typed FFI dispatchers over C signatures. |
-| `caribou-zyntax` | Stable | Zyntax host adapter. Registers frontends (snapshots or `.zyn` grammars) as guest languages, compiles modules via the embed runtime, and publishes typed AST/HIR declarations. |
+| `caribou-zyntax` | Stable | Zyntax host adapter. Registers frontends (snapshots, `.zyn` grammars, or a frontend with its own parser) as guest languages, compiles modules via the embed runtime, and publishes what each frontend's own conventions export. |
+| `caribou-python` | Stable | The Python frontend of Zyntax (`zyntax_python`) as a guest language: registered when a root holds a `.py` file, with Python's module layout and export rules. |
 | `caribou-driver` | Nightly | Host execution supervisor. Discovers workspace files, initializes the `World`, loads guest languages, and backs the `caribou` CLI. |
 
 ## Implementation Status
@@ -61,7 +62,7 @@ Modules are resolved and shared across language boundaries through a unified nam
 * **Wren importing Haxe:** `import "game:Player" for Player` resolves to Haxe classes.
 * **Haxe importing Wren:** Using `-lib caribou`, `import game.hud.Hud` imports `src/game/hud.wren`. Exported Wren method signatures can be defined explicitly (e.g., `#export = "add(n: Num) -> Num"`) or inferred automatically.
 * **Native Plugins:** C libraries built with `caribou_abi::plugin!` in `plugins/` are treated as first-class languages in the module registry.
-* **Zyntax:** Discovered frontends (such as ZynML snapshots or `.zyn` files) register beside standard Wren and Haxe modules.
+* **Zyntax:** Discovered frontends (ZynML snapshots, `.zyn` files, or Python sources) register beside standard Wren and Haxe modules. A module's functions belong to the module: Wren imports them as module variables; Haxe sees the module's classes under the module as their package.
 
 ## Building & Verification
 

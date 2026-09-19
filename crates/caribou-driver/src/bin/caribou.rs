@@ -129,7 +129,7 @@ fn describe_root(root: &std::path::Path) -> Result<Vec<caribou::describe::Module
         desc.path = Some(path.to_string_lossy().into_owned());
         modules.push(desc);
     }
-    modules.extend(caribou_zyntax::describe(root)?);
+    modules.extend(caribou_zyntax::describe(root, caribou_driver::project::python(&[root]))?);
     Ok(modules)
 }
 

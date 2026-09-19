@@ -1,8 +1,9 @@
 //! A Zyntax module is a module of the world: the frontend (ZynML's
-//! snapshot) is a language, the module's functions are published from
-//! its HIR and called as machine code by signature, and Wren reaches
-//! them by the ordinary import through the namespace both languages
-//! share.
+//! snapshot) is a language, the module's functions and structs are
+//! published from its declarations and called as machine code by
+//! signature, and Wren reaches them by the ordinary import through the
+//! namespace both languages share: the functions as module variables,
+//! the struct as a class.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -16,13 +17,13 @@ use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const USE: &str = r#"
-import "game:scorer" for Scorer
-System.print(Scorer.score(7, 2))
-System.print(Scorer.weight(3, 1.5))
-System.print(Scorer.perfect(5, 5))
-System.print(Scorer.perfect(4, 5))
-System.print(Fiber.new { Scorer.score("seven", 2) }.try())
-System.print(Scorer.echo("goal"))
+import "game:scorer" for score, weight, perfect, echo
+System.print(score.call(7, 2))
+System.print(weight.call(3, 1.5))
+System.print(perfect.call(5, 5))
+System.print(perfect.call(4, 5))
+System.print(Fiber.new { score.call("seven", 2) }.try())
+System.print(echo.call("goal"))
 "#;
 
 /// A struct the module declares is a class with its fields and methods;
@@ -89,14 +90,13 @@ fn a_zynml_module_is_imported_from_wren() {
         "12\nthe function returns a Zyntax type the core does not pass yet\n"
     );
 
-    // Published from the HIR: typed by the signature, as a plugin's are.
-    let (iface, index) = registry::lookup_class("game", "scorer", "Scorer").expect("published");
-    let class = &iface.classes[index];
-    assert_eq!(class.type_name, "zynml.Scorer");
-    let weight = class.methods.iter().find(|m| m.name == "weight").expect("weight");
+    // Published from the declarations: the module's functions typed by
+    // their signatures, as the module's own.
+    let iface = registry::lookup("game", "scorer").expect("published");
+    let weight = iface.functions.iter().find(|m| m.name == "weight").expect("weight");
     assert_eq!(weight.params, vec![TypeRef::Float, TypeRef::Float]);
     assert_eq!(weight.ret, TypeRef::Float);
-    let echo = class.methods.iter().find(|m| m.name == "echo").expect("echo");
+    let echo = iface.functions.iter().find(|m| m.name == "echo").expect("echo");
     assert_eq!((echo.params.clone(), echo.ret.clone()), (vec![TypeRef::Str], TypeRef::Str));
     // The struct, from the typed declarations: fields, a constructor, a
     // method on the instance and statics, each with its Zyntax types.

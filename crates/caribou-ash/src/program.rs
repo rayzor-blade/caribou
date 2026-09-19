@@ -718,6 +718,7 @@ pub fn publish_module(
                 ctor,
                 class_object: proto::class_object(program.interpreter.c_type_of(index).cast()),
             }],
+            functions: Vec::new(),
         };
         registry::publish(iface.clone()).map_err(|e| anyhow!("publishing {}: {e}", obj.name))?;
         published.push(Arc::new(iface));

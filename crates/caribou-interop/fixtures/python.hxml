@@ -1,0 +1,8 @@
+# The Haxe program of the Python test: it uses the functions of the
+# Python module the build macro found under the classpath root. Rebuild
+# with `haxe python.hxml` (Haxe 4.3.6) from this directory; python.hl is
+# checked in.
+-cp src
+-lib caribou
+-main UsePython
+-hl python.hl

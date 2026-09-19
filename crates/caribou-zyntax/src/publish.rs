@@ -17,8 +17,9 @@ use zyntax_compiler::hir::{HirFunction, HirType};
 use zyntax_embed::HirModule;
 use std::collections::HashMap;
 
+use zyntax_embed::{ExportedSymbol, SymbolKind};
 use zyntax_typed_ast::type_registry::{PrimitiveType, Type, TypeId, TypeRegistry};
-use zyntax_typed_ast::{InternedString, TypedDeclaration, TypedProgram};
+use zyntax_typed_ast::{InternedString, TypedDeclaration, TypedProgram, Visibility};
 
 /// A function as published: the name a language calls it by, the
 /// runtime's symbol, its typed parameters and result, and whether it
@@ -44,10 +45,40 @@ pub struct Class {
     pub ctor: Option<Function>,
 }
 
-/// What a module declares: its classes, and the functions outside any.
+/// What a module exports: its classes, and the functions the module
+/// itself owns.
 pub struct Declared {
     pub classes: Vec<Class>,
     pub functions: Vec<Function>,
+}
+
+/// The module's exports as its typed AST states them: every function,
+/// struct or class its own file declares public. A frontend may add
+/// files to a program (the Python frontend adds its prelude and the
+/// modules the file imports); their declarations belong to those files.
+pub fn declared_exports(program: &TypedProgram) -> Vec<ExportedSymbol> {
+    program
+        .declarations
+        .iter()
+        .filter(|n| n.span.file == 0)
+        .filter_map(|n| match &n.node {
+            TypedDeclaration::Function(f) if f.visibility == Visibility::Public => {
+                Some(ExportedSymbol {
+                    name: name_of(f.name),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                })
+            }
+            TypedDeclaration::Class(c) if c.visibility == Visibility::Public => {
+                Some(ExportedSymbol {
+                    name: name_of(c.name),
+                    kind: SymbolKind::Class,
+                    is_public: true,
+                })
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 /// The kind a value of a Zyntax type has at the C boundary, given what
@@ -190,10 +221,21 @@ fn function(
     })
 }
 
-/// What `program` declares, against `hir`. A method's symbol is
-/// `Type$method`, as the lowering names it; a struct's or class's own
-/// methods and those an inherent `impl` adds are one list.
-pub fn declared(program: &TypedProgram, hir: &HirModule, lang: &str) -> Declared {
+/// What `program` exports, against `hir`: the classes and functions in
+/// `exports`, described from the program's declarations. A method's
+/// symbol is `Type$method`, as the lowering names it; a struct's or
+/// class's own methods and those an inherent `impl` adds are one list.
+pub fn declared(
+    program: &TypedProgram,
+    exports: &[ExportedSymbol],
+    hir: &HirModule,
+    lang: &str,
+) -> Declared {
+    let exported = |name: &str, kind: SymbolKind| {
+        exports
+            .iter()
+            .any(|e| e.is_public && e.name == name && e.kind == kind)
+    };
     let types = &Types::of(program);
     let mut classes: Vec<Class> = Vec::new();
     let mut functions = Vec::new();
@@ -226,6 +268,35 @@ pub fn declared(program: &TypedProgram, hir: &HirModule, lang: &str) -> Declared
         match &node.node {
             TypedDeclaration::Function(f) => {
                 let name = name_of(f.name);
+                // A frontend that lowers a class's methods to functions
+                // names them `Class$method` and passes the instance
+                // first (the Python frontend does); such a function is
+                // a method of the class when the class is exported.
+                // A dunder is the language's own protocol, not a member.
+                if let Some((class, method)) = name.split_once('$') {
+                    if !exported(class, SymbolKind::Class) || method.starts_with("__") {
+                        continue;
+                    }
+                    let receiver = f
+                        .params
+                        .first()
+                        .is_some_and(|p| types.named(&p.ty).as_deref() == Some(class));
+                    let sig = Signature {
+                        symbol: name.clone(),
+                        is_static: !receiver,
+                        params: f.params.iter().map(|p| &p.ty).collect(),
+                        ret: &f.return_type,
+                        name: method.to_owned(),
+                    };
+                    if let Some(function) = function(sig, hir, types, lang) {
+                        let at = class_at(&mut classes, class.to_owned());
+                        classes[at].methods.push(function);
+                    }
+                    continue;
+                }
+                if !exported(&name, SymbolKind::Function) {
+                    continue;
+                }
                 let sig = Signature {
                     symbol: name.clone(),
                     is_static: true,
@@ -239,6 +310,9 @@ pub fn declared(program: &TypedProgram, hir: &HirModule, lang: &str) -> Declared
             }
             TypedDeclaration::Class(c) => {
                 let name = name_of(c.name);
+                if !exported(&name, SymbolKind::Class) {
+                    continue;
+                }
                 let at = class_at(&mut classes, name.clone());
                 for field in &c.fields {
                     classes[at]
@@ -255,6 +329,9 @@ pub fn declared(program: &TypedProgram, hir: &HirModule, lang: &str) -> Declared
                 let Some(name) = types.named(&imp.for_type) else {
                     continue;
                 };
+                if !exported(&name, SymbolKind::Class) {
+                    continue;
+                }
                 let at = class_at(&mut classes, name.clone());
                 for m in &imp.methods {
                     if let Some(function) = method(&name, m) {
@@ -279,15 +356,13 @@ pub fn declared(program: &TypedProgram, hir: &HirModule, lang: &str) -> Declared
     Declared { classes, functions }
 }
 
-/// The interface of a module: each class it declares, and, when it
-/// declares functions outside any class, a class named after the module
-/// (`scorer` → `Scorer`) whose statics they are, since a language
-/// imports classes. `func_of` gives a symbol's compiled address.
+/// The interface of a module: each class it exports, and the functions
+/// it exports as the module's own. `func_of` gives a symbol's compiled
+/// address.
 pub fn interface(
     lang: LangId,
     lang_name: &str,
     module: &str,
-    short: &str,
     declared: Declared,
     func_of: &dyn Fn(&str) -> Option<*const u8>,
 ) -> Interface {
@@ -312,7 +387,7 @@ pub fn interface(
             },
         })
     };
-    let mut classes: Vec<ClassIface> = declared
+    let classes: Vec<ClassIface> = declared
         .classes
         .iter()
         .map(|c| ClassIface {
@@ -333,30 +408,10 @@ pub fn interface(
             class_object: caribou_abi::Value::null(),
         })
         .collect();
-    if !declared.functions.is_empty() {
-        let class = capitalised(short);
-        classes.push(ClassIface {
-            name: class.clone(),
-            type_name: format!("{lang_name}.{class}"),
-            superclass: None,
-            fields: Vec::new(),
-            statics: Vec::new(),
-            methods: declared.functions.iter().filter_map(method).collect(),
-            ctor: None,
-            class_object: caribou_abi::Value::null(),
-        });
-    }
     Interface {
         lang,
         module: module.to_owned(),
         classes,
-    }
-}
-
-fn capitalised(name: &str) -> String {
-    let mut chars = name.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().chain(chars).collect(),
-        None => String::new(),
+        functions: declared.functions.iter().filter_map(method).collect(),
     }
 }

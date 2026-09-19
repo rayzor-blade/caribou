@@ -1,0 +1,13 @@
+[package]
+name = "caribou-python"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "The Python frontend of Zyntax as a language of the world"
+
+# Stable, as the core is.
+
+[dependencies]
+caribou = { path = "../caribou" }
+caribou-zyntax = { path = "../caribou-zyntax" }
+zyntax_python = { workspace = true }

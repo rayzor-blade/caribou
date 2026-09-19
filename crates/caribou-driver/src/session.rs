@@ -137,7 +137,7 @@ impl Session {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("plugins");
-        let frontends = caribou_zyntax::Frontend::files_in(&roots)
+        let mut frontends = caribou_zyntax::Frontend::files_in(&roots)
             .iter()
             .map(|file| {
                 caribou_zyntax::Frontend::file(file)
@@ -145,6 +145,7 @@ impl Session {
                     .map_err(|e| anyhow!(e))
             })
             .collect::<Result<Vec<_>>>()?;
+        frontends.extend(project::python(&roots));
         let others: Vec<String> = plugins
             .iter()
             .map(|p| p.name().to_owned())

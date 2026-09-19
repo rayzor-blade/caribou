@@ -203,6 +203,37 @@ Parameters are never inferred; they are only declared, and they are where infere
 * The Haxe object keeps the Wren object alive. Wren's collector sees what Haxe holds.
 * A Wren abort inside a call is thrown into Haxe as a `String` containing the message. A Haxe exception that crossed into Wren and comes back is rethrown as the original exception.
 
+## Zyntax Modules: Python and ZynML
+
+A module of a Zyntax frontend is a module of the world like a Wren module. The Python frontend registers when a root holds a `.py` file; ZynML registers from a `zynml.zsnap` under a root. Each frontend keeps its own language's conventions, and Caribou reads them rather than choosing its own:
+
+* **Layout:** A module is found the way its language lays modules out. `game.tally` is `game/tally.py` or `game/tally/__init__.py`.
+* **Exports:** A Python module exports its top-level `def`s and `class`es: the names in `__all__` when it sets one, otherwise every name without a leading underscore. A class exports its methods without a leading underscore. A ZynML module exports what it declares public.
+* **Functions belong to the module.** They are not gathered into an invented class. Wren imports them as module variables and calls each as it calls a `Fn`. Haxe imports types, so it does not see them; a class the module declares is what Haxe reaches.
+
+```python
+# src/game/tally.py
+def score(hits: int, misses: int) -> int:
+    return hits * 10 - misses * 3
+
+class Tally:
+    def __init__(self, hits: int):
+        self.hits = hits
+    def total(self, misses: int) -> int:
+        return score(self.hits, misses)
+```
+
+```wren
+import "game:tally" for score, Tally
+System.print(score.call(7, 2))   // 64
+```
+
+```haxe
+import game.tally.Tally;         // the class, under the module as its package
+```
+
+Types come from the module's declarations: Python annotations and ZynML signatures. Numbers, booleans, and strings cross; an instance of a Python or ZynML class does not cross yet, so a call that takes or returns one fails with an error that says so.
+
 ## Functions & Callbacks
 
 A function crosses by reference, keeps its captured environment, and comes back as itself.

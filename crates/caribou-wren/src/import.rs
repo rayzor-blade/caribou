@@ -368,11 +368,35 @@ pub fn install(vm: &mut VM, lang: LangId, module: &str) -> Result<String, Import
             .by_type
             .insert((iface.lang, symbol::intern(&class.type_name)), ptr);
     }
+    // The module's own functions are module variables, each a `Function`
+    // the importer calls as it calls a `Fn`: `import "game:tally" for
+    // score`, then `score.call(7, 2)`.
+    for function in &iface.functions {
+        let value = caribou::function::new(
+            function.target,
+            &format!("{}.{}", iface.module, function.name),
+            Some(function.params.len()),
+        );
+        let instance = proxy(vm, value)
+            .ok_or_else(|| ImportError(format!("`{name}` has no class for a function")))?;
+        let entry = vm
+            .engine
+            .modules
+            .get_mut(&name)
+            .ok_or_else(|| ImportError(format!("`{name}` did not install")))?;
+        let slot = entry
+            .var_names
+            .iter()
+            .position(|n| *n == function.name)
+            .ok_or_else(|| ImportError(format!("`{name}` has no variable `{}`", function.name)))?;
+        entry.vars[slot] = instance;
+    }
     Ok(name)
 }
 
-/// The module blob: an empty top level and one foreign-shaped class per
-/// published class, each with the handle field and nothing else.
+/// The module blob: an empty top level, one foreign-shaped class per
+/// published class, each with the handle field and nothing else, and a
+/// module variable per published function, filled after the install.
 fn blob(iface: &Interface) -> Result<Vec<u8>, serialize::SerializeError> {
     let mut interner = Interner::new();
     let mut top_level = MirFunction::new(interner.intern("<module>"), 0);
@@ -410,6 +434,9 @@ fn blob(iface: &Interface) -> Result<Vec<u8>, serialize::SerializeError> {
             }
         })
         .collect();
+    for function in &iface.functions {
+        var_names.push(function.name.clone());
+    }
     let module = ModuleMir {
         top_level,
         classes,
@@ -632,6 +659,7 @@ fn function_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
             ctor: None,
             class_object: Value::null(),
         }],
+        functions: Vec::new(),
     };
     let bytes = blob(&shell).map_err(|e| ImportError(format!("`{FUNCTION_MODULE}`: {e}")))?;
     if vm.interpret_bytecode(FUNCTION_MODULE, &bytes) != InterpretResult::Success {
@@ -695,6 +723,7 @@ fn sequence_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
             ctor: None,
             class_object: Value::null(),
         }],
+        functions: Vec::new(),
     };
     let bytes = blob(&shell).map_err(|e| ImportError(format!("`{SEQUENCE_MODULE}`: {e}")))?;
     if vm.interpret_bytecode(SEQUENCE_MODULE, &bytes) != InterpretResult::Success {
@@ -1145,6 +1174,7 @@ mod tests {
             lang: 7,
             module: "game.Player".to_owned(),
             classes: vec![player.clone()],
+            functions: Vec::new(),
         };
         let bytes = blob(&iface).unwrap();
         let decoded = serialize::load(&bytes).unwrap();

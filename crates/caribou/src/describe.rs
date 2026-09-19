@@ -24,6 +24,9 @@ pub struct ModuleDesc {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub path: Option<String>,
+    /// The functions the module itself owns, each a `Static` member.
+    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Vec::is_empty"))]
+    pub functions: Vec<MemberDesc>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,10 +132,26 @@ impl ModuleDesc {
             }
             out
         };
+        let function = |m: &crate::registry::MethodIface| MemberDesc {
+            name: m.name.clone(),
+            kind: MemberKind::Static,
+            signature: signature_of(m),
+            params: m
+                .params
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| ParamDesc {
+                    name: format!("a{i}"),
+                    ty: ty.clone(),
+                })
+                .collect(),
+            ret: m.ret.clone(),
+        };
         ModuleDesc {
             lang: lang.to_owned(),
             module: iface.module.clone(),
             path: None,
+            functions: iface.functions.iter().map(function).collect(),
             classes: iface
                 .classes
                 .iter()

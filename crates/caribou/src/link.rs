@@ -287,6 +287,7 @@ mod tests {
             lang: crate::world::LANG_CORE,
             module: "bench/tally".to_owned(),
             classes: vec![class.clone()],
+            functions: Vec::new(),
         };
         let add = method("add", false, vec![TypeRef::Float], TypeRef::Float);
         let l = link(&iface, &class, &add, Kind::Method);

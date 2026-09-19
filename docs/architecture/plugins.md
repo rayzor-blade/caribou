@@ -42,7 +42,7 @@ caribou_abi::plugin! {
 
 **Declaration rules:**
 
-* A function outside any class becomes a static method of a class named after the plugin (`Math`).
+* A function outside any class becomes a static method of a class named after the plugin (`Math`). This is the plugin ABI's own convention; a Zyntax module's functions stay the module's own (see [zyntax.md](zyntax.md)).
 * Each declaration is checked against the item it names by coercing the item to the declared function pointer type. A signature that does not match the item does not compile.
 * The macro reads each type's tag from the `Param` and `Returned` traits. `u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`, `()`, and `Value` map to their tags. `Text` is a string. `&T` and `&mut T` of a declared class are an object of that class, borrowed for the call; when such a parameter comes first, the function is an instance method. `Box<T>` is a new object of the class, owned by the core from then on.
 * A static `new` that returns its own class is the class's constructor.

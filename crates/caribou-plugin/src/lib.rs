@@ -319,6 +319,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 ctor,
                 class_object: Value::null(),
             }],
+            functions: Vec::new(),
         })
         .collect()
 }

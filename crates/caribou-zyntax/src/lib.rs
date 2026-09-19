@@ -34,7 +34,8 @@ use caribou::registry;
 use caribou::world::{self, Adapter};
 use caribou_abi::LangId;
 use zyntax_embed::{
-    LanguageGrammar, SNAPSHOT_EXTENSION, Snapshot, TieredConfig, TieredRuntime, TypedProgram,
+    ExportedSymbol, LanguageGrammar, ModuleArchitecture, SNAPSHOT_EXTENSION, Snapshot,
+    TieredConfig, TieredRuntime, TypedProgram,
 };
 
 mod dispatch;
@@ -51,8 +52,26 @@ pub trait Language {
     /// The language's name, in lower case: what a namespace lists.
     fn name(&self) -> &str;
 
-    /// The file extensions of its modules under the roots, with the dot.
-    fn extensions(&self) -> &[String];
+    /// How the language lays modules out as files, in Zyntax's terms:
+    /// `game.tally` is `game/tally.py` or `game/tally/__init__.py` to
+    /// Python, `game/Tally.hx` to a Haxe-like language. One entry per
+    /// layout the language reads; the first that has a file wins.
+    fn architectures(&self) -> Vec<ModuleArchitecture>;
+
+    /// What a module exports, by the language's own convention. The
+    /// default is every function, struct or class the module's own file
+    /// declares public, which is what the frontend's typed AST says; a
+    /// frontend with a rule of its own (`__all__`) overrides it.
+    fn exports(&self, program: &TypedProgram) -> Vec<ExportedSymbol> {
+        publish::declared_exports(program)
+    }
+
+    /// The methods an exported class exports, by the language's own
+    /// convention, or `None` for every method the frontend declared. A
+    /// constructor is published either way.
+    fn exported_members(&self, _program: &TypedProgram, _class: &str) -> Option<Vec<String>> {
+        None
+    }
 
     /// Give `runtime` what the language's programs link against: a
     /// snapshot, plugins, entry points. Once, before any module loads.
@@ -63,18 +82,29 @@ pub trait Language {
     fn parse(&self, runtime: &TieredRuntime, source: &str, file: &str) -> Result<TypedProgram, String>;
 }
 
+/// The layouts a grammar's `file_extensions` describe: a file per module
+/// under the package's directories, one layout per extension.
+fn by_extension(extensions: &[String]) -> Vec<ModuleArchitecture> {
+    extensions
+        .iter()
+        .map(|ext| ModuleArchitecture::DotSeparatedPackages {
+            extension: ext.trim_start_matches('.').to_owned(),
+        })
+        .collect()
+}
+
 /// A language from a `.zyn` grammar alone.
 pub struct GrammarLanguage {
     name: String,
     grammar: LanguageGrammar,
-    extensions: Vec<String>,
+    architectures: Vec<ModuleArchitecture>,
 }
 
 impl GrammarLanguage {
     pub fn new(grammar: LanguageGrammar) -> GrammarLanguage {
         GrammarLanguage {
             name: grammar.name().to_lowercase(),
-            extensions: grammar.file_extensions().to_vec(),
+            architectures: by_extension(grammar.file_extensions()),
             grammar,
         }
     }
@@ -85,8 +115,8 @@ impl Language for GrammarLanguage {
         &self.name
     }
 
-    fn extensions(&self) -> &[String] {
-        &self.extensions
+    fn architectures(&self) -> Vec<ModuleArchitecture> {
+        self.architectures.clone()
     }
 
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String> {
@@ -107,7 +137,7 @@ pub struct SnapshotLanguage {
     name: String,
     snapshot: Arc<Snapshot>,
     grammar: LanguageGrammar,
-    extensions: Vec<String>,
+    architectures: Vec<ModuleArchitecture>,
 }
 
 impl SnapshotLanguage {
@@ -120,7 +150,7 @@ impl SnapshotLanguage {
         Ok(SnapshotLanguage {
             name: snapshot.language().to_lowercase(),
             snapshot: Arc::new(snapshot),
-            extensions: grammar.file_extensions().to_vec(),
+            architectures: by_extension(grammar.file_extensions()),
             grammar,
         })
     }
@@ -131,8 +161,8 @@ impl Language for SnapshotLanguage {
         &self.name
     }
 
-    fn extensions(&self) -> &[String] {
-        &self.extensions
+    fn architectures(&self) -> Vec<ModuleArchitecture> {
+        self.architectures.clone()
     }
 
     /// The snapshot's grammar is the one the runtime parses with too,
@@ -286,15 +316,51 @@ impl Adapter for Runtime {
     }
 }
 
-/// The file for module `name` (`game/scorer`) of the language whose
-/// grammar reads `extensions`, under the first root that has one.
-fn find(name: &str, extensions: &[String]) -> Option<PathBuf> {
+/// The file for module `name` (`game/scorer`) of a language with these
+/// layouts, under the first root that has one.
+fn find(name: &str, architectures: &[ModuleArchitecture]) -> Option<PathBuf> {
+    let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
     world::source_roots().into_iter().find_map(|root| {
-        extensions
+        architectures
             .iter()
-            .map(|ext| root.join(format!("{name}{ext}")))
+            .flat_map(|arch| arch.module_to_paths(&segments, &root))
             .find(|path| path.is_file())
     })
+}
+
+/// The module a file under `root` is, by a layout: its path segments
+/// without the extension, or the directory's for a package's own file
+/// (`__init__.py`, `mod.rs`, `index.js`). `None` for a file the layout
+/// does not read.
+fn module_of(arch: &ModuleArchitecture, root: &std::path::Path, file: &std::path::Path) -> Option<Vec<String>> {
+    let rel = file.strip_prefix(root).ok()?;
+    let mut segments: Vec<String> = rel
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    let last = segments.pop()?;
+    let (own_file, extensions): (Option<&str>, Vec<String>) = match arch {
+        ModuleArchitecture::DotSeparatedPackages { extension } => (None, vec![extension.clone()]),
+        ModuleArchitecture::RustStyle { extension, mod_file_name } => {
+            (Some(mod_file_name), vec![extension.clone()])
+        }
+        ModuleArchitecture::PythonStyle { extension, init_file_name } => {
+            (Some(init_file_name), vec![extension.clone()])
+        }
+        ModuleArchitecture::NodeStyle { extensions, .. } => (
+            None,
+            extensions.iter().map(|e| e.trim_start_matches('.').to_owned()).collect(),
+        ),
+        _ => return None,
+    };
+    if own_file == Some(last.as_str()) {
+        return (!segments.is_empty()).then_some(segments);
+    }
+    let stem = extensions
+        .iter()
+        .find_map(|ext| last.strip_suffix(&format!(".{ext}")))?;
+    segments.push(stem.to_owned());
+    Some(segments)
 }
 
 /// The registry's loader for a grammar language: parse, lower, publish
@@ -308,7 +374,7 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
                 "`{name}` cannot load: its Zyntax runtime is not on this thread"
             ));
         };
-        let Some(path) = find(&name, state.language.extensions()) else {
+        let Some(path) = find(&name, &state.language.architectures()) else {
             return Ok(false);
         };
         let source = std::fs::read_to_string(&path)
@@ -323,7 +389,13 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
             .runtime
             .lower_to_hir(program.clone())
             .map_err(|e| format!("`{name}`: {e}"))?;
-        let declared = publish::declared(&program, &hir, state.language.name());
+        let exports = state.language.exports(&program);
+        let mut declared = publish::declared(&program, &exports, &hir, state.language.name());
+        for class in &mut declared.classes {
+            if let Some(members) = state.language.exported_members(&program, &class.name) {
+                class.methods.retain(|m| members.contains(&m.name));
+            }
+        }
         state
             .runtime
             .compile_module(hir)
@@ -332,7 +404,6 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
             lang,
             state.language.name(),
             &name,
-            module,
             declared,
             &|symbol| state.runtime.function_pointer(symbol),
         );
@@ -342,42 +413,50 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
 }
 
 /// The modules of the frontends under `root` as data, for a build step:
-/// every file under `root` with one of their extensions, each loaded into
-/// a world of this thread's as running it would and described from what
-/// it published, with its path. A module directly under the root has no
-/// namespace and is not a module of the world.
-pub fn describe(root: &std::path::Path) -> Result<Vec<caribou::describe::ModuleDesc>, String> {
-    let frontends = Frontend::files_in(&[root])
+/// the frontend files under the root plus `others` (languages that parse
+/// on their own, which the caller knows to add), every file under `root`
+/// with one of their extensions, each loaded into a world of this
+/// thread's as running it would and described from what it published,
+/// with its path. A module directly under the root has no namespace and
+/// is not a module of the world.
+pub fn describe(
+    root: &std::path::Path,
+    others: Vec<Frontend>,
+) -> Result<Vec<caribou::describe::ModuleDesc>, String> {
+    let mut frontends = Frontend::files_in(&[root])
         .iter()
         .map(|file| Frontend::file(file))
         .collect::<Result<Vec<_>, _>>()?;
+    frontends.extend(others);
     if frontends.is_empty() {
         return Ok(Vec::new());
     }
     let names: Vec<String> = frontends.iter().map(|f| f.name().to_owned()).collect();
-    let extensions: Vec<String> = frontends
+    let architectures: Vec<ModuleArchitecture> = frontends
         .iter()
-        .flat_map(|f| f.language.extensions().iter().cloned())
+        .flat_map(|f| f.language.architectures())
         .collect();
-    // Every module by namespace and name, from the files.
+    // Every module by namespace and name, from the files each layout
+    // reads.
     let mut modules: Vec<(String, String, PathBuf)> = Vec::new();
     let mut namespaces: Vec<String> = Vec::new();
     for entry in walk(root) {
-        let Ok(rel) = entry.strip_prefix(root) else {
+        let Some(segments) = architectures
+            .iter()
+            .find_map(|arch| module_of(arch, root, &entry))
+        else {
             continue;
         };
-        let rel = rel.to_string_lossy().replace('\\', "/");
-        let Some(ext) = extensions.iter().find(|e| rel.ends_with(e.as_str())) else {
+        let [namespace, rest @ ..] = segments.as_slice() else {
             continue;
         };
-        let stem = &rel[..rel.len() - ext.len()];
-        let Some((namespace, module)) = stem.split_once('/') else {
+        if rest.is_empty() {
             continue;
-        };
-        if !namespaces.contains(&namespace.to_owned()) {
-            namespaces.push(namespace.to_owned());
         }
-        modules.push((namespace.to_owned(), module.to_owned(), entry.clone()));
+        if !namespaces.contains(namespace) {
+            namespaces.push(namespace.clone());
+        }
+        modules.push((namespace.clone(), rest.join("/"), entry.clone()));
     }
     let world = world::World::new(world::Config {
         namespaces: namespaces

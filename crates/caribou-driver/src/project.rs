@@ -70,6 +70,16 @@ pub fn roots(program: &Path) -> Vec<PathBuf> {
     roots
 }
 
+/// The Python frontend, when a root holds a `.py` file: Python parses on
+/// its own, so no file under a root names it.
+pub fn python(roots: &[impl AsRef<Path>]) -> Vec<caribou_zyntax::Frontend> {
+    if caribou_python::Python::present_in(roots) {
+        vec![caribou_zyntax::Frontend::new(Box::new(caribou_python::Python::new()))]
+    } else {
+        Vec::new()
+    }
+}
+
 /// The namespaces of a project: each directory under a root, and each
 /// name in `imported`, every one over every resident language, the
 /// languages named in `others` (plugins, Zyntax frontends) after the

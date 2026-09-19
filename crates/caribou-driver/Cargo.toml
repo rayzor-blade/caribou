@@ -19,6 +19,7 @@ caribou-ash = { path = "../caribou-ash", features = ["runner"] }
 caribou-wren = { path = "../caribou-wren", features = ["runner"] }
 caribou-plugin = { path = "../caribou-plugin" }
 caribou-zyntax = { path = "../caribou-zyntax" }
+caribou-python = { path = "../caribou-python" }
 serde_json = "1"
 wren_lift = { workspace = true }
 
