@@ -14,7 +14,6 @@ use caribou::world::{Config, World};
 use caribou_ash::{Mode, Options};
 use caribou_interop::captured;
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const RELAY: &str = include_str!("../fixtures/src/game/relay.wren");
@@ -60,7 +59,6 @@ fn haxe_and_wren_tasks_share_the_world() {
     let sink = Rc::clone(&errors);
     let mut config = VMConfig {
         execution_mode: ExecutionMode::Jit,
-        gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),

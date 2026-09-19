@@ -35,6 +35,11 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
         .into_iter()
         .map(|(namespace, _)| namespace)
         .collect();
+    // The Wren modules compile on a VM, whose heap seals wren_lift's seam:
+    // the seams go in first, as a session's do, so a session opened after
+    // the build in this process finds them in place.
+    caribou_ash::install().map_err(|e| anyhow!("ash: {e}"))?;
+    caribou_wren::install().map_err(|e| anyhow!("wren_lift: {e}"))?;
     // The plugins beside the program are the ones its namespaces cover,
     // and they ship in the bundle for this target.
     let plugin_dir = program

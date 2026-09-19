@@ -21,7 +21,6 @@ use caribou::world::{Config, World};
 use caribou_ash::{Mode, Options};
 use caribou_interop::captured;
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const HUD: &str = include_str!("../fixtures/src/game/hud.wren");
@@ -69,7 +68,6 @@ fn a_haxe_program_imports_a_wren_class() {
     let sink = Rc::clone(&errors);
     let mut config = VMConfig {
         execution_mode: ExecutionMode::Interpreter,
-        gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),

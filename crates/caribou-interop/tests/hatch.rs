@@ -10,7 +10,6 @@ use caribou::bundle::SectionKind;
 use caribou_ash::Mode;
 use caribou_driver::{Options, Session};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const USE: &str = r#"
@@ -73,7 +72,6 @@ fn a_held_package_stages_into_a_fresh_vm() {
     }
     let mut config = VMConfig {
         execution_mode: ExecutionMode::Interpreter,
-        gc_strategy: GcStrategy::Immix,
         ..VMConfig::default()
     };
     caribou_wren::import::configure(&mut config);

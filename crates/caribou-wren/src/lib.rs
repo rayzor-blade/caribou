@@ -230,7 +230,6 @@ fn table() -> RuntimeVTable {
 #[cfg(test)]
 pub(crate) mod testutil {
     use wren_lift::runtime::engine::ExecutionMode;
-    use wren_lift::runtime::gc_trait::GcStrategy;
     use wren_lift::runtime::vm::{VM, VMConfig};
 
     const CHILD_ENV: &str = "CARIBOU_WREN_INSTALL_CHILD";
@@ -256,7 +255,6 @@ pub(crate) mod testutil {
     pub(crate) fn immix_vm(mode: ExecutionMode) -> VM {
         let mut vm = VM::new(VMConfig {
             execution_mode: mode,
-            gc_strategy: GcStrategy::Immix,
             ..VMConfig::default()
         });
         vm.output_buffer = Some(String::new());
@@ -269,7 +267,7 @@ mod tests {
     use super::testutil::{immix_vm, parent_of};
     use super::*;
     use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-    use wren_lift::runtime::gc_trait::GcStrategy;
+    use wren_lift::runtime::gc_trait::GcAllocator;
     use wren_lift::runtime::rt::{RT_VERSION, wlift_rt_installed};
     use wren_lift::runtime::vm::{VM, VMConfig};
 
@@ -318,7 +316,6 @@ mod tests {
         };
         let before = core_allocated();
         let mut vm = VM::new(VMConfig {
-            gc_strategy: GcStrategy::Immix,
             ..VMConfig::default()
         });
         // Sealed by the VM above.
@@ -338,7 +335,7 @@ mod tests {
             "the VM's objects did not come from the core's heap"
         );
         let stats = vm.gc.stats();
-        assert!(stats.major_collections >= 1, "no cycle ran");
+        assert!(stats.collections >= 1, "no cycle ran");
         assert!(stats.objects_freed > 0, "a cycle reclaimed nothing");
         assert!(stats.total_allocated >= 100_000 * 32);
         drop(vm);
@@ -430,7 +427,7 @@ mod tests {
         );
         // Its own trigger, under a shared one the other thread kept resetting.
         assert!(
-            stats.major_collections >= 1,
+            stats.collections >= 1,
             "the VM ran no cycle of its own"
         );
         assert!(stats.objects_freed > 0);
@@ -460,7 +457,7 @@ mod tests {
         );
         assert_eq!(result, InterpretResult::Success);
         assert_eq!(
-            vm.gc.stats().major_collections,
+            vm.gc.stats().collections,
             0,
             "a cycle ran before the idle"
         );
@@ -477,7 +474,7 @@ mod tests {
         assert_eq!(result, InterpretResult::Success);
         assert_eq!(vm.take_output().trim(), "true");
         let stats = vm.gc.stats();
-        assert!(stats.major_collections >= 1, "no cycle ran during the idle");
+        assert!(stats.collections >= 1, "no cycle ran during the idle");
         assert!(
             stats.objects_freed >= 5000,
             "the idle cycle freed {}",

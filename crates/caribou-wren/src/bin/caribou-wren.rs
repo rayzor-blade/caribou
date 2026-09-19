@@ -19,7 +19,7 @@
 use std::process;
 
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
+use wren_lift::runtime::gc_trait::GcAllocator;
 use wren_lift::runtime::rt::wlift_rt_installed;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
@@ -123,7 +123,6 @@ fn run() -> Result<(), String> {
     let mut vm = VM::new(VMConfig {
         execution_mode: args.mode,
         step_limit,
-        gc_strategy: GcStrategy::Immix,
         ..VMConfig::default()
     });
     // Every fiber on a stack of its own, on the core's heap and on
@@ -151,11 +150,9 @@ fn run() -> Result<(), String> {
     if args.gc_stats {
         let stats = vm.gc.stats();
         eprintln!("--- GC Stats ---");
-        eprintln!("  minor collections: {}", stats.minor_collections);
-        eprintln!("  major collections: {}", stats.major_collections);
+        eprintln!("  collections:        {}", stats.collections);
         eprintln!("  objects allocated:  {}", stats.objects_allocated);
         eprintln!("  objects freed:      {}", stats.objects_freed);
-        eprintln!("  objects promoted:   {}", stats.objects_promoted);
         eprintln!("  peak objects:       {}", stats.peak_objects);
         eprintln!("  total allocated:    {} KB", stats.total_allocated / 1024);
         eprintln!("  total freed:        {} KB", stats.total_freed / 1024);

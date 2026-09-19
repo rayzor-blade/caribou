@@ -19,7 +19,6 @@ use caribou::symbol::intern;
 use caribou::world::{Config, World};
 use caribou_abi::{LangId, Value};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::{GcImpl, GcStrategy};
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const HUD: &str = r#"
@@ -36,7 +35,6 @@ class Hud {
 fn vm(mode: ExecutionMode) -> VM {
     let mut vm = VM::new(VMConfig {
         execution_mode: mode,
-        gc_strategy: GcStrategy::Immix,
         ..VMConfig::default()
     });
     vm.output_buffer = Some(String::new());
@@ -48,10 +46,7 @@ fn vm(mode: ExecutionMode) -> VM {
 /// before the next collection scans the stack.
 #[inline(never)]
 fn wren_has(vm: &VM, hidden: usize) -> bool {
-    match &vm.gc {
-        GcImpl::Immix(gc) => gc.containing_allocation(!hidden + 16).is_some(),
-        _ => unreachable!("an Immix VM"),
-    }
+    vm.gc.containing_allocation(!hidden + 16).is_some()
 }
 
 /// Overwrite the stack below this frame: the core's collection left the

@@ -11,7 +11,6 @@ use std::time::{Duration, Instant};
 
 use caribou::heap;
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 /// A thread spinning on numbers alone for longer than the test needs,
@@ -35,7 +34,6 @@ fn a_compiled_loop_that_never_allocates_comes_to_a_stop() {
     let sink = Rc::clone(&errors);
     let mut config = VMConfig {
         execution_mode: ExecutionMode::Tiered,
-        gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),

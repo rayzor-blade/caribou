@@ -24,7 +24,6 @@ use caribou_abi::hl::{
 };
 use caribou_abi::{ErrorKind, LangId, Value};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const SCRIPT: &str = r#"
@@ -84,7 +83,6 @@ extern "C" fn boom(_n: i32) -> i32 {
 fn vm(mode: ExecutionMode) -> VM {
     let mut vm = VM::new(VMConfig {
         execution_mode: mode,
-        gc_strategy: GcStrategy::Immix,
         ..VMConfig::default()
     });
     vm.output_buffer = Some(String::new());

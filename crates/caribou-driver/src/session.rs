@@ -12,7 +12,6 @@ use caribou::world::{Config, Event, EventKind, LANG_CORE, World};
 use caribou_abi::{ErrorKind, Value};
 use caribou_ash::{Mode, Options as AshOptions, Program};
 use wren_lift::runtime::engine::ExecutionMode;
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 use crate::project;
@@ -209,7 +208,6 @@ impl Session {
 
         let mut config = VMConfig {
             execution_mode: wren_mode,
-            gc_strategy: GcStrategy::Immix,
             ..VMConfig::default()
         };
         caribou_wren::import::configure(&mut config);

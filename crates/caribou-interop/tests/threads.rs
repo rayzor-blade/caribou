@@ -10,7 +10,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 /// Eight tasks, each allocating enough to run cycles while the others
@@ -74,7 +73,6 @@ fn config(errors: &Rc<RefCell<Vec<String>>>, mode: ExecutionMode) -> VMConfig {
     let sink = Rc::clone(errors);
     let mut config = VMConfig {
         execution_mode: mode,
-        gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),

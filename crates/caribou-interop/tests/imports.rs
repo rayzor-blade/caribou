@@ -20,7 +20,6 @@ use caribou::world::{Config, LANG_CORE, World};
 use caribou_abi::Value;
 use caribou_ash::{Mode, Options};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const SCRIPT: &str = include_str!("../fixtures/wren/main.wren");
@@ -106,7 +105,6 @@ fn vm(mode: ExecutionMode, errors: &Rc<RefCell<Vec<String>>>) -> VM {
     let sink = Rc::clone(errors);
     let mut config = VMConfig {
         execution_mode: mode,
-        gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),

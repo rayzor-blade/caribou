@@ -20,7 +20,6 @@ use std::sync::{LazyLock, Mutex};
 use caribou::registry;
 use caribou::world;
 use wren_lift::runtime::engine::InterpretResult;
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{CompiledModule, VM, VMConfig};
 
 use crate::proto::current_vm;
@@ -69,13 +68,10 @@ pub static WLBC: LazyLock<String> =
 /// imports (`import_order`). A module that does not compile is an
 /// error naming it; its diagnostics go where wren_lift reports them.
 pub fn compile(sources: &[(String, String)]) -> Result<Vec<(String, Vec<u8>)>, String> {
-    // A VM to compile on, allocating nothing that outlives the build:
-    // not an Immix one, which would claim the seam before the core's
-    // heap could.
-    let mut vm = VM::new(VMConfig {
-        gc_strategy: GcStrategy::Arena,
-        ..VMConfig::default()
-    });
+    // A VM to compile on. Its heap seals wren_lift's seam, so a build
+    // that shares its process with a session installs the seams first
+    // (`caribou_driver::bundle::build`).
+    let mut vm = VM::new(VMConfig::default());
     let mut out = Vec::with_capacity(sources.len());
     for (name, source) in sources {
         let bytes = vm

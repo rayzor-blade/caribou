@@ -14,7 +14,6 @@ use caribou::registry;
 use caribou::world::{Config, World};
 use caribou_abi::{ABI_VERSION, TypeTag};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
-use wren_lift::runtime::gc_trait::GcStrategy;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 /// Where the build script put the test plugins.
@@ -129,7 +128,6 @@ fn a_plugin_is_a_language_wren_imports() {
     let sink = Rc::clone(&errors);
     let mut config = VMConfig {
         execution_mode: ExecutionMode::Interpreter,
-        gc_strategy: GcStrategy::Immix,
         error_fn: Some(Box::new(move |_kind, _module, _line, message: &str| {
             sink.borrow_mut().push(message.to_owned());
         })),

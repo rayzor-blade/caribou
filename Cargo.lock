@@ -206,7 +206,7 @@ dependencies = [
  "anyhow",
  "ash_macro",
  "ash_std",
- "beadie 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie",
  "bindgen",
  "byteorder",
  "cc",
@@ -235,7 +235,7 @@ dependencies = [
  "anyhow",
  "ash_core",
  "ash_native_call",
- "beadie 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie",
  "cc",
  "libc",
  "windows-sys 0.59.0",
@@ -350,49 +350,20 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "beadie"
 version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf#868d1069eeda1ea162460273869597a9b0866ebf"
-dependencies = [
- "beadie-backend 0.3.0 (git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf)",
- "beadie-core 0.3.0 (git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf)",
-]
-
-[[package]]
-name = "beadie"
-version = "0.3.0"
 source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
- "beadie-backend 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
- "beadie-core 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie-backend",
+ "beadie-core",
  "beadie-cranelift",
 ]
 
 [[package]]
 name = "beadie-backend"
 version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf#868d1069eeda1ea162460273869597a9b0866ebf"
-dependencies = [
- "beadie-core 0.3.0 (git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf)",
- "crossbeam-channel",
- "log",
-]
-
-[[package]]
-name = "beadie-backend"
-version = "0.3.0"
 source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
- "beadie-core 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie-core",
  "crossbeam-channel",
- "log",
-]
-
-[[package]]
-name = "beadie-core"
-version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf#868d1069eeda1ea162460273869597a9b0866ebf"
-dependencies = [
- "crossbeam-channel",
- "crossbeam-epoch",
  "log",
 ]
 
@@ -412,8 +383,8 @@ version = "0.3.0"
 source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
  "anyhow",
- "beadie-backend 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
- "beadie-core 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie-backend",
+ "beadie-core",
  "cranelift-codegen",
  "cranelift-frontend",
  "cranelift-jit",
@@ -3904,21 +3875,21 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=032a722d7b0a0ced786695c25e10d9cb645c48c7#032a722d7b0a0ced786695c25e10d9cb645c48c7"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=c533f4c7847e5ffb83375bb69b096085c4bb1b08#c533f4c7847e5ffb83375bb69b096085c4bb1b08"
 dependencies = [
  "libc",
 ]
 
 [[package]]
 name = "wren_lift"
-version = "0.1.19"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=032a722d7b0a0ced786695c25e10d9cb645c48c7#032a722d7b0a0ced786695c25e10d9cb645c48c7"
+version = "0.1.21"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=c533f4c7847e5ffb83375bb69b096085c4bb1b08#c533f4c7847e5ffb83375bb69b096085c4bb1b08"
 dependencies = [
  "aes-gcm",
  "argon2",
  "ariadne",
  "base64",
- "beadie 0.3.0 (git+https://github.com/darmie/beadie.git?rev=868d1069eeda1ea162460273869597a9b0866ebf)",
+ "beadie",
  "bincode 2.0.1",
  "clap",
  "cranelift-codegen",
@@ -3956,6 +3927,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-encoder",
  "web-time",
+ "windows-sys 0.59.0",
  "wlift_region",
  "zip",
  "zstd",
@@ -4220,7 +4192,7 @@ name = "zyntax_compiler"
 version = "0.1.0"
 dependencies = [
  "algebraic_effects_pass",
- "beadie 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie",
  "bincode 1.3.3",
  "bit-set 0.5.3",
  "cranelift",
@@ -4261,7 +4233,7 @@ name = "zyntax_embed"
 version = "0.1.0"
 dependencies = [
  "algebraic_effects_pass",
- "beadie 0.3.0 (git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e)",
+ "beadie",
  "ciborium",
  "indexmap",
  "krio_adapter",
