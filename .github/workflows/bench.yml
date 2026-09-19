@@ -1,0 +1,69 @@
+# The interop benchmarks, nightly and on demand, with the tables in the
+# run's summary and the raw output kept as an artifact. A shared runner's
+# numbers move with its load; they show a trend, not a measurement to
+# compare with a quiet machine's.
+name: Bench
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: nightly
+
+jobs:
+  bench:
+    name: interop benches (macos-15)
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caribou
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: ./caribou/.github/actions/siblings
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            caribou
+            ash
+      - name: ash_std, which ash_core's build script embeds
+        working-directory: ash
+        run: cargo build --release -p ash_std
+      - name: Benches
+        working-directory: caribou
+        run: |
+          mkdir -p bench-out
+          for bench in interop transfer swarm; do
+            echo "== $bench"
+            cargo bench -p caribou-interop --bench "$bench" 2>&1 | tee "bench-out/$bench.txt"
+          done
+      - name: Summary
+        if: always()
+        working-directory: caribou
+        run: |
+          {
+            echo "## Interop benches, $(date -u +%Y-%m-%d) on ${{ runner.os }} ${{ runner.arch }}, commit ${GITHUB_SHA::12}"
+            echo
+            echo "Shared runner: the numbers show a trend, not a quiet machine's."
+            for bench in interop transfer swarm; do
+              echo
+              echo "### $bench"
+              echo
+              echo '```'
+              grep -Ev "^[[:space:]]*(Compiling|Finished|Running)|^warning:|^note:" "bench-out/$bench.txt" || true
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-${{ github.sha }}
+          path: caribou/bench-out
+          retention-days: 90

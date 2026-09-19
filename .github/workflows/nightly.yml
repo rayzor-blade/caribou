@@ -1,0 +1,149 @@
+# A nightly build of the `caribou` command for each platform, published as
+# the rolling `nightly` pre-release: the command, ash's runtime image
+# beside it, the haxelib and the docs, one archive per target
+# (scripts/package_nightly.sh). A night with no new commit publishes
+# nothing; a platform that fails does not hold the others back.
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTUP_TOOLCHAIN: nightly
+
+jobs:
+  changed:
+    name: anything new since the last nightly
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh release view nightly --repo "$GITHUB_REPOSITORY" --json body -q .body 2>/dev/null | grep -oE 'commit [0-9a-f]{40}' | cut -d' ' -f2 || true)
+          if [ "$last" = "$GITHUB_SHA" ] && [ "${{ github.event_name }}" = schedule ]; then
+            echo "nothing new since $last"
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    name: build (${{ matrix.target }})
+    needs: changed
+    if: needs.changed.outputs.build == 'true'
+    runs-on: ${{ matrix.os }}
+    # A retired or saturated runner image fails this leg rather than holding
+    # the release behind it.
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          # bindgen finds the runner image's libclang; nothing links LLVM.
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caribou
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: LLVM 21 (libclang for bindgen)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo apt-get install -y libclang-21-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+      - uses: ./caribou/.github/actions/siblings
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            caribou
+            ash
+          shared-key: nightly-${{ matrix.target }}
+      - name: ash_std, which ash_core's build script embeds
+        working-directory: ash
+        run: cargo build --release -p ash_std
+      - name: Build the command
+        working-directory: caribou
+        run: cargo build --release -p caribou-driver
+      # A command that runs a program is what ships: the Haxe-and-Wren
+      # fixture, from the directory its project layout expects.
+      - name: Smoke test
+        working-directory: caribou/crates/caribou-interop/fixtures
+        shell: bash
+        run: ../../../target/release/caribou run hud.hl
+      - name: Package
+        working-directory: caribou
+        shell: bash
+        run: scripts/package_nightly.sh "${{ matrix.target }}"
+      # The packaged command, from a directory with nothing else in it.
+      - name: Smoke test the archive
+        working-directory: caribou
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            *windows*) name=$(basename dist/*.zip .zip); (cd "$RUNNER_TEMP" && 7z x -bso0 -bsp0 "$GITHUB_WORKSPACE/caribou/dist/$name.zip") ;;
+            *) name=$(basename dist/*.tar.gz .tar.gz); tar xzf "dist/$name.tar.gz" -C "$RUNNER_TEMP" ;;
+          esac
+          cd crates/caribou-interop/fixtures
+          "$RUNNER_TEMP/$name/caribou" run hud.hl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            caribou/dist/*.tar.gz
+            caribou/dist/*.zip
+            caribou/dist/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish the nightly pre-release
+    needs: [changed, build]
+    # One platform failing still publishes the others; an empty set is the
+    # error below. A cancelled run publishes nothing.
+    if: ${{ always() && needs.changed.outputs.build == 'true' && needs.build.result != 'cancelled' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Require at least one archive
+        run: |
+          ls -la dist
+          count=$(find dist -name '*.tar.gz' -o -name '*.zip' | wc -l | tr -d ' ')
+          [ "$count" != 0 ] || { echo "::error::no platform produced an archive"; exit 1; }
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          date=$(date -u +%Y-%m-%d)
+          gh release delete nightly --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes 2>/dev/null || true
+          {
+            echo "Nightly build of $date from commit $GITHUB_SHA."
+            echo
+            echo "Each archive holds the \`caribou\` command for its target, ash's runtime image beside it, the \`haxe/\` haxelib (\`haxelib dev caribou <dir>/haxe\`), the docs and the license. Built with the nightly toolchain; not a release. A platform missing here failed to build tonight."
+          } > notes.md
+          gh release create nightly --repo "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
+            --title "Nightly $date" --notes-file notes.md dist/*

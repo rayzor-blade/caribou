@@ -6,7 +6,14 @@
 
 <p align="center">A shared runtime core for game and multimedia scripting.</p>
 
-# Caribou Multi-Language Runtime Core
+<p align="center">
+<a href="https://github.com/rayzor-blade/caribou/actions/workflows/ci.yml"><img src="https://github.com/rayzor-blade/caribou/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/rayzor-blade/caribou/actions/workflows/nightly.yml"><img src="https://github.com/rayzor-blade/caribou/actions/workflows/nightly.yml/badge.svg" alt="Nightly"></a>
+<a href="https://github.com/rayzor-blade/caribou/actions/workflows/bench.yml"><img src="https://github.com/rayzor-blade/caribou/actions/workflows/bench.yml/badge.svg" alt="Bench"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
+</p>
+
+<h1 align="center">Caribou Multi-Language Runtime Core</h1>
 
 Caribou is a shared execution runtime for multi-language environments, serving three guest runtimes:
 
@@ -150,6 +157,14 @@ ash-wasm-run target/wasm32-wasip1/debug/build/caribou/*/out/caribou-*.wasm --tes
 ```
 
 Tests that need a second thread or unwinding are marked ignored on wasm; a wasm module has one thread and aborts on panic. The scheduler's integration tests stay off wasm until fibers there are host-driven.
+
+### Continuous Integration
+
+Three workflows under `.github/workflows` run on GitHub Actions:
+
+* **CI** (`ci.yml`), on every push and pull request: the core and the crates that build on stable (`caribou_abi`, `caribou`, `caribou-wren`, `caribou-plugin`), the whole workspace on nightly, and the core's unit tests on `wasm32-wasip1` under Ash's wasm host. Each job checks out `ash` and `zyntax` beside the repository at the revs `Cargo.toml` pins, so CI builds what the manifest declares.
+* **Nightly** (`nightly.yml`), every night and on demand: a release build of the `caribou` command for macOS (arm64) and Linux (x86_64), published as the rolling `nightly` pre-release with the `haxe/` haxelib, the docs and the license in each archive. A night with no new commit publishes nothing.
+* **Bench** (`bench.yml`), every night and on demand: the three interop benchmarks, with their tables in the run's summary and the raw output kept as an artifact. A shared runner's numbers show a trend, not a quiet machine's.
 
 ### JIT Tiers & LLVM Configuration
 

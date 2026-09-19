@@ -1,0 +1,111 @@
+# Tests on every push and pull request: the core and the crates that build
+# on stable, the whole workspace on nightly (caribou-ash needs it for
+# ash_std), and the core's unit tests on wasm32.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  core:
+    name: core (stable, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caribou
+      - uses: ./caribou/.github/actions/siblings
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: caribou
+      - name: Tests
+        working-directory: caribou
+        run: cargo test -p caribou_abi -p caribou -p caribou-wren -p caribou-plugin
+
+  workspace:
+    name: workspace (nightly, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caribou
+      - uses: dtolnay/rust-toolchain@nightly
+      # ash_core's build script binds HashLink's headers with bindgen, which
+      # wants LLVM 21's libclang; macOS runners have Xcode's, Linux installs it.
+      - name: LLVM 21 (libclang for bindgen)
+        if: runner.os == 'Linux'
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo apt-get install -y libclang-21-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+      - uses: ./caribou/.github/actions/siblings
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            caribou
+            ash
+      - name: ash_std, which ash_core's build script embeds
+        working-directory: ash
+        run: cargo build -p ash_std
+      - name: Tests
+        working-directory: caribou
+        run: cargo test --workspace --no-fail-fast
+      - name: Benches build
+        working-directory: caribou
+        run: cargo bench -p caribou-interop --no-run
+
+  wasm:
+    name: core on wasm32 (nightly, ubuntu)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      RUSTUP_TOOLCHAIN: nightly
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: caribou
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: wasm32-wasip1
+      - name: LLVM 21 (libclang for bindgen)
+        run: |
+          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+          sudo apt-get install -y libclang-21-dev
+          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+      - uses: ./caribou/.github/actions/siblings
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            caribou
+            ash
+      - name: Ash's wasm host
+        working-directory: ash
+        run: cargo build -p ash_wasm_runtime --bin ash-wasm-run
+      - name: Core unit tests on wasm32-wasip1
+        working-directory: caribou
+        env:
+          CARGO_TARGET_WASM32_WASIP1_RUNNER: ${{ github.workspace }}/ash/target/debug/ash-wasm-run
+        run: cargo test -p caribou --target wasm32-wasip1 -- --test-threads=1

@@ -1,0 +1,28 @@
+# The sibling checkouts caribou's `[patch]` table points at, each at the
+# rev caribou's Cargo.toml names for it, so CI builds what the manifest
+# declares and nothing floats. Expects caribou checked out at `caribou/`.
+# ash_core's build script embeds the ash_std cdylib from the ash
+# checkout's target directory, so a job that builds caribou-ash builds
+# `ash_std` in `ash/` first, after its cache is restored.
+name: Sibling checkouts
+description: Clone ash and zyntax beside caribou at the revs its manifest pins.
+runs:
+  using: composite
+  steps:
+    - name: Read the pinned revs
+      id: revs
+      shell: bash
+      run: |
+        rev() { grep -E "^$1 = \{ git = " caribou/Cargo.toml | sed -E 's/.*rev = "([0-9a-f]+)".*/\1/'; }
+        echo "ash=$(rev ash_std)" >> "$GITHUB_OUTPUT"
+        echo "zyntax=$(rev zyntax_embed)" >> "$GITHUB_OUTPUT"
+    - uses: actions/checkout@v4
+      with:
+        repository: rayzor-blade/ash
+        ref: ${{ steps.revs.outputs.ash }}
+        path: ash
+    - uses: actions/checkout@v4
+      with:
+        repository: darmie/zyntax
+        ref: ${{ steps.revs.outputs.zyntax }}
+        path: zyntax
