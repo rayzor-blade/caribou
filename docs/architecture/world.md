@@ -59,6 +59,8 @@ Each adapter answers for its language (`caribou_ash::report`, `caribou_wren::rep
 
 **WrenLift:** WrenLift reloads a module by re-running it while keeping the class objects it declared (`VM::reload_module`). It drops the module's compiled bodies and clears its inline caches. The adapter then publishes the module again and runs the program's `Hatch.onReload` callbacks. `Session::reload` does the same with the VM entered. Ash does not support reload yet: `Adapter::reload` returns an error for Haxe.
 
+**Zyntax:** The adapter parses the module's source again, staged or from its file, and hands the typed program to the language's runtime (`TieredRuntime::reload_typed_program`). The runtime lowers it, compares each function with the running one, and swaps the code of the functions that changed; calls between the module's compiled functions go through cells, so the swap reaches them. The interface is then published again with the code now behind each symbol. A function that fails to compile keeps its old code and fails the reload. The runtime diffs an edit against the module it compiled last, so a language's last-loaded module is the one that reloads; the adapter refuses the others with an error that names the module in the way. A module's function that another language holds as a value follows too: the `Function` object a Wren module variable holds (`caribou::function::of_module`) reads the function from the module's interface again once the epoch has moved.
+
 **Triggers:** A reload is triggered either by the driver calling `reload` or by the world's own file watch. `World::watch_sources` checks the file that every loaded module came from (`registry::sources`, which a language's loader records) on a short interval, from a thread of its own. When a file changes, the watch raises a reactor source (see [scheduler.md](scheduler.md#the-reactor)) whose handler reloads the module on the world's thread, between scheduler turns. In practice this means wherever the program is idle: a `Sys.sleep`, a `Lock` wait, or a frame's pacing. A module loaded later is watched from then on. A source that no longer compiles reloads nothing: the module stays as it was, and the event carries the error. A session watches from the moment it opens, and `caribou run` prints to stderr what it reloaded.
 
 ## Events
@@ -71,7 +73,7 @@ Each adapter answers for its language (`caribou_ash::report`, `caribou_wren::rep
 
 * The adapter registry, the language table, the namespace table, the source roots, and the loaders.
 * The driver described above, and sessions opened from a bundle.
-* Reload of a Wren module, the file watch that triggers it, and events.
+* Reload of a Wren module and of a Zyntax module, the file watch that triggers it, and events.
 
 **Not yet implemented:**
 

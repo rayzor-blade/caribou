@@ -346,6 +346,9 @@ struct State {
     language: Box<dyn Language>,
     runtime: TieredRuntime,
     staged: HashMap<String, String>,
+    /// The module the runtime compiled last: the one its reload diffs
+    /// an edit against.
+    current: Option<String>,
 }
 
 /// The form a bundle carries a module of these languages in.
@@ -395,12 +398,17 @@ impl Adapter for Runtime {
                         language: frontend.language,
                         runtime,
                         staged: HashMap::new(),
+                        current: None,
                     },
                 )
             });
             caribou::bridge::set_typed_dispatch(lang, dispatch::dispatch);
             registry::set_loader(lang, Arc::new(move |ns, module| load(lang, ns, module)));
         }
+    }
+
+    fn reload(&self, lang: LangId, module: &str) -> Result<(), String> {
+        reload(lang, module)
     }
 
     /// A bundle's module of one of these languages: its source, staged
@@ -497,8 +505,77 @@ fn module_of(arch: &ModuleArchitecture, root: &std::path::Path, file: &std::path
     Some(segments)
 }
 
-/// The registry's loader for a grammar language: parse, lower, publish
-/// from the HIR, compile.
+/// A module's source, parsed and lowered in its language's runtime,
+/// with what its interface publishes.
+struct Parsed {
+    program: TypedProgram,
+    hir: zyntax_embed::HirModule,
+    declared: publish::Declared,
+    /// The file it came from, when it did.
+    file: Option<PathBuf>,
+}
+
+impl State {
+    /// Find, parse and lower module `name` (`game/scorer`); `None` when
+    /// no layout of the language has it. Lowered from a copy of the
+    /// program: the declarations type the interface, the HIR is what
+    /// runs.
+    fn parse(&self, name: &str) -> Result<Option<Parsed>, String> {
+        let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
+        let Some(found) = find(&segments, &self.language.architectures(), &self.staged) else {
+            return Ok(None);
+        };
+        let (source, file, path) = match found {
+            Found::Staged(staged) => (self.staged[&staged].clone(), staged, None),
+            Found::File(path) => (
+                std::fs::read_to_string(&path)
+                    .map_err(|e| format!("`{name}`: cannot read {}: {e}", path.display()))?,
+                path.to_string_lossy().into_owned(),
+                Some(path),
+            ),
+        };
+        let sources = Sources {
+            staged: &self.staged,
+        };
+        let program = self
+            .language
+            .parse(&self.runtime, &source, &file, &sources)
+            .map_err(|e| format!("`{name}`: {e}"))?;
+        let hir = self
+            .runtime
+            .lower_to_hir(program.clone())
+            .map_err(|e| format!("`{name}`: {e}"))?;
+        let exports = self.language.exports(&program);
+        let mut declared = publish::declared(&program, &exports, &hir, self.language.name());
+        for class in &mut declared.classes {
+            if let Some(members) = self.language.exported_members(&program, &class.name) {
+                class.methods.retain(|m| members.contains(&m.name));
+            }
+        }
+        Ok(Some(Parsed {
+            program,
+            hir,
+            declared,
+            file: path,
+        }))
+    }
+
+    /// Publish module `name`'s interface from `declared`, with the
+    /// runtime's current code behind each symbol.
+    fn publish(&self, lang: LangId, name: &str, declared: publish::Declared) -> Result<(), String> {
+        let iface = publish::interface(
+            lang,
+            self.language.name(),
+            name,
+            declared,
+            &|symbol| self.runtime.function_pointer(symbol),
+        );
+        registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))
+    }
+}
+
+/// The registry's loader for a grammar language: parse, lower, compile,
+/// publish from the HIR.
 fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
     let name = format!("{namespace}/{module}");
     STATES.with(|states| {
@@ -508,51 +585,58 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
                 "`{name}` cannot load: its Zyntax runtime is not on this thread"
             ));
         };
-        let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
-        let Some(found) = find(&segments, &state.language.architectures(), &state.staged) else {
+        let Some(parsed) = state.parse(&name)? else {
             return Ok(false);
         };
-        let (source, file) = match found {
-            Found::Staged(staged) => (state.staged[&staged].clone(), staged),
-            Found::File(path) => (
-                std::fs::read_to_string(&path)
-                    .map_err(|e| format!("`{name}`: cannot read {}: {e}", path.display()))?,
-                path.to_string_lossy().into_owned(),
-            ),
-        };
-        let sources = Sources {
-            staged: &state.staged,
-        };
-        let program = state
-            .language
-            .parse(&state.runtime, &source, &file, &sources)
-            .map_err(|e| format!("`{name}`: {e}"))?;
-        // Lowered from a copy: the declarations type the interface, the
-        // HIR is what runs.
-        let hir = state
-            .runtime
-            .lower_to_hir(program.clone())
-            .map_err(|e| format!("`{name}`: {e}"))?;
-        let exports = state.language.exports(&program);
-        let mut declared = publish::declared(&program, &exports, &hir, state.language.name());
-        for class in &mut declared.classes {
-            if let Some(members) = state.language.exported_members(&program, &class.name) {
-                class.methods.retain(|m| members.contains(&m.name));
-            }
-        }
         state
             .runtime
-            .compile_module(hir)
+            .compile_module(parsed.hir)
             .map_err(|e| format!("`{name}`: {e}"))?;
-        let iface = publish::interface(
-            lang,
-            state.language.name(),
-            &name,
-            declared,
-            &|symbol| state.runtime.function_pointer(symbol),
-        );
-        registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))?;
+        state.current = Some(name.clone());
+        state.publish(lang, &name, parsed.declared)?;
+        // A file the world watches: an edit reloads the module.
+        if let Some(path) = parsed.file {
+            registry::set_source(lang, &name, path);
+        }
         Ok(true)
+    })
+}
+
+/// Load module `name` again from its source, over the running one: the
+/// runtime swaps the functions whose code changed and keeps the rest,
+/// and the interface publishes again with the code now behind each
+/// symbol. A function that fails to compile keeps its old code and
+/// fails the reload. The runtime diffs an edit against the module it
+/// compiled last, so only that module reloads; see git-bug
+/// 5bcf0d678e3b10197a5554df0fea80caaac84522e7921e6aabca4449011fdc98.
+fn reload(lang: LangId, name: &str) -> Result<(), String> {
+    STATES.with(|states| {
+        let mut states = states.borrow_mut();
+        let Some(state) = states.get_mut(&lang) else {
+            return Err(format!(
+                "`{name}` cannot reload: its Zyntax runtime is not on this thread"
+            ));
+        };
+        match &state.current {
+            Some(current) if current == name => {}
+            Some(current) => {
+                return Err(format!(
+                    "`{name}` cannot reload: its runtime compiled `{current}` after it, and reloads only the last module it compiled"
+                ));
+            }
+            None => return Err(format!("`{name}` is not loaded")),
+        }
+        let Some(parsed) = state.parse(name)? else {
+            return Err(format!("`{name}` has no source to reload from"));
+        };
+        let report = state
+            .runtime
+            .reload_typed_program(parsed.program)
+            .map_err(|e| format!("`{name}`: {e}"))?;
+        if let Some((function, error)) = report.failed.first() {
+            return Err(format!("`{name}`: {function}: {error}"));
+        }
+        state.publish(lang, name, parsed.declared)
     })
 }
 

@@ -370,11 +370,14 @@ pub fn install(vm: &mut VM, lang: LangId, module: &str) -> Result<String, Import
     }
     // The module's own functions are module variables, each a `Function`
     // the importer calls as it calls a `Fn`: `import "game:tally" for
-    // score`, then `score.call(7, 2)`.
+    // score`, then `score.call(7, 2)`. A reload of the module reaches
+    // them: the value follows what the module publishes for the name.
     for function in &iface.functions {
-        let value = caribou::function::new(
+        let value = caribou::function::of_module(
+            iface.lang,
+            &iface.module,
+            &function.name,
             function.target,
-            &format!("{}.{}", iface.module, function.name),
             Some(function.params.len()),
         );
         let instance = proxy(vm, value)

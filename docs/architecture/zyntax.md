@@ -76,6 +76,7 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Native C ABI call dispatch for scalar types and managed strings.
 * Wren and Haxe cross-language module resolution and metadata generation.
 * Distribution within a Caribou bundle: each frontend as a language section (its snapshot, or a name for one built into Caribou), its modules as source (see [bundle.md](bundle.md)).
+* Reload of an edited module through the runtime's own hot reload, with the interface published again (see [world.md](world.md#reload)).
 
 **Pending Architecture:**
 

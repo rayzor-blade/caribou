@@ -6,7 +6,7 @@
 
 ## Interfaces
 
-An `Interface` describes one module of one language: its `lang`, its `module` name in that language's own terms (for example `game.Player` for Haxe), its classes, and the functions the module itself owns. A language whose modules export functions (Python, ZynML) publishes them as `functions`, each a `MethodIface` that takes only its parameters. Each importing language maps them in its own way: Wren installs a module variable per function, and Haxe, which imports types, does not see them.
+An `Interface` describes one module of one language: its `lang`, its `module` name in that language's own terms (for example `game.Player` for Haxe), its classes, and the functions the module itself owns. A language whose modules export functions (Python, ZynML) publishes them as `functions`, each a `MethodIface` that takes only its parameters. Each importing language maps them in its own way: Wren installs a module variable per function, a `Function` value of the core's own language that follows a reload of the module (`caribou::function::of_module`), and Haxe, which imports types, does not see them.
 
 A `ClassIface` contains:
 
