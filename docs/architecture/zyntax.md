@@ -75,6 +75,7 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * The Python frontend as a language: layout, exports, classes, and module functions.
 * Native C ABI call dispatch for scalar types and managed strings.
 * Wren and Haxe cross-language module resolution and metadata generation.
+* Distribution within a Caribou bundle: each frontend as a language section (its snapshot, or a name for one built into Caribou), its modules as source (see [bundle.md](bundle.md)).
 
 **Pending Architecture:**
 
@@ -82,4 +83,4 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
 * Bi-directional import resolution allowing Zyntax modules to import external host languages.
 * Effect system and fiber synchronization across the native runtime bridge.
-* Standalone distribution of Zyntax modules within composite deployment bundles.
+* Bundled modules in Zyntax's compiled form: the snapshot's lowered HIR with declarations beside it, in place of source.

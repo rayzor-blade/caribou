@@ -1,19 +1,29 @@
-//! Building a bundle from a project: the program, and every Wren module
-//! under the project's source roots, compiled. The namespaces are the
-//! project's (`project::namespaces`), so a program run from the bundle
-//! sees what it saw from the directory.
+//! Building a bundle from a project: the program, every Wren module
+//! under the project's source roots, compiled, every Zyntax frontend
+//! under them with the modules of its language, and the plugins beside
+//! the program. The namespaces are the project's
+//! (`project::namespaces`), so a program run from the bundle sees what
+//! it saw from the directory.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
 use caribou::bundle::{Bundle, Entry, Manifest, Section, SectionKind};
+use caribou_zyntax::Frontend;
 
 use crate::project;
+
+/// The form a Zyntax snapshot language section comes in.
+const SNAPSHOT: &str = "zsnap";
+/// The form of a language section for a frontend built into caribou.
+const BUILTIN: &str = "builtin";
+/// The extension of a Zyntax runtime plugin.
+const ZRTL: &str = "zrtl";
 
 /// The extension a bundle is written with.
 pub const EXTENSION: &str = "cb";
 
-/// The bundle for the program at `program`, with the Wren modules under
+/// The bundle for the program at `program`, with the modules under
 /// `roots`.
 pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
     let name = program
@@ -27,15 +37,45 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
         .collect();
     // The plugins beside the program are the ones its namespaces cover,
     // and they ship in the bundle for this target.
-    let plugins = caribou_plugin::load_dir(
-        &program
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("plugins"),
-    )
-    .map_err(|e| anyhow!("{e}"))?;
-    let plugin_names: Vec<String> = plugins.iter().map(|p| p.name().to_owned()).collect();
-    let namespaces = project::namespaces(roots, &imported, &plugin_names);
+    let plugin_dir = program
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("plugins");
+    let plugins = caribou_plugin::load_dir(&plugin_dir).map_err(|e| anyhow!("{e}"))?;
+    // The Zyntax frontends under the roots, each as the snapshot a run
+    // brings it up from, or as a name when caribou has it in.
+    let mut frontends: Vec<(Frontend, Section)> = Vec::new();
+    for file in Frontend::files_in(roots) {
+        let bytes = Frontend::snapshot_bytes(&file).map_err(|e| anyhow!(e))?;
+        let frontend = Frontend::snapshot(&bytes).map_err(|e| anyhow!("{}: {e}", file.display()))?;
+        let section = Section {
+            kind: SectionKind::Language,
+            lang: frontend.name().to_owned(),
+            format: SNAPSHOT.to_owned(),
+            name: file
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            data: bytes,
+        };
+        frontends.push((frontend, section));
+    }
+    for frontend in project::python(roots) {
+        let section = Section {
+            kind: SectionKind::Language,
+            lang: frontend.name().to_owned(),
+            format: BUILTIN.to_owned(),
+            name: String::new(),
+            data: Vec::new(),
+        };
+        frontends.push((frontend, section));
+    }
+    let others: Vec<String> = plugins
+        .iter()
+        .map(|p| p.name().to_owned())
+        .chain(frontends.iter().map(|(f, _)| f.name().to_owned()))
+        .collect();
+    let namespaces = project::namespaces(roots, &imported, &others);
     let mut sections = vec![Section {
         kind: SectionKind::Module,
         lang: "haxe".to_owned(),
@@ -93,18 +133,43 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
             data: source.into_bytes(),
         });
     }
-    for plugin in &plugins {
-        let path = plugin.path();
+    // Each frontend, then the modules of its language under the roots,
+    // as source: the frontend parses them as it would from a root.
+    for (frontend, section) in &frontends {
+        sections.push(section.clone());
+        let mut staged: Vec<String> = Vec::new();
+        for root in roots {
+            for (module, path) in frontend.modules_in(root) {
+                if staged.contains(&module) {
+                    continue;
+                }
+                sections.push(Section {
+                    kind: SectionKind::Module,
+                    lang: frontend.name().to_owned(),
+                    format: caribou_zyntax::SOURCE.to_owned(),
+                    name: module.clone(),
+                    data: std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
+                });
+                staged.push(module);
+            }
+        }
+    }
+    let mut libs: Vec<(String, PathBuf)> = plugins
+        .iter()
+        .map(|p| (String::new(), p.path().to_owned()))
+        .collect();
+    libs.extend(zrtl_plugins(&plugin_dir)?.into_iter().map(|p| ("zyntax".to_owned(), p)));
+    for (lang, path) in libs {
         sections.push(Section {
             kind: SectionKind::NativeLib,
-            lang: String::new(),
+            lang,
             format: caribou::bundle::target(),
             name: path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .ok_or_else(|| anyhow!("{} has no file name", path.display()))?
                 .to_owned(),
-            data: std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
+            data: std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?,
         });
     }
     Ok(Bundle {
@@ -147,33 +212,80 @@ pub fn wren_modules(root: &Path, dir: &Path, out: &mut Vec<(String, PathBuf)>) -
     Ok(())
 }
 
-/// The bundle's plugins for this target, loaded. A library loads from a
-/// file, so each is written under the temporary directory by the hash
-/// of its bytes, once per content; a library already there is loaded as
-/// it is.
-pub fn plugins(bundle: &Bundle) -> Result<Vec<caribou_plugin::Plugin>> {
-    let mut out = Vec::new();
-    for section in bundle.native_libs(&caribou::bundle::target()) {
-        let dir = std::env::temp_dir()
-            .join("caribou-plugins")
-            .join(format!("{:016x}", fnv(&section.data)));
+/// The `.zrtl` plugins in `dir`, in name order.
+fn zrtl_plugins(dir: &Path) -> Result<Vec<PathBuf>> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(Vec::new());
+    };
+    let mut out: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == ZRTL))
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
+/// The bundle's native libraries for this target, as a directory: a
+/// library loads from a file, so they are written under the temporary
+/// directory, in one directory per set of contents, once; a directory
+/// already there is used as it is. `caribou_plugin::load_dir` reads the
+/// plugins from it, and a Zyntax frontend its `.zrtl` plugins.
+pub fn native_libs(bundle: &Bundle) -> Result<PathBuf> {
+    let target = caribou::bundle::target();
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for section in bundle.native_libs(&target) {
+        hash = fnv(hash, section.name.as_bytes());
+        hash = fnv(hash, &section.data);
+    }
+    let dir = std::env::temp_dir()
+        .join("caribou-plugins")
+        .join(format!("{hash:016x}"));
+    for section in bundle.native_libs(&target) {
         let path = dir.join(&section.name);
-        if !path.is_file() {
-            std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
-            // Written whole before it has its name, so a reader never
-            // sees a partial library.
-            let part = dir.join(format!("{}.{}", section.name, std::process::id()));
-            std::fs::write(&part, &section.data).with_context(|| format!("writing {}", part.display()))?;
-            std::fs::rename(&part, &path).with_context(|| format!("placing {}", path.display()))?;
+        if path.is_file() {
+            continue;
         }
-        out.push(caribou_plugin::load(&path).map_err(|e| anyhow!("{}: {e}", section.name))?);
+        std::fs::create_dir_all(&dir).with_context(|| format!("making {}", dir.display()))?;
+        // Written whole before it has its name, so a reader never sees
+        // a partial library.
+        let part = dir.join(format!("{}.{}", section.name, std::process::id()));
+        std::fs::write(&part, &section.data).with_context(|| format!("writing {}", part.display()))?;
+        std::fs::rename(&part, &path).with_context(|| format!("placing {}", path.display()))?;
+    }
+    Ok(dir)
+}
+
+/// The frontends a bundle's language sections name, brought up from the
+/// snapshot each carries or from this build of caribou, with
+/// `plugin_dir` for their `.zrtl` plugins.
+pub fn frontends(bundle: &Bundle, plugin_dir: &Path) -> Result<Vec<Frontend>> {
+    let mut out = Vec::new();
+    for section in bundle.languages() {
+        let frontend = match section.format.as_str() {
+            SNAPSHOT => Frontend::snapshot(&section.data)
+                .map_err(|e| anyhow!("the language {} does not load: {e}", section.lang))?,
+            BUILTIN => project::builtin(&section.lang).ok_or_else(|| {
+                anyhow!(
+                    "the bundle needs the language {} built into caribou, and this build has no such language",
+                    section.lang
+                )
+            })?,
+            other => {
+                return Err(anyhow!(
+                    "the language {} comes as `{other}`, which this build does not read",
+                    section.lang
+                ));
+            }
+        };
+        out.push(frontend.with_plugin_dir(plugin_dir.to_owned()));
     }
     Ok(out)
 }
 
-/// FNV-1a over `bytes`.
-fn fnv(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
+/// FNV-1a over `bytes`, continued from `hash`.
+fn fnv(hash: u64, bytes: &[u8]) -> u64 {
+    bytes.iter().fold(hash, |h, &b| {
         (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
     })
 }

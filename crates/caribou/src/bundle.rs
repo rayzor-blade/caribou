@@ -11,9 +11,14 @@
 //! framing only; a module's format is its language's to read and to
 //! refuse. A source is the text a compiled module was built from, for
 //! its language's diagnostics, under the module's name. A resource is
-//! bytes by name, for whoever asks for it. A native library is a plugin
-//! on the shared ABI, under its file name, for the target its format
-//! names (`aarch64-macos`): a run takes the ones of its own target.
+//! bytes by name, for whoever asks for it. A native library is one a run
+//! opens from a file, under its file name, for the target its format
+//! names (`aarch64-macos`): a plugin on the shared ABI, or a runtime's
+//! own plugin form (a Zyntax `.zrtl`, with `lang` naming the runtime);
+//! a run takes the ones of its own target. A language is a frontend the
+//! run brings up itself to read the bundle's modules, under its name:
+//! the format says how it comes, a Zyntax snapshot with its grammar
+//! (`zsnap`) or one this build of caribou has in it (`builtin`).
 //!
 //! Wire format, all integers little-endian:
 //!
@@ -52,6 +57,7 @@ pub enum SectionKind {
     Resource = 2,
     Source = 3,
     NativeLib = 4,
+    Language = 5,
 }
 
 /// One section: for a module, `lang` names the language, `format` the
@@ -59,7 +65,10 @@ pub enum SectionKind {
 /// language; for a source, `lang` and the module's `name`, `format`
 /// empty, `data` the text; for a resource, `name` alone, `lang` and
 /// `format` empty; for a native library, `format` the target, `name`
-/// the file name, `lang` empty.
+/// the file name, `lang` the runtime whose plugin form it is, or empty
+/// for a plugin on the shared ABI; for a language, `lang` its name,
+/// `format` how it comes (`zsnap`, `builtin`), `name` the file it came
+/// from or empty, `data` the snapshot or empty.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Section {
     pub kind: SectionKind,
@@ -102,6 +111,13 @@ impl Bundle {
         self.sections
             .iter()
             .filter(move |s| s.kind == SectionKind::NativeLib && s.format == target)
+    }
+
+    /// The languages a run brings up to read the modules.
+    pub fn languages(&self) -> impl Iterator<Item = &Section> {
+        self.sections
+            .iter()
+            .filter(|s| s.kind == SectionKind::Language)
     }
 
     /// The entry module's section, when the bundle carries it.
@@ -229,6 +245,7 @@ pub fn load(bytes: &[u8]) -> Result<Bundle, Error> {
             2 => SectionKind::Resource,
             3 => SectionKind::Source,
             4 => SectionKind::NativeLib,
+            5 => SectionKind::Language,
             k => return Err(Error::Kind(k)),
         };
         sections.push(Section {
@@ -360,6 +377,20 @@ mod tests {
                     name: "libmath.dylib".to_owned(),
                     data: vec![0xcf, 0xfa, 0xed, 0xfe],
                 },
+                Section {
+                    kind: SectionKind::Language,
+                    lang: "zynml".to_owned(),
+                    format: "zsnap".to_owned(),
+                    name: "zynml.zsnap".to_owned(),
+                    data: b"ZSNP...".to_vec(),
+                },
+                Section {
+                    kind: SectionKind::Language,
+                    lang: "python".to_owned(),
+                    format: "builtin".to_owned(),
+                    name: String::new(),
+                    data: Vec::new(),
+                },
             ],
         }
     }
@@ -375,6 +406,11 @@ mod tests {
         assert_eq!(back.modules().count(), 2);
         assert_eq!(back.native_libs("aarch64-macos").count(), 1);
         assert_eq!(back.native_libs("x86_64-windows").count(), 0);
+        let languages: Vec<(&str, &str)> = back
+            .languages()
+            .map(|s| (s.lang.as_str(), s.format.as_str()))
+            .collect();
+        assert_eq!(languages, [("zynml", "zsnap"), ("python", "builtin")]);
     }
 
     #[test]

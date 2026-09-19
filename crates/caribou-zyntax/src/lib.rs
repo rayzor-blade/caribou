@@ -35,7 +35,7 @@ use caribou::world::{self, Adapter};
 use caribou_abi::LangId;
 use zyntax_embed::{
     ExportedSymbol, LanguageGrammar, ModuleArchitecture, SNAPSHOT_EXTENSION, Snapshot,
-    TieredConfig, TieredRuntime, TypedProgram,
+    SnapshotBuilder, TieredConfig, TieredRuntime, TypedProgram,
 };
 
 mod dispatch;
@@ -79,7 +79,33 @@ pub trait Language {
 
     /// The typed AST of a module's `source`, `file` naming it, for
     /// `runtime`: what a program links against types what it parses to.
-    fn parse(&self, runtime: &TieredRuntime, source: &str, file: &str) -> Result<TypedProgram, String>;
+    /// A frontend that reads the modules this one imports itself reads
+    /// them from `sources`.
+    fn parse(
+        &self,
+        runtime: &TieredRuntime,
+        source: &str,
+        file: &str,
+        sources: &Sources,
+    ) -> Result<TypedProgram, String>;
+}
+
+/// Where a language's modules are read from: a bundle's staged sources
+/// first, by path under a root, then the world's source roots.
+pub struct Sources<'a> {
+    staged: &'a HashMap<String, String>,
+}
+
+impl Sources<'_> {
+    /// The source of the module with these path segments (`["game",
+    /// "util"]`) under one of `architectures`' layouts, when there is
+    /// one.
+    pub fn module(&self, segments: &[String], architectures: &[ModuleArchitecture]) -> Option<String> {
+        match find(segments, architectures, self.staged)? {
+            Found::Staged(name) => Some(self.staged[&name].clone()),
+            Found::File(path) => std::fs::read_to_string(path).ok(),
+        }
+    }
 }
 
 /// The layouts a grammar's `file_extensions` describe: a file per module
@@ -124,7 +150,13 @@ impl Language for GrammarLanguage {
         Ok(())
     }
 
-    fn parse(&self, runtime: &TieredRuntime, source: &str, file: &str) -> Result<TypedProgram, String> {
+    fn parse(
+        &self,
+        runtime: &TieredRuntime,
+        source: &str,
+        file: &str,
+        _sources: &Sources,
+    ) -> Result<TypedProgram, String> {
         self.grammar
             .parse_with_signatures(source, file, runtime.plugin_signatures())
             .map_err(|e| e.to_string())
@@ -174,7 +206,13 @@ impl Language for SnapshotLanguage {
             .map_err(|e| e.to_string())
     }
 
-    fn parse(&self, runtime: &TieredRuntime, source: &str, file: &str) -> Result<TypedProgram, String> {
+    fn parse(
+        &self,
+        runtime: &TieredRuntime,
+        source: &str,
+        file: &str,
+        _sources: &Sources,
+    ) -> Result<TypedProgram, String> {
         self.grammar
             .parse_with_signatures(source, file, runtime.plugin_signatures())
             .map_err(|e| e.to_string())
@@ -214,6 +252,42 @@ impl Frontend {
         }
         let grammar = LanguageGrammar::compile_zyn_file(path).map_err(|e| at(e.to_string()))?;
         Ok(Frontend::grammar(grammar))
+    }
+
+    /// The frontend in `path` as snapshot bytes, the form a bundle
+    /// carries: a `.zsnap` as it is, a `.zyn` compiled and wrapped in a
+    /// snapshot of its grammar alone.
+    pub fn snapshot_bytes(path: &std::path::Path) -> Result<Vec<u8>, String> {
+        let at = |e: String| format!("{}: {e}", path.display());
+        if path.extension().is_some_and(|e| e == SNAPSHOT_EXTENSION) {
+            return std::fs::read(path).map_err(|e| at(e.to_string()));
+        }
+        let grammar = LanguageGrammar::compile_zyn_file(path).map_err(|e| at(e.to_string()))?;
+        let compiled = grammar.to_compiled_bytes().map_err(|e| at(e.to_string()))?;
+        SnapshotBuilder::new(grammar.name())
+            .grammar(compiled)
+            .encode()
+            .map_err(|e| at(e.to_string()))
+    }
+
+    /// The module files of this language under `root`, as `(path under
+    /// the root, path)`: every file one of its layouts reads, in walk
+    /// order. The name is what a bundle stages the module under and
+    /// what `find` asks for.
+    pub fn modules_in(&self, root: &std::path::Path) -> Vec<(String, PathBuf)> {
+        let architectures = self.language.architectures();
+        walk(root)
+            .into_iter()
+            .filter(|file| {
+                architectures
+                    .iter()
+                    .any(|arch| module_of(arch, root, file).is_some())
+            })
+            .filter_map(|file| {
+                let name = staged_name(file.strip_prefix(root).ok()?);
+                Some((name, file))
+            })
+            .collect()
     }
 
     /// Whether `path` names a frontend file.
@@ -266,10 +340,23 @@ impl Frontend {
     }
 }
 
-/// A language's runtime and frontend, on the thread that registered it.
+/// A language's runtime and frontend, on the thread that registered it,
+/// and the module sources a bundle staged for it, by path under a root.
 struct State {
     language: Box<dyn Language>,
     runtime: TieredRuntime,
+    staged: HashMap<String, String>,
+}
+
+/// The form a bundle carries a module of these languages in.
+pub const SOURCE: &str = "source";
+
+/// A path under a root as a staged module's name: `/`-separated.
+fn staged_name(rel: &std::path::Path) -> String {
+    rel.components()
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 thread_local! {
@@ -307,6 +394,7 @@ impl Adapter for Runtime {
                     State {
                         language: frontend.language,
                         runtime,
+                        staged: HashMap::new(),
                     },
                 )
             });
@@ -314,17 +402,63 @@ impl Adapter for Runtime {
             registry::set_loader(lang, Arc::new(move |ns, module| load(lang, ns, module)));
         }
     }
+
+    /// A bundle's module of one of these languages: its source, staged
+    /// under its path, for the loader to find before any root.
+    fn install(&self, lang: LangId, section: &caribou::bundle::Section) -> Result<(), String> {
+        use caribou::bundle::SectionKind;
+        if section.kind != SectionKind::Module || section.format != SOURCE {
+            return Err(format!(
+                "a {} module comes as {SOURCE}, not `{}`",
+                world::language_name(lang),
+                section.format
+            ));
+        }
+        let text = String::from_utf8(section.data.clone())
+            .map_err(|e| format!("the source is not UTF-8: {e}"))?;
+        STATES.with(|states| {
+            let mut states = states.borrow_mut();
+            let state = states
+                .get_mut(&lang)
+                .ok_or("its Zyntax runtime is not on this thread")?;
+            state.staged.insert(section.name.clone(), text);
+            Ok(())
+        })
+    }
 }
 
-/// The file for module `name` (`game/scorer`) of a language with these
-/// layouts, under the first root that has one.
-fn find(name: &str, architectures: &[ModuleArchitecture]) -> Option<PathBuf> {
-    let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
+/// Where a module's source was found.
+enum Found {
+    /// Staged from a bundle, under this name.
+    Staged(String),
+    File(PathBuf),
+}
+
+/// The source of the module with these path segments (`["game",
+/// "scorer"]`) of a language with these layouts: staged under one of
+/// the paths a layout gives it, else the file under the first root that
+/// has one.
+fn find(
+    segments: &[String],
+    architectures: &[ModuleArchitecture],
+    staged: &HashMap<String, String>,
+) -> Option<Found> {
+    if !staged.is_empty() {
+        let found = architectures
+            .iter()
+            .flat_map(|arch| arch.module_to_paths(segments, &PathBuf::new()))
+            .map(|path| staged_name(&path))
+            .find(|name| staged.contains_key(name));
+        if let Some(name) = found {
+            return Some(Found::Staged(name));
+        }
+    }
     world::source_roots().into_iter().find_map(|root| {
         architectures
             .iter()
-            .flat_map(|arch| arch.module_to_paths(&segments, &root))
+            .flat_map(|arch| arch.module_to_paths(segments, &root))
             .find(|path| path.is_file())
+            .map(Found::File)
     })
 }
 
@@ -374,14 +508,24 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
                 "`{name}` cannot load: its Zyntax runtime is not on this thread"
             ));
         };
-        let Some(path) = find(&name, &state.language.architectures()) else {
+        let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
+        let Some(found) = find(&segments, &state.language.architectures(), &state.staged) else {
             return Ok(false);
         };
-        let source = std::fs::read_to_string(&path)
-            .map_err(|e| format!("`{name}`: cannot read {}: {e}", path.display()))?;
+        let (source, file) = match found {
+            Found::Staged(staged) => (state.staged[&staged].clone(), staged),
+            Found::File(path) => (
+                std::fs::read_to_string(&path)
+                    .map_err(|e| format!("`{name}`: cannot read {}: {e}", path.display()))?,
+                path.to_string_lossy().into_owned(),
+            ),
+        };
+        let sources = Sources {
+            staged: &state.staged,
+        };
         let program = state
             .language
-            .parse(&state.runtime, &source, &path.to_string_lossy())
+            .parse(&state.runtime, &source, &file, &sources)
             .map_err(|e| format!("`{name}`: {e}"))?;
         // Lowered from a copy: the declarations type the interface, the
         // HIR is what runs.

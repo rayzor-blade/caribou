@@ -7,13 +7,12 @@
 //! in Haxe reaches `game/scorer.py`.
 //!
 //! A Python module may import other Python modules of the project by
-//! their dotted name (`import game.util`); the resolver finds them under
-//! the world's source roots.
+//! their dotted name (`import game.util`); the adapter's `Sources` finds
+//! them, staged from a bundle or under the world's source roots.
 
 use std::path::Path;
 
-use caribou::world;
-use caribou_zyntax::Language;
+use caribou_zyntax::{Language, Sources};
 use caribou_zyntax::zyntax_embed::{
     Collector, ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
 };
@@ -61,17 +60,6 @@ fn has_py(dir: &Path) -> bool {
     false
 }
 
-/// The source of the project's Python module `name` (`game.util`), under
-/// the first root that has it.
-fn module_source(name: &str) -> Option<String> {
-    let relative = format!("{}.py", name.replace('.', "/"));
-    world::source_roots()
-        .into_iter()
-        .map(|root| root.join(&relative))
-        .find(|path| path.is_file())
-        .and_then(|path| std::fs::read_to_string(path).ok())
-}
-
 impl Language for Python {
     fn name(&self) -> &str {
         "python"
@@ -117,7 +105,21 @@ impl Language for Python {
         Ok(())
     }
 
-    fn parse(&self, _runtime: &TieredRuntime, source: &str, file: &str) -> Result<TypedProgram, String> {
-        zyntax_python::parse_program_with(source, file, &module_source).map_err(|e| e.render(file, source, false))
+    /// The modules this one imports (`import game.util`) come from
+    /// `sources`, by Python's own layout.
+    fn parse(
+        &self,
+        _runtime: &TieredRuntime,
+        source: &str,
+        file: &str,
+        sources: &Sources,
+    ) -> Result<TypedProgram, String> {
+        let architectures = self.architectures();
+        let module_source = |name: &str| {
+            let segments: Vec<String> = name.split('.').map(str::to_owned).collect();
+            sources.module(&segments, &architectures)
+        };
+        zyntax_python::parse_program_with(source, file, &module_source)
+            .map_err(|e| e.render(file, source, false))
     }
 }

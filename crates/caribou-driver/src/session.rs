@@ -76,8 +76,11 @@ impl Session {
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
         if bundle::looks_like(&bytes) {
             let bundle = bundle::load(&bytes).with_context(|| path.display().to_string())?;
-            // A bundle's plugins are its own native library sections.
-            let plugins = crate::bundle::plugins(&bundle)?;
+            // A bundle's plugins are its own native library sections,
+            // and its languages come up from its language sections.
+            let plugin_dir = crate::bundle::native_libs(&bundle)?;
+            let plugins = caribou_plugin::load_dir(&plugin_dir).map_err(|e| anyhow!("{e}"))?;
+            let frontends = crate::bundle::frontends(&bundle, &plugin_dir)?;
             let entry = bundle
                 .entry()
                 .ok_or_else(|| anyhow!("{} carries no entry module", path.display()))?;
@@ -100,7 +103,7 @@ impl Session {
                 program,
                 config,
                 plugins,
-                Vec::new(),
+                frontends,
                 Some(&bundle),
                 options.wren_mode,
                 options.report,
@@ -137,15 +140,7 @@ impl Session {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .join("plugins");
-        let mut frontends = caribou_zyntax::Frontend::files_in(&roots)
-            .iter()
-            .map(|file| {
-                caribou_zyntax::Frontend::file(file)
-                    .map(|f| f.with_plugin_dir(plugin_dir.clone()))
-                    .map_err(|e| anyhow!(e))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        frontends.extend(project::python(&roots));
+        let frontends = project::frontends(&roots, &plugin_dir)?;
         let others: Vec<String> = plugins
             .iter()
             .map(|p| p.name().to_owned())

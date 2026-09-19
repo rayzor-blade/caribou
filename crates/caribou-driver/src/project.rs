@@ -74,10 +74,37 @@ pub fn roots(program: &Path) -> Vec<PathBuf> {
 /// its own, so no file under a root names it.
 pub fn python(roots: &[impl AsRef<Path>]) -> Vec<caribou_zyntax::Frontend> {
     if caribou_python::Python::present_in(roots) {
-        vec![caribou_zyntax::Frontend::new(Box::new(caribou_python::Python::new()))]
+        builtin("python").into_iter().collect()
     } else {
         Vec::new()
     }
+}
+
+/// The frontend this build of caribou has in it under `lang`, the one a
+/// bundle's `builtin` language section asks for.
+pub fn builtin(lang: &str) -> Option<caribou_zyntax::Frontend> {
+    match lang {
+        "python" => Some(caribou_zyntax::Frontend::new(Box::new(
+            caribou_python::Python::new(),
+        ))),
+        _ => None,
+    }
+}
+
+/// The Zyntax frontends of a project: the frontend files under `roots`,
+/// each with `plugin_dir` for its `.zrtl` plugins, and the languages
+/// that parse on their own when a root holds their files.
+pub fn frontends(roots: &[PathBuf], plugin_dir: &Path) -> anyhow::Result<Vec<caribou_zyntax::Frontend>> {
+    let mut frontends = caribou_zyntax::Frontend::files_in(roots)
+        .iter()
+        .map(|file| {
+            caribou_zyntax::Frontend::file(file)
+                .map(|f| f.with_plugin_dir(plugin_dir.to_owned()))
+                .map_err(|e| anyhow::anyhow!(e))
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    frontends.extend(python(roots));
+    Ok(frontends)
 }
 
 /// The namespaces of a project: each directory under a root, and each
