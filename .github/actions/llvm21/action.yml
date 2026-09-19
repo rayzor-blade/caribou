@@ -1,0 +1,29 @@
+# The LLVM 21 libclang that ash_core's build script binds HashLink's
+# headers with: bindgen against any other libclang turns `hl_type` into an
+# opaque blob, and the build script stops on that. From apt.llvm.org on
+# Linux and Homebrew on macOS, named by LLVM_SYS_211_PREFIX and
+# LIBCLANG_PATH for the steps after. On Windows the runner image's LLVM
+# serves, as it does for ash's own release.
+name: LLVM 21 for bindgen
+description: Install LLVM 21 and point ash's build script at its libclang.
+runs:
+  using: composite
+  steps:
+    - name: LLVM 21 (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
+        sudo apt-get install -y libclang-21-dev
+        echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
+    - name: LLVM 21 (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        brew install llvm@21
+        prefix="$(brew --prefix llvm@21)"
+        "$prefix/bin/llvm-config" --version | grep -q '^21\.' \
+          || { echo "::error::Homebrew's llvm@21 is not LLVM 21"; exit 1; }
+        echo "LLVM_SYS_211_PREFIX=$prefix" >> "$GITHUB_ENV"
+        echo "LIBCLANG_PATH=$prefix/lib" >> "$GITHUB_ENV"

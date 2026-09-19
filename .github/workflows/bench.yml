@@ -32,12 +32,9 @@ jobs:
         with:
           path: caribou
       - uses: dtolnay/rust-toolchain@nightly
-      - name: LLVM 21 (libclang for bindgen)
-        if: runner.os == 'Linux'
-        run: |
-          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
-          sudo apt-get install -y libclang-21-dev
-          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+        with:
+          components: rustfmt # bindgen pretty-prints through it
+      - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:

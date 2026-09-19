@@ -769,22 +769,36 @@ mod tests {
         let obj = Value::object(!obj_hidden as *const c_void);
 
         heap::major();
-        assert_eq!(
-            of(obj, 41).map(Value::to_bits),
-            Some(Value::object(!cell_hidden as *const c_void).to_bits()),
+        assert!(
+            cell_of_is(obj, cell_hidden),
             "the cell lives while the holder's handle does"
         );
 
         heap::handle_release(root);
         scrub_stack();
         heap::major();
-        assert_eq!(of(obj, 41), None, "dropped, the cell left the map");
+        assert!(!has_cell(obj), "dropped, the cell left the map");
         #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
         heap::gc_unregister_current_os_thread();
     }
 
-    /// Overwrite the stack below this frame, where `of` left the cell's
-    /// address for the conservative scan to find.
+    /// Whether `obj`'s cell is the one at `cell_hidden` inverted. The
+    /// lookup runs in a frame of its own, below the test's, so the cell's
+    /// address never sits in a slot of the test's frame, where the
+    /// conservative scan would find it after the handle is released.
+    #[inline(never)]
+    fn cell_of_is(obj: Value, cell_hidden: usize) -> bool {
+        of(obj, 41).map(Value::to_bits)
+            == Some(Value::object(!cell_hidden as *const c_void).to_bits())
+    }
+
+    #[inline(never)]
+    fn has_cell(obj: Value) -> bool {
+        of(obj, 41).is_some()
+    }
+
+    /// Overwrite the stack below this frame, where the lookups left the
+    /// cell's address for the conservative scan to find.
     #[inline(never)]
     fn scrub_stack() {
         let buf = [0u8; 1 << 14];

@@ -37,7 +37,7 @@ jobs:
           workspaces: caribou
       - name: Tests
         working-directory: caribou
-        run: cargo test -p caribou_abi -p caribou -p caribou-wren -p caribou-plugin
+        run: cargo test --no-fail-fast -p caribou_abi -p caribou -p caribou-wren -p caribou-plugin
 
   workspace:
     name: workspace (nightly, ${{ matrix.os }})
@@ -54,14 +54,9 @@ jobs:
         with:
           path: caribou
       - uses: dtolnay/rust-toolchain@nightly
-      # ash_core's build script binds HashLink's headers with bindgen, which
-      # wants LLVM 21's libclang; macOS runners have Xcode's, Linux installs it.
-      - name: LLVM 21 (libclang for bindgen)
-        if: runner.os == 'Linux'
-        run: |
-          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
-          sudo apt-get install -y libclang-21-dev
-          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+        with:
+          components: rustfmt # bindgen pretty-prints through it
+      - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:
@@ -91,11 +86,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy
-      - name: LLVM 21 (libclang for bindgen)
-        run: |
-          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
-          sudo apt-get install -y libclang-21-dev
-          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
+      - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:
@@ -125,11 +116,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           targets: wasm32-wasip1
-      - name: LLVM 21 (libclang for bindgen)
-        run: |
-          wget -qO- https://apt.llvm.org/llvm.sh | sudo bash -s -- 21
-          sudo apt-get install -y libclang-21-dev
-          echo "LLVM_SYS_211_PREFIX=/usr/lib/llvm-21" >> "$GITHUB_ENV"
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:
