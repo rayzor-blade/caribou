@@ -19,8 +19,16 @@ pub unsafe extern "C" fn gc_alloc(size: usize) -> *mut u8 {
     raw(heap::gc_alloc(size))
 }
 
+pub unsafe extern "C" fn gc_alloc_noptr(size: usize) -> *mut u8 {
+    raw(heap::gc_alloc_noptr(size))
+}
+
 pub unsafe extern "C" fn alloc_locked(size: usize) -> *mut u8 {
     raw(heap::gc_locked_init().allocate(size))
+}
+
+pub unsafe extern "C" fn alloc_locked_noptr(size: usize) -> *mut u8 {
+    raw(heap::gc_locked_init().allocate_noptr(size))
 }
 
 pub unsafe extern "C" fn alloc_immortal(size: usize) -> *mut u8 {

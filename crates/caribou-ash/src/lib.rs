@@ -211,7 +211,9 @@ fn table() -> RuntimeVTable {
         size: std::mem::size_of::<RuntimeVTable>() as u32,
         // Heap.
         gc_alloc: Some(heap::gc_alloc),
+        gc_alloc_noptr: Some(heap::gc_alloc_noptr),
         alloc_locked: Some(heap::alloc_locked),
+        alloc_locked_noptr: Some(heap::alloc_locked_noptr),
         alloc_immortal: Some(heap::alloc_immortal),
         alloc_with_finalizer: Some(heap::alloc_with_finalizer),
         allocation_size: Some(heap::allocation_size),

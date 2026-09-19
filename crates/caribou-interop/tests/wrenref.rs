@@ -49,15 +49,6 @@ fn wren_has(vm: &VM, hidden: usize) -> bool {
     vm.gc.containing_allocation(!hidden + 16).is_some()
 }
 
-/// Overwrite the stack below this frame: the core's collection left the
-/// object's address in frames the Wren cycle's frames then reuse, where
-/// its conservative scan would find it.
-#[inline(never)]
-fn scrub_stack() {
-    let buf = [0u8; 1 << 16];
-    std::hint::black_box(&buf);
-}
-
 /// The ref Haxe holds for the object at `hidden` inverted, as its address
 /// inverted, or 0 for none; see `wren_has` for the frame. A word, not an
 /// `Option`: the payload register of a `None` is whatever the callee left
@@ -174,10 +165,10 @@ fn haxe_holds_a_wren_object_through_a_ref() {
     // its handle; the object goes with the next Wren cycle. The scrub
     // clears what `ref_for` left below this frame.
     heap::handle_release(root);
-    scrub_stack();
+    heap::scrub_stack_and_registers();
     heap::major();
     assert_eq!(ref_for(obj_hidden), 0, "the object no longer keeps the ref");
-    scrub_stack();
+    heap::scrub_stack_and_registers();
     vm.collect_garbage();
     assert!(
         !wren_has(&vm, obj_hidden),

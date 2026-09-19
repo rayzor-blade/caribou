@@ -336,7 +336,7 @@ thread_local! {
             hooked_limit: Cell::new(0),
             hooked_block: Cell::new(usize::MAX),
             objects: Cell::new(std::ptr::null()),
-            heap_base: Cell::new(0),
+            heap_base: Cell::new(!0),
             blocks: Cell::new(std::ptr::null()),
             registered: Cell::new(false),
             deferred: Cell::new(false),
@@ -347,8 +347,14 @@ thread_local! {
 }
 
 /// This thread's bump region, plus whether it is a registered mutator.
+///
+/// The cursor and the limit are heap offsets, not addresses. glibc keeps
+/// a thread's locals at the top of its stack mapping, inside what the
+/// conservative scan covers, and a region's end address is the next
+/// block's first object, which the scan would then keep alive. A limit of
+/// zero is no region.
 struct Tlab {
-    /// Bump cursor and the end of the region.
+    /// Bump cursor and the end of the region, as offsets from `heap_base`.
     cur: Cell<usize>,
     limit: Cell<usize>,
     /// Heap offset of the block this thread is bumping through, so a refill
@@ -362,6 +368,8 @@ struct Tlab {
     /// Stable side table, shared atomically with the stopped-world marker.
     /// A bump publishes its boundary before returning the new allocation.
     objects: Cell<*const std::sync::atomic::AtomicU8>,
+    /// The heap's first address, inverted: as an address it is the heap's
+    /// first object, which the scan would keep alive.
     heap_base: Cell<usize>,
     /// The block table, as stable as the side table, for a drop-hooked
     /// allocation to flag its block.
@@ -1264,6 +1272,12 @@ pub fn gc_alloc(size: usize) -> Option<NonNull<u8>> {
     gc_alloc_kind(size, 0, false)
 }
 
+/// [`gc_alloc`] for memory that never holds a heap pointer: the collector
+/// keeps it reachable and never scans it.
+pub fn gc_alloc_noptr(size: usize) -> Option<NonNull<u8>> {
+    gc_alloc_kind(size, OBJECT_KIND_NOPTR, false)
+}
+
 /// [`gc_alloc`] with the allocation's kind bits written beside its size in
 /// the same side-table access, and its block flagged when the object has
 /// a drop hook. Through the bump region this is one thread-local lookup;
@@ -1286,20 +1300,20 @@ fn gc_alloc_kind(size: usize, kind: u8, has_drop: bool) -> Option<NonNull<u8>> {
             } else {
                 (&t.cur, t.limit.get())
             };
-            let cur = cur_cell.get();
-            if cur != 0 {
-                let mut p = cur;
+            if limit != 0 {
+                let base = !t.heap_base.get();
+                let mut p = base + cur_cell.get();
                 if (p & (LINE_SIZE - 1)) + aligned > LINE_SIZE {
                     p = (p + LINE_SIZE - 1) & !(LINE_SIZE - 1);
                 }
                 let np = p + aligned;
-                if np <= limit {
-                    let offset = p - t.heap_base.get();
+                if np <= base + limit {
+                    let offset = p - base;
                     unsafe {
                         (*t.objects.get().add(offset / ALLOC_QUANTUM))
                             .store((aligned / ALLOC_QUANTUM) as u8 | kind, Ordering::Relaxed);
                     }
-                    cur_cell.set(np);
+                    cur_cell.set(np - base);
                     return Step::Bumped(p);
                 }
             }
@@ -1330,7 +1344,8 @@ fn gc_alloc_kind(size: usize, kind: u8, has_drop: bool) -> Option<NonNull<u8>> {
 }
 
 /// Install `block` as this thread's bump region, releasing the previous one.
-/// The set of in-use regions lives on the heap because `sweep` consults it
+/// `cur` and `limit` are addresses; the thread keeps them as offsets. The
+/// set of in-use regions lives on the heap because `sweep` consults it
 /// under the same lock; only the cursor is thread-local.
 fn adopt_tlab_region(
     gc: &mut ImmixAllocator,
@@ -1347,18 +1362,19 @@ fn adopt_tlab_region(
             .has_drop
             .store(true, Ordering::Relaxed);
     }
+    let base = gc.heap.memory.as_ptr() as usize;
     TLAB.with(|t| {
         t.objects.set(gc.heap.objects.as_ptr());
-        t.heap_base.set(gc.heap.memory.as_ptr() as usize);
+        t.heap_base.set(!base);
         t.blocks.set(gc.blocks.as_ptr());
         if hooked {
             t.hooked_block.set(block);
-            t.hooked_cur.set(cur);
-            t.hooked_limit.set(limit);
+            t.hooked_cur.set(cur - base);
+            t.hooked_limit.set(limit - base);
         } else {
             t.block.set(block);
-            t.cur.set(cur);
-            t.limit.set(limit);
+            t.cur.set(cur - base);
+            t.limit.set(limit - base);
         }
     });
 }
@@ -3240,6 +3256,15 @@ impl ImmixAllocator {
             .borrow_mut()
             .persistent_roots
             .insert(p.as_ptr() as *mut hl::vdynamic);
+        Some(p)
+    }
+
+    /// [`Self::allocate`] for memory that never holds a heap pointer: the
+    /// collector keeps it reachable and never scans it.
+    pub fn allocate_noptr(&mut self, size: usize) -> Option<NonNull<u8>> {
+        let p = self.allocate(size)?;
+        let offset = p.as_ptr() as usize - self.heap.memory.as_ptr() as usize;
+        self.set_allocation_kind(offset, OBJECT_KIND_NOPTR);
         Some(p)
     }
 

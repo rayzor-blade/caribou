@@ -759,12 +759,31 @@ mod tests {
         (heap::handle_new(cp), !(cp as usize), !(s as usize))
     }
 
+    /// This thread as a mutator for the test's collections, unregistered
+    /// when the test ends, however it ends: a thread left registered
+    /// stalls every later collection in the process.
+    struct Mutator;
+
+    impl Mutator {
+        fn register() -> Mutator {
+            // A wasm module's one thread is registered by `init`.
+            #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+            heap::gc_register_current_os_thread();
+            Mutator
+        }
+    }
+
+    impl Drop for Mutator {
+        fn drop(&mut self) {
+            #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+            heap::gc_unregister_current_os_thread();
+        }
+    }
+
     #[test]
     fn one_cell_per_object_while_the_holder_keeps_it() {
         heap::init();
-        // A wasm module's one thread is registered by `init`.
-        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-        heap::gc_register_current_os_thread();
+        let _mutator = Mutator::register();
         let (root, cell_hidden, obj_hidden) = held();
         let obj = Value::object(!obj_hidden as *const c_void);
 
@@ -775,11 +794,9 @@ mod tests {
         );
 
         heap::handle_release(root);
-        scrub_stack();
+        heap::scrub_stack_and_registers();
         heap::major();
         assert!(!has_cell(obj), "dropped, the cell left the map");
-        #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
-        heap::gc_unregister_current_os_thread();
     }
 
     /// Whether `obj`'s cell is the one at `cell_hidden` inverted. The
@@ -795,14 +812,6 @@ mod tests {
     #[inline(never)]
     fn has_cell(obj: Value) -> bool {
         of(obj, 41).is_some()
-    }
-
-    /// Overwrite the stack below this frame, where the lookups left the
-    /// cell's address for the conservative scan to find.
-    #[inline(never)]
-    fn scrub_stack() {
-        let buf = [0u8; 1 << 14];
-        std::hint::black_box(&buf);
     }
 
     #[test]
