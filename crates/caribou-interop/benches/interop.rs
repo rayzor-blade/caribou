@@ -92,6 +92,8 @@ fn main() {
         Options {
             mode: args.mode,
             wren_mode: args.wren_mode,
+            // The program as it runs, not as it reloads.
+            reload: false,
             ..Options::default()
         },
     )

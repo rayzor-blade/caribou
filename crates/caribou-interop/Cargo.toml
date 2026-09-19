@@ -26,6 +26,8 @@ caribou-python = { path = "../caribou-python" }
 # ZynML's snapshot, the Zyntax frontend of the tests.
 zynml = { workspace = true }
 ash_std = { workspace = true }
+# The Haxe reload test rebuilds a program by editing its bytecode.
+ash_core = { workspace = true }
 wren_lift = { workspace = true }
 
 [lib]

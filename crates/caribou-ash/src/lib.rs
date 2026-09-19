@@ -79,6 +79,25 @@ impl Adapter for Runtime {
         // ash's own startup installs the same one, so this is idempotent.
         unsafe { ash_std::fun::hlp_install_static_call() };
     }
+
+    /// Reload the program from its file, whichever of its modules is
+    /// named: a Haxe program is one file. Ash reads and checks the file
+    /// now and refuses a program that cannot replace the running one in
+    /// place (a type's layout, the globals or the function table changed
+    /// shape); an accepted one is applied by the interpreter when it next
+    /// returns from a native call, which is before any Haxe code runs
+    /// again on a program parked in one. Every published callable reads
+    /// its function's slot per call, so it follows without republishing.
+    fn reload(&self, _lang: LangId, _module: &str) -> Result<(), String> {
+        #[cfg(feature = "runner")]
+        {
+            ash_core::reload::stage_reload().map(drop)
+        }
+        #[cfg(not(feature = "runner"))]
+        {
+            Err("this build of caribou-ash runs no program to reload".to_owned())
+        }
+    }
 }
 
 /// Why an install did not happen.

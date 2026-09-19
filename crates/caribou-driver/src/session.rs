@@ -30,6 +30,11 @@ pub struct Options {
     /// Count what the run does, for [`Session::report`]: how often each
     /// Wren function is entered, per tier.
     pub report: bool,
+    /// Let the Haxe program reload in place when its file changes, as the
+    /// other languages' modules do. Ash then lowers what its interpreter
+    /// walks without inlining and enters no interpreted loop by OSR, so a
+    /// measurement of the program itself turns this off.
+    pub reload: bool,
 }
 
 impl Default for Options {
@@ -40,6 +45,7 @@ impl Default for Options {
             roots: Vec::new(),
             args: Vec::new(),
             report: false,
+            reload: true,
         }
     }
 }
@@ -71,6 +77,7 @@ impl Session {
         let ash_options = AshOptions {
             mode: options.mode,
             args: options.args,
+            reload: options.reload,
             ..AshOptions::default()
         };
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -254,6 +261,9 @@ impl Session {
     ) -> Result<Value, Value> {
         let missing =
             |message: String| Error::value(Error::new(ErrorKind::Runtime, &message, LANG_CORE));
+        // A Haxe reload staged since the program last ran applies now, as
+        // it would when the program's own call returned.
+        self.program.poll_reload();
         // Entered for the lookup too: a module loading on first use needs
         // the VM.
         caribou_wren::with_vm(&mut self.vm, |_| {

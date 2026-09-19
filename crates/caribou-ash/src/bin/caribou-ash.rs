@@ -18,7 +18,11 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args> {
-    let mut options = Options::default();
+    // No world asks this runner to reload: the program runs as ash runs it.
+    let mut options = Options {
+        reload: false,
+        ..Options::default()
+    };
     let mut file = None;
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {

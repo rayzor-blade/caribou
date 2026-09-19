@@ -57,7 +57,11 @@ Each adapter answers for its language (`caribou_ash::report`, `caribou_wren::rep
 
 `World::reload(namespace, module)` loads a module again from the project's sources, whatever language it is. The adapter that serves the language re-runs the module in place (`Adapter::reload`): its classes keep their identity and get the new method bodies, and its interface is published again. The protocol's epoch is then bumped, so every call site in every language refills on its next use (see [bridge.md](bridge.md#call-sites)), and subscribers receive `Event::Reload`. An object of the module that was created before the reload keeps its class and therefore runs the new bodies. A call that another language bound to the class before the reload reaches the new bodies through its call site.
 
-**WrenLift:** WrenLift reloads a module by re-running it while keeping the class objects it declared (`VM::reload_module`). It drops the module's compiled bodies and clears its inline caches. The adapter then publishes the module again and runs the program's `Hatch.onReload` callbacks. `Session::reload` does the same with the VM entered. Ash does not support reload yet: `Adapter::reload` returns an error for Haxe.
+**WrenLift:** WrenLift reloads a module by re-running it while keeping the class objects it declared (`VM::reload_module`). It drops the module's compiled bodies and clears its inline caches. The adapter then publishes the module again and runs the program's `Hatch.onReload` callbacks. `Session::reload` does the same with the VM entered.
+
+**Ash:** A Haxe program is one file, so a reload of any of its modules reloads the program from the rebuilt `.hl`, through Ash's own hot reload. The adapter asks Ash to read and check the file (`ash_core::reload::stage_reload`). Ash refuses a program that cannot replace the running one in place: a type whose field layout changed, a different number of globals, or a function table of another shape, which is what adding or removing a method produces. An accepted program is staged. The interpreter applies it when it next returns from a call. It diffs the function bodies by hash and sends each changed body back to the interpreter by writing the stub sentinel into the body's function slot. A compiled body that had inlined a changed one goes back the same way. It then flushes the vtables, so they read the slots again, and walks the new bytecode from then on. The tiers compile the new bodies again as they get hot. A program parked in `Sys.sleep` or in a frame's pacing takes the reload before any of its code runs again, and a call from outside through `Session::call` applies a staged reload first. Every callable the program published reads its slot per call, so nothing is republished. The program registers its file under its own name (`registry::set_source`), so the watch covers it.
+
+Under reload, Ash lowers what its interpreter walks without inlining and enters no interpreted loop by OSR. That is Ash's own trade under `--hot-reload`. `Session::Options::reload` turns it off for a measurement. A program loaded from a bundle has no file to reload from.
 
 **Zyntax:** The adapter parses the module's source again, staged or from its file, and hands the typed program to the language's runtime (`TieredRuntime::reload_typed_program`). The runtime lowers it, compares each function with the running one, and swaps the code of the functions that changed; calls between the module's compiled functions go through cells, so the swap reaches them. The interface is then published again with the code now behind each symbol. A function that fails to compile keeps its old code and fails the reload. The runtime diffs an edit against the module it compiled last, so a language's last-loaded module is the one that reloads; the adapter refuses the others with an error that names the module in the way. A module's function that another language holds as a value follows too: the `Function` object a Wren module variable holds (`caribou::function::of_module`) reads the function from the module's interface again once the epoch has moved.
 
@@ -73,10 +77,11 @@ Each adapter answers for its language (`caribou_ash::report`, `caribou_wren::rep
 
 * The adapter registry, the language table, the namespace table, the source roots, and the loaders.
 * The driver described above, and sessions opened from a bundle.
-* Reload of a Wren module and of a Zyntax module, the file watch that triggers it, and events.
+* Reload of a Wren module, of a Zyntax module and of the Haxe program, the file watch that triggers it, and events.
 
 **Not yet implemented:**
 
-* Reload for Ash.
+* A reload's quiescent point across worker worlds: a reload runs on the world's thread between turns, which is quiescent for a single-threaded program, not for one with workers in the module's code.
+* A Haxe rebuild that changes the program's shape: Ash refuses it, and the program restarts.
 
 Under a session, the program's own loop drives the scheduler, and the world's handlers run from there through the reactor. A driver with a loop of its own receives them from `tick` as well.

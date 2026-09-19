@@ -14,7 +14,7 @@ caribou_abi = { path = "crates/caribou_abi", version = "0.1.0" }
 krio-fiber = { git = "https://github.com/darmie/krio.git", rev = "286f5e0710e20772179fc2ca96f6fda8d13e3a70" }
 krio-core = { git = "https://github.com/darmie/krio.git", rev = "286f5e0710e20772179fc2ca96f6fda8d13e3a70" }
 # Git, not the registry release: the batched compile API is only here.
-beadie = { git = "https://github.com/darmie/beadie", rev = "868d1069eeda1ea162460273869597a9b0866ebf", default-features = false }
+beadie = { git = "https://github.com/darmie/beadie", rev = "c403f29c8dd66635b545debcd2406847f613470e", default-features = false }
 libc = "0.2"
 # The runtimes, each at one rev: what the seams here are built against,
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime

@@ -1,0 +1,6 @@
+# The Haxe program of the Haxe reload test. Rebuild with `haxe reload.hxml`
+# (Haxe 4.3.6) from this directory; reload.hl is checked in.
+-cp src
+-lib caribou
+-main UseReload
+-hl reload.hl

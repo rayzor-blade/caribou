@@ -76,6 +76,8 @@ fn main() {
         Options {
             mode: Mode::Hybrid,
             wren_mode: ExecutionMode::Tiered,
+            // The program as it runs, not as it reloads.
+            reload: false,
             ..Options::default()
         },
     )

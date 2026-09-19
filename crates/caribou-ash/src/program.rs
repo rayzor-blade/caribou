@@ -52,6 +52,12 @@ pub struct Options {
     pub install: bool,
     /// The program's own arguments.
     pub args: Vec<String>,
+    /// Let the program reload in place from its file when the world asks
+    /// ([`Runtime::reload`](crate::Runtime)). Ash then lowers what the
+    /// interpreter walks without inlining, and a loop the interpreter runs
+    /// is not entered by OSR: the trade Ash makes under `--hot-reload`.
+    /// Off for a program loaded from bytes, which has no file.
+    pub reload: bool,
 }
 
 impl Default for Options {
@@ -60,6 +66,7 @@ impl Default for Options {
             mode: Mode::Hybrid,
             install: true,
             args: Vec::new(),
+            reload: true,
         }
     }
 }
@@ -70,6 +77,7 @@ impl Default for Options {
 pub struct Program {
     path: PathBuf,
     mode: Mode,
+    reload: bool,
     bytecode: ManuallyDrop<Arc<DecodedBytecode>>,
     resolver: ManuallyDrop<Box<NativeFunctionResolver>>,
     interpreter: ManuallyDrop<Box<HLInterpreter>>,
@@ -296,6 +304,10 @@ pub fn load(path: &Path, options: Options) -> Result<Program> {
 /// program is, a bundle's, for the libraries beside it, its arguments and
 /// its tier's cache.
 pub fn load_bytes(bytes: &[u8], path: &Path, options: Options) -> Result<Program> {
+    let options = Options {
+        reload: false,
+        ..options
+    };
     load_with(path, options, || BytecodeDecoder::decode_bytes(bytes))
 }
 
@@ -354,9 +366,13 @@ fn load_with(
         };
         interpreter.enable_tiered(path, &resolver, &bytecode, cfg)?;
     }
+    if options.reload {
+        interpreter.enable_reload(path, &resolver)?;
+    }
     Ok(Program {
         path: path.to_owned(),
         mode: options.mode,
+        reload: options.reload,
         bytecode: ManuallyDrop::new(bytecode),
         resolver: ManuallyDrop::new(resolver),
         interpreter: ManuallyDrop::new(interpreter),
@@ -397,7 +413,29 @@ impl Program {
     /// its classes from the moment `main` runs.
     pub fn publish(&mut self) -> Result<Vec<Arc<Interface>>> {
         let bytecode: Arc<DecodedBytecode> = Arc::clone(&self.bytecode);
-        publish_module(&bytecode, self)
+        let published = publish_module(&bytecode, self)?;
+        // One file behind every module: the watch reloads the program under
+        // the program's name when the file changes.
+        if self.reload && !published.is_empty() {
+            registry::set_source(published[0].lang, &self.name(), self.path.clone());
+        }
+        Ok(published)
+    }
+
+    /// Apply a reload the world staged, if one is: what the interpreter
+    /// does itself when a call of its own returns, done here for a call
+    /// from outside. Only between runs of the program, never from a
+    /// native it is in.
+    pub fn poll_reload(&mut self) {
+        self.interpreter.poll_reload(&self.resolver);
+    }
+
+    /// The program's name: its file's stem.
+    pub fn name(&self) -> String {
+        self.path
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default()
     }
 
     /// Let a tier-chase thread finish what it holds, then let the program
