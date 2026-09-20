@@ -12,6 +12,12 @@ typedef void (*caribou_ash_trap_callback_fn)(void *context);
  */
 #define CARIBOU_ASH_TRAP_STORAGE 512
 
+/* Aligned as a jmp_buf is, which is what the storage holds first. */
+union caribou_ash_trap_storage {
+    jmp_buf buffer;
+    unsigned char bytes[CARIBOU_ASH_TRAP_STORAGE];
+};
+
 /*
  * Run `callback` under a HashLink trap whose setjmp frame is this one.
  *
@@ -29,10 +35,10 @@ int caribou_ash_run_with_hl_trap(
     caribou_ash_trap_remove_fn remove,
     caribou_ash_trap_callback_fn callback,
     void *context) {
-    _Alignas(16) unsigned char storage[CARIBOU_ASH_TRAP_STORAGE];
+    union caribou_ash_trap_storage storage;
     /* The bridge never calls in holding the GC lock: a throw has nothing
      * to release. */
-    jmp_buf *buffer = (jmp_buf *)setup(storage, sizeof storage, 0);
+    jmp_buf *buffer = (jmp_buf *)setup(&storage, sizeof storage, 0);
     if (buffer == NULL) {
         return 2;
     }
@@ -44,6 +50,6 @@ int caribou_ash_run_with_hl_trap(
         return 1;
     }
     callback(context);
-    remove(storage);
+    remove(&storage);
     return 0;
 }
