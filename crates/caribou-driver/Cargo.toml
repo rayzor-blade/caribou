@@ -8,8 +8,9 @@ description = "Runs a Caribou program: one world with every resident language, f
 # Nightly, through caribou-ash: ash_std needs it.
 
 [features]
-# WrenLift's LLVM top tier; see caribou-wren.
-llvm = ["caribou-wren/llvm"]
+# Both runtimes' LLVM tiers, as their own releases ship them: the nightly
+# archives are built with it. Needs LLVM 21 on the build machine.
+llvm = ["caribou-wren/llvm", "caribou-ash/llvm"]
 
 [dependencies]
 anyhow = "1"

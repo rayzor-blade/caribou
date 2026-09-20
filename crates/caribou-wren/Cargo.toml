@@ -12,8 +12,7 @@ description = "Hosts WrenLift on the caribou core by filling wren_lift's runtime
 # core, and `--describe`, which prints a module's interface as JSON.
 runner = ["caribou/serde", "dep:serde_json"]
 # WrenLift's LLVM top tier above its Cranelift baseline, off by default as
-# it is in wren_lift. Needs LLVM 21 on the build machine; with it on, the
-# whole build links LLVM dynamically, Ash's tier included.
+# it is in wren_lift. Needs LLVM 21 on the build machine, linked statically.
 llvm = ["wren_lift/llvm"]
 
 [dependencies]

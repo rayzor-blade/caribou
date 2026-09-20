@@ -1,5 +1,6 @@
 # A nightly build of the `caribou` command for each platform, published as
-# the rolling `nightly` pre-release: the command, ash's runtime image
+# the rolling `nightly` pre-release: the command with both runtimes' LLVM
+# tiers linked in, as their own releases ship them, ash's runtime image
 # beside it, the haxelib and the docs, one archive per target
 # (scripts/package_nightly.sh). A night with no new commit publishes
 # nothing; a platform that fails does not hold the others back.
@@ -57,7 +58,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-          # bindgen finds the runner image's libclang; nothing links LLVM.
+          # The runner image's LLVM has no development files; the llvm21
+          # action installs them, as ash's release does.
           - os: windows-2022
             target: x86_64-pc-windows-msvc
     steps:
@@ -68,6 +70,8 @@ jobs:
         with:
           components: rustfmt # bindgen pretty-prints through it
       - uses: ./caribou/.github/actions/llvm21
+        with:
+          link: "true"
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:
@@ -80,7 +84,20 @@ jobs:
         run: cargo build --release -p ash_std
       - name: Build the command
         working-directory: caribou
-        run: cargo build --release -p caribou-driver
+        run: cargo build --release -p caribou-driver --features llvm
+      # LLVM's static libraries import zlib, zstd and libxml2 as DLLs, and
+      # Windows searches the executable's directory first: without them the
+      # process does not start, with no message but the exit code.
+      - name: The DLLs LLVM imports, beside the command (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $bin = "$env:LLVM_SYS_211_PREFIX\bin"
+          foreach ($dll in @('zlib.dll', 'zstd.dll', 'libxml2.dll')) {
+            $src = Join-Path $bin $dll
+            if (-not (Test-Path $src)) { throw "$bin has no $dll" }
+            Copy-Item $src caribou\target\release\ -Force
+          }
       # A command that runs a program is what ships: the Haxe-and-Wren
       # fixture, from the directory its project layout expects.
       - name: Smoke test

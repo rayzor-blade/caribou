@@ -54,8 +54,8 @@ Tests that need a second thread or unwinding are marked ignored on wasm; a wasm 
 
 ## Continuous Integration
 
-`.github/workflows` holds three workflows. `ci.yml` runs the tests on every push: the stable crates, the whole workspace on nightly, rustfmt and clippy with warnings denied, and the core on wasm32. `nightly.yml` publishes a release build of the `caribou` command for macOS, Linux and Windows as the rolling `nightly` pre-release. `bench.yml` runs the benchmarks nightly on macOS and Linux into the run's summary. Each job checks out `ash` and `zyntax` beside the repository at the revs `Cargo.toml` pins.
+`.github/workflows` holds three workflows. `ci.yml` runs the tests on every push: the stable crates, the whole workspace on nightly, rustfmt and clippy with warnings denied, and the core on wasm32. `nightly.yml` publishes a release build of the `caribou` command for macOS, Linux and Windows as the rolling `nightly` pre-release, built with `--features llvm` (see below), LLVM installed as the runtimes' own releases install it. `bench.yml` runs the benchmarks nightly on macOS and Linux into the run's summary. Each job checks out `ash` and `zyntax` beside the repository at the revs `Cargo.toml` pins.
 
 ## JIT Tiers & LLVM Configuration
 
-WrenLift executes on Cranelift by default. To enable the LLVM optimizing tier, build `caribou-wren`, `caribou-driver`, or `caribou-interop` with `--features llvm`. This requires an LLVM 21 installation and links LLVM dynamically across all JIT components (including Ash).
+A default build runs Ash on its interpreter and Cranelift tier and WrenLift on its interpreter and Cranelift tiers, and links no LLVM. `--features llvm` on `caribou-driver` adds both runtimes' LLVM tiers, as their own releases ship them: `caribou-ash/llvm` turns on Ash's, `caribou-wren/llvm` WrenLift's. It needs LLVM 21 on the build machine (`LLVM_SYS_211_PREFIX`), links it statically, and grows the command by LLVM's size. The nightly archives are built this way; on macOS the script bundles the Homebrew dylibs the build still references (z3), and on Windows the DLLs LLVM imports (zlib, zstd, libxml2).

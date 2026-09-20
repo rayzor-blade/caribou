@@ -6,6 +6,14 @@
 # command links the runtime in, and the sibling copy is for programs with
 # HDLLs beside them), the haxelib, the docs and the license.
 #
+# The command links LLVM statically. On macOS the few Homebrew dylibs it
+# still references (z3 and what that pulls in) live at paths only a
+# machine with Homebrew has, so they are copied beside it with their load
+# commands rewritten to @executable_path. On Windows the DLLs LLVM imports
+# (zlib, zstd, libxml2) ride beside it too, from target/release, where the
+# workflow put them. On Linux the equivalents are distro packages and
+# stay dynamic.
+#
 # Usage: scripts/package_nightly.sh <target-triple> [<yyyymmdd>]
 # Expects target/release/caribou and ../ash/target/release/<runtime>.
 set -euo pipefail
@@ -46,11 +54,6 @@ if [[ -f "$STD_SRC" ]]; then
       install_name_tool -id "@executable_path/$HL" "$DIST/$HL"
       # HashLink 1.x builds import libhl.1.dylib: the same image.
       ln -s "$HL" "$DIST/libhl.1.dylib"
-      # Rewriting a load command invalidates the signature; unsigned, dlopen
-      # registers one in the kernel on first open, which stalls.
-      codesign --force -s - "$DIST/$STD"
-      codesign --force -s - "$DIST/$HL"
-      codesign --force -s - "$DIST/$EXE"
       ;;
     MINGW*|MSYS*|CYGWIN*)
       # A copy, not a link: a Windows symlink needs Developer Mode.
@@ -61,6 +64,53 @@ if [[ -f "$STD_SRC" ]]; then
 else
   echo "warning: $STD_SRC not found; the archive carries the command alone" >&2
 fi
+
+case "$(uname -s)" in
+  Darwin)
+    # Every non-system dylib the command or the runtime image references,
+    # and what those reference in turn, brought beside them.
+    machos=("$DIST/$EXE")
+    [[ -f "$DIST/$STD" ]] && machos+=("$DIST/$STD" "$DIST/$HL")
+    for macho in "${machos[@]}"; do
+      otool -L "$macho" | awk 'NR>1 {print $1}' | while read -r dep; do
+        case "$dep" in
+          /usr/lib/*|/System/*|@*) continue ;;
+        esac
+        name="$(basename "$dep")"
+        [[ -f "$DIST/$name" ]] || { cp "$dep" "$DIST/$name"; chmod u+w "$DIST/$name"; }
+        install_name_tool -change "$dep" "@executable_path/$name" "$macho"
+        install_name_tool -id "@executable_path/$name" "$DIST/$name"
+        otool -L "$DIST/$name" | awk 'NR>1 {print $1}' | while read -r sub; do
+          case "$sub" in
+            /usr/lib/*|/System/*|@*) continue ;;
+          esac
+          subname="$(basename "$sub")"
+          [[ -f "$DIST/$subname" ]] || { cp "$sub" "$DIST/$subname"; chmod u+w "$DIST/$subname"; }
+          install_name_tool -change "$sub" "@executable_path/$subname" "$DIST/$name"
+        done
+        codesign --force -s - "$DIST/$name"
+      done
+    done
+    # Signing last: rewriting a load command invalidates the signature, and
+    # unsigned, dlopen registers one in the kernel on first open, which
+    # stalls.
+    for macho in "${machos[@]}"; do
+      codesign --force -s - "$macho"
+    done
+    echo "dynamic dependencies:"
+    otool -L "$DIST/$EXE" | sed -n '2,20p'
+    ;;
+  MINGW*|MSYS*|CYGWIN*)
+    for dll in zlib.dll zstd.dll libxml2.dll; do
+      test -f "target/release/$dll" || { echo "error: target/release/$dll is not there; LLVM imports it" >&2; exit 1; }
+      cp "target/release/$dll" "$DIST/"
+    done
+    ;;
+  *)
+    echo "dynamic dependencies (from distro packages):"
+    ldd "$DIST/$EXE" | grep -v 'linux-vdso\|ld-linux\|libc\.\|libm\.\|libgcc\|libpthread\|libdl' || true
+    ;;
+esac
 
 mkdir -p dist
 case "$ARCHIVE" in

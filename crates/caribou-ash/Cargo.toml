@@ -14,6 +14,9 @@ description = "Hosts Ash on the caribou core by filling ash_std's runtime seam w
 # The `program` module and the `caribou-ash` binary: ash's interpreter and
 # Cranelift tier over the core, loading, running and publishing a `.hl`.
 runner = ["dep:ash_core", "dep:ash_interp", "dep:anyhow"]
+# Ash's LLVM tier above Cranelift, as ash's own release ships it; off by
+# default. Needs LLVM 21 on the build machine, linked statically.
+llvm = ["ash_core?/llvm", "ash_interp?/llvm"]
 
 [dependencies]
 caribou = { path = "../caribou" }
