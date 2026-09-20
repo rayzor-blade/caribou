@@ -1,0 +1,3 @@
+User-agent: *
+Allow: /
+Sitemap: https://caribou.rayzor.tech/sitemap.xml

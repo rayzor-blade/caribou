@@ -3,9 +3,71 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Caribou</title>
-<meta name="description" content="Caribou: a polyglot runtime substrate that runs Haxe, Wren, Python, Lua and native plugins on one heap, one scheduler and one module registry.">
-<link rel="icon" href="assets/caribou.png">
+<title>Caribou — Many languages, one runtime core</title>
+<meta name="description" content="Caribou is a polyglot runtime substrate: Haxe, Wren, Python, Lua and native plugins run on one heap, one scheduler and one module registry, sharing modules, types and objects across languages.">
+<meta name="author" content="Damilare Akinlaja">
+<meta name="keywords" content="polyglot runtime, Haxe, Wren, Python, Lua, HashLink, JIT, shared heap, garbage collector, scheduler, module registry, hot reload, game engine scripting, plugins, Rust">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#f6f0e4">
+<link rel="canonical" href="https://caribou.rayzor.tech/">
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Caribou">
+<meta property="og:title" content="Caribou — Many languages, one runtime core">
+<meta property="og:description" content="A polyglot runtime substrate: Haxe, Wren, Python, Lua and native plugins on one heap, one scheduler and one module registry.">
+<meta property="og:url" content="https://caribou.rayzor.tech/">
+<meta property="og:image" content="https://caribou.rayzor.tech/assets/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Caribou — many languages, one runtime core">
+<!-- Twitter -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Caribou — Many languages, one runtime core">
+<meta name="twitter:description" content="Haxe, Wren, Python, Lua and native plugins on one heap, one scheduler and one module registry.">
+<meta name="twitter:image" content="https://caribou.rayzor.tech/assets/og-image.png">
+<!-- Structured data -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://caribou.rayzor.tech/#app",
+      "name": "Caribou",
+      "description": "A polyglot runtime substrate: Haxe, Wren, Python, Lua and native plugins run on one heap, one scheduler and one module registry.",
+      "applicationCategory": "DeveloperApplication",
+      "operatingSystem": "macOS, Linux, Windows",
+      "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+      "url": "https://caribou.rayzor.tech/",
+      "downloadUrl": "https://github.com/rayzor-blade/caribou/releases/tag/nightly",
+      "license": "https://github.com/rayzor-blade/caribou/blob/main/LICENSE",
+      "programmingLanguage": "Rust",
+      "codeRepository": "https://github.com/rayzor-blade/caribou",
+      "author": { "@type": "Person", "name": "Damilare Akinlaja" },
+      "sameAs": [ "https://github.com/rayzor-blade/caribou" ],
+      "image": "https://caribou.rayzor.tech/assets/og-image.png"
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://caribou.rayzor.tech/#website",
+      "url": "https://caribou.rayzor.tech/",
+      "name": "Caribou",
+      "description": "A polyglot runtime substrate with one heap, one scheduler and one module registry.",
+      "publisher": { "@id": "https://caribou.rayzor.tech/#org" }
+    },
+    {
+      "@type": "Organization",
+      "@id": "https://caribou.rayzor.tech/#org",
+      "name": "Caribou",
+      "url": "https://caribou.rayzor.tech/",
+      "logo": "https://caribou.rayzor.tech/assets/caribou.png",
+      "sameAs": [ "https://github.com/rayzor-blade/caribou", "https://ash.rayzor.tech/", "https://wrenlift.com/" ]
+    }
+  ]
+}
+</script>
+<link rel="icon" type="image/png" href="assets/caribou.png">
+<link rel="apple-touch-icon" href="assets/caribou.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
