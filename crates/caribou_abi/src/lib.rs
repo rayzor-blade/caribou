@@ -456,8 +456,9 @@ pub mod mem {
 /// object      0xFFFC_0000_0000_0000 | (ptr & 0x0000_FFFF_FFFF_FFFF)
 /// ```
 ///
-/// WrenLift's layout plus the integer tag. Pointers are canonical 48-bit
-/// addresses; reading one sign-extends bit 47.
+/// WrenLift's layout plus the integer tag. Pointers are 48-bit user
+/// addresses, kept and read zero-extended: Linux on arm64 hands out the
+/// whole range, bit 47 included.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Value(u64);
@@ -565,9 +566,7 @@ impl Value {
     #[inline]
     pub fn as_object(self) -> Option<*mut c_void> {
         if self.is_object() {
-            // Sign-extend bit 47 back into the canonical form.
-            let raw = ((self.0 & Self::PTR_MASK) << 16) as i64 >> 16;
-            Some(raw as usize as *mut c_void)
+            Some((self.0 & Self::PTR_MASK) as usize as *mut c_void)
         } else {
             None
         }
@@ -1152,8 +1151,7 @@ mod tests {
             let v = Value::object(addr as *const c_void);
             assert!(v.is_object());
             assert!(!v.is_number() && !v.is_int() && !v.is_null());
-            let expected = ((addr as u64) << 16) as i64 >> 16;
-            assert_eq!(v.as_object().unwrap() as usize as u64, expected as u64);
+            assert_eq!(v.as_object().unwrap() as usize, addr);
         }
         assert_eq!(
             Value::object(core::ptr::null()).as_object(),
