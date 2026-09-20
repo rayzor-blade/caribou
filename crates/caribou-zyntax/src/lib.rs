@@ -28,7 +28,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use caribou::registry;
 use caribou::world::{self, Adapter};
@@ -93,7 +93,7 @@ pub trait Language {
 /// Where a language's modules are read from: a bundle's staged sources
 /// first, by path under a root, then the world's source roots.
 pub struct Sources<'a> {
-    staged: &'a HashMap<String, String>,
+    staged: &'a Staged,
 }
 
 impl Sources<'_> {
@@ -105,11 +105,51 @@ impl Sources<'_> {
         segments: &[String],
         architectures: &[ModuleArchitecture],
     ) -> Option<String> {
-        match find(segments, architectures, self.staged)? {
-            Found::Staged(name) => Some(self.staged[&name].clone()),
-            Found::File(path) => std::fs::read_to_string(path).ok(),
-        }
+        source_of(segments, architectures, self.staged)
     }
+}
+
+/// A bundle's staged sources, by path under a root. Shared with the
+/// runtime's import resolver, which outlives any borrow of the state.
+type Staged = Mutex<HashMap<String, String>>;
+
+/// The source of the module `segments` name, staged or in a root.
+fn source_of(
+    segments: &[String],
+    architectures: &[ModuleArchitecture],
+    staged: &Staged,
+) -> Option<String> {
+    let staged = staged.lock().unwrap();
+    match find(segments, architectures, &staged)? {
+        Found::Staged(name) => Some(staged[&name].clone()),
+        Found::File(path) => std::fs::read_to_string(path).ok(),
+    }
+}
+
+/// The resolver a language's runtime asks for a module one of its own
+/// modules imports (`import util`, `import game.util`): a dotted path
+/// names the module from the root; a bare name is a module of the
+/// importing module's namespace, else of any namespace the world has.
+/// The runtime's own snapshot modules are asked before it.
+fn import_resolver(
+    architectures: Vec<ModuleArchitecture>,
+    staged: Arc<Staged>,
+    importing: Arc<Mutex<Option<String>>>,
+) -> zyntax_embed::ImportResolverCallback {
+    Box::new(move |path: &str| {
+        let candidates: Vec<Vec<String>> = if path.contains('.') {
+            vec![path.split('.').map(str::to_owned).collect()]
+        } else {
+            let own = importing.lock().unwrap().clone();
+            own.into_iter()
+                .chain(registry::namespaces().into_iter().map(|ns| ns.name))
+                .map(|ns| vec![ns, path.to_owned()])
+                .collect()
+        };
+        Ok(candidates
+            .iter()
+            .find_map(|segments| source_of(segments, &architectures, &staged)))
+    })
 }
 
 /// The layouts a grammar's `file_extensions` describe: a file per module
@@ -333,9 +373,9 @@ impl Frontend {
         self.language.name()
     }
 
-    /// The runtime for this language, its plugins opened and the
-    /// language prepared on it.
-    fn bring_up(&mut self) -> Result<TieredRuntime, String> {
+    /// The runtime for this language, its plugins opened, the language
+    /// prepared on it and its imports resolved from the world's sources.
+    fn bring_up(&mut self) -> Result<State, String> {
         let mut runtime = TieredRuntime::new(TieredConfig::default()).map_err(|e| e.to_string())?;
         if let Some(dir) = &self.plugin_dir
             && dir.is_dir()
@@ -345,7 +385,44 @@ impl Frontend {
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         self.language.prepare(&mut runtime)?;
-        Ok(runtime)
+        let staged = Arc::new(Mutex::new(HashMap::new()));
+        let importing = Arc::new(Mutex::new(None));
+        runtime.add_import_resolver(import_resolver(
+            self.language.architectures(),
+            Arc::clone(&staged),
+            Arc::clone(&importing),
+        ));
+        Ok(State {
+            language: std::mem::replace(&mut self.language, Box::new(Unprepared)),
+            runtime,
+            staged,
+            importing,
+            current: None,
+        })
+    }
+}
+
+/// What a `Frontend` holds once its language moved into its `State`.
+struct Unprepared;
+
+impl Language for Unprepared {
+    fn name(&self) -> &str {
+        ""
+    }
+    fn architectures(&self) -> Vec<ModuleArchitecture> {
+        Vec::new()
+    }
+    fn prepare(&mut self, _runtime: &mut TieredRuntime) -> Result<(), String> {
+        Err("the frontend's language is already registered".to_owned())
+    }
+    fn parse(
+        &self,
+        _runtime: &TieredRuntime,
+        _source: &str,
+        _file: &str,
+        _sources: &Sources,
+    ) -> Result<TypedProgram, String> {
+        Err("the frontend's language is already registered".to_owned())
     }
 }
 
@@ -354,7 +431,10 @@ impl Frontend {
 struct State {
     language: Box<dyn Language>,
     runtime: TieredRuntime,
-    staged: HashMap<String, String>,
+    staged: Arc<Staged>,
+    /// The namespace of the module being parsed and lowered, for the
+    /// import resolver's bare names.
+    importing: Arc<Mutex<Option<String>>>,
     /// The module the runtime compiled last: the one its reload diffs
     /// an edit against.
     current: Option<String>,
@@ -393,24 +473,14 @@ impl Adapter for Runtime {
 
     fn assign_languages(&mut self, ids: &[LangId]) {
         for (mut frontend, &lang) in std::mem::take(&mut self.frontends).into_iter().zip(ids) {
-            let runtime = match frontend.bring_up() {
-                Ok(runtime) => runtime,
+            let state = match frontend.bring_up() {
+                Ok(state) => state,
                 Err(e) => {
                     eprintln!("caribou: zyntax {}: {e}", frontend.name());
                     continue;
                 }
             };
-            STATES.with(|s| {
-                s.borrow_mut().insert(
-                    lang,
-                    State {
-                        language: frontend.language,
-                        runtime,
-                        staged: HashMap::new(),
-                        current: None,
-                    },
-                )
-            });
+            STATES.with(|s| s.borrow_mut().insert(lang, state));
             caribou::bridge::set_typed_dispatch(lang, dispatch::dispatch);
             registry::set_loader(lang, Arc::new(move |ns, module| load(lang, ns, module)));
         }
@@ -438,7 +508,11 @@ impl Adapter for Runtime {
             let state = states
                 .get_mut(&lang)
                 .ok_or("its Zyntax runtime is not on this thread")?;
-            state.staged.insert(section.name.clone(), text);
+            state
+                .staged
+                .lock()
+                .unwrap()
+                .insert(section.name.clone(), text);
             Ok(())
         })
     }
@@ -540,11 +614,12 @@ impl State {
     /// runs.
     fn parse(&self, name: &str) -> Result<Option<Parsed>, String> {
         let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
-        let Some(found) = find(&segments, &self.language.architectures(), &self.staged) else {
+        let staged = self.staged.lock().unwrap();
+        let Some(found) = find(&segments, &self.language.architectures(), &staged) else {
             return Ok(None);
         };
         let (source, file, path) = match found {
-            Found::Staged(staged) => (self.staged[&staged].clone(), staged, None),
+            Found::Staged(key) => (staged[&key].clone(), key, None),
             Found::File(path) => (
                 std::fs::read_to_string(&path)
                     .map_err(|e| format!("`{name}`: cannot read {}: {e}", path.display()))?,
@@ -552,17 +627,25 @@ impl State {
                 Some(path),
             ),
         };
+        drop(staged);
         let sources = Sources {
             staged: &self.staged,
         };
-        let program = self
+        // The importing module's namespace, for the resolver, while its
+        // imports are read: at the parse for a frontend that reads them
+        // itself, at the lowering for one the runtime reads them for.
+        *self.importing.lock().unwrap() = segments.first().cloned();
+        let lowered = self
             .language
             .parse(&self.runtime, &source, &file, &sources)
-            .map_err(|e| format!("`{name}`: {e}"))?;
-        let hir = self
-            .runtime
-            .lower_to_hir(program.clone())
-            .map_err(|e| format!("`{name}`: {e}"))?;
+            .and_then(|program| {
+                self.runtime
+                    .lower_to_hir(program.clone())
+                    .map(|hir| (program, hir))
+                    .map_err(|e| e.to_string())
+            });
+        *self.importing.lock().unwrap() = None;
+        let (program, hir) = lowered.map_err(|e| format!("`{name}`: {e}"))?;
         let exports = self.language.exports(&program);
         let mut declared = publish::declared(&program, &exports, &hir, self.language.name());
         for class in &mut declared.classes {

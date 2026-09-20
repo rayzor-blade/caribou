@@ -22,7 +22,7 @@ When the module registry resolves an identifier such as `game/scorer`, compilati
 
 * **Resolution:** The language loader locates the target source file by matching registered file extensions under project roots.
 * **Signature Parsing:** Source code is parsed via `parse_with_signatures`. This binds plugin signatures against application call sites and initializes the module's type registry.
-* **HIR Lowering:** The typed AST is lowered to HIR inside the runtime context via `TieredRuntime::lower_to_hir`. This pass applies the active grammars, loads snapshot modules, resolves imports, and executes Krio optimization passes.
+* **HIR Lowering:** The typed AST is lowered to HIR inside the runtime context via `TieredRuntime::lower_to_hir`. This pass applies the active grammars, loads snapshot modules, resolves imports, and executes Krio optimization passes. A module's own imports (`import util`, `import game.util`) resolve through the resolver the adapter registers on each language's runtime: a dotted path names the module from the root; a bare name is a module of the importing module's namespace, else of any namespace of the world. Staged bundle sources come before the roots, as for the module itself. The runtime asks its snapshot's modules first, so a library name the snapshot ships wins.
 * **Publishing:** The compiler introspects declarations to expose language constructs to the host registry.
 * **JIT Compilation:** The lowered HIR is compiled to machine code via `compile_module`.
 

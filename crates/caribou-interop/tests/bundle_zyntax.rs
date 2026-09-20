@@ -17,6 +17,12 @@ import "game:tally" for score
 System.print(score.call(7, 2))
 "#;
 
+/// uses.zynml imports util.zynml: both staged, neither under a root.
+const USE_USES: &str = r#"
+import "game:uses" for quad
+System.print(quad.call(3))
+"#;
+
 #[test]
 fn a_bundle_carries_its_zyntax_languages() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
@@ -87,5 +93,11 @@ fn a_bundle_carries_its_zyntax_languages() {
     let output = vm.take_output();
     assert_eq!(result, InterpretResult::Success, "{output:?}");
     assert_eq!(output, "64\n");
+    // A ZynML module's own import resolves from the staged sources.
+    vm.output_buffer = Some(String::new());
+    let result = caribou_wren::with_vm(vm, |vm| vm.interpret("uses", USE_USES));
+    let output = vm.take_output();
+    assert_eq!(result, InterpretResult::Success, "{output:?}");
+    assert_eq!(output, "12\n");
     let _ = std::fs::remove_dir_all(&dir);
 }

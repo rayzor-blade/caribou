@@ -34,6 +34,14 @@ System.print(Point.area(3, 4))
 System.print(Fiber.new { Point.origin() }.try())
 "#;
 
+/// A module that imports another of its language: `import util` in
+/// uses.zynml is game/util.zynml, resolved from the world's roots as the
+/// module itself was, and its functions are the importer's to call.
+const USES: &str = r#"
+import "game:uses" for quad
+System.print(quad.call(3))
+"#;
+
 #[test]
 fn a_zynml_module_is_imported_from_wren() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
@@ -97,6 +105,16 @@ fn a_zynml_module_is_imported_from_wren() {
         output,
         "12\nthe function returns a Zyntax type the core does not pass yet\n"
     );
+    vm.output_buffer = Some(String::new());
+    let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("uses", USES));
+    let output = vm.take_output();
+    assert_eq!(
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
+    );
+    assert_eq!(output, "12\n");
 
     // Published from the declarations: the module's functions typed by
     // their signatures, as the module's own.

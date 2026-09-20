@@ -1,0 +1,7 @@
+// A ZynML module importing a sibling: `util` is game/util.zynml, found
+// through the namespace's roots as the module itself is.
+import util
+
+def quad(x: i64): i64 {
+    return twice(twice(x))
+}
