@@ -458,11 +458,31 @@ thread_local! {
 /// The adapter: each frontend a language of the world.
 pub struct Runtime {
     frontends: Vec<Frontend>,
+    /// The languages brought up, whose states go with the adapter.
+    langs: Vec<LangId>,
 }
 
 impl Runtime {
     pub fn new(frontends: Vec<Frontend>) -> Runtime {
-        Runtime { frontends }
+        Runtime {
+            frontends,
+            langs: Vec::new(),
+        }
+    }
+}
+
+/// The states go with the world, on its thread and while the process's
+/// other threads are alive: a runtime joins its worker as it drops, and
+/// Windows runs a thread-local's destructor only once the process has
+/// killed every other thread.
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        STATES.with(|states| {
+            let mut states = states.borrow_mut();
+            for lang in &self.langs {
+                states.remove(lang);
+            }
+        });
     }
 }
 
@@ -481,6 +501,7 @@ impl Adapter for Runtime {
                 }
             };
             STATES.with(|s| s.borrow_mut().insert(lang, state));
+            self.langs.push(lang);
             caribou::bridge::set_typed_dispatch(lang, dispatch::dispatch);
             registry::set_loader(lang, Arc::new(move |ns, module| load(lang, ns, module)));
         }
