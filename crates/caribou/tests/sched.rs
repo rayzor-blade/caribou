@@ -12,8 +12,8 @@ use std::time::{Duration, Instant};
 use caribou::sched::{
     DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter,
     attach_host_state, current_task, has_worker_pool, is_pool_worker, live_tasks, new_waiter, park,
-    request_park, resume_cause, scheduler_idle, set_switch_hook, sleep_until, spawn, spawn_fiber,
-    spawn_fiber_on_pool, suspended_sp, tick, wake, world_id, yield_now,
+    quiesce, request_park, resume_cause, scheduler_idle, set_switch_hook, sleep_until, spawn,
+    spawn_fiber, spawn_fiber_on_pool, suspended_sp, tick, wake, world_id, yield_now,
 };
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
@@ -382,6 +382,55 @@ fn pool_workers_know_themselves() {
         assert!(!on_worker);
     }
     assert!(!is_pool_worker());
+}
+
+/// A quiescent point holds every worker between turns: a pooled task
+/// that counts a turn at a time makes no progress inside it, and goes
+/// on after.
+#[test]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_feature = "atomics")),
+    ignore = "needs threads"
+)]
+fn a_quiescent_point_parks_the_workers_between_turns() {
+    world_id();
+    let started = new_waiter();
+    let turns = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (task_turns, task_stop) = (Arc::clone(&turns), Arc::clone(&stop));
+    spawn_fiber_on_pool(DEFAULT_STACK_SIZE, move || {
+        assert!(wake(started));
+        while !task_stop.load(Ordering::Acquire) {
+            task_turns.fetch_add(1, Ordering::AcqRel);
+            yield_now();
+        }
+    });
+    assert!(park(started, Some(Instant::now() + Duration::from_secs(5))));
+    if !has_worker_pool() {
+        stop.store(true, Ordering::Release);
+        run_to_completion();
+        return;
+    }
+    let counting = || {
+        let before = turns.load(Ordering::Acquire);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while turns.load(Ordering::Acquire) == before {
+            assert!(Instant::now() < deadline, "the task stopped counting");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    counting();
+    quiesce(|| {
+        let held = turns.load(Ordering::Acquire);
+        std::thread::sleep(Duration::from_millis(50));
+        assert_eq!(turns.load(Ordering::Acquire), held);
+    });
+    counting();
+    stop.store(true, Ordering::Release);
+    while live_tasks() > 0 {
+        tick(None);
+        scheduler_idle(Some(Instant::now() + Duration::from_millis(5)));
+    }
 }
 
 #[test]

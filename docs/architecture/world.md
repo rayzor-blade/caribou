@@ -67,6 +67,8 @@ Under reload, Ash lowers what its interpreter walks without inlining and enters 
 
 **Triggers:** A reload is triggered either by the driver calling `reload` or by the world's own file watch. `World::watch_sources` checks the file that every loaded module came from (`registry::sources`, which a language's loader records) on a short interval, from a thread of its own. When a file changes, the watch raises a reactor source (see [scheduler.md](scheduler.md#the-reactor)) whose handler reloads the module on the world's thread, between scheduler turns. In practice this means wherever the program is idle: a `Sys.sleep`, a `Lock` wait, or a frame's pacing. A module loaded later is watched from then on. A source that no longer compiles reloads nothing: the module stays as it was, and the event carries the error. A session watches from the moment it opens, and `caribou run` prints to stderr what it reloaded.
 
+**The quiescent point:** The reload runs from the world's main context, so that world's tasks are between turns. The worker worlds are asked to park between theirs (`sched::quiesce`): each parks at the top of its loop, an idle one is woken to do so, and the reload runs once every worker has parked or a second has passed. A worker still out after that is inside a native call that blocks, running no task code. A parked worker counts as blocking to the collector, so a collection another thread starts meanwhile goes ahead.
+
 ## Events
 
 `World::on(kind, handler)` subscribes a handler to events of a kind, and `World::raise` raises one. Handlers run on the world's thread, from `tick` and at the end of a reload. They never run inside a collection or a stack switch, and they run with the world unborrowed, so a handler may subscribe, raise, or reload. `Reload` is the only event kind so far. It carries the error when the load failed. A task's uncaught error and a language's log line arrive as events through the paths that raise them.
@@ -81,7 +83,6 @@ Under reload, Ash lowers what its interpreter walks without inlining and enters 
 
 **Not yet implemented:**
 
-* A reload's quiescent point across worker worlds: a reload runs on the world's thread between turns, which is quiescent for a single-threaded program, not for one with workers in the module's code.
 * A Haxe rebuild that changes the program's shape: Ash refuses it, and the program restarts.
 
 Under a session, the program's own loop drives the scheduler, and the world's handlers run from there through the reactor. A driver with a loop of its own receives them from `tick` as well.

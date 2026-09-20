@@ -309,10 +309,15 @@ impl World {
         let adapter = self
             .adapter_for(lang)
             .ok_or_else(|| format!("no adapter serves {}", language_name(lang)))?;
-        let result = adapter.reload(lang, module);
-        if result.is_ok() {
-            crate::protocol::bump_epoch();
-        }
+        // Between turns on this world; the worker worlds park between
+        // theirs while the module's code and tables change.
+        let result = sched::quiesce(|| {
+            let result = adapter.reload(lang, module);
+            if result.is_ok() {
+                crate::protocol::bump_epoch();
+            }
+            result
+        });
         self.raise(Event::Reload {
             lang,
             module: module.to_owned(),

@@ -77,6 +77,20 @@ mod threaded {
         WORKER_POOL.get_or_init(spawn_worker_pool).as_ref()
     }
 
+    /// The workers running now; none starts the pool.
+    pub(in crate::sched) fn started_workers() -> Vec<Arc<WorldEndpoint>> {
+        WORKER_POOL
+            .get()
+            .and_then(Option::as_ref)
+            .map(|pool| {
+                pool.workers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            })
+            .unwrap_or_default()
+    }
+
     fn spawn_worker_pool() -> Option<WorkerPool> {
         // Empty on wasm: the pool there grows as tasks are created, so
         // there is nothing to size up front and nothing to size it from.
@@ -156,6 +170,9 @@ mod threaded {
             // never reaches the idle wait, and nothing on this path takes
             // the heap lock, which is where the rest reaches a safepoint.
             heap::gc_safepoint();
+            if crate::sched::quiesce::requested() {
+                crate::sched::quiesce::park();
+            }
             if world::schedule_step() {
                 continue;
             }
@@ -276,6 +293,14 @@ pub fn worker_count() -> usize {
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub fn has_worker_pool() -> bool {
     false
+}
+
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+pub(super) use threaded::started_workers;
+
+#[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
+pub(super) fn started_workers() -> Vec<std::sync::Arc<super::world::WorldEndpoint>> {
+    Vec::new()
 }
 
 /// No threads to make a pool from; the spawning world runs the task.

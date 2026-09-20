@@ -33,6 +33,9 @@ pub(super) enum WorldCommand {
         id: TaskId,
         placed: Placed,
     },
+    /// Wakes a worker idle in its wait so it sees a quiescent point
+    /// requested; nothing to do on arrival.
+    Park,
 }
 
 /// A world's mailbox. The only part of a world that is `Sync`.
@@ -513,6 +516,7 @@ fn drain_commands() {
                     world.ready_sources.push_back(source);
                 }
             }),
+            WorldCommand::Park => {}
         }
     }
 }

@@ -26,6 +26,7 @@
 
 mod pool;
 mod preempt;
+mod quiesce;
 mod reactor;
 mod stack;
 mod task;
@@ -36,6 +37,7 @@ pub use krio_core::{Suspension, Task, TaskId};
 
 pub use pool::{has_worker_pool, is_pool_worker, worker_count};
 pub use preempt::{POLL_EPOCH, any_live_tasks, poll_epoch_address, request_poll};
+pub use quiesce::quiesce;
 pub use reactor::{Signal, add_source, remove_source};
 pub use stack::{
     add_stack_hook, attach_stack_host_state, forget_stack, switch_stack, with_stack_host_state,
