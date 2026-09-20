@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Caribou</title>
+<meta name="description" content="Caribou: a polyglot runtime substrate that runs Haxe, Wren, Python, Lua and native plugins on one heap, one scheduler and one module registry.">
+<link rel="icon" href="assets/caribou.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  body { margin: 0; background: #f6f0e4; -webkit-font-smoothing: antialiased; }
+  * { box-sizing: border-box; }
+  a { color: #8a5a22; text-decoration: none; }
+  a:hover { color: #191512; }
+  ::selection { background: #e8c9a2; }
+  .btn-primary:hover { background: #8a5a22 !important; color: #f6f0e4 !important; }
+  .btn-ghost:hover { border-color: #191512 !important; background: rgba(25,21,18,0.04); }
+  .card:hover { border-color: #c08a52 !important; }
+  .copy:hover { background: rgba(246,240,228,0.2) !important; color: #fffaf0 !important; }
+  .nav a:hover, footer a:hover { color: #191512; }
+</style>
+</head>
+<body>
+<div style="font-family: 'JetBrains Mono', ui-monospace, monospace; color: #191512; background: #f6f0e4; min-height: 100vh;">
+
+  <header style="position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 28px; padding: 14px clamp(20px, 5vw, 64px); background: rgba(246,240,228,0.88); backdrop-filter: blur(10px); border-bottom: 1px solid rgba(25,21,18,0.1);">
+    <a href="#top" style="display: flex; align-items: center; gap: 10px; color: #191512;">
+      <img src="assets/caribou.png" alt="Caribou" style="width: 34px; height: 34px; object-fit: contain;" />
+      <span style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 19px; letter-spacing: -0.04em;">caribou</span>
+    </a>
+    <nav class="nav" style="display: flex; flex-wrap: wrap; gap: 20px; margin-left: auto; font-size: 14px; color: #6b6157;">
+      <a href="#interop" style="color: #6b6157;">Interop</a>
+      <a href="#runtimes" style="color: #6b6157;">Runtimes</a>
+      <a href="#core" style="color: #6b6157;">Core</a>
+      <a href="#start" style="color: #6b6157;">Get started</a>
+      <a href="https://github.com/rayzor-blade/caribou" style="color: #191512; font-weight: 500;">GitHub ↗</a>
+    </nav>
+  </header>
+
+  <section id="top" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: clamp(32px, 6vw, 72px); align-items: center; padding: clamp(48px, 8vw, 110px) clamp(20px, 5vw, 64px) clamp(40px, 6vw, 80px); max-width: 1320px; margin: 0 auto;">
+    <div style="min-width: 0;">
+      <div style="display: inline-flex; align-items: center; gap: 8px; font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #8a5a22; border: 1px solid rgba(192,138,82,0.5); border-radius: 999px; padding: 5px 12px;">polyglot runtime substrate</div>
+      <h1 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(30px, 4.2vw, 54px); line-height: 1.1; letter-spacing: -0.045em; margin: 22px 0 0; text-wrap: balance;">Many languages.<br /><em style="color: #8a5a22;">One</em> runtime core.</h1>
+      <p style="font-size: clamp(17px, 1.5vw, 20px); line-height: 1.55; color: #554d44; max-width: 54ch; margin: 22px 0 0; text-wrap: pretty;">A polyglot substrate that runs multiple languages on a shared heap, scheduler and module registry — so languages share modules, types and object instances across boundaries without killing performance. Built for game and multimedia engines, plugin extensions, and actor/agent systems.</p>
+      <div style="display: flex; flex-wrap: wrap; gap: 12px; margin-top: 32px;">
+        <a class="btn-primary" href="#start" style="display: inline-flex; align-items: center; gap: 8px; background: #191512; color: #f6f0e4; padding: 13px 22px; border-radius: 6px; font-size: 15px; font-weight: 500;">Get started →</a>
+        <a class="btn-ghost" href="https://github.com/rayzor-blade/caribou" style="display: inline-flex; align-items: center; gap: 8px; border: 1px solid rgba(25,21,18,0.25); color: #191512; padding: 13px 22px; border-radius: 6px; font-size: 15px; font-weight: 500;">View source</a>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 28px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #6b6157;">
+        <span>MIT licensed</span><span>·</span><span>zero guest-side dependencies</span><span>·</span><span>hot-reloadable scripts</span>
+      </div>
+    </div>
+
+    <div style="min-width: 0; display: grid; gap: 16px;">
+      <div style="background: #191512; border-radius: 10px; overflow: hidden; box-shadow: 0 24px 60px -30px rgba(25,21,18,0.6);">
+        <div style="display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid rgba(246,240,228,0.12); font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: rgba(246,240,228,0.55);">
+          <span style="width: 9px; height: 9px; border-radius: 50%; background: #c08a52;"></span>
+          <span>~/projects/game — caribou</span>
+        </div>
+        <pre style="margin: 0; padding: 20px 18px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.75; color: #efe4cf; overflow-x: auto;"><span style="color: #c08a52;">$</span> caribou build bin/game.hl
+  <span style="color: #9c948a;">ash</span>      · haxe → hashlink bytecode   <span style="color: #8fb08a;">ok</span>
+  <span style="color: #9c948a;">wrenlift</span> · 12 wren modules            <span style="color: #8fb08a;">ok</span>
+  <span style="color: #9c948a;">zyntax</span>   · 3 .zyn, 1 python frontend  <span style="color: #8fb08a;">ok</span>
+  <span style="color: #9c948a;">plugins</span>  · libphysics.so              <span style="color: #8fb08a;">ok</span>
+  → bin/game.cb
+
+<span style="color: #c08a52;">$</span> caribou run --report bin/game.cb
+  one heap · one scheduler · one registry</pre>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px;">
+        <div style="background: #fffaf0; border: 1px solid rgba(25,21,18,0.1); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 26px; line-height: 1; letter-spacing: -0.04em;">1</div>
+          <div style="font-size: 13px; color: #6b6157; margin-top: 6px;">process, heap and scheduler</div>
+        </div>
+        <div style="background: #fffaf0; border: 1px solid rgba(25,21,18,0.1); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 26px; line-height: 1; letter-spacing: -0.04em;">0</div>
+          <div style="font-size: 13px; color: #6b6157; margin-top: 6px;">compile-time deps in guests</div>
+        </div>
+        <div style="background: #fffaf0; border: 1px solid rgba(25,21,18,0.1); border-radius: 8px; padding: 14px 16px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 26px; line-height: 1; letter-spacing: -0.04em;">100%</div>
+          <div style="font-size: 13px; color: #6b6157; margin-top: 6px;">Haxe conformance via Ash</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section style="border-top: 1px solid rgba(25,21,18,0.1); padding: clamp(28px, 4vw, 44px) clamp(20px, 5vw, 64px); max-width: 1320px; margin: 0 auto; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 28px;">
+    <div>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5a22;">Built for</div>
+      <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 10px 0 6px;">Game &amp; multimedia engines</h3>
+      <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44;">A Haxe host owns the loop and the shipped binary; gameplay, UI and tools are scripted in whatever language suits them and hot-reload in place.</p>
+    </div>
+    <div>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5a22;">Built for</div>
+      <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 10px 0 6px;">Plugin extensions</h3>
+      <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44;">Third-party extensions ship as scripts or native C libraries, resolved through one registry and sandboxed by the same scheduler as everything else.</p>
+    </div>
+    <div>
+      <div style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5a22;">Built for</div>
+      <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 10px 0 6px;">Actor &amp; agent systems</h3>
+      <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44;">Thousands of cooperative fibers across languages sit in one scheduler and one heap — actors message each other by reference, not by wire format.</p>
+    </div>
+  </section>
+
+  <section id="interop" style="padding: clamp(48px, 7vw, 92px) clamp(20px, 5vw, 64px); max-width: 1320px; margin: 0 auto;">
+    <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 14px;">
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5a22;">Interop</span>
+      <h2 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(22px, 2.5vw, 32px); letter-spacing: -0.035em; margin: 0;">Imports that cross languages.</h2>
+    </div>
+    <p style="font-size: 16.5px; line-height: 1.6; color: #554d44; max-width: 62ch; margin: 0 0 32px;">A game engine written in Haxe can drive gameplay systems scripted in Wren, hand native objects across the boundary, and hot-reload scripts at runtime — without rebuilding native components.</p>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px;">
+      <div style="border: 1px solid rgba(25,21,18,0.14); border-radius: 10px; overflow: hidden; background: #191512;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; border-bottom: 1px solid rgba(246,240,228,0.14); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(246,240,228,0.5);">
+          <span>hud.wren</span><span style="color: #c08a52;">wren → haxe</span>
+        </div>
+        <pre style="margin: 0; padding: 20px 18px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #efe4cf; overflow-x: auto;"><span style="display: block;"><span style="color: #d79a63;">import</span> <span style="color: #9ec48f;">"game:Player"</span> <span style="color: #d79a63;">for</span> <span style="color: #c3a3e0;">Player</span></span><span style="display: block; height: 1.7em;"></span><span style="display: block;"><span style="color: #d79a63;">class</span> <span style="color: #c3a3e0;">Hud</span> {</span><span style="display: block;">  <span style="color: #8a8076;">// signature inferred</span></span><span style="display: block;">  <span style="color: #d79a63;">static</span> <span style="color: #7fb6d4;">draw</span>(p) {</span><span style="display: block;">    <span style="color: #c3a3e0;">System</span>.<span style="color: #7fb6d4;">print</span>(<span style="color: #9ec48f;">"hp %(p.health)"</span>)</span><span style="display: block;">  }</span><span style="display: block; height: 1.7em;"></span><span style="display: block;">  <span style="color: #8a8076;">// or state it explicitly</span></span><span style="display: block;">  <span style="color: #d79a63;">#export</span> = <span style="color: #9ec48f;">"scale(n: Num) -&gt; Num"</span></span><span style="display: block;">  <span style="color: #d79a63;">static</span> <span style="color: #7fb6d4;">scale</span>(n) { <span style="color: #d79a63;">return</span> n * 2 }</span><span style="display: block;">}</span></pre>
+      </div>
+      <div style="border: 1px solid rgba(25,21,18,0.14); border-radius: 10px; overflow: hidden; background: #191512;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; border-bottom: 1px solid rgba(246,240,228,0.14); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(246,240,228,0.5);">
+          <span>Main.hx</span><span style="color: #c08a52;">haxe → wren</span>
+        </div>
+        <pre style="margin: 0; padding: 20px 18px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #efe4cf; overflow-x: auto;"><span style="display: block; color: #8a8076;">// haxe -lib caribou</span><span style="display: block;"><span style="color: #d79a63;">import</span> game.hud.<span style="color: #c3a3e0;">Hud</span>; <span style="color: #8a8076;">// src/game/hud.wren</span></span><span style="display: block; height: 1.7em;"></span><span style="display: block;"><span style="color: #d79a63;">class</span> <span style="color: #c3a3e0;">Main</span> {</span><span style="display: block;">  <span style="color: #d79a63;">static function</span> <span style="color: #7fb6d4;">main</span>() {</span><span style="display: block;">    <span style="color: #c3a3e0;">Hud</span>.<span style="color: #7fb6d4;">draw</span>(<span style="color: #d79a63;">new</span> <span style="color: #c3a3e0;">Player</span>());</span><span style="display: block;">    <span style="color: #8a8076;">// typed by the #export signature</span></span><span style="display: block;">    <span style="color: #d79a63;">var</span> hp:<span style="color: #c3a3e0;">Float</span> = <span style="color: #c3a3e0;">Hud</span>.<span style="color: #7fb6d4;">scale</span>(21);</span><span style="display: block;">  }</span><span style="display: block;">}</span></pre>
+      </div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px; margin-top: 18px;">
+      <div style="border: 1px solid rgba(25,21,18,0.14); border-radius: 10px; overflow: hidden; background: #191512;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; border-bottom: 1px solid rgba(246,240,228,0.14); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(246,240,228,0.5);">
+          <span>plugins/math/src/lib.rs</span><span style="color: #c08a52;">native plugin</span>
+        </div>
+        <pre style="margin: 0; padding: 20px 18px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #efe4cf; overflow-x: auto;"><span style="display: block;"><span style="color: #c3a3e0;">caribou_abi</span>::<span style="color: #7fb6d4;">plugin!</span> {</span><span style="display: block;">    name: <span style="color: #9ec48f;">"math"</span>;</span><span style="display: block;">    <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">hypot</span>(f64, f64) -&gt; f64;</span><span style="display: block;">    <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">shout</span>(<span style="color: #c3a3e0;">Text</span>) -&gt; <span style="color: #c3a3e0;">Text</span>;</span><span style="display: block;">    <span style="color: #d79a63;">class</span> <span style="color: #c3a3e0;">Vec2</span> {</span><span style="display: block;">        <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">new</span>(f64, f64) -&gt; <span style="color: #c3a3e0;">Box</span>&lt;<span style="color: #c3a3e0;">Vec2</span>&gt;;</span><span style="display: block;">        <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">len</span>(&amp;<span style="color: #c3a3e0;">Vec2</span>) -&gt; f64;</span><span style="display: block;">        <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">scale</span>(&amp;<span style="color: #d79a63;">mut</span> <span style="color: #c3a3e0;">Vec2</span>, f64);</span><span style="display: block;">    }</span><span style="display: block;">    <span style="color: #d79a63;">class</span> <span style="color: #c3a3e0;">Tally</span> {</span><span style="display: block;">        <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">watch</span>(&amp;<span style="color: #d79a63;">mut</span> <span style="color: #c3a3e0;">Tally</span>, <span style="color: #c3a3e0;">Value</span>);</span><span style="display: block;">        <span style="color: #d79a63;">fn</span> <span style="color: #7fb6d4;">add</span>(&amp;<span style="color: #d79a63;">mut</span> <span style="color: #c3a3e0;">Tally</span>, f64) -&gt; f64;</span><span style="display: block;">    }</span><span style="display: block;">}</span></pre>
+      </div>
+      <div style="border: 1px solid rgba(25,21,18,0.14); border-radius: 10px; overflow: hidden; background: #191512;">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; border-bottom: 1px solid rgba(246,240,228,0.14); font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(246,240,228,0.5);">
+          <span>UsePlugin.hx</span><span style="color: #c08a52;">haxe → plugin</span>
+        </div>
+        <pre style="margin: 0; padding: 20px 18px; font-family: 'JetBrains Mono', monospace; font-size: 13px; line-height: 1.7; color: #efe4cf; overflow-x: auto;"><span style="display: block;"><span style="color: #d79a63;">import</span> math.<span style="color: #c3a3e0;">Math</span>;</span><span style="display: block;"><span style="color: #d79a63;">import</span> math.<span style="color: #c3a3e0;">Vec2</span>;</span><span style="display: block;"><span style="color: #d79a63;">import</span> math.<span style="color: #c3a3e0;">Tally</span>;</span><span style="display: block; height: 1.7em;"></span><span style="display: block;"><span style="color: #c3a3e0;">Sys</span>.<span style="color: #7fb6d4;">println</span>(<span style="color: #c3a3e0;">Math</span>.<span style="color: #7fb6d4;">hypot</span>(3, 4));</span><span style="display: block;"><span style="color: #d79a63;">var</span> v = <span style="color: #d79a63;">new</span> <span style="color: #c3a3e0;">Vec2</span>(3, 4);</span><span style="display: block;">v.<span style="color: #7fb6d4;">scale</span>(2);</span><span style="display: block;"><span style="color: #c3a3e0;">Sys</span>.<span style="color: #7fb6d4;">println</span>(v.<span style="color: #7fb6d4;">len</span>());</span><span style="display: block; height: 1.7em;"></span><span style="display: block; color: #8a8076;">// the plugin object holds a Haxe closure</span><span style="display: block;"><span style="color: #d79a63;">var</span> t = <span style="color: #d79a63;">new</span> <span style="color: #c3a3e0;">Tally</span>();</span><span style="display: block;">t.<span style="color: #7fb6d4;">watch</span>(total -&gt; total * 10);</span><span style="display: block;"><span style="color: #c3a3e0;">Sys</span>.<span style="color: #7fb6d4;">println</span>(t.<span style="color: #7fb6d4;">add</span>(3));</span></pre>
+      </div>
+    </div>
+    <p style="font-size: 15px; line-height: 1.6; color: #554d44; margin: 18px 0 0;">A C or Rust library declared with <code style="font-family: 'JetBrains Mono', monospace; font-size: 13.5px;">caribou_abi::plugin!</code> and dropped in <code style="font-family: 'JetBrains Mono', monospace; font-size: 13.5px;">plugins/</code> becomes a module like any other: its classes appear under <code style="font-family: 'JetBrains Mono', monospace; font-size: 13.5px;">math.*</code> in Haxe, import the same way in Wren, and can hold a guest closure and call back into it.</p>
+    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; margin-top: 30px;">
+      <div style="border-top: 2px solid #191512; padding-top: 14px;">
+        <h4 style="margin: 0 0 6px; font-size: 15px; font-weight: 600;">Explicit or inferred exports</h4>
+        <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44;">Annotate a Wren signature with <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">#export = "add(n: Num) -&gt; Num"</code>, or let Caribou infer it.</p>
+      </div>
+      <div style="border-top: 2px solid #191512; padding-top: 14px;">
+        <h4 style="margin: 0 0 6px; font-size: 15px; font-weight: 600;">No marshalling tax</h4>
+        <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44;">Native objects pass across boundaries by reference — the heap is already shared.</p>
+      </div>
+      <div style="border-top: 2px solid #191512; padding-top: 14px;">
+        <h4 style="margin: 0 0 6px; font-size: 15px; font-weight: 600;">Hot reload in prod</h4>
+        <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44;">Guest scripts reload while the process runs, in development and shipped builds alike.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="runtimes" style="border-top: 1px solid rgba(25,21,18,0.1); padding: clamp(48px, 7vw, 92px) clamp(20px, 5vw, 64px); max-width: 1320px; margin: 0 auto;">
+    <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 36px;">
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5a22;">Guest runtimes</span>
+      <h2 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(22px, 2.5vw, 32px); letter-spacing: -0.035em; margin: 0;">Languages keep their <em>ecosystem</em>.</h2>
+    </div>
+    <p style="font-size: 16.5px; line-height: 1.6; color: #554d44; max-width: 64ch; margin: -18px 0 32px;">Haxe still pulls from haxelib, Wren from Hatch, Python from pip, Lua from luarocks. Nothing is re-packaged for Caribou, and the set is open — a frontend joins by filling in a seam table.</p>
+    <div style="display: flex; flex-wrap: wrap; gap: 18px;">
+      <div class="card" style="flex: 1 1 260px; min-width: 0; background: #fffaf0; border: 1px solid rgba(25,21,18,0.1); border-radius: 10px; padding: 26px 24px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 20px; letter-spacing: -0.03em; margin: 0;">Ash</h3>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #8a5a22;">HAXE</span>
+        </div>
+        <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #554d44;">Haxe compiled to HashLink bytecode, run on a tiering JIT. Usually the host: it owns the process entry point, the main loop and the shipped executable.</p>
+        <a href="https://ash.rayzor.tech" style="font-size: 14px; margin-top: auto; padding-top: 6px;">ash.rayzor.tech ↗</a>
+      </div>
+      <div class="card" style="flex: 1 1 260px; min-width: 0; background: #fffaf0; border: 1px solid rgba(25,21,18,0.1); border-radius: 10px; padding: 26px 24px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 20px; letter-spacing: -0.03em; margin: 0;">WrenLift</h3>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #8a5a22;">WREN</span>
+        </div>
+        <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #554d44;">Standalone Wren with a tier-up JIT and the Hatch package tool. On Caribou it matches its own benchmark timings and memory under heavy GC pressure.</p>
+        <a href="https://wrenlift.com" style="font-size: 14px; margin-top: auto; padding-top: 6px;">wrenlift.com ↗</a>
+      </div>
+      <div class="card" style="flex: 1 1 260px; min-width: 0; background: #fffaf0; border: 1px solid rgba(25,21,18,0.1); border-radius: 10px; padding: 26px 24px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 20px; letter-spacing: -0.03em; margin: 0;">Zyntax</h3>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #8a5a22;">LUA · PYTHON · DSL</span>
+        </div>
+        <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #554d44;">The frontend lane. Zyntax is a complete JIT compiler frontend for further languages and DSLs — Python and Lua come from it — and its modules register beside Wren and Haxe in the same namespace.</p>
+        <span style="font-size: 13px; font-family: 'JetBrains Mono', monospace; color: #6b6157; margin-top: auto; padding-top: 6px;">in progress</span>
+      </div>
+      <div style="flex: 1 1 260px; min-width: 0; background: rgba(192,138,82,0.1); border: 1px dashed rgba(192,138,82,0.55); border-radius: 10px; padding: 26px 24px; display: flex; flex-direction: column; gap: 12px;">
+        <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 10px;">
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 20px; letter-spacing: -0.03em; margin: 0;">Native plugins</h3>
+          <span style="font-family: 'JetBrains Mono', monospace; font-size: 11.5px; color: #8a5a22;">C ABI</span>
+        </div>
+        <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #554d44;">C libraries built with <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">caribou_abi::plugin!</code> drop into <code style="font-family: 'JetBrains Mono', monospace; font-size: 13px;">plugins/</code> and are treated as first-class languages in the registry.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="core" style="background: #191512; color: #efe4cf; padding: clamp(48px, 7vw, 96px) clamp(20px, 5vw, 64px);">
+    <div style="max-width: 1320px; margin: 0 auto;">
+      <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 40px;">
+        <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #c08a52;">The core</span>
+        <h2 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(22px, 2.5vw, 32px); letter-spacing: -0.035em; margin: 0; color: #f6f0e4;">Four runtime systems, consolidated.</h2>
+      </div>
+      <div style="display: flex; flex-wrap: wrap; border-radius: 10px; overflow: hidden;">
+        <div style="flex: 1 1 250px; min-width: 0; background: #191512; padding: 28px 24px; border: 1px solid rgba(246,240,228,0.16); margin: -0.5px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c08a52;">01</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 12px 0 8px; color: #f6f0e4;">Global managed heap</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: rgba(246,240,228,0.66);">One collector for every language. Objects cross boundaries as references, never as serialized copies.</p>
+        </div>
+        <div style="flex: 1 1 250px; min-width: 0; background: #191512; padding: 28px 24px; border: 1px solid rgba(246,240,228,0.16); margin: -0.5px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c08a52;">02</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 12px 0 8px; color: #f6f0e4;">Task &amp; fiber scheduler</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: rgba(246,240,228,0.66);">Cooperative scheduling shared across guests, so a Wren fiber and a Haxe task sit in the same queue.</p>
+        </div>
+        <div style="flex: 1 1 250px; min-width: 0; background: #191512; padding: 28px 24px; border: 1px solid rgba(246,240,228,0.16); margin: -0.5px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c08a52;">03</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 12px 0 8px; color: #f6f0e4;">Module registry</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: rgba(246,240,228,0.66);">One namespace across languages. A module's functions belong to the module, whoever imports it.</p>
+        </div>
+        <div style="flex: 1 1 250px; min-width: 0; background: #191512; padding: 28px 24px; border: 1px solid rgba(246,240,228,0.16); margin: -0.5px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #c08a52;">04</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 12px 0 8px; color: #f6f0e4;">Native plugin loader</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: rgba(246,240,228,0.66);">A single dynamic loader for native plugins, resolved through the same registry as script modules.</p>
+        </div>
+      </div>
+
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 28px; margin-top: 56px;">
+        <div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 19px; letter-spacing: -0.03em; margin: 0 0 10px; color: #f6f0e4;">The seam table</h3>
+          <p style="margin: 0; font-size: 15px; line-height: 1.65; color: rgba(246,240,228,0.7);">Each guest exposes a struct of function pointers covering heap allocation, collection and scheduling. By default they point at its own implementations.</p>
+        </div>
+        <div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 19px; letter-spacing: -0.03em; margin: 0 0 10px; color: #f6f0e4;">Adapter initialization</h3>
+          <p style="margin: 0; font-size: 15px; line-height: 1.65; color: rgba(246,240,228,0.7);">Adapter crates overwrite those tables with Caribou's implementations before the runtime allocates a single byte.</p>
+        </div>
+        <div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 19px; letter-spacing: -0.03em; margin: 0 0 10px; color: #f6f0e4;">Isolated testing</h3>
+          <p style="margin: 0; font-size: 15px; line-height: 1.65; color: rgba(246,240,228,0.7);">Standalone suites still run against native implementations, unmodified. Adapter builds run the same guest binaries over Caribou.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="start" style="border-top: 1px solid rgba(25,21,18,0.1); padding: clamp(48px, 7vw, 92px) clamp(20px, 5vw, 64px); max-width: 1320px; margin: 0 auto;">
+    <div style="display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-bottom: 32px;">
+      <span style="font-family: 'JetBrains Mono', monospace; font-size: 12px; letter-spacing: 0.1em; text-transform: uppercase; color: #8a5a22;">Get started</span>
+      <h2 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: clamp(22px, 2.5vw, 32px); letter-spacing: -0.035em; margin: 0;">Simple toolchain in one CLI.</h2>
+      <p style="font-size: 15.5px; line-height: 1.6; color: #554d44; max-width: 62ch; margin: 0;">One install script gives you the <code style="font-size: 14px;">caribou</code> command — pulled from the rolling nightly release, verified, and dropped on your <code style="font-size: 14px;">PATH</code>. Prefer to build it yourself? See <a href="https://github.com/rayzor-blade/caribou/blob/main/docs/building.md">building.md</a>.</p>
+    </div>
+    <div style="display: flex; flex-direction: column;">
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 40px; align-items: start; border-top: 1px solid rgba(25,21,18,0.18); padding: 22px 0;">
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8a5a22;">01</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 0;">Install caribou</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44; max-width: 48ch;">One script drops the caribou binary on your PATH. Prebuilt for macOS, Linux and Windows, aarch64 and x86_64.</p>
+        </div>
+        <div style="position: relative; min-width: 0;">
+          <pre style="margin: 0; background: #191512; color: #efe4cf; border-radius: 7px; padding: 14px 44px 14px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.7; overflow-x: auto;"># macos · linux
+$ curl -fsSL caribou.rayzor.tech/install.sh | sh
+
+# windows · powershell
+&gt; irm caribou.rayzor.tech/install.ps1 | iex</pre>
+          <button class="copy" type="button" style="position: absolute; top: 8px; right: 8px; background: rgba(246,240,228,0.1); color: rgba(246,240,228,0.75); border: 1px solid rgba(246,240,228,0.18); border-radius: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 4px 7px; cursor: pointer;">copy</button>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 40px; align-items: start; border-top: 1px solid rgba(25,21,18,0.18); padding: 22px 0;">
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8a5a22;">02</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 0;">Run a program</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44; max-width: 48ch;">Point caribou at the program your compiler already produces. Guest modules beside it are discovered and loaded.</p>
+        </div>
+        <div style="position: relative; min-width: 0;">
+          <pre style="margin: 0; background: #191512; color: #efe4cf; border-radius: 7px; padding: 14px 44px 14px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.7; overflow-x: auto;">caribou run bin/game.hl
+caribou run --report bin/game.hl
+caribou run --mode hybrid --wren tiered bin/game.hl</pre>
+          <button class="copy" type="button" style="position: absolute; top: 8px; right: 8px; background: rgba(246,240,228,0.1); color: rgba(246,240,228,0.75); border: 1px solid rgba(246,240,228,0.18); border-radius: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 4px 7px; cursor: pointer;">copy</button>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 40px; align-items: start; border-top: 1px solid rgba(25,21,18,0.18); padding: 22px 0;">
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8a5a22;">03</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 0;">Bundle for deployment</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44; max-width: 48ch;">build packages the program and every language's modules — plus native plugins — into one .cb file. A run needs the file and nothing else.</p>
+        </div>
+        <div style="position: relative; min-width: 0;">
+          <pre style="margin: 0; background: #191512; color: #efe4cf; border-radius: 7px; padding: 14px 44px 14px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.7; overflow-x: auto;">caribou build bin/game.hl
+caribou build bin/game.hl -o dist/game.cb
+caribou run dist/game.cb</pre>
+          <button class="copy" type="button" style="position: absolute; top: 8px; right: 8px; background: rgba(246,240,228,0.1); color: rgba(246,240,228,0.75); border: 1px solid rgba(246,240,228,0.18); border-radius: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 4px 7px; cursor: pointer;">copy</button>
+        </div>
+      </div>
+      <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px 40px; align-items: start; border-top: 1px solid rgba(25,21,18,0.18); padding: 22px 0;">
+        <div style="display: flex; flex-direction: column; gap: 8px;">
+          <div style="font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #8a5a22;">04</div>
+          <h3 style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 18px; letter-spacing: -0.03em; margin: 0;">Inspect the registry</h3>
+          <p style="margin: 0; font-size: 14.5px; line-height: 1.6; color: #554d44; max-width: 48ch;">describe reports what a module, plugin library or project root exports across the shared namespace.</p>
+        </div>
+        <div style="position: relative; min-width: 0;">
+          <pre style="margin: 0; background: #191512; color: #efe4cf; border-radius: 7px; padding: 14px 44px 14px 14px; font-family: 'JetBrains Mono', monospace; font-size: 12.5px; line-height: 1.7; overflow-x: auto;">caribou describe src/game/hud.wren
+caribou describe plugins/libphysics.so
+caribou describe .</pre>
+          <button class="copy" type="button" style="position: absolute; top: 8px; right: 8px; background: rgba(246,240,228,0.1); color: rgba(246,240,228,0.75); border: 1px solid rgba(246,240,228,0.18); border-radius: 5px; font-family: 'JetBrains Mono', monospace; font-size: 10.5px; padding: 4px 7px; cursor: pointer;">copy</button>
+        </div>
+      </div>
+    </div>
+    <div style="display: flex; flex-wrap: wrap; gap: 10px 26px; margin-top: 28px; font-size: 14.5px; color: #554d44;">
+      <span>Docs in the repo:</span>
+      <a href="https://github.com/rayzor-blade/caribou/blob/main/docs/interop.md">interop.md</a>
+      <a href="https://github.com/rayzor-blade/caribou/blob/main/docs/architecture.md">architecture.md</a>
+      <a href="https://github.com/rayzor-blade/caribou/blob/main/docs/building.md">building.md</a>
+    </div>
+  </section>
+
+  <footer style="border-top: 1px solid rgba(25,21,18,0.1); padding: 40px clamp(20px, 5vw, 64px); max-width: 1320px; margin: 0 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 18px 28px;">
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <img src="assets/caribou.png" alt="" style="width: 26px; height: 26px; object-fit: contain;" />
+      <span style="font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 16px; letter-spacing: -0.04em;">caribou</span>
+    </div>
+    <span style="font-size: 13.5px; color: #6b6157;">MIT licensed · © 2026 the Caribou contributors</span>
+    <div style="display: flex; flex-wrap: wrap; gap: 20px; margin-left: auto; font-size: 13.5px;">
+      <a href="https://github.com/rayzor-blade/caribou">GitHub</a>
+      <a href="https://ash.rayzor.tech">Ash</a>
+      <a href="https://wrenlift.com">WrenLift</a>
+      <a href="https://haxe.org">Haxe</a>
+      <a href="https://wren.io">Wren</a>
+    </div>
+  </footer>
+</div>
+<script>
+  // Each copy button copies the code block beside it and says so briefly.
+  for (const button of document.querySelectorAll('button.copy')) {
+    button.addEventListener('click', () => {
+      const code = button.parentElement.querySelector('pre').textContent;
+      navigator.clipboard?.writeText(code);
+      button.textContent = 'copied';
+      clearTimeout(button._t);
+      button._t = setTimeout(() => { button.textContent = 'copy'; }, 1600);
+    });
+  }
+</script>
+</body>
+</html>
