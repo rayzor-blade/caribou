@@ -54,7 +54,7 @@ Tests that need a second thread or unwinding are marked ignored on wasm; a wasm 
 
 ## Continuous Integration
 
-`.github/workflows` holds three workflows. `ci.yml` runs the tests on every push: the stable crates, the whole workspace on nightly, rustfmt and clippy with warnings denied, and the core on wasm32. `nightly.yml` publishes a release build of the `caribou` command for macOS, Linux and Windows as the rolling `nightly` pre-release, built with `--features llvm` (see below), LLVM installed as the runtimes' own releases install it. `bench.yml` runs the benchmarks nightly on macOS and Linux into the run's summary. Each job checks out `ash` and `zyntax` beside the repository at the revs `Cargo.toml` pins.
+`.github/workflows` holds three workflows. `ci.yml` runs the tests on every push: the stable crates, the whole workspace on nightly, rustfmt and clippy with warnings denied, and the core on wasm32. `nightly.yml` publishes a release build of the `caribou` command for macOS, Linux and Windows as the rolling `nightly` pre-release (one `caribou-nightly-<target>` archive per platform, which `install.sh` and `install.ps1` at the repository root fetch and verify), built with `--features llvm` (see below), LLVM installed as the runtimes' own releases install it. `pages.yml` publishes `site/` with the installers beside the page. `bench.yml` runs the benchmarks nightly on macOS and Linux into the run's summary. Each job checks out `ash` and `zyntax` beside the repository at the revs `Cargo.toml` pins.
 
 ## JIT Tiers & LLVM Configuration
 

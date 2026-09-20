@@ -56,6 +56,18 @@ Modules are resolved and shared across language boundaries through a unified nam
 * **Native Plugins:** C libraries built with `caribou_abi::plugin!` in `plugins/` are treated as first-class languages in the module registry.
 * **Zyntax:** Discovered frontends (ZynML snapshots, `.zyn` files, or Python sources) register beside standard Wren and Haxe modules. A module's functions belong to the module: Wren imports them as module variables; Haxe sees the module's classes under the module as their package.
 
+## Installing
+
+The nightly `caribou` command, prebuilt for macOS, Linux and Windows:
+
+```sh
+curl -fsSL https://caribou.rayzor.tech/install.sh | sh
+```
+
+```powershell
+irm https://caribou.rayzor.tech/install.ps1 | iex
+```
+
 ## Building & Verification
 
 ### Build Commands

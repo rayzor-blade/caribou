@@ -1,6 +1,8 @@
 # The site under `site/`, published to GitHub Pages on every push that
-# changes it, and on request. Pages serves the directory as it is: no
-# build step, index.html at its root.
+# changes it or the installers, and on request. Pages serves the directory
+# as it is: no build step, index.html at its root. The installers live at
+# the repository root, where the README's raw links find them, and are
+# copied in at deploy so the site serves them at the URLs the page shows.
 name: Pages
 
 on:
@@ -8,6 +10,8 @@ on:
     branches: [main]
     paths:
       - "site/**"
+      - "install.sh"
+      - "install.ps1"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -28,6 +32,8 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: The installers, beside the page
+        run: cp install.sh install.ps1 site/
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

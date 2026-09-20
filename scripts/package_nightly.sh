@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Package the release `caribou` command as the nightly archive for one
-# target: dist/caribou-nightly-<date>-<target>.tar.gz (a zip on Windows)
-# and its .sha256. Inside: the command, ash's runtime image beside it
+# target: dist/caribou-nightly-<target>.tar.gz (a zip on Windows) and its
+# .sha256. The name carries no date, so the installer's URL is stable;
+# the release's title and notes say which night it is. Inside: the command, ash's runtime image beside it
 # under the names an HDLL imports (as ash's own release ships it: the
 # command links the runtime in, and the sibling copy is for programs with
 # HDLLs beside them), the haxelib, the docs and the license.
@@ -14,12 +15,11 @@
 # workflow put them. On Linux the equivalents are distro packages and
 # stay dynamic.
 #
-# Usage: scripts/package_nightly.sh <target-triple> [<yyyymmdd>]
+# Usage: scripts/package_nightly.sh <target-triple>
 # Expects target/release/caribou and ../ash/target/release/<runtime>.
 set -euo pipefail
 
-TARGET="${1:?usage: package_nightly.sh <target-triple> [<yyyymmdd>]}"
-STAMP="${2:-$(date -u +%Y%m%d)}"
+TARGET="${1:?usage: package_nightly.sh <target-triple>}"
 
 case "$(uname -s)" in
   Darwin) EXE=caribou; STD=libash_std.dylib; HL=libhl.dylib; ARCHIVE=tar ;;
@@ -30,7 +30,7 @@ esac
 BIN="target/release/$EXE"
 test -f "$BIN" || { echo "error: $BIN not built" >&2; exit 1; }
 
-NAME="caribou-nightly-${STAMP}-${TARGET}"
+NAME="caribou-nightly-${TARGET}"
 DIST="dist/$NAME"
 rm -rf "$DIST"
 mkdir -p "$DIST"

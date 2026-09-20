@@ -7,3 +7,5 @@ crates/caribou-interop/fixtures/src/zynml.zsnap
 # Packaging and bench output of the workflows, when run by hand.
 dist/
 bench-out/
+site/install.sh
+site/install.ps1
