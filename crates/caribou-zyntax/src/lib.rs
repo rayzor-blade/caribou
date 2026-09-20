@@ -294,10 +294,15 @@ impl Frontend {
             .collect()
     }
 
-    /// Whether `path` names a frontend file.
+    /// Whether `path` names a frontend file. A hidden one is not: a
+    /// `._name.zsnap` is the sidecar a macOS archive leaves beside the file.
     pub fn is_frontend_file(path: &std::path::Path) -> bool {
-        path.extension()
-            .is_some_and(|e| e == SNAPSHOT_EXTENSION || e == "zyn")
+        !path
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
+            && path
+                .extension()
+                .is_some_and(|e| e == SNAPSHOT_EXTENSION || e == "zyn")
     }
 
     /// The frontend files directly under each of `roots`, in name order.
@@ -750,4 +755,19 @@ fn walk(dir: &std::path::Path) -> Vec<PathBuf> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Frontend;
+    use std::path::Path;
+
+    #[test]
+    fn a_hidden_file_is_not_a_frontend() {
+        assert!(Frontend::is_frontend_file(Path::new("src/zynml.zsnap")));
+        assert!(Frontend::is_frontend_file(Path::new("src/lang.zyn")));
+        assert!(!Frontend::is_frontend_file(Path::new("src/._zynml.zsnap")));
+        assert!(!Frontend::is_frontend_file(Path::new("src/.zynml.zsnap")));
+        assert!(!Frontend::is_frontend_file(Path::new("src/zynml.txt")));
+    }
 }
