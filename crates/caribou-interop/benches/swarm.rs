@@ -125,8 +125,18 @@ fn main() {
             mixed.1 / haxe.1,
             mixed.1 / wren.1
         );
-        if mixed.2 != haxe.2 || mixed.2 != wren.2 {
+        // The engines contract `a * b + c` differently: ash always, wren_lift
+        // in its top tier. That moves a checksum by ulps; more is a wrong run.
+        let spread = [haxe.2, wren.2, mixed.2]
+            .iter()
+            .fold(0.0f64, |acc, &c| acc.max((c - haxe.2).abs()));
+        if spread > haxe.2.abs() * 1e-12 {
             println!("checksums differ: the three runs are not the same arena");
+        } else if spread > 0.0 {
+            println!(
+                "checksums agree to {:.1e}: fused multiply-adds differ",
+                spread
+            );
         }
     }
     if args.report {
