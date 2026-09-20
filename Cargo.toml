@@ -25,11 +25,11 @@ ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "4659
 ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "4659c3004f7e1db217529afd18e18f78b2da3844", default-features = false }
 ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "4659c3004f7e1db217529afd18e18f78b2da3844", default-features = false }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "631db680fa5bc7f6c6de3abce7fb073dcc9a0913" }
-zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "8387b62d5b4800ede7fab78c4dd32ffb9d29eac0" }
-zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "8387b62d5b4800ede7fab78c4dd32ffb9d29eac0", default-features = false }
-zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "8387b62d5b4800ede7fab78c4dd32ffb9d29eac0" }
-zynml = { git = "https://github.com/darmie/zyntax.git", rev = "8387b62d5b4800ede7fab78c4dd32ffb9d29eac0", default-features = false }
-zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "8387b62d5b4800ede7fab78c4dd32ffb9d29eac0" }
+zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "185882e61c798d8b59455ca0b88bf7ea7914ef0a" }
+zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "185882e61c798d8b59455ca0b88bf7ea7914ef0a", default-features = false }
+zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "185882e61c798d8b59455ca0b88bf7ea7914ef0a" }
+zynml = { git = "https://github.com/darmie/zyntax.git", rev = "185882e61c798d8b59455ca0b88bf7ea7914ef0a", default-features = false }
+zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "185882e61c798d8b59455ca0b88bf7ea7914ef0a" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,
