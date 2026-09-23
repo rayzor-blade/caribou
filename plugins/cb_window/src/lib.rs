@@ -7,7 +7,7 @@ use winit::{
     event::WindowEvent as NativeWindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     platform::pump_events::EventLoopExtPumpEvents,
-    window::{Window, WindowAttributes},
+    window::{self, Window, WindowAttributes},
 };
 
 pub mod events;
@@ -18,6 +18,14 @@ const APPKIT: i32 = 1;
 const WIN32: i32 = 2;
 const XLIB: i32 = 3;
 const WAYLAND: i32 = 4;
+
+#[derive(Debug, Clone, PartialEq, PluginEnum)]
+#[caribou(name = "window.WindowLevel", from = window::WindowLevel)]
+enum WindowLevel {
+    AlwaysOnBottom,
+    Normal,
+    AlwaysOnTop,
+}
 
 /// Opened once, in `resumed`, because winit will not make a window before it.
 struct App {
@@ -606,6 +614,94 @@ impl WindowBuilder {
         new_box
     }
 
+    pub extern "C" fn maximized(this: &mut WindowBuilder, yes: bool) -> Box<WindowBuilder> {
+        this.attributes = this.attributes.clone().with_maximized(yes);
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn visible(this: &mut WindowBuilder, yes: bool) -> Box<WindowBuilder> {
+        this.attributes = this.attributes.clone().with_visible(yes);
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn content_protected(this: &mut WindowBuilder, yes: bool) -> Box<WindowBuilder> {
+        this.attributes = this.attributes.clone().with_content_protected(yes);
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn decorations(this: &mut WindowBuilder, yes: bool) -> Box<WindowBuilder> {
+        this.attributes = this.attributes.clone().with_decorations(yes);
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn transparent(this: &mut WindowBuilder, yes: bool) -> Box<WindowBuilder> {
+        this.attributes = this.attributes.clone().with_transparent(yes);
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn blur(this: &mut WindowBuilder, yes: bool) -> Box<WindowBuilder> {
+        this.attributes = this.attributes.clone().with_blur(yes);
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn min_size(
+        this: &mut WindowBuilder,
+        width: i32,
+        height: i32,
+    ) -> Box<WindowBuilder> {
+        this.attributes = this
+            .attributes
+            .clone()
+            .with_min_inner_size(winit::dpi::LogicalSize::new(width, height));
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn max_size(
+        this: &mut WindowBuilder,
+        width: i32,
+        height: i32,
+    ) -> Box<WindowBuilder> {
+        this.attributes = this
+            .attributes
+            .clone()
+            .with_max_inner_size(winit::dpi::LogicalSize::new(width, height));
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
+    pub extern "C" fn window_level(
+        this: &mut WindowBuilder,
+        level: Enum<WindowLevel>,
+    ) -> Box<WindowBuilder> {
+        let window_level: window::WindowLevel = match level.get() {
+            WindowLevel::AlwaysOnBottom => window::WindowLevel::AlwaysOnBottom,
+            WindowLevel::Normal => window::WindowLevel::Normal,
+            WindowLevel::AlwaysOnTop => window::WindowLevel::AlwaysOnTop,
+        };
+        this.attributes = this
+            .attributes
+            .clone()
+            .with_window_level(window_level.into());
+        let new_box = Box::new(this.clone());
+        let _ = this;
+        new_box
+    }
+
     pub extern "C" fn open(this: &mut WindowBuilder) -> Box<WindowHandle> {
         let handle = open_with_attributes(this.attributes.clone());
 
@@ -684,6 +780,15 @@ caribou_abi::plugin! {
         fn size(&mut WindowBuilder, i32, i32) -> Box<WindowBuilder>;
         fn fullscreen(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
         fn resizable(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn maximized(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn visible(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn content_protected(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn decorations(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn transparent(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn blur(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
+        fn min_size(&mut WindowBuilder, i32, i32) -> Box<WindowBuilder>;
+        fn max_size(&mut WindowBuilder, i32, i32) -> Box<WindowBuilder>;
+        fn window_level(&mut WindowBuilder, Enum<WindowLevel>) -> Box<WindowBuilder>;
         fn open(&mut WindowBuilder) -> Box<WindowHandle>;
     }
 }
