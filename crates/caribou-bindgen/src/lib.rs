@@ -1,8 +1,9 @@
 //! Typed native binding declarations to Rust wrappers and `plugin!` exports.
-//! Traits describe resource classes; `#[native(name)]` selects a backend
-//! function. `#[idl("Name")]` imports enum values or namespace constants
-//! from a vendored WebIDL source. This does not infer native GPU semantics
-//! from WebIDL interfaces or generate a language-specific heap layout.
+//! Traits describe resource classes; structs describe plugin-owned records;
+//! `#[native(name)]` selects a backend function. `#[idl("Name")]` imports
+//! enum values or namespace constants from a vendored WebIDL source. This
+//! does not infer native GPU semantics from WebIDL interfaces or generate a
+//! language-specific heap layout.
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::collections::HashSet;
@@ -167,6 +168,38 @@ fn scalar(ty: &Type) -> bool {
     })
 }
 
+fn stored_value(
+    ty: &Type,
+    resources: &HashSet<String>,
+    records: &HashSet<String>,
+) -> Result<(TokenStream, TokenStream, TokenStream), String> {
+    if let Some(enumeration) = generic(ty, "Enum") {
+        return Ok((
+            quote!(i32),
+            quote!(Enum<#enumeration>),
+            quote!(value.get().native()),
+        ));
+    }
+    if scalar(ty) {
+        if type_name(ty).as_deref() == Some("Buffer") {
+            return Err("Buffer fields need an explicit ownership policy".into());
+        }
+        if type_name(ty).as_deref() == Some("Text") {
+            return Ok((quote!(String), quote!(Text), quote!(value.to_string())));
+        }
+        return Ok((quote!(#ty), quote!(#ty), quote!(value)));
+    }
+    let name = type_name(ty).ok_or("record fields need named types")?;
+    let ident = ident(&name)?;
+    if resources.contains(&name) {
+        Ok((quote!(i32), quote!(&#ident), quote!(value.handle)))
+    } else if records.contains(&name) {
+        Ok((quote!(#ident), quote!(&#ident), quote!(value.clone())))
+    } else {
+        Err(format!("unsupported record field type {name}"))
+    }
+}
+
 /// Emit a self-contained set of resource wrappers, schemas and one plugin
 /// table. Backends implement the selected functions with integer handles;
 /// the generated ABI uses typed native objects, enums, Text and Buffer.
@@ -179,6 +212,23 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
         .iter()
         .filter_map(|i| match i {
             Item::Trait(t) => Some(t.ident.to_string()),
+            Item::Struct(s) => Some(s.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let resources: HashSet<_> = file
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Trait(t) => Some(t.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let records: HashSet<_> = file
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Struct(s) => Some(s.ident.to_string()),
             _ => None,
         })
         .collect();
@@ -197,10 +247,12 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
         let name = match &item {
             Item::Enum(e) => &e.ident,
             Item::Trait(t) => &t.ident,
+            Item::Struct(s) => &s.ident,
             Item::Mod(m) => &m.ident,
             _ => {
                 return Err(
-                    "declarations support enums, resource traits and constant modules".into(),
+                    "declarations support enums, records, resource traits and constant modules"
+                        .into(),
                 );
             }
         };
@@ -283,6 +335,102 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                 output.extend(quote!(pub struct #name; impl #name { #methods }));
                 exports.extend(quote!(class #name { #signatures }));
             }
+            Item::Struct(s) => {
+                let class = &s.ident;
+                if !s.generics.params.is_empty() {
+                    return Err("records cannot be generic".into());
+                }
+                let syn::Fields::Named(fields) = s.fields else {
+                    return Err("records need named fields".into());
+                };
+                let mut stored_fields = TokenStream::new();
+                let mut required_params = Vec::new();
+                let mut required_types = Vec::new();
+                let mut required_values = Vec::new();
+                let mut initial_values = Vec::new();
+                let mut methods = TokenStream::new();
+                let mut signatures = TokenStream::new();
+                let mut field_names = HashSet::new();
+                let mut method_names = HashSet::from(["new".to_owned()]);
+                for field in fields.named {
+                    if !field.attrs.is_empty() {
+                        return Err(format!(
+                            "record field attributes are not supported on {class}"
+                        ));
+                    }
+                    let field_name = field.ident.expect("named field");
+                    if !field_names.insert(field_name.to_string()) {
+                        return Err(format!("duplicate field {class}.{field_name}"));
+                    }
+                    let (container, value_ty) = if let Some(inner) = generic(&field.ty, "Option") {
+                        ("option", inner)
+                    } else if let Some(inner) = generic(&field.ty, "Vec") {
+                        ("sequence", inner)
+                    } else {
+                        ("required", field.ty.clone())
+                    };
+                    if let Some(enumeration) = generic(&value_ty, "Enum") {
+                        if !enums.contains(&type_name(&enumeration).unwrap_or_default()) {
+                            return Err(format!("unknown enum in {class}.{field_name}"));
+                        }
+                    }
+                    let (stored, parameter, convert) =
+                        stored_value(&value_ty, &resources, &records)?;
+                    match container {
+                        "required" => {
+                            stored_fields.extend(quote!(pub(crate) #field_name: #stored,));
+                            required_params.push(quote!(#field_name: #parameter));
+                            required_types.push(quote!(#parameter));
+                            required_values
+                                .push(quote!(#field_name: { let value = #field_name; #convert }));
+                        }
+                        "option" => {
+                            if !method_names.insert(field_name.to_string()) {
+                                return Err(format!(
+                                    "generated method {class}.{field_name} is duplicated"
+                                ));
+                            }
+                            stored_fields.extend(quote!(pub(crate) #field_name: Option<#stored>,));
+                            initial_values.push(quote!(#field_name: None));
+                            methods.extend(quote! {
+                                pub extern "C" fn #field_name(this: &mut #class, value: #parameter) {
+                                    this.#field_name = Some(#convert);
+                                }
+                            });
+                            signatures.extend(quote!(fn #field_name(&mut #class, #parameter);));
+                        }
+                        "sequence" => {
+                            stored_fields.extend(quote!(pub(crate) #field_name: Vec<#stored>,));
+                            initial_values.push(quote!(#field_name: Vec::new()));
+                            let add = ident(&format!("add{}", pascal(&field_name.to_string())))?;
+                            if !method_names.insert(add.to_string()) {
+                                return Err(format!(
+                                    "generated method {class}.{add} is duplicated"
+                                ));
+                            }
+                            methods.extend(quote! {
+                                pub extern "C" fn #add(this: &mut #class, value: #parameter) {
+                                    this.#field_name.push(#convert);
+                                }
+                            });
+                            signatures.extend(quote!(fn #add(&mut #class, #parameter);));
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                methods.extend(quote! {
+                    pub extern "C" fn new(#(#required_params),*) -> Box<#class> {
+                        Box::new(#class { #(#required_values,)* #(#initial_values,)* })
+                    }
+                });
+                signatures = quote!(fn new(#(#required_types),*) -> Box<#class>; #signatures);
+                output.extend(quote! {
+                    #[derive(Clone)]
+                    pub struct #class { #stored_fields }
+                    impl #class { #methods }
+                });
+                exports.extend(quote!(class #class { #signatures }));
+            }
             Item::Trait(t) => {
                 let class = &t.ident;
                 if !t.generics.params.is_empty() || !t.supertraits.is_empty() {
@@ -336,7 +484,11 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                                     "first object parameter must be the {class} receiver"
                                 ));
                             }
-                            quote!(#param.handle)
+                            if resources.contains(&target) {
+                                quote!(#param.handle)
+                            } else {
+                                quote!(#param)
+                            }
                         } else if let Some(e) = generic(ty, "Enum") {
                             if !enums.contains(&type_name(&e).unwrap_or_default()) {
                                 return Err("unknown enum".into());
@@ -355,7 +507,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                         ReturnType::Default => (quote!(), quote!(value), quote!(())),
                         ReturnType::Type(_, ty) => {
                             let (convert, fallback) = if let Some(target) = generic(ty, "Box") {
-                                if !classes.contains(&type_name(&target).unwrap_or_default()) {
+                                if !resources.contains(&type_name(&target).unwrap_or_default()) {
                                     return Err("unknown returned resource".into());
                                 }
                                 (quote!(Box::new(#target { handle: value })), quote!(0))
@@ -451,6 +603,39 @@ mod tests {
         assert!(!generated.contains("wgpu.Power"));
     }
     #[test]
+    fn records_generate_required_optional_and_sequence_fields() {
+        let generated = generate(
+            "gpu",
+            r#"
+              enum Format { Rgba }
+              struct Entry { slot: i32 }
+              struct Descriptor {
+                size: i64,
+                label: Option<Text>,
+                format: Option<Enum<Format>>,
+                buffer: Option<BufferResource>,
+                entries: Vec<Entry>,
+              }
+              trait BufferResource {}
+              trait Device {
+                #[native(create)] fn create(this: &Device, descriptor: &Descriptor);
+              }
+            "#,
+            "",
+        )
+        .unwrap();
+        syn::parse_file(&generated).unwrap();
+        assert!(generated.contains("pub (crate) size : i64"));
+        assert!(generated.contains("pub (crate) label : Option < String >"));
+        assert!(generated.contains("pub (crate) format : Option < i32 >"));
+        assert!(generated.contains("pub (crate) buffer : Option < i32 >"));
+        assert!(generated.contains("pub (crate) entries : Vec < Entry >"));
+        assert!(generated.contains("fn new (size : i64) -> Box < Descriptor >"));
+        assert!(generated.contains("fn label (& mut Descriptor , Text)"));
+        assert!(generated.contains("fn addEntries (& mut Descriptor , & Entry)"));
+        assert!(generated.contains("backend :: create (this . handle , descriptor)"));
+    }
+    #[test]
     fn ambiguous_and_unsupported_declarations_fail_generation() {
         for (api, idl) in [
             ("#[idl(\"E\")] enum E {}", "enum E { \"a-b\", \"a--b\" };"),
@@ -465,6 +650,8 @@ mod tests {
                 "#[idl(\"E\")] enum E {}",
                 "enum E { \"a\" }; enum E { \"b\" };",
             ),
+            ("struct R { new: Option<i32> }", ""),
+            ("struct R { bytes: Buffer }", ""),
         ] {
             assert!(generate("gpu", api, idl).is_err(), "accepted {api}");
         }

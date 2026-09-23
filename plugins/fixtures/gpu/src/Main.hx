@@ -1,5 +1,6 @@
 import gpu.GpuInstance;
 import gpu.GpuBindings;
+import gpu.GpuBufferDescriptor;
 import gpu.BufferUsage;
 import gpu.Power;
 
@@ -21,8 +22,12 @@ class Main {
         var queue = device.queue();
         var data = haxe.io.Bytes.alloc(16);
         for (i in 0...4) data.setInt32(i * 4, i + 1);
-        var storage = device.createBuffer(16, BufferUsage.STORAGE() | BufferUsage.COPY_DST() | BufferUsage.COPY_SRC());
-        var readback = device.createBuffer(16, BufferUsage.MAP_READ() | BufferUsage.COPY_DST());
+        var storageDescriptor = new GpuBufferDescriptor(16,
+            BufferUsage.STORAGE() | BufferUsage.COPY_DST() | BufferUsage.COPY_SRC());
+        storageDescriptor.mappedAtCreation(false);
+        var storage = device.createBuffer(storageDescriptor);
+        var readback = device.createBuffer(new GpuBufferDescriptor(16,
+            BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
         queue.writeBuffer(storage, 0, data, data.length);
         // Input Text is UTF-8, including this comment; no UTF-16 ABI helpers.
         var shader = device.createShader('/* é文 */

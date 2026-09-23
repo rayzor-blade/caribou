@@ -36,6 +36,15 @@ mod TextureUsage {}
 #[idl("GPUColorWrite")]
 mod ColorWrite {}
 
+// Dictionary-like values are plugin-owned Caribou objects. Required fields
+// are constructor arguments; Option fields use their WebGPU default until a
+// generated setter is called.
+struct GpuBufferDescriptor {
+    size: i64,
+    usage: i32,
+    mappedAtCreation: Option<bool>,
+}
+
 trait GpuInstance {
     #[native(is_valid)]
     fn valid(this: &GpuInstance) -> bool;
@@ -80,7 +89,7 @@ trait GpuDevice {
     #[native(device_destroy)]
     fn destroy(this: &GpuDevice);
     #[native(buffer_create)]
-    fn createBuffer(this: &GpuDevice, size: i64, usage: i32) -> Box<GpuBuffer>;
+    fn createBuffer(this: &GpuDevice, descriptor: &GpuBufferDescriptor) -> Box<GpuBuffer>;
     #[native(buffer_map_begin)]
     fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Box<GpuRequest>;
     #[native(shader_create)]

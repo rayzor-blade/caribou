@@ -15,6 +15,7 @@ A Haxe program uses `-lib caribou` and places the plugin library in the
 
 ```haxe
 import gpu.GpuInstance;
+import gpu.GpuBufferDescriptor;
 import gpu.Power;
 import gpu.BufferUsage;
 
@@ -23,8 +24,9 @@ var adapter = instance.requestAdapter(HighPerformance);
 if (!adapter.valid()) throw "No GPU adapter available";
 var device = adapter.requestDevice();
 if (!device.valid()) throw "Could not open the GPU device";
-var buffer = device.createBuffer(1024,
+var descriptor = new GpuBufferDescriptor(1024,
     BufferUsage.STORAGE() | BufferUsage.COPY_DST());
+var buffer = device.createBuffer(descriptor);
 
 // Use the buffer, then release native resources explicitly.
 buffer.destroy();
@@ -68,6 +70,26 @@ Argument lowering is explicit:
 | `Enum<Power>`, etc. | The enum's declared native code |
 | Scalar | The same scalar |
 
+WebIDL-style dictionaries are declared as Rust structs in `gpu.api.rs`:
+
+```rust
+struct GpuBufferDescriptor {
+    size: i64,
+    usage: i32,
+    mappedAtCreation: Option<bool>,
+}
+```
+
+Bindgen emits a plugin-owned Caribou class. Plain fields are required
+constructor arguments, `Option<T>` fields start unset and become setters,
+and `Vec<T>` fields become `addField(T)` methods. A resource method borrows
+the generated Rust record directly, so the descriptor is not serialized or
+lowered through a dynamic map. Scalars remain inline, enums are converted to
+their native codes, resource fields retain their typed handles, and nested
+records copy only descriptor metadata. Payload bytes continue to use
+Caribou `Buffer`; buffer fields are rejected until their heap-rooting policy
+is explicit.
+
 Return lowering wraps native handles in the declared resource class and
 native enum codes in actual Caribou enums. It does not expose enum ordinals
 as the language-side representation. Generated wrappers translate unwinding
@@ -92,9 +114,10 @@ Enum names become Caribou constructors such as `OneMinusSrcAlpha`.
 Constants become static methods such as `gpu.BufferUsage.STORAGE()` so they
 are available through the same plugin metadata in every frontend.
 
-The generator supports fieldless enums, integer constant namespaces and
-explicit resource method declarations. It does **not** infer wgpu operations,
-WebIDL dictionary layouts, overloads or Promise scheduling from interfaces.
+The generator supports fieldless enums, integer constant namespaces,
+dictionary records and explicit resource method declarations. Record layouts
+are declared explicitly for now; it does **not** yet infer them from WebIDL,
+nor infer wgpu operations, overloads or Promise scheduling from interfaces.
 As in hlwgpu, the native implementation and its API projections remain
 explicit. Texture and vertex formats currently expose the backend's declared
 subset in `gpu.api.rs`; this is not the complete browser WebGPU API.

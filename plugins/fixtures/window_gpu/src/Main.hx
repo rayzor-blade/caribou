@@ -1,6 +1,7 @@
 import gpu.BufferUsage;
 import gpu.ColorWrite;
 import gpu.GpuInstance;
+import gpu.GpuBufferDescriptor;
 import gpu.Power;
 import gpu.TextureFormat;
 import gpu.VertexFormat;
@@ -65,10 +66,10 @@ class Main {
         var corners = [-0.8, -0.65, 0.8, -0.65, 0.0, 0.8];
         var vertexData = haxe.io.Bytes.alloc(corners.length * 4);
         for (i in 0...corners.length) vertexData.setFloat(i * 4, corners[i]);
-        var vertices = device.createBuffer(
+        var vertices = device.createBuffer(new GpuBufferDescriptor(
             vertexData.length,
             BufferUsage.VERTEX() | BufferUsage.COPY_DST()
-        );
+        ));
         queue.writeBuffer(vertices, 0, vertexData, vertexData.length);
 
         var shader = device.createShader(SHADER);

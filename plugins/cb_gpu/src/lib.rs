@@ -51,6 +51,21 @@ mod tests {
         assert_eq!(AddressMode::MirrorRepeat.native(), 2);
         assert_eq!(BufferUsage::STORAGE(), 128);
         assert_eq!(TextureUsage::RENDER_ATTACHMENT(), 16);
+
+        let create_buffer = symbol("GpuDevice", "createBuffer");
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[create_buffer.param_classes[1] as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuBufferDescriptor"
+        );
+        let mut descriptor = GpuBufferDescriptor::new(64, BufferUsage::STORAGE());
+        assert_eq!(descriptor.size, 64);
+        assert_eq!(descriptor.mappedAtCreation, None);
+        GpuBufferDescriptor::mappedAtCreation(&mut descriptor, true);
+        assert_eq!(descriptor.mappedAtCreation, Some(true));
     }
     #[test]
     fn generated_resource_methods_preserve_native_identity() {

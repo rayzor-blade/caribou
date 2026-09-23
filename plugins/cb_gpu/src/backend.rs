@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
+use crate::GpuBufferDescriptor;
 use crate::handles::{PendingRequests, Slab, kind_of};
 use crate::types::Kind;
 use caribou_abi::{Buffer, ErrorKind, Text, host};
@@ -255,13 +256,13 @@ pub unsafe fn device_destroy(device: i32) {
 
 // -- buffers ----------------------------------------------------------------
 
-pub unsafe fn buffer_create(device: i32, size: i64, usage: i32) -> i32 {
+pub unsafe fn buffer_create(device: i32, descriptor: &GpuBufferDescriptor) -> i32 {
     let entry = find!(DEVICES, device, 0);
     let buffer = entry.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
-        size: size.max(0) as u64,
-        usage: wgpu::BufferUsages::from_bits_truncate(usage as u32),
-        mapped_at_creation: false,
+        size: descriptor.size.max(0) as u64,
+        usage: wgpu::BufferUsages::from_bits_truncate(descriptor.usage as u32),
+        mapped_at_creation: descriptor.mappedAtCreation.unwrap_or(false),
     });
     BUFFERS.lock().unwrap().put(buffer)
 }

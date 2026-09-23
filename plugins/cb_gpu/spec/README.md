@@ -25,8 +25,8 @@ The `caribou-bindgen` build dependency reads these declarations and generates:
 
 - Caribou enum schemas and Rust enum types, such as `gpu.BlendFactor`.
 - Static constant accessors, such as `gpu.BufferUsage.STORAGE()`.
-- Typed resource wrappers and the `plugin!` export table from the method
-  declarations in `gpu.api.rs`.
+- Typed resource and descriptor wrappers and the `plugin!` export table from
+  the declarations in `gpu.api.rs`.
 
 Haxe discovers the resulting types through `-lib caribou`. The same plugin
 metadata is available to other Caribou frontends. There is no separate
