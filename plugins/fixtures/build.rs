@@ -1,191 +1,105 @@
-#![feature(path_absolute_method)]
+//! Build the native plugins and Haxe programs used by src/bin/{gpu,window}.rs.
+use std::{env, fs, path::Path, path::PathBuf, process::Command};
 
-use std::path::PathBuf;
-use std::process::Command;
+// Fixture directory, Cargo package and library target. Keep these explicit:
+// a shared library filename is not a reliable way to infer its fixture.
+const FIXTURES: &[(&str, &str, &str)] = &[
+    ("gpu", "caribou-gpu", "caribou_gpu"),
+    ("window", "caribou-window", "caribou_window"),
+];
+
+fn run(command: &mut Command, description: &str) {
+    let status = command
+        .status()
+        .unwrap_or_else(|error| panic!("{description}: {error}"));
+    assert!(status.success(), "{description}: {status}");
+}
+
+fn watch(path: impl AsRef<Path>) {
+    println!("cargo:rerun-if-changed={}", path.as_ref().display());
+}
 
 fn main() {
-    let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let plugins = manifest_dir.join("../");
-    println!("cargo:rerun-if-changed={}", plugins.display());
-    println!(
-        "cargo:rerun-if-changed={}",
-        manifest_dir.join("../../crates/caribou_abi/src").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        manifest_dir.join("../../crates/caribou_abi_derive/src").display()
-    );
-    let target_dir = out_dir.join("plugins");
-    // gen plugin package list
-    let packages = std::fs::read_dir(&plugins)
-        .expect("the plugins dir exists")
-        .filter_map(|entry| {
-            let entry = entry.expect("the plugin dir entry reads");
-            let path = entry.path();
-            if path.is_dir() {
-                // use cargo package name as plugin name, which is not the same as the directory name
-                let manifest_path = path.join("Cargo.toml");
-                let manifest = std::fs::read_to_string(&manifest_path).unwrap_or_else(|_| {
-                    panic!("the plugin manifest {} reads", manifest_path.display())
-                });
-                let name = manifest
-                    .lines()
-                    .find_map(|line| {
-                        if line.starts_with("name") {
-                            Some(line.split('=').nth(1)?.trim().trim_matches('"').to_string())
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or_else(|| {
-                        panic!("the plugin manifest {} has a name", manifest_path.display())
-                    });
-                if name == "caribou-plugin-fixtures" {
-                    return None;
-                }
-                Some(name.to_string())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
+    let fixtures = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
+    let root = fixtures.join("../..").canonicalize().unwrap();
+    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
+    let target = out.join("plugins");
+    let haxe = root.join("haxe");
 
-    // build all the plugins in the workspace, so that the test program can load them
-    let mut args = packages
-        .iter()
-        .flat_map(|name| ["-p", name])
-        .collect::<Vec<_>>();
-
-    args.push("--target-dir");
-    args.push(target_dir.to_str().unwrap());
-    let status = Command::new(std::env::var("CARGO").unwrap())
-        .args(["build"])
-        .args(args)
-        .current_dir(&manifest_dir)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTFLAGS")
-        .status()
-        .expect("cargo runs");
-    assert!(status.success(), "the test plugins build");
-
-    // copy the built plugin dylib to the pligin directory of the fixtures, so that the test program can load them
-    let target_dir = target_dir.join("debug");
-    // get the dylibs of the built plugins
-    let dylibs = std::fs::read_dir(&target_dir)
-        .expect("the target dir exists")
-        .filter_map(|entry| {
-            let entry = entry.expect("the target dir entry reads");
-            let path = entry.path();
-            if path.is_file()
-                && path
-                    .extension()
-                    .is_some_and(|ext| ext == std::env::consts::DLL_EXTENSION)
-            {
-                Some(path)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    // use haxelib dev CLI to install the local caribou haxelib path, so that the test program can use it
-    let status = Command::new("haxelib")
-        .args([
-            "dev",
-            "caribou",
-            manifest_dir.join("../../haxe").to_str().unwrap(),
-        ])
-        .status()
-        .expect("haxelib runs");
-    assert!(status.success(), "the caribou haxelib installs");
-
-    // build the hashlink binary of each fixture, so that the test program can run them
-    let fixtures = manifest_dir;
-    // walk into fixtures dir and find all haxe hxml projects, and build them with hashlink target
-    let entries = std::fs::read_dir(&fixtures).expect("the fixtures dir exists");
-    for entry in entries {
-        let entry = entry.expect("the fixture dir entry reads");
-        let path = entry.path();
-        if path.is_dir() {
-            println!("cargo:rerun-if-changed={}", path.display());
-            // check if entry name matches plugin package suffix, and copy its dylib to the fixture's plugin directory
-            let found_plugin = dylibs.iter().find(|name| {
-                println!(
-                    "checking if plugin dylib {} matches fixture {}",
-                    name.display(),
-                    path.display()
-                );
-                path.file_name().unwrap_or_default().to_str().unwrap()
-                    == name
-                        .file_name()
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .replace(&format!(".{}", std::env::consts::DLL_EXTENSION), "")
-                        .split("_")
-                        .collect::<Vec<&str>>()[1]
-            });
-            println!(
-                "found plugin dylib for fixture {}: {:?}",
-                path.display(),
-                found_plugin
-            );
-            if let Some(plugin_dylib) = found_plugin {
-                let fixture_plugin_dir = path.join("plugins");
-                std::fs::create_dir_all(&fixture_plugin_dir)
-                    .expect("the fixture plugin dir exists");
-                let fixture_plugin_dylib =
-                    fixture_plugin_dir.join(plugin_dylib.file_name().unwrap());
-                println!(
-                    "copying plugin dylib {} to fixture {}",
-                    plugin_dylib.display(),
-                    fixture_plugin_dylib.display()
-                );
-                std::fs::copy(&plugin_dylib, &fixture_plugin_dylib).unwrap_or_else(|_| {
-                    panic!(
-                        "the plugin dylib {} copies to {}",
-                        plugin_dylib.display(),
-                        fixture_plugin_dylib.display()
-                    )
-                });
-            }
-
-            // get any hxml file in the directory
-            let hxml_path = std::fs::read_dir(&path)
-                .expect("the fixture dir entry reads")
-                .filter_map(|entry| {
-                    let entry = entry.expect("the fixture dir entry reads");
-                    let path = entry.path();
-                    if path.is_file() && path.extension().map(|ext| ext == "hxml").unwrap_or(false)
-                    {
-                        Some(path)
-                    } else {
-                        None
-                    }
-                })
-                .next();
-            if let Some(hxml_path) = hxml_path {
-                if hxml_path.exists() {
-                    println!(
-                        "{:?}",
-                        [
-                            "-C",
-                            &path.to_str().unwrap(),
-                            &hxml_path.file_name().unwrap().to_str().unwrap()
-                        ]
-                    );
-                    let status = Command::new("haxe")
-                        .args([
-                            "-C",
-                            &path.to_str().unwrap(),
-                            &hxml_path.file_name().unwrap().to_str().unwrap(),
-                        ])
-                        .status()
-                        .expect("haxe runs");
-                    assert!(status.success(), "the fixture {} builds", path.display());
-                }
+    watch(root.join("Cargo.toml"));
+    watch(root.join("Cargo.lock"));
+    watch(&haxe);
+    // The descriptor command uses the core/adapters, and plugins use the ABI
+    // and generator. Watch their sources, not directories we write below.
+    for entry in fs::read_dir(root.join("crates")).unwrap() {
+        let path = entry.unwrap().path();
+        if path.join("Cargo.toml").is_file() {
+            watch(path.join("Cargo.toml"));
+            watch(path.join("src"));
+            if path.join("build.rs").is_file() {
+                watch(path.join("build.rs"));
             }
         }
+    }
+    for &(fixture, _, _) in FIXTURES {
+        watch(root.join("plugins").join(format!("cb_{fixture}")));
+        watch(fixtures.join(fixture).join("src"));
+        watch(fixtures.join(fixture).join(format!("{fixture}.hxml")));
+    }
+
+    // Cargo holds the outer target directory's lock. Build both plugins and
+    // the descriptor command in our own target directory to avoid re-entry
+    // deadlocks and dependence on a stale/preinstalled caribou executable.
+    let mut build = Command::new(env::var_os("CARGO").unwrap());
+    build.args(["build", "--locked", "-p", "caribou-driver"]);
+    for &(_, package, _) in FIXTURES {
+        build.args(["-p", package]);
+    }
+    run(
+        build
+            .arg("--target-dir")
+            .arg(&target)
+            .current_dir(&root)
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("RUSTFLAGS"),
+        "building the fixture plugins and descriptor command",
+    );
+
+    let libraries = target.join("debug");
+    let mut paths = vec![libraries.clone()];
+    paths.extend(env::split_paths(&env::var_os("PATH").unwrap_or_default()));
+    let path = env::join_paths(paths).expect("the fixture command search path is valid");
+
+    // Haxe's -lib caribou resolves through a build-local repository. Never
+    // rewrite the user's global haxelib dev registration from a Cargo build.
+    let haxelib = out.join("haxelib");
+    fs::create_dir_all(&haxelib).expect("the fixture haxelib repository is created");
+    run(
+        Command::new("haxelib")
+            .env("HAXELIB_PATH", &haxelib)
+            .args(["dev", "caribou"])
+            .arg(&haxe),
+        "registering Caribou in the fixture-local haxelib repository",
+    );
+
+    for &(fixture, _, library) in FIXTURES {
+        let project = fixtures.join(fixture);
+        let filename = format!(
+            "{}{library}.{}",
+            env::consts::DLL_PREFIX,
+            env::consts::DLL_EXTENSION
+        );
+        let plugins = project.join("plugins");
+        fs::create_dir_all(&plugins).expect("the fixture plugin directory is created");
+        fs::copy(libraries.join(&filename), plugins.join(&filename))
+            .unwrap_or_else(|error| panic!("copying {filename} to {fixture}: {error}"));
+        run(
+            Command::new("haxe")
+                .current_dir(&project)
+                .env("HAXELIB_PATH", &haxelib)
+                .env("PATH", &path)
+                .arg(format!("{fixture}.hxml")),
+            &format!("compiling the {fixture} Haxe fixture"),
+        );
     }
 }

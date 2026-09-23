@@ -7,7 +7,7 @@ use winit::{
     event::WindowEvent as NativeWindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     platform::pump_events::EventLoopExtPumpEvents,
-    window::{self, Cursor, CustomCursorSource, Window, WindowAttributes},
+    window::{self, Cursor, Window, WindowAttributes},
 };
 
 pub mod events;
@@ -130,6 +130,7 @@ fn with<T>(handle: i32, miss: T, body: impl FnOnce(&mut Open) -> T) -> T {
     })
 }
 
+#[allow(dead_code)]
 fn open(title: Text, width: i32, height: i32) -> i32 {
     let Ok(event_loop) = EventLoop::new() else {
         return 0;
@@ -397,7 +398,6 @@ impl WindowHandle {
             }
         });
     }
-
 
     pub extern "C" fn set_cursor_custom(
         this: &WindowHandle,
@@ -751,6 +751,7 @@ caribou_abi::plugin! {
     enum Modifiers;
     enum DeviceEvent;
     enum ScaleSize;
+    enum WindowLevel;
 
     class Size {
         fn width(&Size) -> i32;
