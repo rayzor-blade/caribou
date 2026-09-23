@@ -57,7 +57,7 @@ trait GpuAdapter {
     #[native(adapter_backend)]
     fn backend(this: &GpuAdapter) -> Enum<Backend>;
     #[native(adapter_limit)]
-    fn limit(this: &GpuAdapter, which: Enum<Limit>) -> i32;
+    fn limit(this: &GpuAdapter, which: Enum<Limit>) -> i64;
     #[native(adapter_destroy)]
     fn destroy(this: &GpuAdapter);
     #[native(device_open)]
@@ -80,9 +80,9 @@ trait GpuDevice {
     #[native(device_destroy)]
     fn destroy(this: &GpuDevice);
     #[native(buffer_create)]
-    fn createBuffer(this: &GpuDevice, size: i32, usage: i32) -> Box<GpuBuffer>;
+    fn createBuffer(this: &GpuDevice, size: i64, usage: i32) -> Box<GpuBuffer>;
     #[native(buffer_map_begin)]
-    fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i32, size: i32) -> Box<GpuRequest>;
+    fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Box<GpuRequest>;
     #[native(shader_create)]
     fn createShader(this: &GpuDevice, wgsl: Text) -> Box<GpuShader>;
     #[native(compute_pipeline_create)]
@@ -107,7 +107,7 @@ trait GpuQueue {
     #[native(is_valid)]
     fn valid(this: &GpuQueue) -> bool;
     #[native(queue_write_buffer)]
-    fn writeBuffer(this: &GpuQueue, buffer: &GpuBuffer, offset: i32, data: Buffer, len: i32);
+    fn writeBuffer(this: &GpuQueue, buffer: &GpuBuffer, offset: i64, data: Buffer, len: i32);
     #[native(queue_write_texture)]
     fn writeTexture(this: &GpuQueue, texture: &GpuTexture, data: Buffer, width: i32, height: i32, bytes_per_row: i32);
     #[native(surface_present)]
@@ -118,7 +118,7 @@ trait GpuBuffer {
     #[native(is_valid)]
     fn valid(this: &GpuBuffer) -> bool;
     #[native(buffer_copy_out)]
-    fn copyOut(this: &GpuBuffer, offset: i32, out: Buffer, len: i32) -> bool;
+    fn copyOut(this: &GpuBuffer, offset: i64, out: Buffer, len: i32) -> bool;
     #[native(buffer_unmap)]
     fn unmap(this: &GpuBuffer);
     #[native(buffer_destroy)]
@@ -156,7 +156,7 @@ trait GpuEncoder {
     #[native(encoder_compute)]
     fn compute(this: &GpuEncoder, pipeline: &GpuPipeline, bindgroup: &GpuBindGroup, x: i32, y: i32, z: i32);
     #[native(encoder_copy_buffer)]
-    fn copyBuffer(this: &GpuEncoder, src: &GpuBuffer, src_offset: i32, dst: &GpuBuffer, dst_offset: i32, size: i32);
+    fn copyBuffer(this: &GpuEncoder, src: &GpuBuffer, src_offset: i64, dst: &GpuBuffer, dst_offset: i64, size: i64);
     #[native(encoder_submit)]
     fn submit(this: &GpuEncoder, queue: &GpuQueue);
     #[native(pass_reset)]
@@ -184,7 +184,7 @@ trait GpuEncoder {
     #[native(encoder_copy_texture_to_texture)]
     fn copyTextureToTexture(this: &GpuEncoder, src: &GpuTexture, dst: &GpuTexture, width: i32, height: i32);
     #[native(encoder_clear_buffer)]
-    fn clearBuffer(this: &GpuEncoder, buffer: &GpuBuffer, offset: i32, size: i32);
+    fn clearBuffer(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64, size: i64);
     #[native(encoder_copy_texture_to_buffer)]
     fn copyTextureToBuffer(this: &GpuEncoder, texture: &GpuTexture, buffer: &GpuBuffer, width: i32, height: i32, bytes_per_row: i32);
     #[native(render_set_bind_group)]
@@ -198,11 +198,11 @@ trait GpuEncoder {
     #[native(render_set_stencil_reference)]
     fn renderSetStencilReference(this: &GpuEncoder, reference: i32);
     #[native(encoder_compute_indirect)]
-    fn computeIndirect(this: &GpuEncoder, pipeline: &GpuPipeline, bindgroup: &GpuBindGroup, buffer: &GpuBuffer, offset: i32);
+    fn computeIndirect(this: &GpuEncoder, pipeline: &GpuPipeline, bindgroup: &GpuBindGroup, buffer: &GpuBuffer, offset: i64);
     #[native(render_draw_indirect)]
-    fn renderDrawIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i32);
+    fn renderDrawIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64);
     #[native(render_draw_indexed_indirect)]
-    fn renderDrawIndexedIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i32);
+    fn renderDrawIndexedIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64);
     #[native(encoder_push_debug_group)]
     fn pushDebugGroup(this: &GpuEncoder, label: Text);
     #[native(encoder_pop_debug_group)]
@@ -242,11 +242,11 @@ trait GpuPipelineBuilder {
     #[native(pipeline_shader)]
     fn shader(this: &GpuPipelineBuilder, shader: &GpuShader, vs: Text, fs: Text);
     #[native(pipeline_vertex_buffer)]
-    fn vertexBuffer(this: &GpuPipelineBuilder, stride: i32, step: Enum<VertexStepMode>);
+    fn vertexBuffer(this: &GpuPipelineBuilder, stride: i64, step: Enum<VertexStepMode>);
     #[native(pipeline_attribute_packed)]
     fn attributePacked(this: &GpuPipelineBuilder, format: Enum<VertexFormat>);
     #[native(pipeline_attribute)]
-    fn attribute(this: &GpuPipelineBuilder, format: Enum<VertexFormat>, offset: i32, location: i32);
+    fn attribute(this: &GpuPipelineBuilder, format: Enum<VertexFormat>, offset: i64, location: i32);
     #[native(pipeline_target)]
     fn target(this: &GpuPipelineBuilder, format: Enum<TextureFormat>, write_mask: i32);
     #[native(pipeline_blend)]

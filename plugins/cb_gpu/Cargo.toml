@@ -11,8 +11,9 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
 default = ["native"]
-# Native wgpu implementation. A Caribou wasm forwarding backend is not
-# implemented yet; builds without native report this explicitly.
+# The wgpu implementation. On WebAssembly this compiles against the browser
+# WebGPU backend so the plugin ABI and generated API remain target portable;
+# loading Caribou plugins in a browser is runtime work outside this crate.
 native = ["dep:wgpu", "dep:pollster", "dep:raw-window-handle"]
 # Adds Vulkan to a build that would not have it. Windows takes D3D12 by
 # default; this is for the separate build that can also use Vulkan, chosen at
@@ -24,8 +25,7 @@ caribou-bindgen = { path = "../../crates/caribou-bindgen" }
 # One backend each, the one the platform actually uses. wgpu will compile
 # every backend it is given and only some are gated out by target, so leaving
 # the defaults on builds Vulkan into a macOS library that will never call it.
-# Android also enables GLES. Browser WebGPU is not a backend of this
-# native plugin.
+# Android also enables GLES; browser targets select WebGPU below.
 [target.'cfg(target_vendor = "apple")'.dependencies]
 wgpu = { version = "30", optional = true, default-features = false, features = [
   "std", "parking_lot", "wgsl", "metal",
@@ -41,9 +41,25 @@ wgpu = { version = "30", optional = true, default-features = false, features = [
   "std", "parking_lot", "wgsl", "vulkan", "gles",
 ] }
 
-[target.'cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
+[target.'cfg(all(unix, not(target_arch = "wasm32"), not(target_vendor = "apple"), not(target_os = "android")))'.dependencies]
 wgpu = { version = "30", optional = true, default-features = false, features = [
   "std", "parking_lot", "wgsl", "vulkan",
+] }
+
+# Keep the same Rust backend compiling for a future Caribou browser runtime.
+# The fragile Send/Sync feature is valid only for wasm builds without atomics,
+# which are definitionally single-threaded; threaded wasm will need local
+# resource tables instead of the native process-wide mutexes.
+[target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies]
+wgpu = { version = "30", optional = true, default-features = false, features = [
+  "std", "parking_lot", "wgsl", "webgpu", "fragile-send-sync-non-atomic-wasm",
+] }
+
+# Emscripten uses wgpu-core's GLES backend rather than the browser WebGPU
+# backend used by wasm32-unknown-unknown.
+[target.'cfg(all(target_arch = "wasm32", target_os = "emscripten"))'.dependencies]
+wgpu = { version = "30", optional = true, default-features = false, features = [
+  "std", "parking_lot", "wgsl", "gles", "fragile-send-sync-non-atomic-wasm",
 ] }
 
 

@@ -163,7 +163,7 @@ pub unsafe fn adapter_backend(adapter: i32) -> i32 {
     }
 }
 
-pub unsafe fn adapter_limit(adapter: i32, which: i32) -> i32 {
+pub unsafe fn adapter_limit(adapter: i32, which: i32) -> i64 {
     let adapter = find!(ADAPTERS, adapter, 0);
     let limits = adapter.limits();
     // Native limit codes declared by gpu.api.rs.
@@ -177,7 +177,7 @@ pub unsafe fn adapter_limit(adapter: i32, which: i32) -> i32 {
         6 => limits.max_compute_invocations_per_workgroup as u64,
         _ => 0,
     };
-    value.min(i32::MAX as u64) as i32
+    value.min(i64::MAX as u64) as i64
 }
 
 pub unsafe fn adapter_destroy(adapter: i32) {
@@ -255,7 +255,7 @@ pub unsafe fn device_destroy(device: i32) {
 
 // -- buffers ----------------------------------------------------------------
 
-pub unsafe fn buffer_create(device: i32, size: i32, usage: i32) -> i32 {
+pub unsafe fn buffer_create(device: i32, size: i64, usage: i32) -> i32 {
     let entry = find!(DEVICES, device, 0);
     let buffer = entry.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
@@ -266,7 +266,7 @@ pub unsafe fn buffer_create(device: i32, size: i32, usage: i32) -> i32 {
     BUFFERS.lock().unwrap().put(buffer)
 }
 
-pub unsafe fn queue_write_buffer(queue: i32, buffer: i32, offset: i32, data: Buffer, len: i32) {
+pub unsafe fn queue_write_buffer(queue: i32, buffer: i32, offset: i64, data: Buffer, len: i32) {
     let Some(bytes) = bytes(&data, len) else {
         return;
     };
@@ -278,7 +278,7 @@ pub unsafe fn queue_write_buffer(queue: i32, buffer: i32, offset: i32, data: Buf
     queue.write_buffer(&buffer, offset.max(0) as u64, bytes);
 }
 
-pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i32, size: i32) -> i32 {
+pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64) -> i32 {
     let buffer = find!(BUFFERS, buffer, 0);
     let done = Arc::new(AtomicBool::new(false));
     let result = Arc::new(AtomicI32::new(0));
@@ -295,7 +295,7 @@ pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i32, size: i32)
     REQUESTS.lock().unwrap().waiting(done, result, device)
 }
 
-pub unsafe fn buffer_copy_out(buffer: i32, offset: i32, out: Buffer, len: i32) -> bool {
+pub unsafe fn buffer_copy_out(buffer: i32, offset: i64, out: Buffer, len: i32) -> bool {
     if bytes(&out, len).is_none() || len <= 0 {
         return false;
     }
@@ -442,10 +442,10 @@ pub unsafe fn encoder_compute(encoder: i32, pipeline: i32, bindgroup: i32, x: i3
 pub unsafe fn encoder_copy_buffer(
     encoder: i32,
     src: i32,
-    src_offset: i32,
+    src_offset: i64,
     dst: i32,
-    dst_offset: i32,
-    size: i32,
+    dst_offset: i64,
+    size: i64,
 ) {
     let encoder = find!(ENCODERS, encoder);
     let source = find!(BUFFERS, src);
@@ -780,7 +780,7 @@ pub unsafe fn encoder_copy_texture_to_texture(
     );
 }
 
-pub unsafe fn encoder_clear_buffer(encoder: i32, buffer: i32, offset: i32, size: i32) {
+pub unsafe fn encoder_clear_buffer(encoder: i32, buffer: i32, offset: i64, size: i64) {
     let entry = find!(ENCODERS, encoder);
     let buffer = find!(BUFFERS, buffer);
     let mut held = entry.lock().unwrap();
@@ -1004,6 +1004,32 @@ unsafe fn raw_handles(
                 wa as *mut c_void,
             )?)),
         ),
+        5 => (
+            rwh::RawDisplayHandle::Android(rwh::AndroidDisplayHandle::new()),
+            rwh::RawWindowHandle::AndroidNdk(rwh::AndroidNdkWindowHandle::new(NonNull::new(
+                wa as *mut c_void,
+            )?)),
+        ),
+        6 => {
+            let mut window = rwh::UiKitWindowHandle::new(NonNull::new(wa as *mut c_void)?);
+            window.ui_view_controller = NonNull::new(wb as *mut c_void);
+            (
+                rwh::RawDisplayHandle::UiKit(rwh::UiKitDisplayHandle::new()),
+                rwh::RawWindowHandle::UiKit(window),
+            )
+        }
+        7 => (
+            rwh::RawDisplayHandle::Web(rwh::WebDisplayHandle::new()),
+            rwh::RawWindowHandle::WebCanvas(rwh::WebCanvasWindowHandle::new(NonNull::new(
+                wa as *mut c_void,
+            )?)),
+        ),
+        8 => (
+            rwh::RawDisplayHandle::Web(rwh::WebDisplayHandle::new()),
+            rwh::RawWindowHandle::WebOffscreenCanvas(rwh::WebOffscreenCanvasWindowHandle::new(
+                NonNull::new(wa as *mut c_void)?,
+            )),
+        ),
         _ => return None,
     })
 }
@@ -1045,13 +1071,16 @@ pub unsafe fn surface_preferred_format(surface: i32, adapter: i32) -> i32 {
     let formats = held.surface.get_capabilities(&adapter).formats;
     // -1 rather than a default, so a format this library has no name for
     // cannot pass itself off as Rgba8Unorm and fail later inside configure.
-    match formats.first() {
-        Some(wgpu::TextureFormat::Rgba8Unorm) => 0,
-        Some(wgpu::TextureFormat::Bgra8Unorm) => 1,
-        Some(wgpu::TextureFormat::Rgba8UnormSrgb) => 2,
-        Some(wgpu::TextureFormat::Bgra8UnormSrgb) => 4,
-        _ => -1,
-    }
+    formats
+        .into_iter()
+        .find_map(|format| match format {
+            wgpu::TextureFormat::Rgba8Unorm => Some(0),
+            wgpu::TextureFormat::Bgra8Unorm => Some(1),
+            wgpu::TextureFormat::Rgba8UnormSrgb => Some(2),
+            wgpu::TextureFormat::Bgra8UnormSrgb => Some(4),
+            _ => None,
+        })
+        .unwrap_or(-1)
 }
 
 pub unsafe fn surface_configure(device: i32, surface: i32, width: i32, height: i32, format: i32) {
@@ -1275,7 +1304,7 @@ pub unsafe fn pipeline_shader(builder: i32, shader: i32, vs: Text, fs: Text) {
     });
 }
 
-pub unsafe fn pipeline_vertex_buffer(builder: i32, stride: i32, step: i32) {
+pub unsafe fn pipeline_vertex_buffer(builder: i32, stride: i64, step: i32) {
     building(builder, |build| {
         build
             .buffers
@@ -1283,7 +1312,7 @@ pub unsafe fn pipeline_vertex_buffer(builder: i32, stride: i32, step: i32) {
     });
 }
 
-pub unsafe fn pipeline_attribute(builder: i32, format: i32, offset: i32, location: i32) {
+pub unsafe fn pipeline_attribute(builder: i32, format: i32, offset: i64, location: i32) {
     building(builder, |build| {
         // Belongs to the buffer opened last; the Haxe builder's types are what
         // stop this being reached with none open.
@@ -1490,7 +1519,7 @@ pub unsafe fn render_set_blend_constant(encoder: i32, r: f64, g: f64, b: f64, a:
 
 // -- drawing the GPU decided on -----------------------------------------------
 
-pub unsafe fn render_draw_indirect(encoder: i32, buffer: i32, offset: i32) {
+pub unsafe fn render_draw_indirect(encoder: i32, buffer: i32, offset: i64) {
     let entry = find!(ENCODERS, encoder);
     let buffer = find!(BUFFERS, buffer);
     let mut held = entry.lock().unwrap();
@@ -1499,7 +1528,7 @@ pub unsafe fn render_draw_indirect(encoder: i32, buffer: i32, offset: i32) {
     }
 }
 
-pub unsafe fn render_draw_indexed_indirect(encoder: i32, buffer: i32, offset: i32) {
+pub unsafe fn render_draw_indexed_indirect(encoder: i32, buffer: i32, offset: i64) {
     let entry = find!(ENCODERS, encoder);
     let buffer = find!(BUFFERS, buffer);
     let mut held = entry.lock().unwrap();
@@ -1569,7 +1598,7 @@ pub unsafe fn encoder_compute_indirect(
     pipeline: i32,
     bindgroup: i32,
     buffer: i32,
-    offset: i32,
+    offset: i64,
 ) {
     let encoder = find!(ENCODERS, encoder);
     let pipeline = find!(PIPELINES, pipeline);

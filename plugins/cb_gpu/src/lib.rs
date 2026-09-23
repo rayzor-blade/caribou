@@ -4,7 +4,7 @@
 
 #[cfg(not(feature = "native"))]
 compile_error!(
-    "caribou-gpu currently requires its native backend; no wasm forwarding backend is implemented"
+    "caribou-gpu requires its wgpu backend; disable default features only for schema generation"
 );
 
 mod backend;
