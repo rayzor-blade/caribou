@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1790169864,"nonce":"NI7K6Q22rGrsZADqcav2+8t0uzs=","status":2}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1790169925,"nonce":"UlIhJ2g2DN6OUc9WjBeziUuWLx8=","message":"Fix committed as 79de0e091e065b2aef9bf518d0004b0c3f5dae17 (Haxe: preserve cross-class plugin return types), including regression coverage and rebuilt fixtures. The issue remains resolved.","files":null}]}
