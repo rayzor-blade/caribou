@@ -7,7 +7,7 @@ use winit::{
     event::WindowEvent as NativeWindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     platform::pump_events::EventLoopExtPumpEvents,
-    window::{self, Window, WindowAttributes},
+    window::{self, Cursor, CustomCursorSource, Window, WindowAttributes},
 };
 
 pub mod events;
@@ -398,16 +398,29 @@ impl WindowHandle {
         });
     }
 
-    // Todo: Implement caribou_abi::Buffer to Vec<u8> conversion and handle errors properly.
-    // pub extern "C" fn set_cursor_custom(this: &WindowHandle, rgba: caribou_abi::Buffer, width: u16, height: u16, hotspot_x: u16, hotspot_y: u16) {
-    //     with(this.handle, (), |open| {
-    //         if let Some(window) = open.app.window.as_ref() {
-    //             if let Ok(cursor) = winit::window::CustomCursor::from_rgba(rgba.to_vec(), width, height, hotspot_x, hotspot_y) {
-    //                 window.set_cursor(winit::window::CursorIcon::Custom(cursor));
-    //             }
-    //         }
-    //     });
-    // }
+
+    pub extern "C" fn set_cursor_custom(
+        this: &WindowHandle,
+        rgba: caribou_abi::Buffer,
+        width: u16,
+        height: u16,
+        hotspot_x: u16,
+        hotspot_y: u16,
+    ) {
+        with(this.handle, (), |open| {
+            if let Some(window) = open.app.window.as_ref() {
+                if let Ok(cursor) = winit::window::CustomCursor::from_rgba(
+                    rgba.to_vec(),
+                    width,
+                    height,
+                    hotspot_x,
+                    hotspot_y,
+                ) {
+                    window.set_cursor(Cursor::Custom(open.event_loop.create_custom_cursor(cursor)));
+                }
+            }
+        });
+    }
 
     pub extern "C" fn set_position(this: &WindowHandle, x: i32, y: i32) {
         with(this.handle, (), |open| {
@@ -758,6 +771,7 @@ caribou_abi::plugin! {
         fn platform(&WindowHandle) -> i32;
         fn raw(&WindowHandle, i32) -> i64;
         fn set_cursor_icon(&WindowHandle, Text);
+        fn set_cursor_custom(&WindowHandle, Buffer, u16, u16, u16, u16);
         fn set_position(&WindowHandle, i32, i32);
         fn set_size(&WindowHandle, i32, i32);
         fn request_redraw(&WindowHandle);
