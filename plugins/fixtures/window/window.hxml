@@ -1,0 +1,4 @@
+-cp src
+-lib caribou
+-main Main
+-hl window.hl

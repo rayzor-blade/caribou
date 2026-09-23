@@ -116,10 +116,12 @@ class Bridge {
 		directory the compiler writes the program to. */
 	static function pluginLibraries():Array<String> {
 		var output = haxe.macro.Compiler.getOutput();
+		
 		if (output == null || output == "") {
 			return [];
 		}
 		var dir = haxe.io.Path.join([haxe.io.Path.directory(output), "plugins"]);
+		Sys.println("looking for plugin libraries in " + dir);
 		if (!FileSystem.isDirectory(dir)) {
 			return [];
 		}

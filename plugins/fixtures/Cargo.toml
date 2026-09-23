@@ -1,0 +1,11 @@
+[package]
+name = "caribou-plugin-fixtures"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+
+[dependencies]
+caribou-plugin = { path = "../../crates/caribou-plugin" }
+caribou-ash = { path = "../../crates/caribou-ash", features = ["runner"] }
+caribou-driver = { path = "../../crates/caribou-driver" }
+caribou-wren = { path = "../../crates/caribou-wren" }

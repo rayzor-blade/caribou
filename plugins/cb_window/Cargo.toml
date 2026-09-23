@@ -1,0 +1,15 @@
+[package]
+name = "caribou-window"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Windowing system for Caribou"
+
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+caribou_abi = { workspace = true }
+winit = "0.30"
+raw-window-handle = "0.6"

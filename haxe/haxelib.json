@@ -3,7 +3,7 @@
   "url": "https://github.com/rayzor-blade/caribou",
   "license": "MIT",
   "tags": ["runtime", "wren", "hashlink"],
-  "description": "The other languages of a Caribou program as Haxe classes: import them like Haxe modules.",
+  "description": "Haxe Macro library for the Caribou runtime",
   "version": "0.1.0",
   "releasenote": "First release.",
   "contributors": ["darmie"],
