@@ -1,0 +1,13 @@
+[package]
+name = "caribou-plugin-window-events"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+caribou_abi = { workspace = true }
+winit = "0.30"

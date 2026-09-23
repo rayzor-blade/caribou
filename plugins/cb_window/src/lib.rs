@@ -10,92 +10,8 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
-// These declarations generate both the Caribou schema and From<native>
-// conversion. Payloads stay ordinary Rust values while queued; poll encodes
-// them into the shared heap, rooting each nested enum before the next.
-#[derive(PluginEnum)]
-#[caribou(name = "window.MouseButton", from = winit::event::MouseButton)]
-pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
-    Back,
-    Forward,
-    Other(#[caribou(name = "button")] u16),
-}
-
-#[derive(PluginEnum)]
-#[caribou(name = "window.MouseElementState", from = winit::event::ElementState)]
-pub enum MouseElementState {
-    Pressed,
-    Released,
-}
-
-#[derive(PluginEnum)]
-#[caribou(name = "window.MouseScrollDelta", from = winit::event::MouseScrollDelta)]
-pub enum MouseScrollDelta {
-    LineDelta(#[caribou(name = "x")] f32, #[caribou(name = "y")] f32),
-    #[caribou(pattern = winit::event::MouseScrollDelta::PixelDelta(position))]
-    PixelDelta {
-        #[caribou(value = position.x)]
-        x: f64,
-        #[caribou(value = position.y)]
-        y: f64,
-    },
-}
-
-#[derive(PluginEnum)]
-#[caribou(name = "window.TouchPhase", from = winit::event::TouchPhase)]
-pub enum TouchPhase {
-    Started,
-    Moved,
-    Ended,
-    Cancelled,
-}
-
-#[derive(PluginEnum)]
-#[caribou(name = "window.Event", from = NativeWindowEvent, fallback = Self::None)]
-pub enum Event {
-    #[caribou(skip)]
-    None,
-    #[caribou(pattern = NativeWindowEvent::CloseRequested)]
-    Closed,
-    #[caribou(pattern = NativeWindowEvent::Resized(size))]
-    Resized {
-        #[caribou(value = size.width as i32)]
-        width: i32,
-        #[caribou(value = size.height as i32)]
-        height: i32,
-    },
-    #[caribou(pattern = NativeWindowEvent::Moved(position))]
-    Moved {
-        #[caribou(value = position.x)]
-        x: i32,
-        #[caribou(value = position.y)]
-        y: i32,
-    },
-    #[caribou(pattern = NativeWindowEvent::CursorEntered { .. })]
-    CursorEntered,
-    #[caribou(pattern = NativeWindowEvent::CursorLeft { .. })]
-    CursorLeft,
-    #[caribou(pattern = NativeWindowEvent::CursorMoved { position, .. })]
-    CursorMoved {
-        #[caribou(value = position.x)]
-        x: f64,
-        #[caribou(value = position.y)]
-        y: f64,
-    },
-    #[caribou(pattern = NativeWindowEvent::MouseInput { state, button, .. })]
-    MouseInput {
-        state: MouseElementState,
-        button: MouseButton,
-    },
-    #[caribou(pattern = NativeWindowEvent::MouseWheel { delta, phase, .. })]
-    MouseWheel {
-        delta: MouseScrollDelta,
-        phase: TouchPhase,
-    },
-}
+pub mod events;
+pub use events::*;
 
 /// The platform codes `platform` returns.
 const APPKIT: i32 = 1;
@@ -108,6 +24,8 @@ struct App {
     attributes: WindowAttributes,
     window: Option<Window>,
     events: VecDeque<Event>,
+    scale_callback: Option<Kept>,
+    pending_error: Option<CallbackError>,
 }
 
 impl ApplicationHandler for App {
@@ -115,18 +33,56 @@ impl ApplicationHandler for App {
         if self.window.is_none() {
             self.window = event_loop.create_window(self.attributes.clone()).ok();
         }
+        self.events.push_back(Event::Resumed);
     }
 
     fn window_event(
         &mut self,
         _: &ActiveEventLoop,
         _: winit::window::WindowId,
-        event: NativeWindowEvent,
+        mut event: NativeWindowEvent,
     ) {
-        let event = Event::from(event);
-        if !matches!(event, Event::None) {
-            self.events.push_back(event);
+        if let NativeWindowEvent::ScaleFactorChanged {
+            scale_factor,
+            inner_size_writer,
+        } = &mut event
+            && let Some(callback) = &self.scale_callback
+            && self.pending_error.is_none()
+        {
+            let result = scale_request(callback, *scale_factor).and_then(|size| {
+                if let ScaleSize::Physical { width, height } = size {
+                    inner_size_writer
+                        .request_inner_size(winit::dpi::PhysicalSize::new(
+                            width as u32,
+                            height as u32,
+                        ))
+                        .map_err(|_| CallbackError::Invalid("scale-change size writer expired"))?;
+                }
+                Ok(())
+            });
+            self.pending_error = result.err();
         }
+        self.events.push_back(Event::from(event));
+    }
+
+    fn device_event(
+        &mut self,
+        _: &ActiveEventLoop,
+        id: winit::event::DeviceId,
+        event: winit::event::DeviceEvent,
+    ) {
+        self.events.push_back(Event::Device {
+            device_id: events::device_key(id),
+            event: event.into(),
+        });
+    }
+
+    fn suspended(&mut self, _: &ActiveEventLoop) {
+        self.events.push_back(Event::Suspended);
+    }
+
+    fn memory_warning(&mut self, _: &ActiveEventLoop) {
+        self.events.push_back(Event::MemoryWarning);
     }
 }
 
@@ -145,7 +101,13 @@ thread_local! {
 /// Runs `body` on an open window, or returns `miss`.
 fn with<T>(handle: i32, miss: T, body: impl FnOnce(&mut Open) -> T) -> T {
     WINDOWS.with(|windows| {
-        let mut windows = windows.borrow_mut();
+        let Ok(mut windows) = windows.try_borrow_mut() else {
+            host::raise(
+                ErrorKind::Runtime,
+                "window operations cannot re-enter an active event pump",
+            );
+            return miss;
+        };
         let index = (handle - 1).max(-1);
         if index < 0 {
             return miss;
@@ -174,6 +136,8 @@ fn open(title: Text, width: i32, height: i32) -> i32 {
             attributes,
             window: None,
             events: VecDeque::new(),
+            scale_callback: None,
+            pending_error: None,
         },
     };
 
@@ -208,6 +172,8 @@ fn open_with_attributes(attributes: WindowAttributes) -> i32 {
             attributes,
             window: None,
             events: VecDeque::new(),
+            scale_callback: None,
+            pending_error: None,
         },
     };
 
@@ -232,15 +198,22 @@ fn open_with_attributes(attributes: WindowAttributes) -> i32 {
 }
 
 fn poll(handle: i32) -> Enum<Event> {
-    with(handle, Event::None, |open| {
+    let (event, error) = with(handle, (Event::None, None), |open| {
         // Drain queued events before pumping again so none are discarded.
         if open.app.events.is_empty() {
             open.event_loop
                 .pump_app_events(Some(Duration::ZERO), &mut open.app);
         }
-        open.app.events.pop_front().unwrap_or(Event::None)
-    })
-    .into()
+        if let Some(error) = open.app.pending_error.take() {
+            (Event::None, Some(error))
+        } else {
+            (open.app.events.pop_front().unwrap_or(Event::None), None)
+        }
+    });
+    if let Some(error) = error {
+        error.raise();
+    }
+    event.into()
 }
 
 fn width(handle: i32) -> i32 {
@@ -377,6 +350,16 @@ struct WindowHandle {
 }
 
 impl WindowHandle {
+    // Factories also let frontends without enum constructor syntax supply
+    // the synchronous callback's result.
+    pub extern "C" fn physical_scale_size(width: i32, height: i32) -> Enum<ScaleSize> {
+        ScaleSize::Physical { width, height }.into()
+    }
+
+    pub extern "C" fn default_scale_size() -> Enum<ScaleSize> {
+        ScaleSize::Default.into()
+    }
+
     pub extern "C" fn poll(this: &WindowHandle) -> Enum<Event> {
         poll(this.handle)
     }
@@ -429,9 +412,83 @@ impl WindowHandle {
     pub extern "C" fn set_size(this: &WindowHandle, width: i32, height: i32) {
         with(this.handle, (), |open| {
             if let Some(window) = open.app.window.as_ref() {
-                window.set_min_inner_size(Some(winit::dpi::LogicalSize::new(width, height)));
+                let _ = window
+                    .request_inner_size(winit::dpi::LogicalSize::new(width.max(0), height.max(0)));
             }
         });
+    }
+
+    pub extern "C" fn request_redraw(this: &WindowHandle) {
+        with(this.handle, (), |open| {
+            if let Some(window) = &open.app.window {
+                window.request_redraw();
+            }
+        });
+    }
+
+    pub extern "C" fn set_ime_allowed(this: &WindowHandle, allowed: bool) {
+        with(this.handle, (), |open| {
+            if let Some(window) = &open.app.window {
+                window.set_ime_allowed(allowed);
+            }
+        });
+    }
+
+    pub extern "C" fn set_ime_cursor_area(
+        this: &WindowHandle,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) {
+        with(this.handle, (), |open| {
+            if let Some(window) = &open.app.window {
+                window.set_ime_cursor_area(
+                    winit::dpi::LogicalPosition::new(x, y),
+                    winit::dpi::LogicalSize::new(width.max(0.0), height.max(0.0)),
+                );
+            }
+        });
+    }
+
+    /// The callback runs synchronously during poll and returns ScaleSize.
+    /// A null value removes it. Window operations cannot re-enter this callback.
+    pub extern "C" fn on_scale_factor_changed(this: &WindowHandle, callback: Value) {
+        with(this.handle, (), |open| {
+            open.app.scale_callback = (!callback.is_null()).then(|| Kept::new(callback));
+        });
+    }
+
+    /// Returns a correlation ID, or zero when startup notification is unsupported.
+    pub extern "C" fn request_activation_token(this: &WindowHandle) -> i64 {
+        with(this.handle, 0, |open| {
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "dragonfly",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            ))]
+            {
+                use winit::platform::startup_notify::WindowExtStartupNotify;
+                open.app
+                    .window
+                    .as_ref()
+                    .and_then(|w| w.request_activation_token().ok())
+                    .map_or(0, events::request_key)
+            }
+            #[cfg(not(any(
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "dragonfly",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            )))]
+            {
+                let _ = open;
+                0
+            }
+        })
     }
 
     pub extern "C" fn set_fullscreen(this: &WindowHandle, yes: bool) {
@@ -489,6 +546,8 @@ impl WindowHandle {
     pub extern "C" fn close(this: &WindowHandle) {
         with(this.handle, (), |open| {
             open.app.window = None;
+            open.app.scale_callback = None;
+            open.app.pending_error = None;
         });
     }
 }
@@ -558,11 +617,31 @@ caribou_abi::plugin! {
     name:"window";
 
 
+    enum Event;
     enum MouseButton;
     enum MouseElementState;
     enum MouseScrollDelta;
     enum TouchPhase;
-    enum Event;
+    enum FilePath;
+    enum OptionalText;
+    enum OptionalFloat;
+    enum CursorRange;
+    enum Ime;
+    enum TouchForce;
+    enum Theme;
+    enum NativeKeyCode;
+    enum NativeKey;
+    enum PhysicalKey;
+    enum Key;
+    enum KeyCode;
+    enum NamedKey;
+    enum KeyLocation;
+    enum KeySupplement;
+    enum KeyEvent;
+    enum ModifiersKeyState;
+    enum Modifiers;
+    enum DeviceEvent;
+    enum ScaleSize;
 
     class Size {
         fn width(&Size) -> i32;
@@ -575,6 +654,8 @@ caribou_abi::plugin! {
     }
 
     class WindowHandle {
+        fn physical_scale_size(i32, i32) -> Enum<ScaleSize>;
+        fn default_scale_size() -> Enum<ScaleSize>;
         fn poll(&WindowHandle) -> Enum<Event>;
         fn width(&WindowHandle) -> i32;
         fn height(&WindowHandle) -> i32;
@@ -583,6 +664,11 @@ caribou_abi::plugin! {
         fn set_cursor_icon(&WindowHandle, Text);
         fn set_position(&WindowHandle, i32, i32);
         fn set_size(&WindowHandle, i32, i32);
+        fn request_redraw(&WindowHandle);
+        fn set_ime_allowed(&WindowHandle, bool);
+        fn set_ime_cursor_area(&WindowHandle, f64, f64, f64, f64);
+        fn on_scale_factor_changed(&WindowHandle, Value);
+        fn request_activation_token(&WindowHandle) -> i64;
         fn set_fullscreen(&WindowHandle, bool);
         fn has_focus(&WindowHandle) -> bool;
         fn focus(&WindowHandle);
@@ -599,66 +685,5 @@ caribou_abi::plugin! {
         fn fullscreen(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
         fn resizable(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
         fn open(&mut WindowBuilder) -> Box<WindowHandle>;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use winit::event::{
-        DeviceId, ElementState, MouseButton as NativeMouseButton, MouseScrollDelta as NativeScroll,
-        TouchPhase as NativePhase,
-    };
-
-    #[test]
-    fn maps_native_events_without_a_window_or_host_heap() {
-        assert!(matches!(
-            Event::from(NativeWindowEvent::CloseRequested),
-            Event::Closed
-        ));
-        assert!(matches!(
-            Event::from(NativeWindowEvent::Resized(winit::dpi::PhysicalSize::new(
-                800, 600
-            ))),
-            Event::Resized {
-                width: 800,
-                height: 600
-            }
-        ));
-        assert!(matches!(
-            Event::from(NativeWindowEvent::Moved(winit::dpi::PhysicalPosition::new(
-                -10, 20
-            ))),
-            Event::Moved { x: -10, y: 20 }
-        ));
-        let event = NativeWindowEvent::MouseInput {
-            device_id: DeviceId::dummy(),
-            state: ElementState::Pressed,
-            button: NativeMouseButton::Other(7),
-        };
-        assert!(matches!(
-            Event::from(event),
-            Event::MouseInput {
-                state: MouseElementState::Pressed,
-                button: MouseButton::Other(7)
-            }
-        ));
-        let event = NativeWindowEvent::MouseWheel {
-            device_id: DeviceId::dummy(),
-            delta: NativeScroll::PixelDelta(winit::dpi::PhysicalPosition::new(1.5, -2.5)),
-            phase: NativePhase::Ended,
-        };
-        let Event::MouseWheel {
-            delta: MouseScrollDelta::PixelDelta { x, y },
-            phase: TouchPhase::Ended,
-        } = Event::from(event)
-        else {
-            panic!("wrong wheel mapping")
-        };
-        assert_eq!((x, y), (1.5, -2.5));
-        assert!(matches!(
-            Event::from(NativeWindowEvent::RedrawRequested),
-            Event::None
-        ));
     }
 }

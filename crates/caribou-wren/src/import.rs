@@ -809,12 +809,8 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     unsafe {
         view.write(ObjInstance {
             header: ObjHeader {
-                obj_type: ObjType::Instance,
-                gc_mark: 0,
-                generation: 0,
-                flags: 0,
-                next: ptr::null_mut(),
                 class,
+                ..ObjHeader::new(ObjType::Instance)
             },
             num_fields: 0,
             fields_owned: false,

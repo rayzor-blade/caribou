@@ -1,0 +1,5 @@
+# The headless window-event plugin supplies synthetic native payloads.
+-cp ../src
+-lib caribou
+-main UseWindowEvents
+-hl events.hl

@@ -744,6 +744,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "caribou-plugin-window-events"
+version = "0.1.0"
+dependencies = [
+ "caribou_abi",
+ "winit",
+]
+
+[[package]]
 name = "caribou-python"
 version = "0.1.0"
 dependencies = [
@@ -4937,7 +4945,6 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=631db680fa5bc7f6c6de3abce7fb073dcc9a0913#631db680fa5bc7f6c6de3abce7fb073dcc9a0913"
 dependencies = [
  "libc",
 ]
@@ -4945,7 +4952,6 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.22"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=631db680fa5bc7f6c6de3abce7fb073dcc9a0913#631db680fa5bc7f6c6de3abce7fb073dcc9a0913"
 dependencies = [
  "aes-gcm",
  "argon2",

@@ -121,6 +121,8 @@ class Bridge {
 		// module per class: `plugins/math.dylib` beside the program gives
 		// `math.Vec2`.
 		if (plugins.length > 0) {
+			var enums = new Map<String, TypeDefinition>();
+			var enumNames = [];
 			for (doc in described) {
 				if (doc.enums != null) for (e in doc.enums) {
 					var parts = e.name.split(".");
@@ -134,8 +136,23 @@ class Bridge {
 							ret: self, expr: null
 						})
 					}];
-					Context.defineType({pack: parts, name: name, pos: pos,
+					enumNames.push(e.name);
+					enums.set(e.name, {pack: parts, name: name, pos: pos,
 						meta: [{name: ":keep", pos: pos}], kind: TDEnum, fields: fields});
+				}
+			}
+			// Defining an enum can type its payloads immediately. Make every
+			// schema available first, including those later in the catalog.
+			Context.onTypeNotFound(function(name) {
+				var definition = enums.get(name);
+				enums.remove(name);
+				return definition;
+			});
+			for (name in enumNames) {
+				var definition = enums.get(name);
+				if (definition != null) {
+					enums.remove(name);
+					Context.defineType(definition);
 				}
 			}
 			for (doc in described) {

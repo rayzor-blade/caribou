@@ -19,14 +19,30 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../caribou_abi_derive/src").display()
     );
-    let target_dir = out_dir.join("plugins");
-    let status = Command::new(std::env::var("CARGO").unwrap())
-        .args(["build", "-p", "caribou-plugin-math", "--target-dir"])
-        .arg(&target_dir)
-        .current_dir(&manifest_dir)
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .env_remove("RUSTFLAGS")
-        .status()
-        .expect("cargo runs");
-    assert!(status.success(), "the test plugins build");
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../../plugins/cb_window/src/events.rs")
+            .display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir
+            .join("../../plugins/cb_window/src/events")
+            .display()
+    );
+    for (package, directory) in [
+        ("caribou-plugin-math", "plugins"),
+        ("caribou-plugin-window-events", "window-events"),
+    ] {
+        let status = Command::new(std::env::var("CARGO").unwrap())
+            .args(["build", "-p", package, "--target-dir"])
+            .arg(out_dir.join(directory))
+            .current_dir(&manifest_dir)
+            .env_remove("CARGO_ENCODED_RUSTFLAGS")
+            .env_remove("RUSTFLAGS")
+            .status()
+            .expect("cargo runs");
+        assert!(status.success(), "the test plugins build");
+    }
 }
