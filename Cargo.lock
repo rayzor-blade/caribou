@@ -787,6 +787,18 @@ dependencies = [
 [[package]]
 name = "caribou_abi"
 version = "0.1.0"
+dependencies = [
+ "caribou_abi_derive",
+]
+
+[[package]]
+name = "caribou_abi_derive"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "castaway"

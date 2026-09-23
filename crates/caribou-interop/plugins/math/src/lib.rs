@@ -174,14 +174,13 @@ impl Data {
             0 => Event::Closed.into(),
             1 => Event::Resized(800, 600).into(),
             3 => Event::Wide(4_294_967_298).into(),
-            _ => {
-                let label = Text::new("héllo");
-                let root = Kept::new(label.value());
-                let bytes = Buffer::new(&[0, 255]);
-                let value = Event::Message(label, bytes, true, 1.5).into();
-                drop(root);
-                value
+            _ => Event::Message {
+                label: "héllo".into(),
+                bytes: Buffer::new(&[0, 255]),
+                enabled: true,
+                ratio: 1.5,
             }
+            .into(),
         }
     }
     pub extern "C" fn echo_event(event: Enum<Event>) -> Enum<Event> {
@@ -195,19 +194,54 @@ impl Data {
         }
     }
     pub extern "C" fn nested(event: Enum<Event>) -> Enum<Nested> {
-        Nested::Event(event).into()
+        Nested::Event(event.get()).into()
     }
+    pub extern "C" fn pair() -> Enum<Nested> {
+        Nested::Pair {
+            first: Event::Message {
+                label: "first".into(),
+                bytes: Buffer::new(&[42]),
+                enabled: true,
+                ratio: 2.5,
+            },
+            second: Event::Wide(4_294_967_298),
+        }
+        .into()
+    }
+    pub extern "C" fn rebuild_nested(value: Enum<Nested>) -> Enum<Nested> {
+        value.get().into()
+    }
+}
+
+// Ordinary Rust data enums: no separate ABI enum definition or serializer.
+#[derive(caribou_abi::PluginEnum)]
+#[caribou(name = "math.Event")]
+pub enum Event {
+    Closed,
+    Resized(
+        #[caribou(name = "width")] i32,
+        #[caribou(name = "height")] i32,
+    ),
+    Message {
+        label: String,
+        bytes: Buffer,
+        enabled: bool,
+        ratio: f64,
+    },
+    Wide(#[caribou(name = "value")] i64),
+}
+
+#[derive(caribou_abi::PluginEnum)]
+#[caribou(name = "math.Nested")]
+pub enum Nested {
+    Event(#[caribou(name = "event")] Event),
+    Pair { first: Event, second: Event },
 }
 
 caribou_abi::plugin! {
     name: "math";
-    enum Event {
-        Closed;
-        Resized(width: i32, height: i32);
-        Message(label: Text, bytes: Buffer, enabled: bool, ratio: f64);
-        Wide(value: i64);
-    }
-    enum Nested { Event(event: Enum<Event>); }
+    enum Event;
+    enum Nested;
     class Data {
         fn vector() -> Box<Vec2>;
         fn bytes() -> Buffer;
@@ -221,6 +255,8 @@ caribou_abi::plugin! {
         fn echo_event(Enum<Event>) -> Enum<Event>;
         fn area(Enum<Event>) -> i32;
         fn nested(Enum<Event>) -> Enum<Nested>;
+        fn pair() -> Enum<Nested>;
+        fn rebuild_nested(Enum<Nested>) -> Enum<Nested>;
     }
     fn hypot(f64, f64) -> f64;
     fn twice(i32) -> i32;

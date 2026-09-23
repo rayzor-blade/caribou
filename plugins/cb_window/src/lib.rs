@@ -10,6 +10,93 @@ use winit::{
     window::{Window, WindowAttributes},
 };
 
+// These declarations generate both the Caribou schema and From<native>
+// conversion. Payloads stay ordinary Rust values while queued; poll encodes
+// them into the shared heap, rooting each nested enum before the next.
+#[derive(PluginEnum)]
+#[caribou(name = "window.MouseButton", from = winit::event::MouseButton)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+    Back,
+    Forward,
+    Other(#[caribou(name = "button")] u16),
+}
+
+#[derive(PluginEnum)]
+#[caribou(name = "window.MouseElementState", from = winit::event::ElementState)]
+pub enum MouseElementState {
+    Pressed,
+    Released,
+}
+
+#[derive(PluginEnum)]
+#[caribou(name = "window.MouseScrollDelta", from = winit::event::MouseScrollDelta)]
+pub enum MouseScrollDelta {
+    LineDelta(#[caribou(name = "x")] f32, #[caribou(name = "y")] f32),
+    #[caribou(pattern = winit::event::MouseScrollDelta::PixelDelta(position))]
+    PixelDelta {
+        #[caribou(value = position.x)]
+        x: f64,
+        #[caribou(value = position.y)]
+        y: f64,
+    },
+}
+
+#[derive(PluginEnum)]
+#[caribou(name = "window.TouchPhase", from = winit::event::TouchPhase)]
+pub enum TouchPhase {
+    Started,
+    Moved,
+    Ended,
+    Cancelled,
+}
+
+#[derive(PluginEnum)]
+#[caribou(name = "window.Event", from = NativeWindowEvent, fallback = Self::None)]
+pub enum Event {
+    #[caribou(skip)]
+    None,
+    #[caribou(pattern = NativeWindowEvent::CloseRequested)]
+    Closed,
+    #[caribou(pattern = NativeWindowEvent::Resized(size))]
+    Resized {
+        #[caribou(value = size.width as i32)]
+        width: i32,
+        #[caribou(value = size.height as i32)]
+        height: i32,
+    },
+    #[caribou(pattern = NativeWindowEvent::Moved(position))]
+    Moved {
+        #[caribou(value = position.x)]
+        x: i32,
+        #[caribou(value = position.y)]
+        y: i32,
+    },
+    #[caribou(pattern = NativeWindowEvent::CursorEntered { .. })]
+    CursorEntered,
+    #[caribou(pattern = NativeWindowEvent::CursorLeft { .. })]
+    CursorLeft,
+    #[caribou(pattern = NativeWindowEvent::CursorMoved { position, .. })]
+    CursorMoved {
+        #[caribou(value = position.x)]
+        x: f64,
+        #[caribou(value = position.y)]
+        y: f64,
+    },
+    #[caribou(pattern = NativeWindowEvent::MouseInput { state, button, .. })]
+    MouseInput {
+        state: MouseElementState,
+        button: MouseButton,
+    },
+    #[caribou(pattern = NativeWindowEvent::MouseWheel { delta, phase, .. })]
+    MouseWheel {
+        delta: MouseScrollDelta,
+        phase: TouchPhase,
+    },
+}
+
 /// The platform codes `platform` returns.
 const APPKIT: i32 = 1;
 const WIN32: i32 = 2;
@@ -36,12 +123,9 @@ impl ApplicationHandler for App {
         _: winit::window::WindowId,
         event: NativeWindowEvent,
     ) {
-        match event {
-            NativeWindowEvent::CloseRequested => self.events.push_back(Event::Closed),
-            NativeWindowEvent::Resized(size) => self
-                .events
-                .push_back(Event::Resized(size.width as i32, size.height as i32)),
-            _ => {}
+        let event = Event::from(event);
+        if !matches!(event, Event::None) {
+            self.events.push_back(event);
         }
     }
 }
@@ -473,11 +557,12 @@ impl WindowBuilder {
 caribou_abi::plugin! {
     name:"window";
 
-    enum Event {
-        None;
-        Closed;
-        Resized(width: i32, height: i32);
-    }
+
+    enum MouseButton;
+    enum MouseElementState;
+    enum MouseScrollDelta;
+    enum TouchPhase;
+    enum Event;
 
     class Size {
         fn width(&Size) -> i32;
@@ -514,5 +599,66 @@ caribou_abi::plugin! {
         fn fullscreen(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
         fn resizable(&mut WindowBuilder, bool) -> Box<WindowBuilder>;
         fn open(&mut WindowBuilder) -> Box<WindowHandle>;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use winit::event::{
+        DeviceId, ElementState, MouseButton as NativeMouseButton, MouseScrollDelta as NativeScroll,
+        TouchPhase as NativePhase,
+    };
+
+    #[test]
+    fn maps_native_events_without_a_window_or_host_heap() {
+        assert!(matches!(
+            Event::from(NativeWindowEvent::CloseRequested),
+            Event::Closed
+        ));
+        assert!(matches!(
+            Event::from(NativeWindowEvent::Resized(winit::dpi::PhysicalSize::new(
+                800, 600
+            ))),
+            Event::Resized {
+                width: 800,
+                height: 600
+            }
+        ));
+        assert!(matches!(
+            Event::from(NativeWindowEvent::Moved(winit::dpi::PhysicalPosition::new(
+                -10, 20
+            ))),
+            Event::Moved { x: -10, y: 20 }
+        ));
+        let event = NativeWindowEvent::MouseInput {
+            device_id: DeviceId::dummy(),
+            state: ElementState::Pressed,
+            button: NativeMouseButton::Other(7),
+        };
+        assert!(matches!(
+            Event::from(event),
+            Event::MouseInput {
+                state: MouseElementState::Pressed,
+                button: MouseButton::Other(7)
+            }
+        ));
+        let event = NativeWindowEvent::MouseWheel {
+            device_id: DeviceId::dummy(),
+            delta: NativeScroll::PixelDelta(winit::dpi::PhysicalPosition::new(1.5, -2.5)),
+            phase: NativePhase::Ended,
+        };
+        let Event::MouseWheel {
+            delta: MouseScrollDelta::PixelDelta { x, y },
+            phase: TouchPhase::Ended,
+        } = Event::from(event)
+        else {
+            panic!("wrong wheel mapping")
+        };
+        assert_eq!((x, y), (1.5, -2.5));
+        assert!(matches!(
+            Event::from(NativeWindowEvent::RedrawRequested),
+            Event::None
+        ));
     }
 }

@@ -5,9 +5,10 @@ edition.workspace = true
 repository.workspace = true
 description = "Layouts and constants every Caribou runtime, plugin and the core agree on"
 
-# Deliberately empty: a dependency on the core would duplicate its exported
-# symbols in every plugin archive.
+# Never depend on the core: that would duplicate its exported symbols in
+# every plugin archive. The derive runs only at compile time.
 [dependencies]
+caribou_abi_derive = { path = "../caribou_abi_derive", version = "0.1.0" }
 
 [lib]
 crate-type = ["rlib"]

@@ -12,6 +12,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../../crates/caribou_abi/src").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../../crates/caribou_abi_derive/src").display()
+    );
     let target_dir = out_dir.join("plugins");
     // gen plugin package list
     let packages = std::fs::read_dir(&plugins)

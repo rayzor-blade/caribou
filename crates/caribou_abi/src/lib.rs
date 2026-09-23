@@ -30,6 +30,7 @@ pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
 pub mod host;
 pub use host::{Kept, Text};
 pub mod data;
+pub use caribou_abi_derive::PluginEnum;
 pub use data::{Buffer, Enum, EnumDesc, EnumField, PluginEnum};
 
 /// Which runtime defines a type's semantics. A registry, not an enum: the
@@ -952,6 +953,13 @@ macro_rules! plugin {
         $($rest:tt)*
     ) => {
         $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] [$($classes)* $class] [$($enums)*] $($rest)*);
+    };
+    // An enum declared separately, e.g. by a plugin's mapping macro.
+    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]
+        enum $enum:ident;
+        $($rest:tt)*
+    ) => {
+        $crate::plugin!(@munch $name [$($acc)*] [$($classes)*] [$($enums)* $enum] $($rest)*);
     };
     // Enum declarations generate Rust enums; Enum<T> is their C ABI carrier.
     (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]

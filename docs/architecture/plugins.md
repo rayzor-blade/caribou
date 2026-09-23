@@ -105,13 +105,41 @@ caribou_abi::plugin! {
 }
 ```
 
-Haxe automatically gets `example.Event`, an actual enum with `Closed` and `Resized(width:Int, height:Int)`. Returned values work in `switch`, and Haxe-created constructors can be passed back to a plugin. Payloads support numeric scalars (including 64-bit integers), booleans, `Text`, `Buffer`, `Value`, and nested `Enum<T>` carriers. Use `Enum<T>` for a nested payload to avoid recursive Rust value layouts.
+An ordinary Rust enum can instead derive `PluginEnum`. Serde is not required: the derive reads the variants and fields at compile time and generates the same static descriptors and direct conversions as `plugin!`.
+
+```rust
+use caribou_abi::{Enum, PluginEnum};
+
+#[derive(PluginEnum)]
+#[caribou(name = "example.Event")]
+pub enum Event {
+    Closed,
+    Resized { width: i32, height: i32 },
+    Message(String),
+}
+
+pub extern "C" fn event() -> Enum<Event> {
+    Event::Resized { width: 800, height: 600 }.into()
+}
+
+caribou_abi::plugin! {
+    name: "example";
+    enum Event; // Register the existing enum, without redeclaring it.
+    fn event() -> Enum<Event>;
+}
+```
+
+Unit, tuple and named-field variants work. Named fields retain their names; tuple fields default to `a0`, `a1`, etc. `#[caribou(name = "width")]` on a field overrides its exported name, and the same attribute on a variant changes its constructor name. Generic enums are not supported. Every payload type must implement `EnumField`; the derive supplies that implementation for the enum itself, so nested ordinary Rust enums work too. Register each nested enum with `enum NestedType;` in `plugin!`. Native Rust enums are payloads; function signatures still use the one-word `Enum<T>` carrier.
+
+For a type from another crate, a local enum may also use `#[caribou(from = native::Event)]`. The derive generates `From<native::Event>`: variants and fields match by name and each field converts through `Into`. A variant attribute such as `#[caribou(pattern = native::Event::Resized(size))]` overrides its source pattern; field attributes such as `#[caribou(value = size.width as i32)]` project or transform payloads. The compiler checks source-pattern exhaustiveness. An explicit enum-level `fallback = Self::None` handles unmatched source variants, and `#[caribou(skip)]` excludes a local sentinel from source matching. This mapping is necessary for external types: a derive sees the enum it decorates, not another crate's definition.
+
+Haxe automatically gets `example.Event`, an actual enum with `Closed` and `Resized(width:Int, height:Int)`. Returned values work in `switch`, and Haxe-created constructors can be passed back to a plugin. Payloads support the ABI numeric scalars (including 64-bit integers), booleans, `String`, `Text`, `Buffer`, `Value`, derived enums, and nested `Enum<T>` carriers. Rust-owned strings copy into the host once when encoded; decoding them produces owned Rust strings. Buffers and existing carriers share their storage. The encoder roots existing host references before allocating and roots each converted field before encoding the next. Queue ordinary Rust enums to defer host allocation until delivery; retain an already encoded carrier with `Kept` across calls.
 
 The core stores a constructor index followed by traced `Value` fields. Constructor metadata belongs to the type and is shared by every instance. A plugin call borrows or returns the core enum directly. Haxe conversion allocates an enum under the loaded program's own type and translates its payload slots; buffer payloads still share their backing bytes. This conversion is not allocation-free. Haxe constructor names, order, arity, and field types are checked against the plugin declaration before the program runs; a stale declaration requires recompiling the Haxe bytecode.
 
 Wren sees a published class for the enum, with `tag`, `constructor`, and named payload getters; for example, `event is Event`, `event.constructor`, and `event.width`. Inactive payload fields are missing, and enums are immutable. Wren retains the core enum through the existing foreign object mechanism. The descriptors and protocols are shared core facilities; Zyntax's existing restriction on object and array transfer still applies until that adapter implements those conversions.
 
-`plugins/cb_window` exports `window.Event` (`None`, `Closed`, `Resized`). `WindowHandle.poll()` drains queued events individually, and `plugins/fixtures/window` demonstrates exhaustive Haxe pattern matching. The non-window interop fixture `UseData.hx` covers both directions, shared storage, mixed and nested payloads, and GC retention.
+`plugins/cb_window` derives its window, mouse-button, mouse-state, scroll and touch-phase enums. Its declarations also generate the winit conversions, including payload projections and `MouseButton::Other`. Unmapped winit events are ignored through the explicit `None` fallback. `WindowHandle.poll()` encodes and drains queued Rust events individually, and `plugins/fixtures/window` demonstrates exhaustive Haxe pattern matching. The non-window interop fixture `UseData.hx` covers both directions, shared storage, mixed and nested payloads, and GC retention.
 
 These additions change the host and plugin tables. ABI version **2** requires rebuilding existing plugins; the loader rejects version 1 before reading the new layouts.
 

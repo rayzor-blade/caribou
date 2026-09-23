@@ -106,6 +106,11 @@ System.print(Data.area(e))
 System.print(Data.echo_event(e) == e)
 System.print(Fiber.new { Data.sum("text") }.try())
 System.print(Fiber.new { Data.area(b) }.try())
+var pair = Data.pair()
+var rebuilt = Data.rebuild_nested(pair)
+System.print(rebuilt.first.label)
+System.print(rebuilt.first.bytes[0])
+System.print(Data.same_storage(pair.first.bytes, rebuilt.first.bytes))
 "#;
 
 #[test]
@@ -117,7 +122,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 32);
+    assert_eq!(math.symbols().len(), 34);
     let hypot = math
         .symbols()
         .iter()
@@ -208,7 +213,7 @@ fn a_plugin_is_a_language_wren_imports() {
     );
     assert_eq!(
         output,
-        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\n"
+        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\n"
     );
 
     // The temporaries die with Wren's cycle and the core's collection

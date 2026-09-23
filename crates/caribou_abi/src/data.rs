@@ -114,14 +114,14 @@ pub struct EnumData {
     // Value fields follow, traced by the host.
 }
 
-/// Implemented by plugin!'s enum declarations.
+/// Implemented by `#[derive(PluginEnum)]` and plugin!'s enum declarations.
 pub trait PluginEnum: Sized {
     const DESC: &'static EnumDesc;
     fn encode(self) -> Enum<Self>;
     fn decode(value: Enum<Self>) -> Self;
 }
 
-/// The one-word C ABI carrier for a Rust enum declared in plugin!.
+/// The one-word C ABI carrier for a Rust enum implementing PluginEnum.
 #[repr(transparent)]
 pub struct Enum<T: PluginEnum>(*const EnumData, PhantomData<T>);
 impl<T: PluginEnum> Copy for Enum<T> {}
@@ -170,13 +170,34 @@ impl<T: PluginEnum> Returned for Enum<T> {
 }
 
 /// Types that can appear in enum payloads.
-pub trait EnumField: Param + Sized {
+pub trait EnumField: Sized {
+    const TAG: TypeTag;
+    const ENUM: *const EnumDesc = core::ptr::null();
     fn into_value(self) -> Value;
     fn from_value(v: Value) -> Self;
+    /// Visit existing host references before encoding allocates anything.
+    /// Native scalars and Rust-owned data contain no such references.
+    fn visit(&self, _visit: &mut dyn FnMut(Value)) {}
+}
+
+/// Keeps host references embedded in a Rust enum live during encoding.
+#[doc(hidden)]
+pub struct EnumRoots(alloc::vec::Vec<crate::Kept>);
+impl EnumRoots {
+    pub fn new(value: &impl EnumField) -> Self {
+        let mut roots = Self(alloc::vec::Vec::new());
+        value.visit(&mut |v| {
+            if v.is_object() {
+                roots.0.push(crate::Kept::new(v));
+            }
+        });
+        roots
+    }
 }
 macro_rules! fields {
     ($($ty:ty, $encode:expr, $decode:expr);* $(;)?) => { $(
         impl EnumField for $ty {
+            const TAG: TypeTag = <$ty as Param>::TAG;
             fn into_value(self) -> Value { ($encode)(self) }
             fn from_value(v: Value) -> Self { ($decode)(v) }
         }
@@ -190,16 +211,45 @@ fields! {
     f64, Value::number, |v: Value| v.as_number().unwrap();
     f32, |n| Value::number(n as f64), |v: Value| v.as_number().unwrap() as f32;
     bool, Value::bool, |v: Value| v.as_bool().unwrap();
+}
+macro_rules! reference_fields {
+    ($($ty:ty, $encode:expr, $decode:expr);* $(;)?) => { $(
+        impl EnumField for $ty {
+            const TAG: TypeTag = <$ty as Param>::TAG;
+            fn into_value(self) -> Value { ($encode)(self) }
+            fn from_value(v: Value) -> Self { ($decode)(v) }
+            fn visit(&self, visit: &mut dyn FnMut(Value)) { visit(($encode)(*self)); }
+        }
+    )* };
+}
+reference_fields! {
     Value, |v| v, |v| v;
     crate::Text, crate::Text::value, |v| crate::Text::of(v).unwrap();
     Buffer, Buffer::value, |v| Buffer::of(v).unwrap();
 }
 impl<T: PluginEnum> EnumField for Enum<T> {
+    const TAG: TypeTag = TypeTag::ENUM;
+    const ENUM: *const EnumDesc = T::DESC;
     fn into_value(self) -> Value {
         self.value()
     }
     fn from_value(v: Value) -> Self {
         Self::of(v).unwrap()
+    }
+    fn visit(&self, visit: &mut dyn FnMut(Value)) {
+        visit(self.value());
+    }
+}
+
+// Native strings remain Rust-owned until encoding, then copy into the host
+// exactly once. This lets ordinary data enums keep their existing fields.
+impl EnumField for alloc::string::String {
+    const TAG: TypeTag = <crate::Text as Param>::TAG;
+    fn into_value(self) -> Value {
+        crate::Text::new(&self).value()
+    }
+    fn from_value(v: Value) -> Self {
+        crate::Text::of(v).unwrap().as_str().into()
     }
 }
 
@@ -225,14 +275,15 @@ macro_rules! plugin_enum {
                     name: $crate::Str::new(stringify!($variant)),
                     fields: &[$($($crate::data::EnumFieldDesc {
                         name: $crate::Str::new(stringify!($field)),
-                        tag: <$ty as $crate::Param>::TAG,
-                        enumeration: <$ty as $crate::Param>::ENUM,
+                        tag: <$ty as $crate::EnumField>::TAG,
+                        enumeration: <$ty as $crate::EnumField>::ENUM,
                     }),*)?] as *const _,
                     field_count: 0 $( $(+ {let _ = stringify!($field); 1})* )?,
                 }),*] as *const _,
                 variant_count: $crate::plugin!(@count $($variant)*),
             };
             fn encode(self) -> $crate::Enum<Self> {
+                let _inputs = $crate::data::EnumRoots::new(&self);
                 #[allow(non_camel_case_types)]
                 enum Index { $($variant),* }
                 match self { $(Self::$variant $( ( $($field),* ) )? => {
@@ -254,6 +305,21 @@ macro_rules! plugin_enum {
                     }),*,
                     _ => unreachable!("host validated enum tag"),
                 }
+            }
+        }
+        impl $crate::EnumField for $name {
+            const TAG: $crate::TypeTag = $crate::TypeTag::ENUM;
+            const ENUM: *const $crate::EnumDesc = <Self as $crate::PluginEnum>::DESC;
+            fn into_value(self) -> $crate::Value {
+                <Self as $crate::PluginEnum>::encode(self).value()
+            }
+            fn from_value(value: $crate::Value) -> Self {
+                $crate::Enum::<Self>::of(value).expect("host validated enum field").get()
+            }
+            fn visit(&self, visit: &mut dyn FnMut($crate::Value)) {
+                match self { $(Self::$variant $( ( $($field),* ) )? => {
+                    $($($crate::EnumField::visit($field, visit);)*)?
+                }),* }
             }
         }
     };

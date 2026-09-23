@@ -15,6 +15,10 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../caribou_abi/src").display()
     );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../caribou_abi_derive/src").display()
+    );
     let target_dir = out_dir.join("plugins");
     let status = Command::new(std::env::var("CARGO").unwrap())
         .args(["build", "-p", "caribou-plugin-math", "--target-dir"])

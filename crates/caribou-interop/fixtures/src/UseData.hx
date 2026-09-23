@@ -60,6 +60,20 @@ class UseData {
             default: throw "wrong wide constructor";
         }
         check(Data.area(Wide(haxe.Int64.make(2, 3))) == 2, "Haxe 64-bit payload");
+        var pair = Data.pair();
+        hl.Gc.major();
+        // Decode into ordinary Rust nested enums, then encode them again.
+        switch (Data.rebuild_nested(pair)) {
+            case Pair(Message(label, bytes, enabled, ratio), Wide(n)):
+                check(label == "first" && bytes.get(0) == 42 && enabled && ratio == 2.5, "derived named fields");
+                check(n.high == 1 && n.low == 2, "rooted nested enum");
+                switch (pair) {
+                    case Pair(Message(_, original, _, _), _):
+                        check(Data.same_storage(bytes, original), "derived enum copied buffer");
+                    default: throw "original pair";
+                }
+            default: throw "derived nested pair";
+        }
         var caught = false;
         try { Data.area(cast "not an enum"); } catch (_:Dynamic) { caught = true; }
         check(caught, "bad enum accepted");

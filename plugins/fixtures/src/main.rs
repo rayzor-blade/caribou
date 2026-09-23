@@ -14,14 +14,11 @@ fn main() {
 
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("window");
     println!("fixture: {}", fixture.display());
-    let plugins = caribou_plugin::load_dir(&plugin_dir()).expect("the plugins load");
-    assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
-    println!("{}", plugins[0].name());
 
     let mut session = Session::open(
         &fixture.join("window.hl"),
         Options {
-            mode: Mode::Interp,
+            mode: Mode::Hybrid,
             ..Options::default()
         },
     )
