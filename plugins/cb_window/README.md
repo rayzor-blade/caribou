@@ -1,4 +1,73 @@
-# Window events
+# Caribou Window Management Plugin
+Rust winit based window management plugin for Caribou tunime. 
+
+Example:
+
+```haxe 
+
+import window.Event;
+import window.WindowBuilder;
+import window.ScaleSize;
+
+class Main {
+    static function main() {
+        var window = new WindowBuilder()
+            .title("Caribou Window Test")
+            .size(800, 600)
+            .open();
+        window.set_ime_allowed(true);
+        window.set_ime_cursor_area(20, 20, 400, 24);
+        // This runs inside winit's scale callback. Return Physical(w, h)
+        // to override its suggestion; window methods cannot re-enter it.
+        window.on_scale_factor_changed(function(factor:Float):ScaleSize {
+            return Default;
+        });
+        window.request_redraw();
+
+        var running = true;
+        while (running) {
+            switch (window.poll()) {
+                case None:
+                    Sys.sleep(0.001);
+                case Resized(width, height):
+                    Sys.println('Resized to ${width}x${height}');
+                case Moved(x, y):
+                    Sys.println('Moved to ${x}, ${y}');
+                case CursorEntered(device):
+                    Sys.println('Cursor ${device} entered window');
+                case CursorLeft(device):
+                    Sys.println('Cursor ${device} left window');
+                case CursorMoved(x, y, device):
+                    Sys.println('Cursor ${device} moved to ${x}, ${y}');
+                case MouseInput(state, button, device):
+                    Sys.println('Mouse ${device}: ${state}, ${button}');
+                case MouseWheel(delta, phase, device):
+                    Sys.println('Mouse wheel ${device}: ${delta}, ${phase}');
+                case KeyboardInput(device, Input(physical, logical, text, location, state, repeat, _), synthetic):
+                    Sys.println('Key ${device}: ${physical}, ${logical}, ${text}, ${location}, ${state}, repeat=${repeat}, synthetic=${synthetic}');
+                case ModifiersChanged(modifiers):
+                    Sys.println('Modifiers: ${modifiers}');
+                case Ime(event):
+                    Sys.println('IME: ${event}');
+                case DroppedFile(path):
+                    Sys.println('Dropped: ${path}');
+                case HoveredFile(path):
+                    Sys.println('Hovered: ${path}');
+                case HoveredFileCancelled:
+                    Sys.println('File hover cancelled');
+                case Focused(focused):
+                    Sys.println('Focused: ${focused}');
+                ...
+                case Closed | Destroyed:
+                    running = false;
+            }
+        }
+        window.close();
+    }
+}
+```
+
+## Window events
 
 `events.rs` contains the plugin's event definitions and conversions. `events/keys.rs` lists all 194 `KeyCode` and 306 `NamedKey` variants in winit 0.30.13. `lib.rs` owns windows, pumps winit and exposes the plugin API.
 
@@ -56,4 +125,4 @@ The callback runs within `poll()`'s event pump. It must return the size without 
 
 The interactive example is `plugins/fixtures/window`. The headless Haxe fixture is `crates/caribou-interop/fixtures/window_events/events.hxml`; its plugin library is built by the interop build script and its bytecode is checked in.
 
-Nested Wren event payloads exposed an interpreter bug when lazy class installation moved the module table during an expression. The fix is in the main sibling `../wren_lift` repository, referenced by the workspace Cargo patch and tracked in Wren's git-bug `eb28d58`.
+Nested Wren event payloads exposed an interpreter bug when lazy class installation moved the module table during an expression. The fix is in the main sibling wrenlift repository, referenced by the workspace Cargo and tracked in Wren's git-bug `eb28d58`.
