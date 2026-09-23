@@ -143,12 +143,15 @@ Buffer sizes, ranges, offsets and adapter limits use 64-bit integers, matching
 WebGPU's `GPUSize64`. Dimensions, counts, flags and shared-buffer lengths use
 32-bit integers.
 
-## API coverage
+## wgpu API coverage
 
 The plugin is sufficient for basic compute, buffer readback, textured or
-indexed rendering, and presentation. It is not a complete WebGPU or wgpu API.
-The vendored IDL is the coverage checklist; generation currently imports
-selected enums and constants rather than every interface and dictionary.
+indexed rendering, and presentation. It does not yet expose all of wgpu.
+The vendored WebGPU IDL gives binding generation a head start with common
+interfaces, descriptors, enums and constants. It is neither the plugin's
+public contract nor its feature ceiling. Portable WebGPU concepts should be
+generated from it where useful, while wgpu-only and native backend features
+should also be exposed behind adapter capability checks.
 
 The largest missing groups are:
 
@@ -165,11 +168,16 @@ The largest missing groups are:
   textures/images;
 - error scopes, device-lost reporting and structured compilation messages;
 - configurable surface usage, present mode, alpha mode, view formats, color
-  space and frame latency.
+  space and frame latency;
+- wgpu extensions outside the WebGPU IDL, including native format features,
+  pipeline statistics, encoder/pass timestamps, unrestricted mapped buffers,
+  binding arrays and non-uniform indexing, multi-draw, texture atomics,
+  64-bit shaders, subgroups, mesh shaders and ray tracing.
 
 These gaps affect expressiveness on every backend. They are separate from
 the target support above: compiling on a platform does not imply complete
-WebGPU coverage or runtime validation on that platform.
+wgpu coverage or runtime validation on that platform. Individual extensions
+remain conditional on the adapter and backend that implement them.
 
 ## Example and checks
 
