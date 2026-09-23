@@ -81,6 +81,7 @@ pub fn describe_source(module: &str, source: &str) -> Result<ModuleDesc, String>
         lang: LANG.to_owned(),
         module: module.to_owned(),
         path: None,
+        enums: Vec::new(),
         functions: Vec::new(),
         classes: classes
             .iter()

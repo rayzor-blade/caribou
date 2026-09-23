@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use caribou_abi::{ErrorKind, Kept, Text, Value, host};
+use caribou_abi::{Buffer, Enum, ErrorKind, Kept, Text, Value, host};
 
 pub extern "C" fn hypot(a: f64, b: f64) -> f64 {
     a.hypot(b)
@@ -134,8 +134,83 @@ impl Tally {
     }
 }
 
+/// Data conversion probes used by the Haxe and Wren fixtures.
+pub struct Data;
+thread_local! { static SAVED: std::cell::RefCell<Option<Kept>> = const { std::cell::RefCell::new(None) }; }
+impl Data {
+    pub extern "C" fn bytes() -> Buffer {
+        Buffer::new(&[0, 128, 255, 65])
+    }
+    pub extern "C" fn same_storage(a: Buffer, b: Buffer) -> bool {
+        a.as_ptr() == b.as_ptr()
+    }
+    pub extern "C" fn empty() -> Buffer {
+        Buffer::new(&[])
+    }
+    pub extern "C" fn echo(bytes: Buffer) -> Buffer {
+        bytes
+    }
+    pub extern "C" fn sum(bytes: Buffer) -> i32 {
+        unsafe { bytes.as_slice() }.iter().map(|b| *b as i32).sum()
+    }
+    pub extern "C" fn save(bytes: Buffer) {
+        SAVED.with(|v| *v.borrow_mut() = Some(Kept::new(bytes.value())));
+    }
+    pub extern "C" fn saved() -> Buffer {
+        SAVED.with(|v| Buffer::of(v.borrow().as_ref().unwrap().get()).unwrap())
+    }
+    pub extern "C" fn event(which: i32) -> Enum<Event> {
+        match which {
+            0 => Event::Closed.into(),
+            1 => Event::Resized(800, 600).into(),
+            3 => Event::Wide(4_294_967_298).into(),
+            _ => {
+                let label = Text::new("héllo");
+                let root = Kept::new(label.value());
+                let bytes = Buffer::new(&[0, 255]);
+                let value = Event::Message(label, bytes, true, 1.5).into();
+                drop(root);
+                value
+            }
+        }
+    }
+    pub extern "C" fn echo_event(event: Enum<Event>) -> Enum<Event> {
+        event
+    }
+    pub extern "C" fn area(event: Enum<Event>) -> i32 {
+        match event.get() {
+            Event::Resized(w, h) => w * h,
+            Event::Wide(n) => (n >> 32) as i32,
+            _ => -1,
+        }
+    }
+    pub extern "C" fn nested(event: Enum<Event>) -> Enum<Nested> {
+        Nested::Event(event).into()
+    }
+}
+
 caribou_abi::plugin! {
     name: "math";
+    enum Event {
+        Closed;
+        Resized(width: i32, height: i32);
+        Message(label: Text, bytes: Buffer, enabled: bool, ratio: f64);
+        Wide(value: i64);
+    }
+    enum Nested { Event(event: Enum<Event>); }
+    class Data {
+        fn bytes() -> Buffer;
+        fn same_storage(Buffer, Buffer) -> bool;
+        fn empty() -> Buffer;
+        fn echo(Buffer) -> Buffer;
+        fn sum(Buffer) -> i32;
+        fn save(Buffer);
+        fn saved() -> Buffer;
+        fn event(i32) -> Enum<Event>;
+        fn echo_event(Enum<Event>) -> Enum<Event>;
+        fn area(Enum<Event>) -> i32;
+        fn nested(Enum<Event>) -> Enum<Nested>;
+    }
     fn hypot(f64, f64) -> f64;
     fn twice(i32) -> i32;
     fn is_even(i64) -> bool;

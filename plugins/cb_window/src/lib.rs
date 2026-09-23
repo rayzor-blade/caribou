@@ -1,18 +1,14 @@
-use std::{cell::RefCell, str::FromStr, time::Duration};
+use std::{cell::RefCell, collections::VecDeque, str::FromStr, time::Duration};
 
 use caribou_abi::*;
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::WindowEvent as NativeWindowEvent,
     event_loop::{ActiveEventLoop, EventLoop},
     platform::pump_events::EventLoopExtPumpEvents,
     window::{Window, WindowAttributes},
 };
-
-/// What `poll` reports, as bits.
-const CLOSED: i32 = 1;
-const RESIZED: i32 = 2;
 
 /// The platform codes `platform` returns.
 const APPKIT: i32 = 1;
@@ -24,7 +20,7 @@ const WAYLAND: i32 = 4;
 struct App {
     attributes: WindowAttributes,
     window: Option<Window>,
-    events: i32,
+    events: VecDeque<Event>,
 }
 
 impl ApplicationHandler for App {
@@ -38,11 +34,13 @@ impl ApplicationHandler for App {
         &mut self,
         _: &ActiveEventLoop,
         _: winit::window::WindowId,
-        event: WindowEvent,
+        event: NativeWindowEvent,
     ) {
         match event {
-            WindowEvent::CloseRequested => self.events |= CLOSED,
-            WindowEvent::Resized(_) => self.events |= RESIZED,
+            NativeWindowEvent::CloseRequested => self.events.push_back(Event::Closed),
+            NativeWindowEvent::Resized(size) => self
+                .events
+                .push_back(Event::Resized(size.width as i32, size.height as i32)),
             _ => {}
         }
     }
@@ -91,7 +89,7 @@ fn open(title: Text, width: i32, height: i32) -> i32 {
         app: App {
             attributes,
             window: None,
-            events: 0,
+            events: VecDeque::new(),
         },
     };
 
@@ -125,7 +123,7 @@ fn open_with_attributes(attributes: WindowAttributes) -> i32 {
         app: App {
             attributes,
             window: None,
-            events: 0,
+            events: VecDeque::new(),
         },
     };
 
@@ -149,15 +147,16 @@ fn open_with_attributes(attributes: WindowAttributes) -> i32 {
     })
 }
 
-fn poll(handle: i32) -> i32 {
-    with(handle, 0, |open| {
-        open.app.events = 0;
-        open.event_loop
-            .pump_app_events(Some(Duration::ZERO), &mut open.app);
-        // Asked for once, then forgotten: a caller that polls every frame
-        // should not see the same resize forever.
-        std::mem::take(&mut open.app.events)
+fn poll(handle: i32) -> Enum<Event> {
+    with(handle, Event::None, |open| {
+        // Drain queued events before pumping again so none are discarded.
+        if open.app.events.is_empty() {
+            open.event_loop
+                .pump_app_events(Some(Duration::ZERO), &mut open.app);
+        }
+        open.app.events.pop_front().unwrap_or(Event::None)
     })
+    .into()
 }
 
 fn width(handle: i32) -> i32 {
@@ -228,7 +227,6 @@ extern "C" fn raw(handle: i32, which: i32) -> i64 {
     })
 }
 
-
 struct Size {
     width: i32,
     height: i32,
@@ -261,16 +259,32 @@ impl MonitorHandle {
     }
 
     pub extern "C" fn size(this: &MonitorHandle) -> Box<Size> {
-        with(this.handle, Box::new(Size { width: 0, height: 0 }), |open| {
-            open.app
-                .window
-                .as_ref()
-                .and_then(|w| w.current_monitor())
-                .map_or(Box::new(Size { width: 0, height: 0 }), |m| {
-                    let size = m.size();
-                    Box::new(Size { width: size.width as i32, height: size.height as i32 })
-                })
-        })
+        with(
+            this.handle,
+            Box::new(Size {
+                width: 0,
+                height: 0,
+            }),
+            |open| {
+                open.app
+                    .window
+                    .as_ref()
+                    .and_then(|w| w.current_monitor())
+                    .map_or(
+                        Box::new(Size {
+                            width: 0,
+                            height: 0,
+                        }),
+                        |m| {
+                            let size = m.size();
+                            Box::new(Size {
+                                width: size.width as i32,
+                                height: size.height as i32,
+                            })
+                        },
+                    )
+            },
+        )
     }
 }
 
@@ -279,7 +293,7 @@ struct WindowHandle {
 }
 
 impl WindowHandle {
-    pub extern "C" fn poll(this: &WindowHandle) -> i32 {
+    pub extern "C" fn poll(this: &WindowHandle) -> Enum<Event> {
         poll(this.handle)
     }
 
@@ -365,10 +379,7 @@ impl WindowHandle {
 
     pub extern "C" fn scale_factor(this: &WindowHandle) -> f64 {
         with(this.handle, 1.0, |open| {
-            open.app
-                .window
-                .as_ref()
-                .map_or(1.0, |w| w.scale_factor())
+            open.app.window.as_ref().map_or(1.0, |w| w.scale_factor())
         })
     }
 
@@ -453,16 +464,20 @@ impl WindowBuilder {
     }
 
     pub extern "C" fn open(this: &mut WindowBuilder) -> Box<WindowHandle> {
-        let handle = open_with_attributes(
-            this.attributes.clone(),
-        );
-        
+        let handle = open_with_attributes(this.attributes.clone());
+
         Box::new(WindowHandle { handle })
     }
 }
 
 caribou_abi::plugin! {
     name:"window";
+
+    enum Event {
+        None;
+        Closed;
+        Resized(width: i32, height: i32);
+    }
 
     class Size {
         fn width(&Size) -> i32;
@@ -475,7 +490,7 @@ caribou_abi::plugin! {
     }
 
     class WindowHandle {
-        fn poll(&WindowHandle) -> i32;
+        fn poll(&WindowHandle) -> Enum<Event>;
         fn width(&WindowHandle) -> i32;
         fn height(&WindowHandle) -> i32;
         fn platform(&WindowHandle) -> i32;

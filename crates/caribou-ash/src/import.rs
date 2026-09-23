@@ -468,6 +468,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
         }));
         s.kinds.store(fresh, Ordering::Release);
     }
+    crate::data::attach((0..bytecode.types.len()).map(|i| interpreter.c_type_of(i).cast()))?;
     // Strings cross into Haxe under the program's own `String`.
     if let Some(i) = bytecode.type_index_of("String") {
         proto::set_string_type(interpreter.c_type_of(i).cast());

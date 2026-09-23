@@ -52,7 +52,9 @@ impl CType {
             // A list and a typed function cross as the bridge values they
             // are; only their use inside the callee is dynamic.
             TypeRef::Array(_) | TypeRef::Function { .. } => CType::Value,
-            TypeRef::Dyn | TypeRef::Fun => return None,
+            TypeRef::Dyn | TypeRef::Fun | TypeRef::Int64 | TypeRef::Buffer | TypeRef::Enum(_) => {
+                return None;
+            }
         })
     }
 }

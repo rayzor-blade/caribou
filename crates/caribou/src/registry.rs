@@ -44,6 +44,9 @@ pub enum TypeRef {
     Int,
     Float,
     Str,
+    Buffer,
+    Int64,
+    Enum(String),
     /// An object of the named type, in the owning language's own terms:
     /// what [`ClassIface::type_name`] holds for the class that defines it.
     Object(String),

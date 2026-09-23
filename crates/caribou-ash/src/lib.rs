@@ -336,3 +336,5 @@ mod tests {
         assert!(ash_std::rt::gc_alloc(64).is_some());
     }
 }
+
+mod data;

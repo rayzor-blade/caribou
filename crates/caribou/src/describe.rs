@@ -17,6 +17,11 @@ pub struct ModuleDesc {
     pub lang: String,
     pub module: String,
     pub classes: Vec<ClassDesc>,
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Vec::is_empty")
+    )]
+    pub enums: Vec<EnumDesc>,
     /// The file the module came from, when it was described from a
     /// directory.
     #[cfg_attr(
@@ -154,6 +159,7 @@ impl ModuleDesc {
             lang: lang.to_owned(),
             module: iface.module.clone(),
             path: None,
+            enums: Vec::new(),
             functions: iface.functions.iter().map(function).collect(),
             classes: iface
                 .classes
@@ -197,4 +203,18 @@ impl MethodKind {
             MethodKind::Setter => MemberKind::Setter,
         }
     }
+}
+
+/// Language-neutral algebraic enum declaration, in constructor order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EnumDesc {
+    pub name: String,
+    pub variants: Vec<VariantDesc>,
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct VariantDesc {
+    pub name: String,
+    pub fields: Vec<ParamDesc>,
 }

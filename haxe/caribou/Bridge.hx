@@ -11,6 +11,7 @@ private typedef ModuleDesc = {
 	lang:String,
 	module:String,
 	classes:Array<ClassDesc>,
+	?enums:Array<{name:String, variants:Array<{name:String, fields:Array<{name:String, ty:Dynamic}>}>}>,
 	?path:String,
 	/** The functions the module itself owns. Haxe imports types, so
 		these are not emitted: a class the module declares is what Haxe
@@ -102,6 +103,23 @@ class Bridge {
 		// `math.Vec2`.
 		if (plugins.length > 0) {
 			var described:Array<ModuleDesc> = haxe.Json.parse(describe(plugins));
+			for (doc in described) {
+				if (doc.enums != null) for (e in doc.enums) {
+					var parts = e.name.split(".");
+					var name = parts.pop();
+					var pos = Context.currentPos();
+					var self = TPath({pack: parts, name: name});
+					var fields:Array<Field> = [for (v in e.variants) {
+						name: v.name, pos: pos,
+						kind: v.fields.length == 0 ? FVar(null) : FFun({
+							args: [for (p in v.fields) {name: p.name, type: haxeType(p.ty, parts, [])}],
+							ret: self, expr: null
+						})
+					}];
+					Context.defineType({pack: parts, name: name, pos: pos,
+						meta: [{name: ":keep", pos: pos}], kind: TDEnum, fields: fields});
+				}
+			}
 			for (doc in described) {
 				var f = {path: "", namespace: doc.lang, module: doc.module, pack: [doc.lang]};
 				modules.push(f);
@@ -216,9 +234,16 @@ class Bridge {
 				case "Int": macro :Int;
 				case "Bool": macro :Bool;
 				case "Str": macro :String;
+				case "Buffer": macro :haxe.io.Bytes;
+				case "Int64": macro :haxe.Int64;
 				case "Void": macro :Void;
 				default: macro :Dynamic;
 			}
+		}
+		if (Reflect.hasField(ty, "Enum")) {
+			var parts = (Reflect.field(ty, "Enum") : String).split(".");
+			var name = parts.pop();
+			return TPath({pack: parts, name: name});
 		}
 		if (Reflect.hasField(ty, "Object")) {
 			var typeName:String = Reflect.field(ty, "Object");

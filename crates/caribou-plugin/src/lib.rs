@@ -35,12 +35,12 @@ use std::path::{Path, PathBuf};
 
 use caribou::error::Error as CoreError;
 use caribou::heap::{self, TypeDesc};
-use caribou::native;
 use caribou::protocol::{CallSite, Callable, Protocol, REPLY_OK, REPLY_RAISED};
 use caribou::registry::{self, ClassIface, Interface, MethodIface, TypeRef};
 use caribou::symbol::{Symbol, intern};
 use caribou::world::Adapter;
 use caribou::{bridge, cell};
+use caribou::{data, native};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::host::Host;
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
@@ -58,6 +58,7 @@ pub struct Plugin {
     path: PathBuf,
     symbols: Vec<SymbolDesc>,
     classes: Vec<ClassDesc>,
+    enums: Vec<caribou::describe::EnumDesc>,
     _library: libloading::Library,
 }
 
@@ -145,11 +146,28 @@ pub fn load(path: &Path) -> Result<Plugin, Error> {
     } else {
         unsafe { std::slice::from_raw_parts(info.classes, info.class_count) }.to_vec()
     };
+    let enums = if info.enum_count == 0 {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(info.enums, info.enum_count) }
+            .iter()
+            .map(|&d| unsafe { data::describe_enum(&*d) })
+            .collect::<Vec<_>>()
+    };
+    for schema in &enums {
+        if data::enum_type(&schema.name).is_some_and(|d| data::enum_schema(d) != schema) {
+            return Err(Error::NotAPlugin(
+                path.to_owned(),
+                format!("conflicting enum declaration {}", schema.name),
+            ));
+        }
+    }
     Ok(Plugin {
         name: unsafe { info.name.as_str() }.to_owned(),
         path: path.to_owned(),
         symbols,
         classes,
+        enums,
         _library: library,
     })
 }
@@ -187,6 +205,7 @@ pub fn load_dir(dir: &Path) -> Result<Vec<Plugin>, Error> {
 pub fn describe(path: &Path) -> Result<Vec<caribou::describe::ModuleDesc>, Error> {
     let plugin = load(path)?;
     let name = plugin.name.clone();
+    let enums = plugin.enums.clone();
     let world = caribou::world::World::new(caribou::world::Config::default());
     let lang = world
         .register(Box::new(Runtime::new(vec![plugin])))
@@ -195,6 +214,21 @@ pub fn describe(path: &Path) -> Result<Vec<caribou::describe::ModuleDesc>, Error
         .iter()
         .map(|iface| caribou::describe::ModuleDesc::of(iface, &name))
         .collect();
+    modules.retain(|m| {
+        !m.classes
+            .iter()
+            .any(|c| enums.iter().any(|e| e.name == c.type_name))
+    });
+    if !enums.is_empty() {
+        modules.push(caribou::describe::ModuleDesc {
+            lang: name.clone(),
+            module: "__enums".into(),
+            classes: Vec::new(),
+            functions: Vec::new(),
+            path: None,
+            enums,
+        });
+    }
     modules.sort_by(|a, b| a.module.cmp(&b.module));
     Ok(modules)
 }
@@ -225,6 +259,9 @@ impl Adapter for Runtime {
     fn assign_languages(&mut self, ids: &[LangId]) {
         for (plugin, &lang) in self.plugins.iter().zip(ids) {
             bridge::set_typed_dispatch(lang, dispatch);
+            for schema in &plugin.enums {
+                data::register_enum(schema.clone(), lang).expect("validated enum declaration");
+            }
             let descs: Vec<&'static TypeDesc> = plugin
                 .classes
                 .iter()
@@ -244,7 +281,13 @@ impl Adapter for Runtime {
 /// of a class is typed by the class's name; a static `new` returning its
 /// own class is the class's constructor.
 fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec<Interface> {
-    let type_of = |tag: TypeTag, class: u8| {
+    let type_of = |tag: TypeTag, class: u8, enumeration: *const caribou_abi::EnumDesc| {
+        if tag == TypeTag::BUFFER {
+            return TypeRef::Buffer;
+        }
+        if tag == TypeTag::ENUM {
+            return TypeRef::Enum(unsafe { (*enumeration).name.as_str() }.to_owned());
+        }
         if class == NO_CLASS {
             native::type_ref(tag.kind())
         } else {
@@ -265,7 +308,8 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
         let arg_types: Vec<*const hl_type> = params
             .iter()
             .zip(classes)
-            .map(|(&t, &c)| arg_type(t, c, descs))
+            .enumerate()
+            .map(|(i, (&t, &c))| arg_type(t, c, descs, desc.param_enums[i]))
             .collect();
         let name = unsafe { desc.method.as_str() }.to_owned();
         let is_static = desc.flags & sym::STATIC != 0;
@@ -277,13 +321,17 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
             params: params
                 .iter()
                 .zip(classes)
+                .enumerate()
                 .skip(declared)
-                .map(|(&t, &c)| type_of(t, c))
+                .map(|(i, (&t, &c))| type_of(t, c, desc.param_enums[i]))
                 .collect(),
-            ret: type_of(desc.ret, desc.ret_class),
+            ret: type_of(desc.ret, desc.ret_class, desc.ret_enum),
             target: Callable::Typed {
                 func: desc.func,
-                signature: native::signature(&arg_types, arg_type(desc.ret, desc.ret_class, descs)),
+                signature: native::signature(
+                    &arg_types,
+                    arg_type(desc.ret, desc.ret_class, descs, desc.ret_enum),
+                ),
                 lang,
             },
         };
@@ -304,7 +352,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
             by_class[at].1.push(method);
         }
     }
-    by_class
+    let mut interfaces: Vec<Interface> = by_class
         .into_iter()
         .map(|(class, methods, ctor)| Interface {
             lang,
@@ -321,7 +369,48 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
             }],
             functions: Vec::new(),
         })
-        .collect()
+        .collect();
+    for schema in &plugin.enums {
+        let name = schema.name.rsplit('.').next().unwrap().to_owned();
+        let mut fields = vec![
+            registry::FieldIface {
+                name: "tag".into(),
+                ty: TypeRef::Int,
+            },
+            registry::FieldIface {
+                name: "constructor".into(),
+                ty: TypeRef::Str,
+            },
+        ];
+        for field in schema.variants.iter().flat_map(|v| &v.fields) {
+            if let Some(existing) = fields.iter_mut().find(|f| f.name == field.name) {
+                if existing.ty != field.ty {
+                    existing.ty = TypeRef::Dyn;
+                }
+            } else {
+                fields.push(registry::FieldIface {
+                    name: field.name.clone(),
+                    ty: field.ty.clone(),
+                });
+            }
+        }
+        interfaces.push(Interface {
+            lang,
+            module: name.clone(),
+            functions: Vec::new(),
+            classes: vec![ClassIface {
+                name,
+                type_name: schema.name.clone(),
+                superclass: None,
+                fields,
+                statics: Vec::new(),
+                methods: Vec::new(),
+                ctor: None,
+                class_object: Value::null(),
+            }],
+        });
+    }
+    interfaces
 }
 
 // ---------------------------------------------------------------------------
@@ -465,7 +554,19 @@ fn capitalised(name: &str) -> String {
 /// signature: a scalar kind's, or, for an object, its class's descriptor
 /// itself, which is an `hl_type` at word zero and names the class to
 /// `dispatch`.
-fn arg_type(tag: TypeTag, class: u8, descs: &[&'static TypeDesc]) -> *const hl_type {
+fn arg_type(
+    tag: TypeTag,
+    class: u8,
+    descs: &[&'static TypeDesc],
+    enumeration: *const caribou_abi::EnumDesc,
+) -> *const hl_type {
+    if tag == TypeTag::BUFFER {
+        return &data::BUFFER_DESC as *const TypeDesc as *const hl_type;
+    }
+    if tag == TypeTag::ENUM {
+        return data::enum_type(unsafe { (*enumeration).name.as_str() }).expect("registered enum")
+            as *const TypeDesc as *const hl_type;
+    }
     if class != NO_CLASS {
         return descs[class as usize] as *const TypeDesc as *const hl_type;
     }
@@ -509,6 +610,30 @@ unsafe extern "C-unwind" fn dispatch(
         // An object's type is its class's descriptor; the payload crosses.
         if unsafe { heap::is_descriptor(t) } {
             let desc = t as *const TypeDesc;
+            if std::ptr::eq(desc, &data::BUFFER_DESC) || data::is_enum(unsafe { &*desc }) {
+                let value = cell::unwrap(v);
+                let p = value.as_object().filter(|p| !p.is_null()).filter(|p| {
+                    std::ptr::eq(unsafe { caribou::protocol::desc_of(p.cast()) }, desc)
+                });
+                let Some(p) = p else {
+                    return raise(
+                        lang,
+                        &format!(
+                            "argument {} of the plugin function must be a {}, not {}",
+                            i + 1,
+                            if std::ptr::eq(desc, &data::BUFFER_DESC) {
+                                "caribou.Buffer"
+                            } else {
+                                &data::enum_schema(unsafe { &*desc }).name
+                            },
+                            bridge::describe(v)
+                        ),
+                    );
+                };
+                words.push(p as u64);
+                word_kinds.push(0);
+                continue;
+            }
             let Some(payload) = payload_of(v, desc) else {
                 return raise(
                     lang,
@@ -554,7 +679,18 @@ unsafe extern "C-unwind" fn dispatch(
     if bridge::has_pending() {
         return REPLY_RAISED;
     }
-    let result = if returns_object {
+    let result = if returns_object
+        && (std::ptr::eq(
+            ret_type,
+            &data::BUFFER_DESC as *const TypeDesc as *const hl_type,
+        ) || data::is_enum(unsafe { &*ret_type.cast::<TypeDesc>() }))
+    {
+        if word == 0 {
+            Value::null()
+        } else {
+            Value::object(word as *const c_void)
+        }
+    } else if returns_object {
         wrap(
             unsafe { &*(ret_type as *const TypeDesc) },
             word as *mut c_void,

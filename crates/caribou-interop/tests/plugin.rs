@@ -81,6 +81,33 @@ import "math:Vec2" for Vec2
 System.print(Vec2.live() < 10)
 "#;
 
+const DATA: &str = r#"
+import "math:Data" for Data
+import "math:Event" for Event
+var b = Data.bytes()
+System.print(b.count)
+System.print(b[0])
+System.print(b[2])
+b[0] = 23
+var alias = Data.echo(b)
+System.print(Data.same_storage(b, alias))
+System.print(Data.sum(alias))
+var sum = 0
+for (byte in b) sum = sum + byte
+System.print(sum)
+Data.save(b)
+System.print(Data.saved()[0])
+var e = Data.event(1)
+System.print(e is Event)
+System.print(e.tag)
+System.print(e.constructor)
+System.print(e.width)
+System.print(Data.area(e))
+System.print(Data.echo_event(e) == e)
+System.print(Fiber.new { Data.sum("text") }.try())
+System.print(Fiber.new { Data.area(b) }.try())
+"#;
+
 #[test]
 fn a_plugin_is_a_language_wren_imports() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
@@ -90,7 +117,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 19);
+    assert_eq!(math.symbols().len(), 30);
     let hypot = math
         .symbols()
         .iter()
@@ -99,8 +126,8 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(hypot.param_count, 2);
     assert_eq!(hypot.params[0], TypeTag::F64);
     assert_eq!(hypot.ret, TypeTag::F64);
-    assert_eq!(ABI_VERSION, 1);
-    assert_eq!(math.classes().len(), 3);
+    assert_eq!(ABI_VERSION, 2);
+    assert_eq!(math.classes().len(), 4);
 
     let world = World::new(Config::default());
     world
@@ -170,6 +197,20 @@ fn a_plugin_is_a_language_wren_imports() {
         output,
         "5\n10\n6\n1\ntrue\ntrue\nargument 2 of the plugin function must be a math.Vec2, not a number\ntrue\n"
     );
+    vm.output_buffer = Some(String::new());
+    let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("data", DATA));
+    let output = vm.take_output();
+    assert_eq!(
+        result,
+        InterpretResult::Success,
+        "{:?} {output:?}",
+        errors.borrow()
+    );
+    assert_eq!(
+        output,
+        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\n"
+    );
+
     // The temporaries die with Wren's cycle and the core's collection
     // that ends it: their instances go, then the cells they held the
     // objects by, then the objects, through the plugin's finalizer.

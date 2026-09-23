@@ -20,6 +20,12 @@ const _: () = {
 };
 
 pub static HOST: Host = Host {
+    buffer_new,
+    buffer_of,
+    enum_new,
+    enum_of,
+    i64_new,
+    i64_of,
     text_new,
     text_of,
     keep,
@@ -98,4 +104,55 @@ unsafe extern "C" fn raise(kind: ErrorKind, ptr: *const u8, len: usize) {
 
 unsafe extern "C" fn raise_value(err: Value) {
     bridge::set_pending(err);
+}
+
+unsafe extern "C" fn buffer_new(p: *const u8, len: usize) -> caribou_abi::Buffer {
+    let bytes = if len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(p, len) }
+    };
+    unsafe { caribou_abi::Buffer::from_raw(caribou::data::buffer_new(bytes)) }
+}
+unsafe extern "C" fn buffer_of(v: Value) -> caribou_abi::Buffer {
+    unsafe {
+        caribou_abi::Buffer::from_raw(caribou::data::buffer_of(v).unwrap_or(std::ptr::null_mut()))
+    }
+}
+unsafe extern "C" fn enum_new(
+    d: *const caribou_abi::EnumDesc,
+    index: u32,
+    fields: *const Value,
+    len: usize,
+) -> *const caribou_abi::data::EnumData {
+    let Some(desc) = caribou::data::enum_type(unsafe { (*d).name.as_str() }) else {
+        return std::ptr::null();
+    };
+    let fields = if len == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(fields, len) }
+    };
+    caribou::data::enum_new(desc, index, fields).map_or(std::ptr::null(), |p| p)
+}
+unsafe extern "C" fn enum_of(
+    v: Value,
+    d: *const caribou_abi::EnumDesc,
+) -> *const caribou_abi::data::EnumData {
+    let Some(p) = caribou::data::enum_of(v) else {
+        return std::ptr::null();
+    };
+    if unsafe {
+        caribou::data::enum_schema(caribou::data::enum_descriptor(p)).name == (*d).name.as_str()
+    } {
+        p
+    } else {
+        std::ptr::null()
+    }
+}
+unsafe extern "C" fn i64_new(n: i64) -> Value {
+    caribou::error::Int64::value(n)
+}
+unsafe extern "C" fn i64_of(v: Value) -> i64 {
+    caribou::error::Int64::of(v).expect("validated enum integer")
 }

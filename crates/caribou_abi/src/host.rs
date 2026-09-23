@@ -13,6 +13,18 @@ use crate::{ErrorKind, Value};
 /// own function was called on, while that call is in progress.
 #[repr(C)]
 pub struct Host {
+    pub buffer_new: unsafe extern "C" fn(*const u8, usize) -> crate::Buffer,
+    pub buffer_of: unsafe extern "C" fn(Value) -> crate::Buffer,
+    pub enum_new: unsafe extern "C" fn(
+        *const crate::EnumDesc,
+        u32,
+        *const Value,
+        usize,
+    ) -> *const crate::data::EnumData,
+    pub enum_of:
+        unsafe extern "C" fn(Value, *const crate::EnumDesc) -> *const crate::data::EnumData,
+    pub i64_new: unsafe extern "C" fn(i64) -> Value,
+    pub i64_of: unsafe extern "C" fn(Value) -> i64,
     /// A core string of `len` bytes of UTF-8 at `ptr`, copied; unrooted,
     /// so the plugin returns or keeps it before calling the core again.
     pub text_new: unsafe extern "C" fn(*const u8, usize) -> Text,
@@ -43,7 +55,7 @@ pub fn install(host: *const Host) {
     HOST.store(host as *mut Host, Ordering::Release);
 }
 
-fn host() -> &'static Host {
+pub(crate) fn host() -> &'static Host {
     let p = HOST.load(Ordering::Acquire);
     assert!(!p.is_null(), "no core has loaded this plugin");
     unsafe { &*p }

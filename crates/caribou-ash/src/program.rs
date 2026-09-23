@@ -412,6 +412,11 @@ impl Program {
     /// program may publish before `start`, and another language reaches
     /// its classes from the moment `main` runs.
     pub fn publish(&mut self) -> Result<Vec<Arc<Interface>>> {
+        // The driver registers plugins after loading the bytecode. Their
+        // enum declarations are available now, before any program code runs.
+        crate::data::attach(
+            (0..self.bytecode.types.len()).map(|i| self.interpreter.c_type_of(i).cast()),
+        )?;
         let bytecode: Arc<DecodedBytecode> = Arc::clone(&self.bytecode);
         let published = publish_module(&bytecode, self)?;
         // One file behind every module: the watch reloads the program under

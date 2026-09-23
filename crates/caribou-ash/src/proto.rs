@@ -484,6 +484,8 @@ pub(crate) unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
         hl::HOBJ if unsafe { is_string(d) } => {
             Str::value(Str::from_utf16(unsafe { string_units(d) }))
         }
+        hl::HOBJ if crate::data::is_buffer(t) => unsafe { crate::data::buffer_from_haxe(d) },
+        hl::HENUM if crate::data::is_enum(t) => unsafe { crate::data::enum_from_haxe(d) },
         hl::HOBJ => match unsafe { import::behind_face(d) } {
             Some(obj) => obj,
             None => wrap(d),
@@ -537,6 +539,10 @@ pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut v
                 Some(ptr::null_mut())
             } else if let Some(obj) = unwrap(v) {
                 Some(obj)
+            } else if let Some(buffer) = caribou::data::buffer_of(v) {
+                return unsafe { crate::data::buffer_to_haxe(buffer) };
+            } else if let Some(enumeration) = caribou::data::enum_of(v) {
+                return unsafe { crate::data::enum_to_haxe(enumeration) };
             } else if let Some(text) = unsafe { Str::text(v) } {
                 match unsafe { alloc_string(text) } {
                     Some(s) => Some(s),
@@ -1304,7 +1310,7 @@ unsafe fn read_field(d: *mut vdynamic, offset: usize, t: *mut hl_type) -> Option
 }
 
 /// Read the value of `kind` at `at`.
-unsafe fn read_kind(at: *const u8, kind: hl_type_kind) -> Option<Value> {
+pub(crate) unsafe fn read_kind(at: *const u8, kind: hl_type_kind) -> Option<Value> {
     Some(match kind {
         hl::HUI8 => Value::int(i32::from(unsafe { *at })),
         hl::HUI16 => Value::int(i32::from(unsafe { *(at as *const u16) })),
@@ -1330,7 +1336,11 @@ unsafe fn write_field(
 }
 
 /// Write `value` as a value of `kind` at `at`.
-unsafe fn write_kind(at: *mut u8, kind: hl_type_kind, value: Value) -> Option<Result<(), String>> {
+pub(crate) unsafe fn write_kind(
+    at: *mut u8,
+    kind: hl_type_kind,
+    value: Value,
+) -> Option<Result<(), String>> {
     let int = || {
         value
             .as_int()

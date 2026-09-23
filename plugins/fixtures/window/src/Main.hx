@@ -1,3 +1,4 @@
+import window.Event;
 import window.WindowBuilder;
 import window.WindowHandle;
 
@@ -9,14 +10,17 @@ class Main {
             .open();
 
 
-        while (true) {
-            var event = window.poll();
-            Sys.println(event);
-
-            if (event == 1) {
-                break;
+        var running = true;
+        while (running) {
+            switch (window.poll()) {
+                case None:
+                    Sys.sleep(0.001);
+                case Resized(width, height):
+                    Sys.println('Resized to ${width}x${height}');
+                case Closed:
+                    running = false;
             }
         }
+        window.close();
     }
 }
-

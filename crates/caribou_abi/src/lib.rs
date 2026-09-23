@@ -1,6 +1,6 @@
 //! Layouts, constants and the plugin boundary shared by every runtime, plugin
-//! and the core. Invariants: no allocation, no symbol definitions, no
-//! dependencies. HashLink layouts keep `hl.h`'s names; sizes and offsets are
+//! and the core. No runtime dependencies or symbol definitions. Runtime
+//! allocations go through the host; explicit Rust copies use `alloc`. HashLink layouts keep `hl.h`'s names; sizes and offsets are
 //! asserted in the tests. 64-bit targets only.
 
 #![no_std]
@@ -17,7 +17,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
@@ -29,6 +29,8 @@ pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
 
 pub mod host;
 pub use host::{Kept, Text};
+pub mod data;
+pub use data::{Buffer, Enum, EnumDesc, EnumField, PluginEnum};
 
 /// Which runtime defines a type's semantics. A registry, not an enum: the
 /// core assigns ids at world start, one per adapter and one per Zyntax
@@ -659,8 +661,9 @@ impl Str {
 unsafe impl Sync for Str {}
 unsafe impl Send for Str {}
 
-/// An `hl_type_kind` narrowed to a byte. Scalars pass raw, `HBYTES` and up
-/// are pointers, `HDYN` is a boxed [`Value`]. No class names in this version.
+/// A plugin signature tag. The base tags follow `hl_type_kind`; BUFFER
+/// and ENUM are plugin-only tags resolved to core descriptors by the loader.
+/// Scalars pass raw, Text and data carriers as pointers, DYN as Value bits.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeTag(pub u8);
@@ -679,6 +682,8 @@ impl TypeTag {
     pub const FUN: TypeTag = TypeTag(hl::HFUN as u8);
     pub const OBJ: TypeTag = TypeTag(hl::HOBJ as u8);
     pub const ARRAY: TypeTag = TypeTag(hl::HARRAY as u8);
+    pub const BUFFER: TypeTag = TypeTag(24);
+    pub const ENUM: TypeTag = TypeTag(25);
     pub const ABSTRACT: TypeTag = TypeTag(hl::HABSTRACT as u8);
 
     pub const fn kind(self) -> hl::hl_type_kind {
@@ -725,6 +730,8 @@ pub struct SymbolDesc {
     pub params: [TypeTag; MAX_PARAMS],
     pub ret_class: u8,
     pub param_classes: [u8; MAX_PARAMS],
+    pub ret_enum: *const EnumDesc,
+    pub param_enums: [*const EnumDesc; MAX_PARAMS],
 }
 
 unsafe impl Sync for SymbolDesc {}
@@ -753,6 +760,8 @@ pub struct PluginInfo {
     pub symbol_count: usize,
     pub classes: *const ClassDesc,
     pub class_count: usize,
+    pub enums: *const *const EnumDesc,
+    pub enum_count: usize,
 }
 
 unsafe impl Sync for PluginInfo {}
@@ -776,6 +785,7 @@ pub trait Param {
     const TAG: TypeTag;
     /// The class's name for an object, else `None`.
     const CLASS: Option<&'static str> = None;
+    const ENUM: *const EnumDesc = core::ptr::null();
 }
 
 /// A Rust type a plugin function returns: a scalar or a `Value` by its
@@ -784,6 +794,7 @@ pub trait Param {
 pub trait Returned {
     const TAG: TypeTag;
     const CLASS: Option<&'static str> = None;
+    const ENUM: *const EnumDesc = core::ptr::null();
 }
 
 macro_rules! tagged {
@@ -810,6 +821,7 @@ tagged! {
     bool => TypeTag::BOOL,
     Value => TypeTag::DYN,
     Text => TypeTag::BYTES,
+    Buffer => TypeTag::BUFFER,
 }
 
 impl<T: PluginClass> Param for &T {
@@ -923,26 +935,34 @@ pub unsafe extern "C" fn drop_boxed<T>(p: *mut c_void) {
 #[macro_export]
 macro_rules! plugin {
     (name: $name:literal ; $($rest:tt)*) => {
-        $crate::plugin!(@munch $name [] [] $($rest)*);
+        $crate::plugin!(@munch $name [] [] [] $($rest)*);
     };
     // A free function.
-    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*]
+    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]
         fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ;
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* { "" [$method] $method ( $($ty),* ) [$($ret)?] }] [$($classes)*] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* { "" [$method] $method ( $($ty),* ) [$($ret)?] }] [$($classes)*] [$($enums)*] $($rest)*);
     };
     // A class: its type, and the associated functions that hang in it.
-    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*]
+    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]
         class $class:ident {
             $( fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ; )*
         }
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] [$($classes)* $class] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] [$($classes)* $class] [$($enums)*] $($rest)*);
+    };
+    // Enum declarations generate Rust enums; Enum<T> is their C ABI carrier.
+    (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]
+        enum $enum:ident { $( $variant:ident $( ( $( $field:ident : $ft:ty ),* $(,)? ) )? ; )* }
+        $($rest:tt)*
+    ) => {
+        $crate::plugin_enum!($name, $enum, $( $variant $( ( $( $field : $ft ),* ) )? ; )*);
+        $crate::plugin!(@munch $name [$($acc)*] [$($classes)*] [$($enums)* $enum] $($rest)*);
     };
     // Everything gathered: the checks, the tables, the entry.
-    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*] [$($declared:ident)*]) => {
+    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*] [$($declared:ident)*] [$($enums:ident)*]) => {
         $(
             impl $crate::PluginClass for $declared {
                 const NAME: &'static str = stringify!($declared);
@@ -973,6 +993,8 @@ macro_rules! plugin {
                     param_count: $crate::plugin!(@count $($ty)*) as u8,
                     ret: $crate::plugin!(@tag $($ret)?),
                     params: $crate::padded(&[ $( <$ty as $crate::Param>::TAG ),* ]),
+                    ret_enum: <$crate::plugin!(@ret_type $($ret)?) as $crate::Returned>::ENUM,
+                    param_enums: $crate::data::padded_enums(&[$(<$ty as $crate::Param>::ENUM),*]),
                     ret_class: $crate::class_index(&__CARIBOU_CLASSES, $crate::plugin!(@ret_class $($ret)?)),
                     param_classes: $crate::padded_classes(&[
                         $( $crate::class_index(&__CARIBOU_CLASSES, <$ty as $crate::Param>::CLASS) ),*
@@ -988,6 +1010,8 @@ macro_rules! plugin {
             symbol_count: __CARIBOU_SYMBOLS.len(),
             classes: __CARIBOU_CLASSES.as_ptr(),
             class_count: __CARIBOU_CLASSES.len(),
+            enums: &[$(<$enums as $crate::PluginEnum>::DESC as *const $crate::EnumDesc),*] as *const _,
+            enum_count: $crate::plugin!(@count $($enums)*),
         };
 
         #[unsafe(no_mangle)]
@@ -1003,6 +1027,8 @@ macro_rules! plugin {
     };
     (@class "") => { "" };
     (@class $class:ident) => { stringify!($class) };
+    (@ret_type) => { () };
+    (@ret_type $ret:ty) => { $ret };
     (@tag) => { <() as $crate::Returned>::TAG };
     (@tag $ret:ty) => { <$ret as $crate::Returned>::TAG };
     (@ret_class) => { None };
@@ -1191,6 +1217,8 @@ mod tests {
             params: [TypeTag::VOID; MAX_PARAMS],
             ret_class: NO_CLASS,
             param_classes: [NO_CLASS; MAX_PARAMS],
+            ret_enum: core::ptr::null(),
+            param_enums: [core::ptr::null(); MAX_PARAMS],
         }];
         static INFO: PluginInfo = PluginInfo {
             abi_version: ABI_VERSION,
@@ -1199,8 +1227,10 @@ mod tests {
             symbol_count: SYMS.len(),
             classes: core::ptr::null(),
             class_count: 0,
+            enums: core::ptr::null(),
+            enum_count: 0,
         };
-        assert_eq!(INFO.abi_version, 1);
+        assert_eq!(INFO.abi_version, ABI_VERSION);
         assert_eq!(unsafe { INFO.name.as_str() }, "gpu");
         assert_eq!(unsafe { SYMS[0].class.as_str() }, "Texture");
         assert_eq!(SYMS[0].ret.kind(), HI32);
