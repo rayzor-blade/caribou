@@ -1,11 +1,30 @@
 //! Build the native plugins and Haxe programs used by src/bin/{gpu,window}.rs.
 use std::{env, fs, path::Path, path::PathBuf, process::Command};
 
-// Fixture directory, Cargo package and library target. Keep these explicit:
-// a shared library filename is not a reliable way to infer its fixture.
-const FIXTURES: &[(&str, &str, &str)] = &[
-    ("gpu", "caribou-gpu", "caribou_gpu"),
-    ("window", "caribou-window", "caribou_window"),
+// Fixture directory and the plugins it loads. Keep these explicit: a shared
+// library filename is not a reliable way to infer its fixture, and one
+// fixture may deliberately compose several plugins.
+struct Fixture {
+    name: &'static str,
+    plugins: &'static [(&'static str, &'static str)],
+}
+
+const FIXTURES: &[Fixture] = &[
+    Fixture {
+        name: "gpu",
+        plugins: &[("caribou-gpu", "caribou_gpu")],
+    },
+    Fixture {
+        name: "window",
+        plugins: &[("caribou-window", "caribou_window")],
+    },
+    Fixture {
+        name: "window_gpu",
+        plugins: &[
+            ("caribou-gpu", "caribou_gpu"),
+            ("caribou-window", "caribou_window"),
+        ],
+    },
 ];
 
 fn run(command: &mut Command, description: &str) {
@@ -41,10 +60,17 @@ fn main() {
             }
         }
     }
-    for &(fixture, _, _) in FIXTURES {
-        watch(root.join("plugins").join(format!("cb_{fixture}")));
-        watch(fixtures.join(fixture).join("src"));
-        watch(fixtures.join(fixture).join(format!("{fixture}.hxml")));
+    for fixture in FIXTURES {
+        for &(package, _) in fixture.plugins {
+            let plugin = package.strip_prefix("caribou-").unwrap_or(package);
+            watch(root.join("plugins").join(format!("cb_{plugin}")));
+        }
+        watch(fixtures.join(fixture.name).join("src"));
+        watch(
+            fixtures
+                .join(fixture.name)
+                .join(format!("{}.hxml", fixture.name)),
+        );
     }
 
     // Cargo holds the outer target directory's lock. Build both plugins and
@@ -52,7 +78,13 @@ fn main() {
     // deadlocks and dependence on a stale/preinstalled caribou executable.
     let mut build = Command::new(env::var_os("CARGO").unwrap());
     build.args(["build", "--locked", "-p", "caribou-driver"]);
-    for &(_, package, _) in FIXTURES {
+    let mut packages = std::collections::BTreeSet::new();
+    for fixture in FIXTURES {
+        for &(package, _) in fixture.plugins {
+            packages.insert(package);
+        }
+    }
+    for package in packages {
         build.args(["-p", package]);
     }
     run(
@@ -82,24 +114,26 @@ fn main() {
         "registering Caribou in the fixture-local haxelib repository",
     );
 
-    for &(fixture, _, library) in FIXTURES {
-        let project = fixtures.join(fixture);
-        let filename = format!(
-            "{}{library}.{}",
-            env::consts::DLL_PREFIX,
-            env::consts::DLL_EXTENSION
-        );
+    for fixture in FIXTURES {
+        let project = fixtures.join(fixture.name);
         let plugins = project.join("plugins");
         fs::create_dir_all(&plugins).expect("the fixture plugin directory is created");
-        fs::copy(libraries.join(&filename), plugins.join(&filename))
-            .unwrap_or_else(|error| panic!("copying {filename} to {fixture}: {error}"));
+        for &(_, library) in fixture.plugins {
+            let filename = format!(
+                "{}{library}.{}",
+                env::consts::DLL_PREFIX,
+                env::consts::DLL_EXTENSION
+            );
+            fs::copy(libraries.join(&filename), plugins.join(&filename))
+                .unwrap_or_else(|error| panic!("copying {filename} to {}: {error}", fixture.name));
+        }
         run(
             Command::new("haxe")
                 .current_dir(&project)
                 .env("HAXELIB_PATH", &haxelib)
                 .env("PATH", &path)
-                .arg(format!("{fixture}.hxml")),
-            &format!("compiling the {fixture} Haxe fixture"),
+                .arg(format!("{}.hxml", fixture.name)),
+            &format!("compiling the {} Haxe fixture", fixture.name),
         );
     }
 }

@@ -441,6 +441,8 @@ class Bridge {
 			// The body is never run: genhl emits the native in its place.
 			var body = switch (haxe.macro.ComplexTypeTools.toString(ret)) {
 				case "Void": macro {};
+				case "Int": macro return 0;
+				case "haxe.Int64": macro return haxe.Int64.ofInt(0);
 				case "Float": macro return 0.0;
 				case "Bool": macro return false;
 				default: macro return null;
@@ -476,13 +478,13 @@ class Bridge {
 			var arity = m.params.length;
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
-			// A number, a bool or a function comes back from the native in a
+			// A scalar or a function comes back from the native in a
 			// register, and nothing comes back from a `Null` result; anything
 			// else as a boxed dynamic the wrapper casts.
 			var nativeRet = switch (ret) {
 				case TFunction(_, _): ret;
 				default: switch (haxe.macro.ComplexTypeTools.toString(ret)) {
-					case "Float", "Bool", "Void": ret;
+					case "Int", "haxe.Int64", "Float", "Bool", "Void": ret;
 					default: macro :Dynamic;
 				}
 			}

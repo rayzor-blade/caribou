@@ -93,7 +93,8 @@ pub unsafe fn parts(sig: *const hl_type) -> (Vec<*const hl_type>, *const hl_type
 pub fn type_ref(kind: hl::hl_type_kind) -> TypeRef {
     match kind {
         hl::HVOID => TypeRef::Void,
-        hl::HUI8 | hl::HUI16 | hl::HI32 | hl::HI64 => TypeRef::Int,
+        hl::HUI8 | hl::HUI16 | hl::HI32 => TypeRef::Int,
+        hl::HI64 => TypeRef::Int64,
         hl::HF32 | hl::HF64 => TypeRef::Float,
         hl::HBOOL => TypeRef::Bool,
         hl::HBYTES => TypeRef::Str,
