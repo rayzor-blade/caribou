@@ -117,7 +117,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 30);
+    assert_eq!(math.symbols().len(), 32);
     let hypot = math
         .symbols()
         .iter()

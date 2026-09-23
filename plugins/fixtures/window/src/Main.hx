@@ -1,10 +1,9 @@
 import window.Event;
 import window.WindowBuilder;
-import window.WindowHandle;
 
 class Main {
     static function main() {
-        var window: WindowHandle = new WindowBuilder()
+        var window = new WindowBuilder()
             .title("Caribou Window Test")
             .size(800, 600)
             .open();

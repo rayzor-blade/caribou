@@ -8,6 +8,13 @@ class UseData {
         if (!ok) throw what;
     }
     static function main() {
+        // Neither returned class is imported or annotated. Their methods
+        // must be reached through the types in the plugin signatures.
+        var vector = Data.vector();
+        check(vector.len() == 5, "inferred static return type");
+        var tally = vector.tally();
+        hl.Gc.major();
+        check(tally.add(2) == 7, "inferred instance return type");
         var b:Bytes = Data.bytes();
         check(b.length == 4 && b.get(0) == 0 && b.get(1) == 128 && b.get(2) == 255, "binary bytes");
         var alias:Bytes = Data.echo(b);

@@ -73,6 +73,9 @@ class Bridge {
 	/** Every module found, for a type that names a class of another. */
 	static var modules:Array<Found> = [];
 
+	/** Plugin object identities span their per-class modules. */
+	static var pluginTypes:Map<String, TypePath> = [];
+
 	public static function use():Void {
 		var found:Array<Found> = [];
 		var docs:Array<ModuleDesc> = [];
@@ -92,7 +95,23 @@ class Bridge {
 		if (found.length == 0 && plugins.length == 0) {
 			return;
 		}
-		modules = found;
+		// The adapter accesses these fields natively, even when Haxe only
+		// sees Bytes in a generated signature and would remove its fields.
+		for (field in ["length", "b"]) {
+			haxe.macro.Compiler.addGlobalMetadata("haxe.io.Bytes." + field, "@:keep", false, false, true);
+		}
+		modules = found.copy();
+		var described:Array<ModuleDesc> = plugins.length == 0 ? [] : haxe.Json.parse(describe(plugins));
+		pluginTypes = [];
+		// Resolve signatures against the whole plugin catalog, before
+		// emitting any class. A return type can name a later module and
+		// must stay typed even when the caller never imports that class.
+		for (doc in described) {
+			modules.push({path: "", namespace: doc.lang, module: doc.module, pack: [doc.lang]});
+			for (c in doc.classes) {
+				pluginTypes.set(c.type_name, {pack: [doc.lang], name: c.name});
+			}
+		}
 		for (i in 0...found.length) {
 			for (c in docs[i].classes) {
 				define(found[i], docs[i].classes, c);
@@ -102,7 +121,6 @@ class Bridge {
 		// module per class: `plugins/math.dylib` beside the program gives
 		// `math.Vec2`.
 		if (plugins.length > 0) {
-			var described:Array<ModuleDesc> = haxe.Json.parse(describe(plugins));
 			for (doc in described) {
 				if (doc.enums != null) for (e in doc.enums) {
 					var parts = e.name.split(".");
@@ -122,7 +140,6 @@ class Bridge {
 			}
 			for (doc in described) {
 				var f = {path: "", namespace: doc.lang, module: doc.module, pack: [doc.lang]};
-				modules.push(f);
 				for (c in doc.classes) {
 					define(f, doc.classes, c);
 				}
@@ -225,8 +242,9 @@ class Bridge {
 	/** A registry type as a Haxe type. An object type is the class of the
 		same module that reports it, or one the module imports by a
 		namespaced import, written `ns:module.Class`: the class emitted for
-		that Wren module, else the Haxe class the import names. Anything
-		else is `Dynamic`. */
+		that Wren module, else the Haxe class the import names.
+		Plugin object identities are resolved across all plugin modules.
+		Anything else is `Dynamic`. */
 	static function haxeType(ty:Dynamic, pack:Array<String>, classes:Array<ClassDesc>):ComplexType {
 		if (Std.isOfType(ty, String)) {
 			return switch ((ty : String)) {
@@ -251,6 +269,10 @@ class Bridge {
 				if (c.type_name == typeName) {
 					return TPath({pack: pack, name: c.name});
 				}
+			}
+			var pluginType = pluginTypes.get(typeName);
+			if (pluginType != null) {
+				return TPath(pluginType);
 			}
 			var colon = typeName.indexOf(":");
 			var dot = typeName.lastIndexOf(".");

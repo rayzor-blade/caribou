@@ -90,6 +90,13 @@ impl Vec2 {
     pub extern "C" fn live() -> i32 {
         LIVE.load(Ordering::Relaxed)
     }
+
+    pub extern "C" fn tally(this: &Vec2) -> Box<Tally> {
+        Box::new(Tally {
+            total: Self::len(this),
+            on_step: None,
+        })
+    }
 }
 
 impl Drop for Vec2 {
@@ -138,6 +145,9 @@ impl Tally {
 pub struct Data;
 thread_local! { static SAVED: std::cell::RefCell<Option<Kept>> = const { std::cell::RefCell::new(None) }; }
 impl Data {
+    pub extern "C" fn vector() -> Box<Vec2> {
+        Vec2::new(3.0, 4.0)
+    }
     pub extern "C" fn bytes() -> Buffer {
         Buffer::new(&[0, 128, 255, 65])
     }
@@ -199,6 +209,7 @@ caribou_abi::plugin! {
     }
     enum Nested { Event(event: Enum<Event>); }
     class Data {
+        fn vector() -> Box<Vec2>;
         fn bytes() -> Buffer;
         fn same_storage(Buffer, Buffer) -> bool;
         fn empty() -> Buffer;
@@ -229,6 +240,7 @@ caribou_abi::plugin! {
         fn dot(&Vec2, &Vec2) -> f64;
         fn unit(&Vec2) -> Box<Vec2>;
         fn live() -> i32;
+        fn tally(&Vec2) -> Box<Tally>;
     }
     class Tally {
         fn new() -> Box<Tally>;
