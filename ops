@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":5,"timestamp":1790191307,"nonce":"QJ8/hu48E/dPUyz47QPs6ROAR0E=","added":["area:plugins","feature"],"removed":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":2,"timestamp":1790191361,"nonce":"WpaxjuLzVuGoo0T3B/6bUN4kMpc=","title":"GPU plugin: complete portable WebGPU resource and descriptor coverage","was":"The generated `gpu` namespace covers basic compute, buffer readback, rendering"}]}
