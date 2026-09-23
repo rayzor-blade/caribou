@@ -877,6 +877,14 @@ const fn same_str(a: &str, b: &str) -> bool {
     true
 }
 
+#[doc(hidden)]
+pub const fn is_class(class: Option<&str>, expected: &str) -> bool {
+    match class {
+        Some(class) => same_str(class, expected),
+        None => false,
+    }
+}
+
 /// The index of the class named `class` in `table`, [`NO_CLASS`] for
 /// none; a class a signature names but the plugin never declared is a
 /// compile-time error.
@@ -997,7 +1005,7 @@ macro_rules! plugin {
                     class: $crate::Str::new($crate::plugin!(@class $class)),
                     method: $crate::Str::new(stringify!($method)),
                     func: $($path)* as *const ::core::ffi::c_void,
-                    flags: $crate::plugin!(@flags $($ty),*),
+                    flags: $crate::plugin!(@flags $class; $($ty),*),
                     param_count: $crate::plugin!(@count $($ty)*) as u8,
                     ret: $crate::plugin!(@tag $($ret)?),
                     params: $crate::padded(&[ $( <$ty as $crate::Param>::TAG ),* ]),
@@ -1041,11 +1049,16 @@ macro_rules! plugin {
     (@tag $ret:ty) => { <$ret as $crate::Returned>::TAG };
     (@ret_class) => { None };
     (@ret_class $ret:ty) => { <$ret as $crate::Returned>::CLASS };
-    // An instance method takes its receiver first: a function whose first
-    // parameter is an object of a class is one; anything else is static.
-    (@flags) => { $crate::sym::STATIC };
-    (@flags $first:ty $(, $ty:ty)*) => {
-        if <$first as $crate::Param>::CLASS.is_some() { 0 } else { $crate::sym::STATIC }
+    // An instance method takes its own class as its first parameter. Another
+    // class there is an ordinary parameter of a static or constructor.
+    (@flags ""; $($ty:ty),*) => { $crate::sym::STATIC };
+    (@flags $class:ident;) => { $crate::sym::STATIC };
+    (@flags $class:ident; $first:ty $(, $ty:ty)*) => {
+        if $crate::is_class(<$first as $crate::Param>::CLASS, stringify!($class)) {
+            0
+        } else {
+            $crate::sym::STATIC
+        }
     };
     (@count $($x:tt)*) => { <[()]>::len(&[ $( $crate::plugin!(@unit $x) ),* ]) };
     (@unit $x:tt) => { () };

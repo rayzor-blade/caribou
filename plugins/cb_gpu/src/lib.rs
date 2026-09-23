@@ -78,6 +78,38 @@ mod tests {
         );
         assert!(!symbol("GpuSamplerDescriptor", "addressModeU").param_enums[1].is_null());
         assert!(!symbol("GpuSamplerDescriptor", "mipmapFilter").param_enums[1].is_null());
+
+        let view = symbol("GpuTexture", "createView");
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[view.param_classes[1] as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuTextureViewDescriptor"
+        );
+        assert!(!symbol("GpuTextureViewDescriptor", "dimension").param_enums[1].is_null());
+
+        let texture = symbol("GpuDevice", "texture");
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[texture.param_classes[1] as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuTextureDescriptor"
+        );
+        let texture_descriptor = symbol("GpuTextureDescriptor", "new");
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[texture_descriptor.param_classes[0] as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuExtent3D"
+        );
+        assert!(!texture_descriptor.param_enums[1].is_null());
+        assert!(!symbol("GpuTextureDescriptor", "addViewFormats").param_enums[1].is_null());
     }
     #[test]
     fn generated_resource_methods_preserve_native_identity() {

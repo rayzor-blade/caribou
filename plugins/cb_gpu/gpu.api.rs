@@ -5,6 +5,7 @@ enum Power { None = -1, LowPower = 0, HighPerformance = 1 }
 enum Backend { Noop = 0, Vulkan = 1, Metal = 2, Dx12 = 3, Gl = 4, BrowserWebGpu = 5 }
 enum Limit { MaxTextureDimension1D, MaxTextureDimension2D, MaxTextureDimension3D, MaxBindGroups, MaxBufferSize, MaxComputeWorkgroupSizeX, MaxComputeInvocationsPerWorkgroup }
 // These formats are the subset supported by the imported backend.
+#[idl("GPUTextureFormat")]
 enum TextureFormat { Unknown = -1, Rgba8Unorm = 0, Bgra8Unorm = 1, Rgba8UnormSrgb = 2, Depth32Float = 3, Bgra8UnormSrgb = 4, Depth24PlusStencil8 = 5 }
 enum VertexFormat { Float32x2, Float32x3, Float32x4, Uint32 }
 #[idl("GPUBlendFactor")]
@@ -31,6 +32,12 @@ enum MipmapFilterMode {}
 enum AddressMode {}
 #[idl("GPUIndexFormat")]
 enum IndexFormat {}
+#[idl("GPUTextureViewDimension")]
+enum TextureViewDimension {}
+#[idl("GPUTextureAspect")]
+enum TextureAspect {}
+#[idl("GPUTextureDimension")]
+enum TextureDimension {}
 #[idl("GPUBufferUsage")]
 mod BufferUsage {}
 #[idl("GPUTextureUsage")]
@@ -44,6 +51,16 @@ mod ColorWrite {}
 struct GpuBufferDescriptor {}
 #[idl("GPUSamplerDescriptor")]
 struct GpuSamplerDescriptor {}
+#[idl("GPUTextureViewDescriptor")]
+struct GpuTextureViewDescriptor {}
+#[idl("GPUExtent3DDict")]
+struct GpuExtent3D {}
+#[idl("GPUTextureDescriptor")]
+struct GpuTextureDescriptor {
+    // WebIDL also permits a three-element sequence. A typed record keeps the
+    // cross-language API explicit and avoids a dynamic union.
+    size: GpuExtent3D,
+}
 
 trait GpuInstance {
     #[native(is_valid)]
@@ -103,7 +120,7 @@ trait GpuDevice {
     #[native(queue_work_done)]
     fn queueWorkDone(this: &GpuDevice, queue: &GpuQueue) -> Box<GpuRequest>;
     #[native(texture_create)]
-    fn texture(this: &GpuDevice, width: i32, height: i32, format: Enum<TextureFormat>, usage: i32) -> Box<GpuTexture>;
+    fn texture(this: &GpuDevice, descriptor: &GpuTextureDescriptor) -> Box<GpuTexture>;
     #[native(pipeline_begin)]
     fn pipeline(this: &GpuDevice) -> Box<GpuPipelineBuilder>;
     #[native(sampler_create)]
@@ -224,7 +241,7 @@ trait GpuTexture {
     #[native(is_valid)]
     fn valid(this: &GpuTexture) -> bool;
     #[native(texture_view)]
-    fn createView(this: &GpuTexture) -> Box<GpuTextureView>;
+    fn createView(this: &GpuTexture, descriptor: &GpuTextureViewDescriptor) -> Box<GpuTextureView>;
     #[native(texture_destroy)]
     fn destroy(this: &GpuTexture);
 }

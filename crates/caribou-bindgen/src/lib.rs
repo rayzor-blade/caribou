@@ -266,6 +266,7 @@ fn dictionary_fields(
     name: &str,
     aliases: &HashMap<String, Vec<String>>,
     named: &HashMap<String, Type>,
+    overrides: &HashMap<String, Type>,
 ) -> Result<Vec<(syn::Ident, Type)>, String> {
     let mut fields = Vec::new();
     let prefix = declaration_prefix(tokens, "dictionary", name)?;
@@ -273,7 +274,9 @@ fn dictionary_fields(
         let parent = prefix
             .get(1)
             .ok_or_else(|| format!("dictionary {name} has no parent name"))?;
-        fields.extend(dictionary_fields(tokens, parent, aliases, named)?);
+        fields.extend(dictionary_fields(
+            tokens, parent, aliases, named, overrides,
+        )?);
     } else if !prefix.is_empty() {
         return Err(format!("unsupported dictionary declaration for {name}"));
     }
@@ -288,7 +291,11 @@ fn dictionary_fields(
             .split_last()
             .ok_or_else(|| format!("empty member in dictionary {name}"))?;
         let field = ident(field)?;
-        let mut ty = idl_type(ty, aliases, named, &mut HashSet::new())?;
+        let mut ty = if let Some(override_type) = overrides.get(&field.to_string()) {
+            override_type.clone()
+        } else {
+            idl_type(ty, aliases, named, &mut HashSet::new())?
+        };
         if !required && generic(&ty, "Vec").is_none() {
             ty = syn::parse_quote!(Option<#ty>);
         }
@@ -470,11 +477,9 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             Item::Enum(e) => {
                 let name = &e.ident;
                 let schema = format!("{namespace}.{name}");
+                let source = idl_name(&e.attrs)?;
                 let variants: Vec<(syn::Ident, syn::Expr)> =
-                    if let Some(source) = idl_name(&e.attrs)? {
-                        if !e.variants.is_empty() {
-                            return Err("IDL enums must have empty bodies".into());
-                        }
+                    if let Some(source) = source.filter(|_| e.variants.is_empty()) {
                         enum_values(&idl, &source)?
                             .into_iter()
                             .enumerate()
@@ -551,24 +556,35 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     return Err("records need named fields".into());
                 };
                 let imported = idl_name(&s.attrs)?;
-                if imported.is_some() && !fields.named.is_empty() {
-                    return Err(format!("IDL record {class} must have an empty body"));
-                }
+                let explicit_fields: Vec<(syn::Ident, Type)> = fields
+                    .named
+                    .iter()
+                    .map(|field| {
+                        if !field.attrs.is_empty() {
+                            return Err(format!(
+                                "record field attributes are not supported on {class}"
+                            ));
+                        }
+                        Ok((field.ident.clone().expect("named field"), field.ty.clone()))
+                    })
+                    .collect::<Result<_, String>>()?;
                 let declared_fields: Vec<(syn::Ident, Type)> = if let Some(source) = imported {
-                    dictionary_fields(&idl, &source, &aliases, &idl_types)?
-                } else {
-                    fields
-                        .named
+                    let overrides: HashMap<_, _> = explicit_fields
                         .iter()
-                        .map(|field| {
-                            if !field.attrs.is_empty() {
-                                return Err(format!(
-                                    "record field attributes are not supported on {class}"
-                                ));
-                            }
-                            Ok((field.ident.clone().expect("named field"), field.ty.clone()))
-                        })
-                        .collect::<Result<_, String>>()?
+                        .map(|(name, ty)| (name.to_string(), ty.clone()))
+                        .collect();
+                    let imported =
+                        dictionary_fields(&idl, &source, &aliases, &idl_types, &overrides)?;
+                    for name in overrides.keys() {
+                        if !imported.iter().any(|(field, _)| field == name.as_str()) {
+                            return Err(format!(
+                                "{class}.{name} does not override a member of {source}"
+                            ));
+                        }
+                    }
+                    imported
+                } else {
+                    explicit_fields
                 };
                 let mut stored_fields = TokenStream::new();
                 let mut required_params = Vec::new();
@@ -864,14 +880,18 @@ mod tests {
             "gpu",
             r#"
               #[idl("GPUFormat")] enum Format {}
-              #[idl("GPUDescriptor")] struct Descriptor {}
+              #[idl("GPUExtent")] struct Extent {}
+              #[idl("GPUDescriptor")] struct Descriptor { extent: Extent }
             "#,
             r#"
               enum GPUFormat { "rgba", "depth" };
               dictionary GPUBase { DOMString label = ""; };
               typedef [EnforceRange] unsigned long long GPUSize;
+              dictionary GPUExtent { required unsigned long width; };
+              typedef (sequence<unsigned long> or GPUExtent) GPUExtentUnion;
               dictionary GPUDescriptor : GPUBase {
                 required GPUSize size;
+                required GPUExtentUnion extent;
                 boolean enabled = false;
                 sequence<GPUFormat> formats = [];
               };
@@ -883,9 +903,10 @@ mod tests {
             generated.contains("pub (crate) label : Option < caribou_abi :: Rooted < Text > >")
         );
         assert!(generated.contains("pub (crate) size : i64"));
+        assert!(generated.contains("pub (crate) extent : Extent"));
         assert!(generated.contains("pub (crate) enabled : Option < bool >"));
         assert!(generated.contains("pub (crate) formats : Vec < i32 >"));
-        assert!(generated.contains("fn new (i64) -> Box < Descriptor >"));
+        assert!(generated.contains("fn new (i64 , & Extent) -> Box < Descriptor >"));
         assert!(generated.contains("fn addFormats (& mut Descriptor , Enum < Format >)"));
     }
     #[test]

@@ -12,7 +12,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::handles::{PendingRequests, Slab, kind_of};
 use crate::types::Kind;
-use crate::{GpuBufferDescriptor, GpuSamplerDescriptor};
+use crate::{
+    GpuBufferDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor, GpuTextureViewDescriptor,
+};
 use caribou_abi::{Buffer, ErrorKind, Text, host};
 
 /// A device and the queue that came back with it.
@@ -514,28 +516,88 @@ fn vertex_format(which: i32) -> wgpu::VertexFormat {
     }
 }
 
-pub unsafe fn texture_create(device: i32, width: i32, height: i32, format: i32, usage: i32) -> i32 {
+fn texture_dimension(value: i32) -> wgpu::TextureDimension {
+    match value {
+        0 => wgpu::TextureDimension::D1,
+        2 => wgpu::TextureDimension::D3,
+        _ => wgpu::TextureDimension::D2,
+    }
+}
+
+pub unsafe fn texture_create(device: i32, descriptor: &GpuTextureDescriptor) -> i32 {
     let entry = find!(DEVICES, device, 0);
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
+    assert!(
+        descriptor.textureBindingViewDimension.is_none(),
+        "texture binding view dimensions are not supported by this wgpu version"
+    );
+    let view_formats: Vec<_> = descriptor
+        .viewFormats
+        .iter()
+        .copied()
+        .map(texture_format)
+        .collect();
     let texture = entry.device.create_texture(&wgpu::TextureDescriptor {
-        label: None,
+        label: label.as_ref().map(Text::as_str),
         size: wgpu::Extent3d {
-            width: width.max(1) as u32,
-            height: height.max(1) as u32,
-            depth_or_array_layers: 1,
+            width: descriptor.size.width.max(1) as u32,
+            height: descriptor.size.height.unwrap_or(1).max(1) as u32,
+            depth_or_array_layers: descriptor.size.depthOrArrayLayers.unwrap_or(1).max(1) as u32,
         },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: texture_format(format),
-        usage: wgpu::TextureUsages::from_bits_truncate(usage as u32),
-        view_formats: &[],
+        mip_level_count: descriptor.mipLevelCount.unwrap_or(1).max(1) as u32,
+        sample_count: descriptor.sampleCount.unwrap_or(1).max(1) as u32,
+        dimension: texture_dimension(descriptor.dimension.unwrap_or(1)),
+        format: texture_format(descriptor.format),
+        usage: wgpu::TextureUsages::from_bits_truncate(descriptor.usage as u32),
+        view_formats: &view_formats,
     });
     TEXTURES.lock().unwrap().put(texture)
 }
 
-pub unsafe fn texture_view(texture: i32) -> i32 {
+fn texture_view_dimension(value: i32) -> wgpu::TextureViewDimension {
+    match value {
+        0 => wgpu::TextureViewDimension::D1,
+        1 => wgpu::TextureViewDimension::D2,
+        2 => wgpu::TextureViewDimension::D2Array,
+        3 => wgpu::TextureViewDimension::Cube,
+        4 => wgpu::TextureViewDimension::CubeArray,
+        5 => wgpu::TextureViewDimension::D3,
+        _ => panic!("unsupported texture view dimension"),
+    }
+}
+
+fn texture_aspect(value: i32) -> wgpu::TextureAspect {
+    match value {
+        1 => wgpu::TextureAspect::StencilOnly,
+        2 => wgpu::TextureAspect::DepthOnly,
+        _ => wgpu::TextureAspect::All,
+    }
+}
+
+pub unsafe fn texture_view(texture: i32, descriptor: &GpuTextureViewDescriptor) -> i32 {
     let texture = find!(TEXTURES, texture, 0);
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
+    if let Some(swizzle) = descriptor.swizzle.as_ref().map(caribou_abi::Rooted::get) {
+        assert_eq!(
+            swizzle.as_str(),
+            "rgba",
+            "texture component swizzle is not supported by this wgpu version"
+        );
+    }
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        label: label.as_ref().map(Text::as_str),
+        format: descriptor.format.map(texture_format),
+        dimension: descriptor.dimension.map(texture_view_dimension),
+        usage: descriptor
+            .usage
+            .filter(|usage| *usage != 0)
+            .map(|usage| wgpu::TextureUsages::from_bits_truncate(usage as u32)),
+        aspect: texture_aspect(descriptor.aspect.unwrap_or(0)),
+        base_mip_level: descriptor.baseMipLevel.unwrap_or(0).max(0) as u32,
+        mip_level_count: descriptor.mipLevelCount.map(|count| count.max(0) as u32),
+        base_array_layer: descriptor.baseArrayLayer.unwrap_or(0).max(0) as u32,
+        array_layer_count: descriptor.arrayLayerCount.map(|count| count.max(0) as u32),
+    });
     VIEWS.lock().unwrap().put(view)
 }
 

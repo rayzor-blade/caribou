@@ -182,8 +182,8 @@ The largest missing groups are:
 - feature enumeration and required feature/limit negotiation;
 - explicit bind-group and pipeline layouts, dynamic offsets and binding
   ranges;
-- complete texture/view descriptors, texture dimensions, mip levels, array
-  layers, multisampling and storage textures;
+- texture component-swizzle and binding-view extensions absent from wgpu 30,
+  plus the three-element sequence spelling of texture extents;
 - the complete format catalogs (the IDL has 105 texture formats and 42 vertex
   formats; the plugin currently exposes six and four respectively);
 - programmable constants, multiple shaders/stages, render pass load/store
