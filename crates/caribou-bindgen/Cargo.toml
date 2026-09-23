@@ -1,0 +1,11 @@
+[package]
+name = "caribou-bindgen"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Build-time generation of Caribou plugin bindings from typed declarations and WebIDL enums"
+
+[dependencies]
+syn = { version = "2", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

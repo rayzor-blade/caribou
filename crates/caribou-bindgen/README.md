@@ -1,0 +1,23 @@
+# caribou-bindgen
+
+Build-time generation of Caribou plugin wrappers and exports. See
+[the GPU plugin](../../plugins/cb_gpu/README.md) for a working consumer.
+
+`generate(namespace, declaration, webidl)` returns Rust source to include
+from `OUT_DIR`. The namespace is a parameter, independent of the backend's
+crate name. Resource traits contain signatures annotated with
+`#[native(function)]`; enum and constant declarations can import a named
+WebIDL declaration using `#[idl("Name")]`.
+
+Resource methods use explicit `this: &Resource` parameters. Supported carriers
+are Caribou `Text`, `Buffer`, `Enum<T>`, `Box<Resource>` results and borrowed
+resource parameters, plus numeric/boolean scalars. Backends receive integer
+resource handles and declared native enum codes. Generated objects use the
+normal `plugin!` class metadata and finalizers; the backend defines explicit
+native resource lifetime operations.
+
+The WebIDL reader extracts enum strings and numeric constant namespaces. It
+is deliberately not a general WebIDL-to-Rust interface translator: an IDL
+interface cannot specify how a Rust backend owns GPU resources or implements
+asynchronous operations. Those choices belong in the resource declaration
+and backend.
