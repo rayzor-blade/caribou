@@ -18,7 +18,7 @@ use zyntax_compiler::pool_alloc::zyntax_alloc;
 
 /// A core string as a Zyntax string, `[i32 len][bytes]`, from Zyntax's
 /// pool: the callee may keep it or release it as any string of its own.
-/// Not released here; under the pool with no collector it stays.
+/// Allocation and reclamation remain under Zyntax's pool and collector.
 unsafe fn zyntax_string(text: &str) -> *mut c_void {
     let p = unsafe { zyntax_alloc(4 + text.len()) };
     unsafe {

@@ -21,9 +21,9 @@
 //! directory.
 //!
 //! One embed runtime per language, on the thread that registered it.
-//! Memory is Zyntax's own pool with no collector: the drop analysis
-//! releases what it proves dead, the rest stays. The core-heap strategy
-//! is the issue's next item.
+//! Memory belongs to Zyntax's pool and its collector, separate from the
+//! core heap. The adapter does not yet supply the shared ownership and
+//! tracing needed for object, buffer, or enum values to cross.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
