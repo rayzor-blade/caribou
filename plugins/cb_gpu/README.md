@@ -73,22 +73,23 @@ Argument lowering is explicit:
 WebIDL-style dictionaries are declared as Rust structs in `gpu.api.rs`:
 
 ```rust
-struct GpuBufferDescriptor {
-    size: i64,
-    usage: i32,
-    mappedAtCreation: Option<bool>,
-}
+#[idl("GPUBufferDescriptor")]
+struct GpuBufferDescriptor {}
 ```
 
-Bindgen emits a plugin-owned Caribou class. Plain fields are required
-constructor arguments, `Option<T>` fields start unset and become setters,
-and `Vec<T>` fields become `addField(T)` methods. A resource method borrows
-the generated Rust record directly, so the descriptor is not serialized or
-lowered through a dynamic map. Scalars remain inline, enums are converted to
-their native codes, resource fields retain their typed handles, and nested
-records copy only descriptor metadata. Payload bytes continue to use
-Caribou `Buffer`; buffer fields are rejected until their heap-rooting policy
-is explicit.
+Bindgen imports dictionary inheritance, required members, defaults, typedefs
+and sequences, then emits a plugin-owned Caribou class. Required scalar fields
+become constructor arguments, fields with defaults become setters, and
+sequences become `addField(T)` methods. The declaration can also spell out
+the same shape as Rust fields when it needs a deliberate projection instead
+of the complete IDL dictionary.
+
+A resource method borrows the generated Rust record directly, so the
+descriptor is not serialized or lowered through a dynamic map. Scalars
+remain inline, enums are converted to their native codes, resource fields
+retain their typed handles, and nested records copy only descriptor metadata.
+Retained `Text` and `Buffer` fields hold Caribou GC roots: text keeps its host
+string and buffers keep sharing their original backing bytes without a copy.
 
 Return lowering wraps native handles in the declared resource class and
 native enum codes in actual Caribou enums. It does not expose enum ordinals
@@ -115,9 +116,9 @@ Constants become static methods such as `gpu.BufferUsage.STORAGE()` so they
 are available through the same plugin metadata in every frontend.
 
 The generator supports fieldless enums, integer constant namespaces,
-dictionary records and explicit resource method declarations. Record layouts
-are declared explicitly for now; it does **not** yet infer them from WebIDL,
-nor infer wgpu operations, overloads or Promise scheduling from interfaces.
+dictionary records and explicit resource method declarations. It does **not**
+yet map every WebIDL union, record, nullable collection or callback type, nor
+infer wgpu operations, overloads or Promise scheduling from interfaces.
 As in hlwgpu, the native implementation and its API projections remain
 explicit. Texture and vertex formats currently expose the backend's declared
 subset in `gpu.api.rs`; this is not the complete browser WebGPU API.
@@ -181,8 +182,8 @@ The largest missing groups are:
 - feature enumeration and required feature/limit negotiation;
 - explicit bind-group and pipeline layouts, dynamic offsets and binding
   ranges;
-- complete texture/view/sampler descriptors, texture dimensions, mip levels,
-  array layers, multisampling and storage textures;
+- complete texture/view descriptors, texture dimensions, mip levels, array
+  layers, multisampling and storage textures;
 - the complete format catalogs (the IDL has 105 texture formats and 42 vertex
   formats; the plugin currently exposes six and four respectively);
 - programmable constants, multiple shaders/stages, render pass load/store

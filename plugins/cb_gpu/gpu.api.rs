@@ -25,6 +25,8 @@ enum VertexStepMode {}
 enum StencilOperation {}
 #[idl("GPUFilterMode")]
 enum FilterMode {}
+#[idl("GPUMipmapFilterMode")]
+enum MipmapFilterMode {}
 #[idl("GPUAddressMode")]
 enum AddressMode {}
 #[idl("GPUIndexFormat")]
@@ -36,14 +38,12 @@ mod TextureUsage {}
 #[idl("GPUColorWrite")]
 mod ColorWrite {}
 
-// Dictionary-like values are plugin-owned Caribou objects. Required fields
-// are constructor arguments; Option fields use their WebGPU default until a
-// generated setter is called.
-struct GpuBufferDescriptor {
-    size: i64,
-    usage: i32,
-    mappedAtCreation: Option<bool>,
-}
+// Dictionary-like values are plugin-owned Caribou objects. Bindgen imports
+// fields, required markers, typedefs and inherited dictionary members.
+#[idl("GPUBufferDescriptor")]
+struct GpuBufferDescriptor {}
+#[idl("GPUSamplerDescriptor")]
+struct GpuSamplerDescriptor {}
 
 trait GpuInstance {
     #[native(is_valid)]
@@ -107,7 +107,7 @@ trait GpuDevice {
     #[native(pipeline_begin)]
     fn pipeline(this: &GpuDevice) -> Box<GpuPipelineBuilder>;
     #[native(sampler_create)]
-    fn sampler(this: &GpuDevice, filter: Enum<FilterMode>, address: Enum<AddressMode>) -> Box<GpuSampler>;
+    fn sampler(this: &GpuDevice, descriptor: &GpuSamplerDescriptor) -> Box<GpuSampler>;
     #[native(surface_configure)]
     fn configureSurface(this: &GpuDevice, surface: &GpuSurface, width: i32, height: i32, format: Enum<TextureFormat>);
 }

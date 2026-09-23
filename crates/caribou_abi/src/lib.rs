@@ -28,7 +28,7 @@ pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
 pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
 
 pub mod host;
-pub use host::{Kept, Text};
+pub use host::{Kept, Rootable, Rooted, Text};
 pub mod data;
 pub use caribou_abi_derive::PluginEnum;
 pub use data::{Buffer, Enum, EnumDesc, EnumField, PluginEnum};

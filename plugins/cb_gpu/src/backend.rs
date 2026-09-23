@@ -10,9 +10,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use crate::GpuBufferDescriptor;
 use crate::handles::{PendingRequests, Slab, kind_of};
 use crate::types::Kind;
+use crate::{GpuBufferDescriptor, GpuSamplerDescriptor};
 use caribou_abi::{Buffer, ErrorKind, Text, host};
 
 /// A device and the queue that came back with it.
@@ -258,8 +258,9 @@ pub unsafe fn device_destroy(device: i32) {
 
 pub unsafe fn buffer_create(device: i32, descriptor: &GpuBufferDescriptor) -> i32 {
     let entry = find!(DEVICES, device, 0);
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
     let buffer = entry.device.create_buffer(&wgpu::BufferDescriptor {
-        label: None,
+        label: label.as_ref().map(Text::as_str),
         size: descriptor.size.max(0) as u64,
         usage: wgpu::BufferUsages::from_bits_truncate(descriptor.usage as u32),
         mapped_at_creation: descriptor.mappedAtCreation.unwrap_or(false),
@@ -831,25 +832,49 @@ pub unsafe fn encoder_copy_texture_to_buffer(
 
 // -- samplers ---------------------------------------------------------------
 
-pub unsafe fn sampler_create(device: i32, filter: i32, address: i32) -> i32 {
-    let entry = find!(DEVICES, device, 0);
-    let filter = if filter == 1 {
+fn sampler_filter(value: i32) -> wgpu::FilterMode {
+    if value == 1 {
         wgpu::FilterMode::Linear
     } else {
         wgpu::FilterMode::Nearest
-    };
-    let address = match address {
+    }
+}
+
+fn sampler_mipmap_filter(value: i32) -> wgpu::MipmapFilterMode {
+    if value == 1 {
+        wgpu::MipmapFilterMode::Linear
+    } else {
+        wgpu::MipmapFilterMode::Nearest
+    }
+}
+
+fn sampler_address(value: i32) -> wgpu::AddressMode {
+    match value {
         1 => wgpu::AddressMode::Repeat,
         2 => wgpu::AddressMode::MirrorRepeat,
         _ => wgpu::AddressMode::ClampToEdge,
-    };
+    }
+}
+
+pub unsafe fn sampler_create(device: i32, descriptor: &GpuSamplerDescriptor) -> i32 {
+    let entry = find!(DEVICES, device, 0);
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
     let sampler = entry.device.create_sampler(&wgpu::SamplerDescriptor {
-        address_mode_u: address,
-        address_mode_v: address,
-        address_mode_w: address,
-        mag_filter: filter,
-        min_filter: filter,
-        ..Default::default()
+        label: label.as_ref().map(Text::as_str),
+        address_mode_u: sampler_address(descriptor.addressModeU.unwrap_or(0)),
+        address_mode_v: sampler_address(descriptor.addressModeV.unwrap_or(0)),
+        address_mode_w: sampler_address(descriptor.addressModeW.unwrap_or(0)),
+        mag_filter: sampler_filter(descriptor.magFilter.unwrap_or(0)),
+        min_filter: sampler_filter(descriptor.minFilter.unwrap_or(0)),
+        mipmap_filter: sampler_mipmap_filter(descriptor.mipmapFilter.unwrap_or(0)),
+        lod_min_clamp: descriptor.lodMinClamp.unwrap_or(0.0),
+        lod_max_clamp: descriptor.lodMaxClamp.unwrap_or(32.0),
+        compare: descriptor.compare.map(compare_function),
+        anisotropy_clamp: descriptor
+            .maxAnisotropy
+            .unwrap_or(1)
+            .clamp(1, u16::MAX as i32) as u16,
+        border_color: None,
     });
     SAMPLERS.lock().unwrap().put(sampler)
 }

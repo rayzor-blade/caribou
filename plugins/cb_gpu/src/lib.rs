@@ -66,6 +66,18 @@ mod tests {
         assert_eq!(descriptor.mappedAtCreation, None);
         GpuBufferDescriptor::mappedAtCreation(&mut descriptor, true);
         assert_eq!(descriptor.mappedAtCreation, Some(true));
+
+        let sampler = symbol("GpuDevice", "sampler");
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[sampler.param_classes[1] as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuSamplerDescriptor"
+        );
+        assert!(!symbol("GpuSamplerDescriptor", "addressModeU").param_enums[1].is_null());
+        assert!(!symbol("GpuSamplerDescriptor", "mipmapFilter").param_enums[1].is_null());
     }
     #[test]
     fn generated_resource_methods_preserve_native_identity() {

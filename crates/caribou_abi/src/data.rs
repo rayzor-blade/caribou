@@ -81,6 +81,16 @@ impl Buffer {
     }
 }
 
+impl crate::host::Rootable for Buffer {
+    fn value(self) -> Value {
+        Buffer::value(self)
+    }
+
+    fn of(value: Value) -> Option<Self> {
+        Buffer::of(value)
+    }
+}
+
 #[repr(C)]
 pub struct EnumFieldDesc {
     pub name: Str,

@@ -6,7 +6,7 @@
 //! language-specific heap layout.
 use proc_macro2::TokenStream;
 use quote::quote;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use syn::{FnArg, GenericArgument, Item, PathArguments, ReturnType, TraitItem, Type};
 
 fn error(message: impl std::fmt::Display) -> String {
@@ -104,9 +104,9 @@ fn tokens(text: &str) -> Result<Vec<String>, String> {
 }
 fn body<'a>(tokens: &'a [String], kind: &str, name: &str) -> Result<&'a [String], String> {
     let matches: Vec<_> = tokens
-        .windows(3)
+        .windows(2)
         .enumerate()
-        .filter(|(_, t)| t[0] == kind && t[1] == name && t[2] == "{")
+        .filter(|(_, t)| t[0] == kind && t[1] == name)
         .collect();
     if matches.len() != 1 {
         return Err(format!(
@@ -114,12 +114,187 @@ fn body<'a>(tokens: &'a [String], kind: &str, name: &str) -> Result<&'a [String]
             matches.len()
         ));
     }
-    let start = matches[0].0 + 3;
+    let declaration = matches[0].0;
+    let open = tokens[declaration + 2..]
+        .iter()
+        .position(|s| s == "{")
+        .map(|i| declaration + 2 + i)
+        .ok_or_else(|| format!("{kind} {name} has no body"))?;
+    let mut depth = 0usize;
+    for (offset, token) in tokens[open..].iter().enumerate() {
+        match token.as_str() {
+            "{" => depth += 1,
+            "}" => {
+                depth -= 1;
+                if depth == 0 {
+                    return Ok(&tokens[open + 1..open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    Err(format!("unclosed {name}"))
+}
+
+fn declaration_prefix<'a>(
+    tokens: &'a [String],
+    kind: &str,
+    name: &str,
+) -> Result<&'a [String], String> {
+    let matches: Vec<_> = tokens
+        .windows(2)
+        .enumerate()
+        .filter(|(_, t)| t[0] == kind && t[1] == name)
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "expected one WebIDL {kind} {name}, found {}",
+            matches.len()
+        ));
+    }
+    let start = matches[0].0 + 2;
     let end = tokens[start..]
         .iter()
-        .position(|s| s == "}")
-        .ok_or_else(|| format!("unclosed {name}"))?;
+        .position(|s| s == "{")
+        .ok_or_else(|| format!("{kind} {name} has no body"))?;
     Ok(&tokens[start..start + end])
+}
+
+fn statements(tokens: &[String]) -> Vec<&[String]> {
+    let mut result = Vec::new();
+    let mut start = 0;
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    let mut brace = 0usize;
+    let mut bracket = 0usize;
+    for (i, token) in tokens.iter().enumerate() {
+        match token.as_str() {
+            "<" => angle += 1,
+            ">" => angle = angle.saturating_sub(1),
+            "(" => paren += 1,
+            ")" => paren = paren.saturating_sub(1),
+            "{" => brace += 1,
+            "}" => brace = brace.saturating_sub(1),
+            "[" => bracket += 1,
+            "]" => bracket = bracket.saturating_sub(1),
+            ";" if angle == 0 && paren == 0 && brace == 0 && bracket == 0 => {
+                if start < i {
+                    result.push(&tokens[start..i]);
+                }
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    result
+}
+
+fn typedefs(tokens: &[String]) -> HashMap<String, Vec<String>> {
+    statements(tokens)
+        .into_iter()
+        .filter_map(|statement| {
+            let start = statement.iter().position(|token| token == "typedef")? + 1;
+            let alias = statement.last()?.clone();
+            Some((alias, statement[start..statement.len() - 1].to_vec()))
+        })
+        .collect()
+}
+
+fn strip_attributes(mut ty: &[String]) -> &[String] {
+    while ty.first().is_some_and(|token| token == "[") {
+        let mut depth = 0usize;
+        let Some(end) = ty.iter().position(|token| {
+            if token == "[" {
+                depth += 1;
+            } else if token == "]" {
+                depth -= 1;
+            }
+            depth == 0
+        }) else {
+            break;
+        };
+        ty = &ty[end + 1..];
+    }
+    ty
+}
+
+fn idl_type(
+    tokens: &[String],
+    aliases: &HashMap<String, Vec<String>>,
+    named: &HashMap<String, Type>,
+    resolving: &mut HashSet<String>,
+) -> Result<Type, String> {
+    let tokens = strip_attributes(tokens);
+    if tokens.len() == 4 && tokens[0] == "sequence" && tokens[1] == "<" && tokens[3] == ">" {
+        let inner = idl_type(&tokens[2..3], aliases, named, resolving)?;
+        return Ok(syn::parse_quote!(Vec<#inner>));
+    }
+    let spelling = tokens.join(" ");
+    let primitive = match spelling.as_str() {
+        "boolean" => Some(syn::parse_quote!(bool)),
+        "byte" | "octet" | "short" | "unsigned short" | "long" | "unsigned long" => {
+            Some(syn::parse_quote!(i32))
+        }
+        "long long" | "unsigned long long" => Some(syn::parse_quote!(i64)),
+        "float" => Some(syn::parse_quote!(f32)),
+        "double" => Some(syn::parse_quote!(f64)),
+        "DOMString" | "USVString" | "ByteString" => Some(syn::parse_quote!(Text)),
+        _ => None,
+    };
+    if let Some(primitive) = primitive {
+        return Ok(primitive);
+    }
+    if tokens.len() == 1 {
+        let name = &tokens[0];
+        if let Some(target) = named.get(name) {
+            return Ok(target.clone());
+        }
+        if let Some(alias) = aliases.get(name) {
+            if !resolving.insert(name.clone()) {
+                return Err(format!("recursive WebIDL typedef {name}"));
+            }
+            let result = idl_type(alias, aliases, named, resolving);
+            resolving.remove(name);
+            return result;
+        }
+    }
+    Err(format!("unsupported WebIDL type {spelling}"))
+}
+
+fn dictionary_fields(
+    tokens: &[String],
+    name: &str,
+    aliases: &HashMap<String, Vec<String>>,
+    named: &HashMap<String, Type>,
+) -> Result<Vec<(syn::Ident, Type)>, String> {
+    let mut fields = Vec::new();
+    let prefix = declaration_prefix(tokens, "dictionary", name)?;
+    if prefix.first().is_some_and(|token| token == ":") {
+        let parent = prefix
+            .get(1)
+            .ok_or_else(|| format!("dictionary {name} has no parent name"))?;
+        fields.extend(dictionary_fields(tokens, parent, aliases, named)?);
+    } else if !prefix.is_empty() {
+        return Err(format!("unsupported dictionary declaration for {name}"));
+    }
+    for statement in statements(body(tokens, "dictionary", name)?) {
+        let required = statement.first().is_some_and(|token| token == "required");
+        let statement = if required { &statement[1..] } else { statement };
+        let before_default = statement
+            .iter()
+            .position(|token| token == "=")
+            .map_or(statement, |at| &statement[..at]);
+        let (field, ty) = before_default
+            .split_last()
+            .ok_or_else(|| format!("empty member in dictionary {name}"))?;
+        let field = ident(field)?;
+        let mut ty = idl_type(ty, aliases, named, &mut HashSet::new())?;
+        if !required && generic(&ty, "Vec").is_none() {
+            ty = syn::parse_quote!(Option<#ty>);
+        }
+        fields.push((field, ty));
+    }
+    Ok(fields)
 }
 fn enum_values(tokens: &[String], name: &str) -> Result<Vec<String>, String> {
     let body = body(tokens, "enum", name)?;
@@ -181,11 +356,19 @@ fn stored_value(
         ));
     }
     if scalar(ty) {
-        if type_name(ty).as_deref() == Some("Buffer") {
-            return Err("Buffer fields need an explicit ownership policy".into());
-        }
         if type_name(ty).as_deref() == Some("Text") {
-            return Ok((quote!(String), quote!(Text), quote!(value.to_string())));
+            return Ok((
+                quote!(caribou_abi::Rooted<Text>),
+                quote!(Text),
+                quote!(caribou_abi::Rooted::new(value)),
+            ));
+        }
+        if type_name(ty).as_deref() == Some("Buffer") {
+            return Ok((
+                quote!(caribou_abi::Rooted<Buffer>),
+                quote!(Buffer),
+                quote!(caribou_abi::Rooted::new(value)),
+            ));
         }
         return Ok((quote!(#ty), quote!(#ty), quote!(value)));
     }
@@ -207,6 +390,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
     ident(namespace)?;
     let file = syn::parse_file(declaration).map_err(error)?;
     let idl = tokens(webidl)?;
+    let aliases = typedefs(&idl);
     let classes: HashSet<_> = file
         .items
         .iter()
@@ -240,6 +424,29 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             _ => None,
         })
         .collect();
+    let mut idl_types = HashMap::new();
+    for item in &file.items {
+        let (attrs, ty): (&[syn::Attribute], Type) = match item {
+            Item::Enum(item) => {
+                let local = &item.ident;
+                (item.attrs.as_slice(), syn::parse_quote!(Enum<#local>))
+            }
+            Item::Struct(item) => {
+                let local = &item.ident;
+                (item.attrs.as_slice(), syn::parse_quote!(#local))
+            }
+            Item::Trait(item) => {
+                let local = &item.ident;
+                (item.attrs.as_slice(), syn::parse_quote!(#local))
+            }
+            _ => continue,
+        };
+        if let Some(source) = idl_name(attrs)? {
+            if idl_types.insert(source.clone(), ty).is_some() {
+                return Err(format!("WebIDL type {source} is imported more than once"));
+            }
+        }
+    }
     let mut names = HashSet::new();
     let mut output = TokenStream::new();
     let mut exports = TokenStream::new();
@@ -340,8 +547,28 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                 if !s.generics.params.is_empty() {
                     return Err("records cannot be generic".into());
                 }
-                let syn::Fields::Named(fields) = s.fields else {
+                let syn::Fields::Named(fields) = &s.fields else {
                     return Err("records need named fields".into());
+                };
+                let imported = idl_name(&s.attrs)?;
+                if imported.is_some() && !fields.named.is_empty() {
+                    return Err(format!("IDL record {class} must have an empty body"));
+                }
+                let declared_fields: Vec<(syn::Ident, Type)> = if let Some(source) = imported {
+                    dictionary_fields(&idl, &source, &aliases, &idl_types)?
+                } else {
+                    fields
+                        .named
+                        .iter()
+                        .map(|field| {
+                            if !field.attrs.is_empty() {
+                                return Err(format!(
+                                    "record field attributes are not supported on {class}"
+                                ));
+                            }
+                            Ok((field.ident.clone().expect("named field"), field.ty.clone()))
+                        })
+                        .collect::<Result<_, String>>()?
                 };
                 let mut stored_fields = TokenStream::new();
                 let mut required_params = Vec::new();
@@ -352,22 +579,16 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                 let mut signatures = TokenStream::new();
                 let mut field_names = HashSet::new();
                 let mut method_names = HashSet::from(["new".to_owned()]);
-                for field in fields.named {
-                    if !field.attrs.is_empty() {
-                        return Err(format!(
-                            "record field attributes are not supported on {class}"
-                        ));
-                    }
-                    let field_name = field.ident.expect("named field");
+                for (field_name, field_ty) in declared_fields {
                     if !field_names.insert(field_name.to_string()) {
                         return Err(format!("duplicate field {class}.{field_name}"));
                     }
-                    let (container, value_ty) = if let Some(inner) = generic(&field.ty, "Option") {
+                    let (container, value_ty) = if let Some(inner) = generic(&field_ty, "Option") {
                         ("option", inner)
-                    } else if let Some(inner) = generic(&field.ty, "Vec") {
+                    } else if let Some(inner) = generic(&field_ty, "Vec") {
                         ("sequence", inner)
                     } else {
-                        ("required", field.ty.clone())
+                        ("required", field_ty)
                     };
                     if let Some(enumeration) = generic(&value_ty, "Enum") {
                         if !enums.contains(&type_name(&enumeration).unwrap_or_default()) {
@@ -626,7 +847,9 @@ mod tests {
         .unwrap();
         syn::parse_file(&generated).unwrap();
         assert!(generated.contains("pub (crate) size : i64"));
-        assert!(generated.contains("pub (crate) label : Option < String >"));
+        assert!(
+            generated.contains("pub (crate) label : Option < caribou_abi :: Rooted < Text > >")
+        );
         assert!(generated.contains("pub (crate) format : Option < i32 >"));
         assert!(generated.contains("pub (crate) buffer : Option < i32 >"));
         assert!(generated.contains("pub (crate) entries : Vec < Entry >"));
@@ -634,6 +857,36 @@ mod tests {
         assert!(generated.contains("fn label (& mut Descriptor , Text)"));
         assert!(generated.contains("fn addEntries (& mut Descriptor , & Entry)"));
         assert!(generated.contains("backend :: create (this . handle , descriptor)"));
+    }
+    #[test]
+    fn idl_records_import_inheritance_typedefs_defaults_and_sequences() {
+        let generated = generate(
+            "gpu",
+            r#"
+              #[idl("GPUFormat")] enum Format {}
+              #[idl("GPUDescriptor")] struct Descriptor {}
+            "#,
+            r#"
+              enum GPUFormat { "rgba", "depth" };
+              dictionary GPUBase { DOMString label = ""; };
+              typedef [EnforceRange] unsigned long long GPUSize;
+              dictionary GPUDescriptor : GPUBase {
+                required GPUSize size;
+                boolean enabled = false;
+                sequence<GPUFormat> formats = [];
+              };
+            "#,
+        )
+        .unwrap();
+        syn::parse_file(&generated).unwrap();
+        assert!(
+            generated.contains("pub (crate) label : Option < caribou_abi :: Rooted < Text > >")
+        );
+        assert!(generated.contains("pub (crate) size : i64"));
+        assert!(generated.contains("pub (crate) enabled : Option < bool >"));
+        assert!(generated.contains("pub (crate) formats : Vec < i32 >"));
+        assert!(generated.contains("fn new (i64) -> Box < Descriptor >"));
+        assert!(generated.contains("fn addFormats (& mut Descriptor , Enum < Format >)"));
     }
     #[test]
     fn ambiguous_and_unsupported_declarations_fail_generation() {
@@ -651,7 +904,6 @@ mod tests {
                 "enum E { \"a\" }; enum E { \"b\" };",
             ),
             ("struct R { new: Option<i32> }", ""),
-            ("struct R { bytes: Buffer }", ""),
         ] {
             assert!(generate("gpu", api, idl).is_err(), "accepted {api}");
         }

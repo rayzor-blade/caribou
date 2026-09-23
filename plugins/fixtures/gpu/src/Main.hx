@@ -24,6 +24,7 @@ class Main {
         for (i in 0...4) data.setInt32(i * 4, i + 1);
         var storageDescriptor = new GpuBufferDescriptor(16,
             BufferUsage.STORAGE() | BufferUsage.COPY_DST() | BufferUsage.COPY_SRC());
+        storageDescriptor.label("compute storage");
         storageDescriptor.mappedAtCreation(false);
         var storage = device.createBuffer(storageDescriptor);
         var readback = device.createBuffer(new GpuBufferDescriptor(16,

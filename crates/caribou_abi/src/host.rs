@@ -4,6 +4,7 @@
 //! reads strings as [`Text`], calls a value it was given, and raises.
 
 use core::ffi::c_void;
+use core::marker::PhantomData;
 use core::ops::Deref;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
@@ -205,5 +206,51 @@ impl Drop for Kept {
 impl core::fmt::Debug for Kept {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         core::fmt::Debug::fmt(&self.get(), f)
+    }
+}
+
+/// A typed core value retained by a plugin across calls.
+///
+/// The carrier remains the core's object and keeps its original storage;
+/// this wrapper owns only a GC root. It is suitable for fields of plugin
+/// objects, where a bare [`Text`] or [`crate::Buffer`] would be invisible to
+/// the core collector.
+pub struct Rooted<T: Rootable> {
+    kept: Kept,
+    marker: PhantomData<T>,
+}
+
+/// A typed carrier that can be recovered from its core [`Value`].
+pub trait Rootable: Copy {
+    fn value(self) -> Value;
+    fn of(value: Value) -> Option<Self>;
+}
+
+impl<T: Rootable> Rooted<T> {
+    pub fn new(value: T) -> Self {
+        Rooted {
+            kept: Kept::new(value.value()),
+            marker: PhantomData,
+        }
+    }
+
+    pub fn get(&self) -> T {
+        T::of(self.kept.get()).expect("a rooted carrier keeps its original type")
+    }
+}
+
+impl<T: Rootable> Clone for Rooted<T> {
+    fn clone(&self) -> Self {
+        Self::new(self.get())
+    }
+}
+
+impl Rootable for Text {
+    fn value(self) -> Value {
+        Text::value(self)
+    }
+
+    fn of(value: Value) -> Option<Self> {
+        Text::of(value)
     }
 }
