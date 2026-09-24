@@ -3,6 +3,8 @@
 // not the layout of Caribou enums. WebIDL is vendored for reproducible builds.
 enum Power { None = -1, LowPower = 0, HighPerformance = 1 }
 enum Backend { Noop = 0, Vulkan = 1, Metal = 2, Dx12 = 3, Gl = 4, BrowserWebGpu = 5 }
+enum DeviceType { Other, IntegratedGpu, DiscreteGpu, VirtualGpu, Cpu }
+enum MemoryHints { Performance, MemoryUsage }
 #[idl("GPUFeatureName")]
 enum Feature {}
 #[idl("GPUSupportedLimits")]
@@ -118,6 +120,8 @@ enum NativeLimit {
     MaxRayDispatchCount,
     MaxRayRecursionDepth,
 }
+#[idl("GPUMapMode")]
+mod MapMode {}
 // wgpu's own bits follow the IDL's.
 #[idl("GPUBufferUsage")]
 mod BufferUsage {
@@ -177,12 +181,43 @@ struct GpuTextureDescriptor {
     // cross-language API explicit and avoids a dynamic union.
     size: GpuExtent3D,
 }
+// wgpu's backends and instance flags, bit for bit.
+mod Backends {
+    const VULKAN: i32 = 2;
+    const METAL: i32 = 4;
+    const DX12: i32 = 8;
+    const GL: i32 = 16;
+    const BROWSER_WEBGPU: i32 = 32;
+}
+mod InstanceFlag {
+    const DEBUG: i32 = 1;
+    const VALIDATION: i32 = 2;
+    const DISCARD_HAL_LABELS: i32 = 4;
+    const ALLOW_UNDERLYING_NONCOMPLIANT_ADAPTER: i32 = 8;
+    const GPU_BASED_VALIDATION: i32 = 16;
+    const VALIDATION_INDIRECT_CALL: i32 = 32;
+    const AUTOMATIC_TIMESTAMP_NORMALIZATION: i32 = 64;
+    const STRICT_WEBGPU_COMPLIANCE: i32 = 128;
+}
+// Unset members are wgpu's defaults for this build.
+struct GpuInstanceDescriptor {
+    backends: Option<i32>,
+    flags: Option<i32>,
+}
+// WebGPU's adapter options, with wgpu's compatible surface. wgpu has no
+// feature levels and no XR, so those two members are left out.
+struct GpuRequestAdapterOptions {
+    powerPreference: Option<Enum<Power>>,
+    forceFallbackAdapter: Option<bool>,
+    compatibleSurface: Option<GpuSurface>,
+}
 struct GpuDeviceDescriptor {
     requiredFeatures: Vec<Enum<Feature>>,
     requiredLimits: Map<Enum<Limit>, i64>,
     // wgpu's own features and limits, beyond WebGPU's.
     requiredNativeFeatures: Vec<Enum<NativeFeature>>,
     requiredNativeLimits: Map<Enum<NativeLimit>, i64>,
+    memoryHints: Option<Enum<MemoryHints>>,
 }
 
 // Explicit layouts: what a pipeline's bind groups hold, declared ahead of
@@ -490,6 +525,11 @@ trait GpuInstance {
     #[native(adapter_open)]
     #[idl("GPU.requestAdapter")]
     fn requestAdapter(this: &GpuInstance, power: Enum<Power>) -> Future<GpuAdapter>;
+    #[native(instance_create_with)]
+    fn createWith(descriptor: &GpuInstanceDescriptor) -> Box<GpuInstance>;
+    #[native(adapter_request_with)]
+    #[idl("GPU.requestAdapter")]
+    fn requestAdapterWith(this: &GpuInstance, options: &GpuRequestAdapterOptions) -> Future<GpuAdapter>;
     #[native(surface_create)]
     fn surface(this: &GpuInstance, platform: i32, wa: i64, wb: i64, da: i64, db: i64) -> Box<GpuSurface>;
 }
@@ -528,6 +568,19 @@ trait GpuAdapter {
     // TextureFormatFeature bits: filtering, multisampling, storage access.
     #[native(adapter_format_features)]
     fn textureFormatFeatures(this: &GpuAdapter, format: Enum<TextureFormat>) -> i32;
+    // PCI ids where the backend has them, 0 where it does not.
+    #[native(adapter_vendor_id)]
+    fn vendorId(this: &GpuAdapter) -> i64;
+    #[native(adapter_device_id)]
+    fn deviceId(this: &GpuAdapter) -> i64;
+    #[native(adapter_device_type)]
+    fn deviceType(this: &GpuAdapter) -> Enum<DeviceType>;
+    #[native(adapter_pci_bus_id)]
+    fn pciBusId(this: &GpuAdapter) -> Text;
+    #[native(adapter_subgroup_min_size)]
+    fn subgroupMinSize(this: &GpuAdapter) -> i32;
+    #[native(adapter_subgroup_max_size)]
+    fn subgroupMaxSize(this: &GpuAdapter) -> i32;
 }
 
 #[idl("GPUDevice")]
@@ -551,6 +604,10 @@ trait GpuDevice {
     #[native(buffer_map_begin)]
     #[idl("GPUBuffer.mapAsync")]
     fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Future<()>;
+    // `mode` is MapMode.READ or MapMode.WRITE.
+    #[native(buffer_map_with)]
+    #[idl("GPUBuffer.mapAsync")]
+    fn mapBufferWith(this: &GpuDevice, buffer: &GpuBuffer, mode: i32, offset: i64, size: i64) -> Future<()>;
     #[native(shader_create)]
     fn createShader(this: &GpuDevice, wgsl: Text) -> Box<GpuShader>;
     #[native(compute_pipeline_create)]
@@ -640,6 +697,13 @@ trait GpuBuffer {
     fn valid(this: &GpuBuffer) -> bool;
     #[native(buffer_copy_out)]
     fn copyOut(this: &GpuBuffer, offset: i64, out: Buffer, len: i32) -> bool;
+    // Into a range mapped for writing, or mapped at creation.
+    #[native(buffer_copy_in)]
+    fn copyIn(this: &GpuBuffer, offset: i64, data: Buffer, len: i32) -> bool;
+    #[native(buffer_size)]
+    fn size(this: &GpuBuffer) -> i64;
+    #[native(buffer_usage)]
+    fn usage(this: &GpuBuffer) -> i32;
     #[native(buffer_unmap)]
     fn unmap(this: &GpuBuffer);
     #[native(buffer_destroy)]
@@ -855,6 +919,22 @@ trait GpuTexture {
     fn createView(this: &GpuTexture, descriptor: &GpuTextureViewDescriptor) -> Box<GpuTextureView>;
     #[native(texture_destroy)]
     fn destroy(this: &GpuTexture);
+    #[native(texture_width)]
+    fn width(this: &GpuTexture) -> i32;
+    #[native(texture_height)]
+    fn height(this: &GpuTexture) -> i32;
+    #[native(texture_depth_or_array_layers)]
+    fn depthOrArrayLayers(this: &GpuTexture) -> i32;
+    #[native(texture_mip_level_count)]
+    fn mipLevelCount(this: &GpuTexture) -> i32;
+    #[native(texture_sample_count)]
+    fn sampleCount(this: &GpuTexture) -> i32;
+    #[native(texture_get_dimension)]
+    fn dimension(this: &GpuTexture) -> Enum<TextureDimension>;
+    #[native(texture_get_format)]
+    fn format(this: &GpuTexture) -> Enum<TextureFormat>;
+    #[native(texture_usage)]
+    fn usage(this: &GpuTexture) -> i32;
 }
 
 #[idl("GPUTextureView")]

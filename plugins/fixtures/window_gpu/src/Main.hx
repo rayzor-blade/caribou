@@ -2,6 +2,7 @@ import gpu.BufferUsage;
 import gpu.ColorWrite;
 import gpu.GpuInstance;
 import gpu.GpuBufferDescriptor;
+import gpu.GpuRequestAdapterOptions;
 import gpu.GpuSurfaceConfiguration;
 import gpu.PresentMode;
 import gpu.TextureUsage;
@@ -45,12 +46,6 @@ class Main {
         check(window.width() > 0 && window.height() > 0, "window creation failed");
 
         var instance = new GpuInstance();
-        var adapter = instance.requestAdapter(HighPerformance).await();
-        check(adapter.valid(), "no GPU adapter is available");
-        var device = adapter.requestDevice().await();
-        check(device.valid(), "GPU device creation failed");
-        var queue = device.queue();
-
         // Raw handles are plain integers because the two plugins share no
         // Rust types. The window remains alive until after surface.destroy().
         var surface = instance.surface(
@@ -59,6 +54,16 @@ class Main {
             window.raw(2), window.raw(3)
         );
         check(surface.valid(), "this window cannot create a GPU surface");
+
+        // An adapter that can present to this surface.
+        var options = new GpuRequestAdapterOptions();
+        options.powerPreference(HighPerformance);
+        options.compatibleSurface(surface);
+        var adapter = instance.requestAdapterWith(options).await();
+        check(adapter.valid(), "no GPU adapter is available");
+        var device = adapter.requestDevice().await();
+        check(device.valid(), "GPU device creation failed");
+        var queue = device.queue();
         var format = surface.preferredFormat(adapter);
 
         // What this surface supports on this adapter; Fifo is always there.

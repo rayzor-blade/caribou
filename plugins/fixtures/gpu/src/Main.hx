@@ -1,4 +1,9 @@
 import gpu.GpuInstance;
+import gpu.Backends;
+import gpu.GpuInstanceDescriptor;
+import gpu.GpuRequestAdapterOptions;
+import gpu.InstanceFlag;
+import gpu.MapMode;
 import gpu.AccelerationStructureFlag;
 import gpu.AccelerationStructureGeometryFlag;
 import gpu.GpuAccelerationStructureBuild;
@@ -52,6 +57,7 @@ import gpu.GpuTexelCopyTextureInfo;
 import gpu.GpuTextureDescriptor;
 import gpu.GpuVertexState;
 import gpu.TextureUsage;
+import gpu.TextureDimension;
 import gpu.TextureFormatFeature;
 import gpu.NativeFeature;
 import gpu.CompilationMessageType;
@@ -733,6 +739,77 @@ class Main {
         Sys.println('gpu wgpu extensions ok: ${ran.join(", ")}');
     }
 
+    /**
+        What adapters, buffers and textures report, writes through mapped
+        buffers, and an instance and adapter asked for with options.
+    **/
+    static function introspection(adapter:GpuAdapter) {
+        var min = adapter.subgroupMinSize();
+        var max = adapter.subgroupMaxSize();
+        check(min > 0 && min <= max, 'subgroup sizes $min..$max');
+        Sys.println('adapter: ${adapter.deviceType()}, vendor ${adapter.vendorId()}, subgroups $min..$max');
+
+        var configured = new GpuInstanceDescriptor();
+        configured.backends(Backends.VULKAN() | Backends.METAL() | Backends.DX12() | Backends.GL());
+        configured.flags(InstanceFlag.VALIDATION());
+        var instance = GpuInstance.createWith(configured);
+        var options = new GpuRequestAdapterOptions();
+        options.powerPreference(HighPerformance);
+        var chosen = instance.requestAdapterWith(options).await();
+        check(chosen.valid(), "no adapter for the configured instance");
+        chosen.destroy();
+        instance.destroy();
+
+        var requested = new GpuDeviceDescriptor();
+        requested.memoryHints(MemoryUsage);
+        var device = adapter.requestDeviceWith(requested).await();
+        var queue = device.queue();
+
+        var data = haxe.io.Bytes.alloc(16);
+        for (i in 0...4) data.setInt32(i * 4, (i + 1) * 11);
+        var writable = device.createBuffer(new GpuBufferDescriptor(16, BufferUsage.MAP_WRITE() | BufferUsage.COPY_SRC()));
+        check(writable.size() == 16, "buffer size");
+        check(writable.usage() == (BufferUsage.MAP_WRITE() | BufferUsage.COPY_SRC()), "buffer usage");
+        check(!writable.copyIn(0, data, 16), "an unmapped buffer took a write");
+        device.mapBufferWith(writable, MapMode.WRITE(), 0, 16).await();
+        check(writable.copyIn(0, data, 16), "the write mapping refused the data");
+        writable.unmap();
+        var atCreation = new GpuBufferDescriptor(16, BufferUsage.COPY_SRC());
+        atCreation.mappedAtCreation(true);
+        var created = device.createBuffer(atCreation);
+        check(created.copyIn(0, data, 8), "a buffer mapped at creation refused the data");
+        created.unmap();
+        var readback = device.createBuffer(new GpuBufferDescriptor(32, BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
+        var encoder = device.encoder();
+        encoder.copyBuffer(writable, 0, readback, 0, 16);
+        encoder.copyBuffer(created, 0, readback, 16, 16);
+        encoder.submit(queue);
+        device.queueWorkDone(queue).await();
+        device.mapBufferWith(readback, MapMode.READ(), 0, 32).await();
+        var out = haxe.io.Bytes.alloc(32);
+        check(readback.copyOut(0, out, 32), "mapped readback failed");
+        for (i in 0...4) check(out.getInt32(i * 4) == (i + 1) * 11, "the mapped write did not land");
+        check(out.getInt32(16) == 11 && out.getInt32(20) == 22 && out.getInt32(24) == 0, "the write at creation did not land");
+        readback.unmap();
+        refused("a map mode of 3 was accepted", () -> device.mapBufferWith(readback, 3, 0, 32).await());
+
+        var size = new GpuExtent3D(8);
+        size.height(4);
+        size.depthOrArrayLayers(2);
+        var described = new GpuTextureDescriptor(size, Rgba16float, TextureUsage.TEXTURE_BINDING() | TextureUsage.COPY_DST());
+        described.mipLevelCount(2);
+        var texture = device.texture(described);
+        check(texture.width() == 8 && texture.height() == 4 && texture.depthOrArrayLayers() == 2, "texture size");
+        check(texture.mipLevelCount() == 2 && texture.sampleCount() == 1, "texture levels");
+        check(Type.enumEq(texture.dimension(), TextureDimension.D2d), 'texture dimension ${texture.dimension()}');
+        check(Type.enumEq(texture.format(), Rgba16float), 'texture format ${texture.format()}');
+        check(texture.usage() == (TextureUsage.TEXTURE_BINDING() | TextureUsage.COPY_DST()), "texture usage");
+
+        check(device.takeError() == null, "GPU validation error in introspection");
+        device.destroy();
+        Sys.println("gpu introspection ok");
+    }
+
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
@@ -806,6 +883,7 @@ class Main {
         renderingQueriesAndDiagnostics(adapter, device, queue, timestamps);
         deviceLoss(adapter);
         wgpuExtensions(adapter);
+        introspection(adapter);
         device.destroy();
         adapter.destroy();
         instance.destroy();

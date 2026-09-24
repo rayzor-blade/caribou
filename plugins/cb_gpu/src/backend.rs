@@ -168,28 +168,41 @@ pub unsafe fn instance_create() -> i32 {
     INSTANCES.lock().unwrap().put(instance)
 }
 
+pub unsafe fn instance_create_with(descriptor: &crate::GpuInstanceDescriptor) -> i32 {
+    let mut chosen = wgpu::InstanceDescriptor::new_without_display_handle();
+    if let Some(backends) = descriptor.backends {
+        chosen.backends = wgpu::Backends::from_bits_truncate(backends as u32);
+    }
+    if let Some(flags) = descriptor.flags {
+        chosen.flags = wgpu::InstanceFlags::from_bits_truncate(flags as u32);
+    }
+    INSTANCES.lock().unwrap().put(wgpu::Instance::new(chosen))
+}
+
 pub unsafe fn instance_destroy(inst: i32) {
     INSTANCES.lock().unwrap().remove(inst);
 }
 
 // -- adapter ----------------------------------------------------------------
 
-pub unsafe fn adapter_request(inst: i32, power: i32) -> Future<crate::GpuAdapter> {
-    let Some(instance) = INSTANCES.lock().unwrap().get(inst) else {
-        return rejected_future("instance was destroyed");
-    };
-    let options = wgpu::RequestAdapterOptions {
-        power_preference: match power {
-            1 => wgpu::PowerPreference::HighPerformance,
-            0 => wgpu::PowerPreference::LowPower,
-            _ => wgpu::PowerPreference::None,
-        },
-        ..Default::default()
-    };
+fn power_preference(power: i32) -> wgpu::PowerPreference {
+    match power {
+        1 => wgpu::PowerPreference::HighPerformance,
+        0 => wgpu::PowerPreference::LowPower,
+        _ => wgpu::PowerPreference::None,
+    }
+}
+
+/// Resolves with the adapter a started request finds.
+fn settle_adapter(
+    request: impl StdFuture<Output = Result<wgpu::Adapter, wgpu::RequestAdapterError>>
+    + wgpu::WasmNotSend
+    + 'static,
+) -> Future<crate::GpuAdapter> {
     let future = Future::new();
     let completion = Rooted::new(future);
     spawn_gpu(async move {
-        match instance.request_adapter(&options).await {
+        match request.await {
             Ok(adapter) => {
                 let handle = ADAPTERS.lock().unwrap().put(adapter);
                 if handle == 0 {
@@ -213,6 +226,43 @@ pub unsafe fn adapter_request(inst: i32, power: i32) -> Future<crate::GpuAdapter
         }
     });
     future
+}
+
+pub unsafe fn adapter_request(inst: i32, power: i32) -> Future<crate::GpuAdapter> {
+    let Some(instance) = INSTANCES.lock().unwrap().get(inst) else {
+        return rejected_future("instance was destroyed");
+    };
+    settle_adapter(instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: power_preference(power),
+        ..Default::default()
+    }))
+}
+
+/// The request starts while the surface is held; wgpu's request future
+/// borrows neither the instance nor the options.
+pub unsafe fn adapter_request_with(
+    inst: i32,
+    options: &crate::GpuRequestAdapterOptions,
+) -> Future<crate::GpuAdapter> {
+    let Some(instance) = INSTANCES.lock().unwrap().get(inst) else {
+        return rejected_future("instance was destroyed");
+    };
+    let surface = match options.compatibleSurface {
+        None => None,
+        Some(handle) => match SURFACES.lock().unwrap().get(handle) {
+            Some(surface) => Some(surface),
+            None => return rejected_future("the compatible surface was destroyed"),
+        },
+    };
+    let held = surface.as_ref().map(|surface| surface.lock().unwrap());
+    let request = instance.request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: power_preference(options.powerPreference.unwrap_or(-1)),
+        force_fallback_adapter: options.forceFallbackAdapter.unwrap_or(false),
+        compatible_surface: held.as_ref().map(|entry| &entry.surface),
+        ..Default::default()
+    });
+    drop(held);
+    settle_adapter(request)
 }
 
 pub unsafe fn adapter_name(adapter: i32) -> Text {
@@ -410,6 +460,7 @@ fn device_request_configured(
     limits: &[(i32, i64)],
     native_features: &[i32],
     native_limits: &[(i32, i64)],
+    memory_hints: Option<i32>,
 ) -> Future<crate::GpuDevice> {
     let Some(adapter) = ADAPTERS.lock().unwrap().get(adapter) else {
         return rejected_future("adapter was destroyed");
@@ -439,6 +490,10 @@ fn device_request_configured(
         required_features: requested_features,
         required_limits: requested_limits,
         experimental_features,
+        memory_hints: match memory_hints {
+            Some(1) => wgpu::MemoryHints::MemoryUsage,
+            _ => wgpu::MemoryHints::Performance,
+        },
         ..Default::default()
     };
     let future = Future::new();
@@ -491,7 +546,7 @@ fn device_request_configured(
 }
 
 pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
-    device_request_configured(adapter, &[], &[], &[], &[])
+    device_request_configured(adapter, &[], &[], &[], &[], None)
 }
 
 pub unsafe fn device_request_with(
@@ -504,6 +559,7 @@ pub unsafe fn device_request_with(
         &descriptor.requiredLimits,
         &descriptor.requiredNativeFeatures,
         &descriptor.requiredNativeLimits,
+        descriptor.memoryHints,
     )
 }
 
@@ -576,6 +632,21 @@ pub unsafe fn queue_write_buffer(queue: i32, buffer: i32, offset: i64, data: Buf
 }
 
 pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64) -> Future<()> {
+    unsafe { buffer_map_with(device, buffer, 1, offset, size) }
+}
+
+pub unsafe fn buffer_map_with(
+    device: i32,
+    buffer: i32,
+    mode: i32,
+    offset: i64,
+    size: i64,
+) -> Future<()> {
+    let mode = match mode {
+        1 => wgpu::MapMode::Read,
+        2 => wgpu::MapMode::Write,
+        _ => return rejected_future("a map mode is READ or WRITE"),
+    };
     let Some(buffer) = BUFFERS.lock().unwrap().get(buffer) else {
         return rejected_future("buffer was destroyed");
     };
@@ -586,7 +657,7 @@ pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64)
     let completion = Rooted::new(future);
     let start = offset.max(0) as u64;
     buffer.map_async(
-        wgpu::MapMode::Read,
+        mode,
         start..start + size.max(0) as u64,
         move |outcome| match outcome {
             Ok(()) => {
@@ -3040,6 +3111,7 @@ mod bundles;
 mod copies;
 mod diagnostics;
 mod external;
+mod info;
 mod mesh;
 mod native;
 mod queries;
@@ -3050,6 +3122,7 @@ pub use bundles::*;
 pub use copies::*;
 pub use diagnostics::*;
 pub use external::*;
+pub use info::*;
 pub use mesh::*;
 pub use native::*;
 pub use queries::*;
