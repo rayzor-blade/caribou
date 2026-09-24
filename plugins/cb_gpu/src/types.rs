@@ -30,4 +30,5 @@ pub enum Kind {
     ExternalTexture = 26,
     Blas = 27,
     Tlas = 28,
+    PipelineCache = 29,
 }

@@ -36,6 +36,8 @@ struct DeviceEntry {
     dont_care: bool,
     /// Whether the program vouches for shaders wgpu does not check.
     trusted_shaders: bool,
+    /// Whether the program vouches for the pipeline cache data it loads.
+    cache_data: bool,
 }
 
 /// An encoder and whatever pass is open on it.
@@ -467,6 +469,7 @@ fn device_request_configured(adapter: i32, d: &GpuDeviceDescriptor) -> Future<cr
     let accept_experimental = d.experimentalFeatures.unwrap_or(false);
     let dont_care = d.dontCareLoads.unwrap_or(false);
     let trusted_shaders = d.trustedShaders.unwrap_or(false);
+    let cache_data = d.pipelineCacheData.unwrap_or(false);
     let requested_features = match requested_features(&d.requiredFeatures)
         .and_then(|webgpu| Ok(webgpu | native::requested_features(&d.requiredNativeFeatures)?))
     {
@@ -529,6 +532,7 @@ fn device_request_configured(adapter: i32, d: &GpuDeviceDescriptor) -> Future<cr
                     lost,
                     dont_care,
                     trusted_shaders,
+                    cache_data,
                 });
                 if handle == 0 {
                     QUEUES.lock().unwrap().remove(queue);
@@ -823,6 +827,7 @@ slab!(
 slab!(BLASES, ray_tracing::BlasEntry, Kind::Blas);
 // A TLAS's instances are set through `&mut`, so it sits behind a lock.
 slab!(TLASES, Mutex<wgpu::Tlas>, Kind::Tlas);
+slab!(PIPELINE_CACHES, wgpu::PipelineCache, Kind::PipelineCache);
 
 /// A descriptor the caller got wrong: raised in the caller's language, with
 /// no GPU work done.
@@ -3023,6 +3028,9 @@ pub unsafe fn is_valid(handle: i32) -> bool {
         }
         k if k == Kind::Blas as i32 => BLASES.lock().unwrap().get(handle).is_some(),
         k if k == Kind::Tlas as i32 => TLASES.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::PipelineCache as i32 => {
+            PIPELINE_CACHES.lock().unwrap().get(handle).is_some()
+        }
         _ => false,
     }
 }
@@ -3112,6 +3120,7 @@ pub unsafe fn builder_destroy(builder: i32) {
 // The groups below live in their own files; they reach this file's tables
 // and helpers through `super`.
 mod bundles;
+mod caches;
 mod copies;
 mod diagnostics;
 mod external;
@@ -3124,6 +3133,7 @@ mod render;
 mod shaders;
 mod surfaces;
 pub use bundles::*;
+pub use caches::*;
 pub use copies::*;
 pub use diagnostics::*;
 pub use external::*;

@@ -83,6 +83,7 @@ struct ComputePlan {
     label: Option<String>,
     layout: Option<Arc<wgpu::PipelineLayout>>,
     stage: Stage,
+    cache: Option<Arc<wgpu::PipelineCache>>,
 }
 
 fn compute_plan(device: i32, d: &GpuComputePipelineDescriptor) -> Result<ComputePlan, String> {
@@ -100,6 +101,7 @@ fn compute_plan(device: i32, d: &GpuComputePipelineDescriptor) -> Result<Compute
             &d.compute.entryPoint,
             &d.compute.constants,
         )?,
+        cache: super::caches::pipeline_cache(d.cache)?,
     })
 }
 
@@ -112,7 +114,7 @@ fn build_compute(plan: &ComputePlan) -> wgpu::ComputePipeline {
             module: &plan.stage.module,
             entry_point: plan.stage.entry.as_deref(),
             compilation_options: options(&constants),
-            cache: None,
+            cache: plan.cache.as_deref(),
         })
 }
 
@@ -172,6 +174,7 @@ struct RenderPlan {
     multisample: wgpu::MultisampleState,
     fragment: Option<(Stage, Vec<Option<wgpu::ColorTargetState>>)>,
     multiview: Option<NonZeroU32>,
+    cache: Option<Arc<wgpu::PipelineCache>>,
 }
 
 pub(super) fn index_format(value: i32) -> wgpu::IndexFormat {
@@ -318,6 +321,7 @@ fn render_plan(device: i32, d: &GpuRenderPipelineDescriptor) -> Result<RenderPla
         multisample: multisample(d.multisample.as_ref())?,
         fragment,
         multiview,
+        cache: super::caches::pipeline_cache(d.cache)?,
     })
 }
 
@@ -364,7 +368,7 @@ fn build_render(plan: &RenderPlan) -> wgpu::RenderPipeline {
                     compilation_options: options(&fragment_constants),
                 }),
             multiview_mask: plan.multiview,
-            cache: None,
+            cache: plan.cache.as_deref(),
         })
 }
 

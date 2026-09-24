@@ -262,6 +262,17 @@ the program's promise that its code is valid for the backend, stays in
 bounds and terminates. A passthrough compute pipeline needs an explicit
 layout; Metal numbers buffers in the layout's order.
 
+## Pipeline caches
+
+With the `PipelineCache` native feature (Vulkan), `createPipelineCache`
+makes a cache that pipelines add to when their descriptor names it.
+`getData()` returns its bytes to save, and `adapter.pipelineCacheKey()`
+names the adapter they belong to. A cache made with saved `data` starts
+from them; wgpu rejects data from another adapter, driver or wgpu version,
+starting an empty cache instead unless `fallback(false)` makes that an
+error. It cannot tell damaged or forged bytes from real ones, so loading
+data needs `pipelineCacheData(true)` on the device descriptor.
+
 ## Errors and loss
 
 `pushErrorScope(filter)` and `popErrorScope()` catch validation,
@@ -354,8 +365,7 @@ WebGPU's `GPUSize64`. Dimensions, counts, flags and shared-buffer lengths use
 
 - WebGPU members wgpu 30 does not have: texture component swizzle, texture
   binding view dimension, a buffer's map state, and reading a label back.
-- wgpu's pipeline caches, whose saved data wgpu has to trust, and backend
-  handle interop, which has no portable form.
+- Backend handle interop, which has no portable form.
 - API tracing, which needs a wgpu build feature.
 - Browser image, canvas and video sources, which need the browser runtime.
 - The three-element sequence spelling of a texture extent; `GpuExtent3D` is
@@ -393,7 +403,9 @@ The fixture requires an available GPU adapter and fails explicitly if none
 is available. The Rust generator/catalog/handle tests require no GPU.
 
 Both fixtures have been run on Apple M1 Pro/Metal, the GPU fixture also with
-`ASH_GC_STRESS=1 WLIFT_GC_STRESS=1`. Other platforms have not been run.
+`ASH_GC_STRESS=1 WLIFT_GC_STRESS=1`. On Intel Iris Xe/Vulkan (Mesa 26.0.3)
+the GPU fixture's layouts, trusted shaders and pipeline caches pass, and its
+occlusion check fails: wgpu itself reports no samples there.
 
 Wren builds the generated enums through their classes, such as
 `TextureFormat.Rgba8unorm`. Zyntax's shared object, buffer and enum transfer

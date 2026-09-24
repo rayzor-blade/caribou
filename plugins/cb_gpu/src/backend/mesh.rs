@@ -21,6 +21,7 @@ struct MeshPlan {
     multisample: wgpu::MultisampleState,
     fragment: Option<(Stage, Vec<Option<wgpu::ColorTargetState>>)>,
     multiview: Option<NonZeroU32>,
+    cache: Option<Arc<wgpu::PipelineCache>>,
 }
 
 fn mesh_plan(device: i32, d: &GpuMeshPipelineDescriptor) -> Result<MeshPlan, String> {
@@ -59,6 +60,7 @@ fn mesh_plan(device: i32, d: &GpuMeshPipelineDescriptor) -> Result<MeshPlan, Str
         multisample: multisample(d.multisample.as_ref())?,
         fragment,
         multiview,
+        cache: super::caches::pipeline_cache(d.cache)?,
     })
 }
 
@@ -97,7 +99,7 @@ fn build_mesh(plan: &MeshPlan) -> wgpu::RenderPipeline {
                     compilation_options: options(&fragment_constants),
                 }),
             multiview: plan.multiview,
-            cache: None,
+            cache: plan.cache.as_deref(),
         })
 }
 

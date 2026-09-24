@@ -1,4 +1,5 @@
 import gpu.GpuInstance;
+import gpu.GpuPipelineCacheDescriptor;
 import gpu.GpuPassthroughEntryPoint;
 import gpu.GpuPassthroughShaderDescriptor;
 import gpu.GpuShaderModuleDescriptor;
@@ -971,6 +972,48 @@ class Main {
         Sys.println('gpu trusted shaders ok${passthrough ? ": unchecked WGSL, passthrough MSL" : ": unchecked WGSL"}');
     }
 
+    /**
+        Pipeline caches where the adapter has them: a pipeline fills an empty
+        cache, its data is saved, and a second cache loads it back, which a
+        device takes only with pipelineCacheData.
+    **/
+    static function pipelineCaches(adapter:GpuAdapter, device:GpuDevice) {
+        var saved = new GpuPipelineCacheDescriptor();
+        saved.data(haxe.io.Bytes.alloc(16));
+        refused("pipeline cache data was loaded untrusted", () -> device.createPipelineCache(saved));
+        if (!adapter.supportsNative(PipelineCache)) {
+            Sys.println("gpu pipeline caches: untrusted data refused; this adapter has none");
+            return;
+        }
+        var key = adapter.pipelineCacheKey();
+        check(key != null, "no pipeline cache key on an adapter with caches");
+        var requested = new GpuDeviceDescriptor();
+        requested.addRequiredNativeFeatures(PipelineCache);
+        requested.pipelineCacheData(true);
+        var cached = adapter.requestDeviceWith(requested).await();
+        var queue = cached.queue();
+        function run(cache, what) {
+            var descriptor = new GpuComputePipelineDescriptor(
+                new GpuProgrammableStage(cached.createShader(TRIPLE)));
+            descriptor.cache(cache);
+            var pipeline = cached.createComputePipeline(descriptor);
+            tripled(cached, queue, pipeline, pipeline.getBindGroupLayout(0), what);
+        }
+        var empty = cached.createPipelineCache(new GpuPipelineCacheDescriptor());
+        run(empty, "a pipeline filling a cache");
+        var data = empty.getData();
+        check(data != null && data.length > 0, "the cache has no data to save");
+        var loading = new GpuPipelineCacheDescriptor();
+        loading.data(data);
+        loading.fallback(false);
+        var loaded = cached.createPipelineCache(loading);
+        check(cached.takeError() == null, "saved cache data was not accepted back");
+        run(loaded, "a pipeline from loaded cache data");
+        check(cached.takeError() == null, "GPU validation error with pipeline caches");
+        cached.destroy();
+        Sys.println('gpu pipeline caches ok: ${data.length} bytes under $key');
+    }
+
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
@@ -1041,11 +1084,12 @@ class Main {
         readback.destroy();
         check(!storage.valid(), "destroyed buffer remains live");
         explicitLayouts(device, queue);
+        trustedShaders(adapter, device);
+        pipelineCaches(adapter, device);
         renderingQueriesAndDiagnostics(adapter, device, queue, timestamps);
         deviceLoss(adapter);
         wgpuExtensions(adapter);
         dontCareLoads(adapter);
-        trustedShaders(adapter, device);
         introspection(adapter);
         device.destroy();
         adapter.destroy();

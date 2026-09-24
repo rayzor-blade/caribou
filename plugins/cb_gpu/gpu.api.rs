@@ -231,6 +231,20 @@ struct GpuDeviceDescriptor {
     // modules with runtime checks turned off. The program promises that the
     // code is valid for the backend, stays in bounds and terminates.
     trustedShaders: Option<bool>,
+    // Accepts loading saved pipeline cache data, which wgpu has to trust:
+    // it rejects data from another adapter, driver or wgpu version, but
+    // not bytes that were damaged or forged.
+    pipelineCacheData: Option<bool>,
+}
+
+// wgpu's pipeline caches, with PIPELINE_CACHE. A pipeline built with a
+// cache adds to it; getData saves it and `data` loads it back, on an
+// adapter with the same pipelineCacheKey. With `fallback` unset or true,
+// data the adapter cannot use starts an empty cache instead of an error.
+struct GpuPipelineCacheDescriptor {
+    label: Option<Text>,
+    data: Option<Buffer>,
+    fallback: Option<bool>,
 }
 
 // A WGSL module with wgpu's runtime checks, each on unless turned off.
@@ -342,6 +356,7 @@ struct GpuProgrammableStage {}
 struct GpuComputePipelineDescriptor {
     // WebIDL's layout is a pipeline layout or "auto". Unset is "auto".
     layout: Option<GpuPipelineLayout>,
+    #[extension] cache: Option<GpuPipelineCache>,
 }
 
 // Render pipelines from WebGPU's descriptors.
@@ -379,6 +394,7 @@ struct GpuRenderPipelineDescriptor {
     layout: Option<GpuPipelineLayout>,
     // wgpu's own, with MULTIVIEW: the views the pipeline renders.
     #[extension] multiviewMask: Option<i32>,
+    #[extension] cache: Option<GpuPipelineCache>,
 }
 
 // Render and compute passes from WebGPU's descriptors. An attachment's view
@@ -441,6 +457,7 @@ struct GpuMeshPipelineDescriptor {
     multisample: Option<GpuMultisampleState>,
     fragment: Option<GpuFragmentState>,
     multiview: Option<i32>,
+    cache: Option<GpuPipelineCache>,
 }
 
 // wgpu's external textures: one to three planes, and how sampling turns
@@ -627,6 +644,10 @@ trait GpuAdapter {
     fn subgroupMinSize(this: &GpuAdapter) -> i32;
     #[native(adapter_subgroup_max_size)]
     fn subgroupMaxSize(this: &GpuAdapter) -> i32;
+    // Where to file this adapter's pipeline cache data: null on a backend
+    // without pipeline caches.
+    #[native(adapter_pipeline_cache_key)]
+    fn pipelineCacheKey(this: &GpuAdapter) -> Text;
 }
 
 #[idl("GPUDevice")]
@@ -716,6 +737,8 @@ trait GpuDevice {
     fn createBlas(this: &GpuDevice, descriptor: &GpuBlasDescriptor) -> Box<GpuBlas>;
     #[native(tlas_create)]
     fn createTlas(this: &GpuDevice, descriptor: &GpuTlasDescriptor) -> Box<GpuTlas>;
+    #[native(pipeline_cache_create)]
+    fn createPipelineCache(this: &GpuDevice, descriptor: &GpuPipelineCacheDescriptor) -> Box<GpuPipelineCache>;
     #[native(surface_configure_with)]
     fn configureSurfaceWith(this: &GpuDevice, surface: &GpuSurface, configuration: &GpuSurfaceConfiguration);
     #[native(surface_configure)]
@@ -1212,4 +1235,14 @@ trait GpuTlas {
     fn setInstance(this: &GpuTlas, index: i32, instance: &GpuTlasInstance);
     #[native(tlas_clear_instance)]
     fn clearInstance(this: &GpuTlas, index: i32);
+}
+
+trait GpuPipelineCache {
+    #[native(is_valid)]
+    fn valid(this: &GpuPipelineCache) -> bool;
+    #[native(pipeline_cache_destroy)]
+    fn destroy(this: &GpuPipelineCache);
+    // The cache's data to save, or null when the backend has none.
+    #[native(pipeline_cache_data)]
+    fn getData(this: &GpuPipelineCache) -> Buffer;
 }
