@@ -108,7 +108,8 @@ trait GpuDevice {
     #[native(buffer_create)]
     fn createBuffer(this: &GpuDevice, descriptor: &GpuBufferDescriptor) -> Box<GpuBuffer>;
     #[native(buffer_map_begin)]
-    fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Box<GpuRequest>;
+    #[idl("GPUBuffer.mapAsync")]
+    fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Future;
     #[native(shader_create)]
     fn createShader(this: &GpuDevice, wgsl: Text) -> Box<GpuShader>;
     #[native(compute_pipeline_create)]
@@ -118,7 +119,8 @@ trait GpuDevice {
     #[native(encoder_create)]
     fn encoder(this: &GpuDevice) -> Box<GpuEncoder>;
     #[native(queue_work_done)]
-    fn queueWorkDone(this: &GpuDevice, queue: &GpuQueue) -> Box<GpuRequest>;
+    #[idl("GPUQueue.onSubmittedWorkDone")]
+    fn queueWorkDone(this: &GpuDevice, queue: &GpuQueue) -> Future;
     #[native(texture_create)]
     fn texture(this: &GpuDevice, descriptor: &GpuTextureDescriptor) -> Box<GpuTexture>;
     #[native(pipeline_begin)]
@@ -296,15 +298,6 @@ trait GpuSurface {
     fn acquire(this: &GpuSurface) -> Box<GpuTextureView>;
     #[native(surface_destroy)]
     fn destroy(this: &GpuSurface);
-}
-
-trait GpuRequest {
-    #[native(request_ready)]
-    fn ready(this: &GpuRequest) -> bool;
-    #[native(request_result)]
-    fn result(this: &GpuRequest) -> i32;
-    #[native(request_discard)]
-    fn destroy(this: &GpuRequest);
 }
 
 trait GpuBindings {

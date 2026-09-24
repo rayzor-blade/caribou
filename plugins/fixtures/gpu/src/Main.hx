@@ -45,13 +45,8 @@ class Main {
         encoder.compute(pipeline, group, 4, 1, 1);
         encoder.copyBuffer(storage, 0, readback, 0, 16);
         encoder.submit(queue);
-        var request = device.mapBuffer(readback, 0, 16);
-        var deadline = haxe.Timer.stamp() + 10;
-        while (!request.ready()) {
-            check(haxe.Timer.stamp() < deadline, "GPU mapping timed out");
-            Sys.sleep(0.001);
-        }
-        check(request.result() == 1, "mapping failed");
+        device.queueWorkDone(queue).await();
+        device.mapBuffer(readback, 0, 16).await();
         var output = haxe.io.Bytes.alloc(16);
         hl.Gc.major();
         check(readback.copyOut(0, output, output.length), "readback failed");

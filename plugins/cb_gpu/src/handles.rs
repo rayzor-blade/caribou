@@ -5,9 +5,8 @@
 //! rather than reach whatever took its slot; the kind stops a buffer being
 //! read as a texture. The layout is private to this plugin.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::types::Kind;
 
@@ -106,87 +105,6 @@ impl<T> Slab<T> {
     }
 }
 
-/// An operation the caller started and polls for.
-///
-/// `done` and `result` are shared with whatever finishes the work -- a wgpu
-/// callback, or nothing at all when the answer was ready immediately.
-struct PendingRequest {
-    done: Arc<AtomicBool>,
-    result: Arc<AtomicI32>,
-    /// Polled while waiting. Natively a callback runs only when the device is
-    /// asked; in a page the event loop does it and this is 0.
-    device: i32,
-}
-
-/// In-flight requests, by id.
-pub struct PendingRequests {
-    next: i32,
-    slots: HashMap<i32, PendingRequest>,
-}
-
-impl Default for PendingRequests {
-    fn default() -> Self {
-        PendingRequests {
-            next: 1,
-            slots: HashMap::new(),
-        }
-    }
-}
-
-impl PendingRequests {
-    /// An id for work that has already finished.
-    pub fn settled(&mut self, result: i32) -> i32 {
-        self.add(PendingRequest {
-            done: Arc::new(AtomicBool::new(true)),
-            result: Arc::new(AtomicI32::new(result)),
-            device: 0,
-        })
-    }
-
-    /// An id for work in flight. `done` is what the callback sets.
-    pub fn waiting(&mut self, done: Arc<AtomicBool>, result: Arc<AtomicI32>, device: i32) -> i32 {
-        self.add(PendingRequest {
-            done,
-            result,
-            device,
-        })
-    }
-
-    fn add(&mut self, request: PendingRequest) -> i32 {
-        let id = self.next;
-        self.next += 1;
-        self.slots.insert(id, request);
-        id
-    }
-
-    pub fn discard(&mut self, id: i32) {
-        self.slots.remove(&id);
-    }
-
-    pub fn ready(&self, id: i32) -> bool {
-        self.slots
-            .get(&id)
-            .is_some_and(|r| r.done.load(Ordering::Acquire))
-    }
-
-    /// The device to poll before asking again, or 0.
-    pub fn device_of(&self, id: i32) -> i32 {
-        self.slots.get(&id).map_or(0, |r| r.device)
-    }
-
-    /// Collects a finished request and forgets it; 0 if unknown or unfinished.
-    pub fn take(&mut self, id: i32) -> i32 {
-        match self.slots.get(&id) {
-            Some(r) if r.done.load(Ordering::Acquire) => {
-                let result = r.result.load(Ordering::Acquire);
-                self.slots.remove(&id);
-                result
-            }
-            _ => 0,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,31 +173,5 @@ mod tests {
         let h = s.put(1);
         assert_eq!(kind_of(h), Kind::Buffer as i32);
         assert_eq!(kind_of(0), 0, "and zero is nothing");
-    }
-
-    #[test]
-    fn a_request_is_collected_once() {
-        let mut r = PendingRequests::default();
-        let id = r.settled(42);
-        assert!(r.ready(id));
-        assert_eq!(r.take(id), 42);
-        assert!(!r.ready(id), "collecting forgets it");
-        assert_eq!(r.take(id), 0);
-    }
-
-    #[test]
-    fn a_waiting_request_is_not_ready_until_its_flag_is_set() {
-        let mut r = PendingRequests::default();
-        let done = Arc::new(AtomicBool::new(false));
-        let result = Arc::new(AtomicI32::new(0));
-        let id = r.waiting(done.clone(), result.clone(), 42);
-        assert!(!r.ready(id));
-        assert_eq!(r.take(id), 0, "an unfinished request has no result");
-        assert_eq!(r.device_of(id), 42, "and says what to poll");
-
-        result.store(1, Ordering::Release);
-        done.store(true, Ordering::Release);
-        assert!(r.ready(id));
-        assert_eq!(r.take(id), 1);
     }
 }

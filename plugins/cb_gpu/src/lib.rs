@@ -10,7 +10,7 @@ compile_error!(
 mod backend;
 mod handles;
 mod types;
-use caribou_abi::{Buffer, Enum, Text};
+use caribou_abi::{Buffer, Enum, Future, Text};
 include!(concat!(env!("OUT_DIR"), "/gpu.rs"));
 
 #[cfg(test)]
@@ -51,6 +51,16 @@ mod tests {
         assert_eq!(AddressMode::MirrorRepeat.native(), 2);
         assert_eq!(BufferUsage::STORAGE(), 128);
         assert_eq!(TextureUsage::RENDER_ATTACHMENT(), 16);
+
+        let map = symbol("GpuDevice", "mapBuffer");
+        assert_eq!(map.ret, <Future as caribou_abi::Returned>::TAG);
+        let submitted = symbol("GpuDevice", "queueWorkDone");
+        assert_eq!(submitted.ret, <Future as caribou_abi::Returned>::TAG);
+        assert!(
+            __CARIBOU_CLASSES
+                .iter()
+                .all(|class| unsafe { class.name.as_str() } != "GpuRequest")
+        );
 
         let create_buffer = symbol("GpuDevice", "createBuffer");
         assert_eq!(

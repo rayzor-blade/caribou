@@ -7,15 +7,14 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use crate::handles::{PendingRequests, Slab, kind_of};
+use crate::handles::{Slab, kind_of};
 use crate::types::Kind;
 use crate::{
     GpuBufferDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor, GpuTextureViewDescriptor,
 };
-use caribou_abi::{Buffer, ErrorKind, Text, host};
+use caribou_abi::{Buffer, ErrorKind, Future, Rooted, Text, Value, host};
 
 /// A device and the queue that came back with it.
 struct DeviceEntry {
@@ -77,8 +76,6 @@ slab!(SAMPLERS, wgpu::Sampler, Kind::Sampler);
 slab!(BINDGROUPS, wgpu::BindGroup, Kind::Bindgroup);
 slab!(ENCODERS, Encoder, Kind::Encoder);
 
-static REQUESTS: LazyLock<Mutex<PendingRequests>> = LazyLock::new(Mutex::default);
-
 /// Looks a handle up and lets go of the slab before the object is used, so no
 /// two of these locks are ever held at once.
 macro_rules! find {
@@ -114,6 +111,24 @@ fn bytes(data: &Buffer, len: i32) -> Option<&[u8]> {
     Some(unsafe { &data.as_slice()[..len] })
 }
 
+fn rejected_future(message: &str) -> Future {
+    let future = Future::new();
+    future.reject(Text::new(message).value());
+    future
+}
+
+/// Native callbacks only run when wgpu is polled. Browser WebGPU is driven by
+/// its event loop; native backends get a short-lived waiter so awaiting a
+/// Caribou future never requires a language-side busy loop.
+fn drive_device(device: wgpu::Device) {
+    #[cfg(not(target_arch = "wasm32"))]
+    std::thread::spawn(move || {
+        let _ = device.poll(wgpu::PollType::wait_indefinitely());
+    });
+    #[cfg(target_arch = "wasm32")]
+    let _ = device;
+}
+
 // -- instance ---------------------------------------------------------------
 
 pub unsafe fn instance_create() -> i32 {
@@ -140,13 +155,10 @@ pub unsafe fn adapter_request(inst: i32, power: i32) -> i32 {
         },
         ..Default::default()
     };
-    // Resolved before this returns on every native backend. The request id
-    // exists so a page, where it genuinely is a promise, looks the same.
-    let handle = match pollster::block_on(instance.request_adapter(&options)) {
+    match pollster::block_on(instance.request_adapter(&options)) {
         Ok(adapter) => ADAPTERS.lock().unwrap().put(adapter),
         Err(_) => 0,
-    };
-    REQUESTS.lock().unwrap().settled(handle)
+    }
 }
 
 pub unsafe fn adapter_name(adapter: i32) -> Text {
@@ -187,46 +199,26 @@ pub unsafe fn adapter_destroy(adapter: i32) {
     ADAPTERS.lock().unwrap().remove(adapter);
 }
 
-// -- requests ---------------------------------------------------------------
-
-pub unsafe fn request_ready(request: i32) -> bool {
-    // Natively a callback runs only when the device is asked, so a caller
-    // polling this is what makes it finish. `Poll` never blocks.
-    let device = REQUESTS.lock().unwrap().device_of(request);
-    if device != 0 {
-        if let Some(entry) = DEVICES.lock().unwrap().get(device) {
-            let _ = entry.device.poll(wgpu::PollType::Poll);
-        }
-    }
-    REQUESTS.lock().unwrap().ready(request)
-}
-
-pub unsafe fn request_result(request: i32) -> i32 {
-    REQUESTS.lock().unwrap().take(request)
-}
-
 // -- device -----------------------------------------------------------------
 
 pub unsafe fn device_request(adapter: i32) -> i32 {
     let adapter = find!(ADAPTERS, adapter, 0);
-    let handle =
-        match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
-            Ok((device, queue)) => {
-                let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
-                let reported = errors.clone();
-                device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-                    reported.lock().unwrap().push_back(error.to_string());
-                }));
-                let queue = QUEUES.lock().unwrap().put(queue);
-                DEVICES.lock().unwrap().put(DeviceEntry {
-                    device,
-                    queue,
-                    errors,
-                })
-            }
-            Err(_) => 0,
-        };
-    REQUESTS.lock().unwrap().settled(handle)
+    match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
+        Ok((device, queue)) => {
+            let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
+            let reported = errors.clone();
+            device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+                reported.lock().unwrap().push_back(error.to_string());
+            }));
+            let queue = QUEUES.lock().unwrap().put(queue);
+            DEVICES.lock().unwrap().put(DeviceEntry {
+                device,
+                queue,
+                errors,
+            })
+        }
+        Err(_) => 0,
+    }
 }
 
 pub unsafe fn device_take_error(device: i32) -> Text {
@@ -282,21 +274,32 @@ pub unsafe fn queue_write_buffer(queue: i32, buffer: i32, offset: i64, data: Buf
     queue.write_buffer(&buffer, offset.max(0) as u64, bytes);
 }
 
-pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64) -> i32 {
-    let buffer = find!(BUFFERS, buffer, 0);
-    let done = Arc::new(AtomicBool::new(false));
-    let result = Arc::new(AtomicI32::new(0));
-    let (flag, value) = (done.clone(), result.clone());
+pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64) -> Future {
+    let Some(buffer) = BUFFERS.lock().unwrap().get(buffer) else {
+        return rejected_future("buffer was destroyed");
+    };
+    let Some(device) = DEVICES.lock().unwrap().get(device) else {
+        return rejected_future("device was destroyed");
+    };
+    let future = Future::new();
+    let completion = Rooted::new(future);
     let start = offset.max(0) as u64;
     buffer.map_async(
         wgpu::MapMode::Read,
         start..start + size.max(0) as u64,
-        move |outcome| {
-            value.store(i32::from(outcome.is_ok()), Ordering::Release);
-            flag.store(true, Ordering::Release);
+        move |outcome| match outcome {
+            Ok(()) => {
+                completion.get().resolve(Value::null());
+            }
+            Err(error) => {
+                completion
+                    .get()
+                    .reject(Text::new(&error.to_string()).value());
+            }
         },
     );
-    REQUESTS.lock().unwrap().waiting(done, result, device)
+    drive_device(device.device.clone());
+    future
 }
 
 pub unsafe fn buffer_copy_out(buffer: i32, offset: i64, out: Buffer, len: i32) -> bool {
@@ -479,16 +482,20 @@ pub unsafe fn encoder_submit(encoder: i32, queue: i32) {
     ENCODERS.lock().unwrap().remove(handle);
 }
 
-pub unsafe fn queue_work_done(device: i32, queue: i32) -> i32 {
-    let queue = find!(QUEUES, queue, 0);
-    let done = Arc::new(AtomicBool::new(false));
-    let result = Arc::new(AtomicI32::new(0));
-    let (flag, value) = (done.clone(), result.clone());
+pub unsafe fn queue_work_done(device: i32, queue: i32) -> Future {
+    let Some(queue) = QUEUES.lock().unwrap().get(queue) else {
+        return rejected_future("queue was destroyed");
+    };
+    let Some(device) = DEVICES.lock().unwrap().get(device) else {
+        return rejected_future("device was destroyed");
+    };
+    let future = Future::new();
+    let completion = Rooted::new(future);
     queue.on_submitted_work_done(move || {
-        value.store(1, Ordering::Release);
-        flag.store(true, Ordering::Release);
+        completion.get().resolve(Value::null());
     });
-    REQUESTS.lock().unwrap().waiting(done, result, device)
+    drive_device(device.device.clone());
+    future
 }
 
 // -- textures ---------------------------------------------------------------
@@ -1727,15 +1734,13 @@ pub unsafe fn shader_messages(shader: i32) -> Text {
     text_out(&text)
 }
 
-// Native adapter/device requests settle before returning. Resolve the ticket
-// before wrapping it: a request ID must never masquerade as a resource ID.
+// Native adapter/device requests still settle before returning. Their typed
+// asynchronous form needs Promise<T> result metadata in the plugin ABI.
 pub unsafe fn adapter_open(instance: i32, power: i32) -> i32 {
-    let request = unsafe { adapter_request(instance, power) };
-    unsafe { request_result(request) }
+    unsafe { adapter_request(instance, power) }
 }
 pub unsafe fn device_open(adapter: i32) -> i32 {
-    let request = unsafe { device_request(adapter) };
-    unsafe { request_result(request) }
+    unsafe { device_request(adapter) }
 }
 pub unsafe fn adapter_driver(adapter: i32) -> Text {
     let adapter = find!(ADAPTERS, adapter, Text::NULL);
@@ -1755,9 +1760,6 @@ pub unsafe fn pipeline_release(pipeline: i32) {
             pipeline_destroy(pipeline);
         }
     }
-}
-pub unsafe fn request_discard(request: i32) {
-    REQUESTS.lock().unwrap().discard(request);
 }
 pub unsafe fn is_valid(handle: i32) -> bool {
     match kind_of(handle) {

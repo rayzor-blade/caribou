@@ -19,11 +19,13 @@ native resource lifetime operations.
 `Future` is the shared dynamic-result carrier. A backend creates one with
 `Future::new()`, roots it as `Rooted<Future>` while work is outstanding, and
 calls `resolve(Value)` or `reject(Value)` from its completion callback. The
-core wakes every waiting language fiber. A declaration chooses where an
-asynchronous boundary belongs; WebIDL `Promise<T>` syntax does not create a
-backend operation by itself.
+core wakes every waiting language fiber. Annotating a resource method with
+`#[idl("Interface.operation")]` imports its WebIDL return contract;
+`Promise<T>` must be exposed as the shared `Future` carrier. A declaration
+still chooses the plugin method name, arguments and native backend function.
 
-The WebIDL reader extracts enum strings and numeric constant namespaces. It
+The WebIDL reader extracts enum strings, numeric constant namespaces,
+dictionary members and operation return contracts. It
 is deliberately not a general WebIDL-to-Rust interface translator: an IDL
 interface cannot specify how a Rust backend owns GPU resources or implements
 asynchronous operations. Those choices belong in the resource declaration

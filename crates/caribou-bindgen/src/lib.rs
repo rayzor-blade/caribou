@@ -304,8 +304,19 @@ fn idl_type(
         }
         return Ok(syn::parse_quote!(Map<#key, #value>));
     }
+    if let Some(parts) = idl_generic(tokens, "Promise") {
+        if parts.len() != 1 {
+            return Err("WebIDL Promise needs one result type".into());
+        }
+        // Validate the promised value even though the ABI carrier is dynamic.
+        // The concrete result remains in caribou.Future and is projected by
+        // the frontend after await().
+        let _ = idl_type(parts[0], aliases, named, resolving)?;
+        return Ok(syn::parse_quote!(Future));
+    }
     let spelling = tokens.join(" ");
     let primitive = match spelling.as_str() {
+        "undefined" => Some(syn::parse_quote!(())),
         "boolean" => Some(syn::parse_quote!(bool)),
         "byte" | "octet" | "short" | "unsigned short" | "long" | "unsigned long" => {
             Some(syn::parse_quote!(i32))
@@ -334,6 +345,33 @@ fn idl_type(
         }
     }
     Err(format!("unsupported WebIDL type {spelling}"))
+}
+
+fn operation_return(
+    tokens: &[String],
+    source: &str,
+    aliases: &HashMap<String, Vec<String>>,
+    named: &HashMap<String, Type>,
+) -> Result<Type, String> {
+    let (interface, operation) = source
+        .split_once('.')
+        .ok_or_else(|| format!("WebIDL operation {source} must be Interface.method"))?;
+    let matches: Vec<_> = statements(body(tokens, "interface", interface)?)
+        .into_iter()
+        .filter_map(|statement| {
+            statement
+                .windows(2)
+                .position(|part| part[0] == operation && part[1] == "(")
+                .map(|at| &statement[..at])
+        })
+        .collect();
+    if matches.len() != 1 {
+        return Err(format!(
+            "expected one WebIDL operation {source}, found {}",
+            matches.len()
+        ));
+    }
+    idl_type(matches[0], aliases, named, &mut HashSet::new())
 }
 
 fn dictionary_fields(
@@ -858,6 +896,20 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                         .ok_or_else(|| format!("{class}.{name} needs #[native(function)]"))?
                         .parse_args::<syn::Ident>()
                         .map_err(error)?;
+                    if let Some(source) = idl_name(&f.attrs)? {
+                        let imported = operation_return(&idl, &source, &aliases, &idl_types)?;
+                        let declared = match &f.sig.output {
+                            ReturnType::Default => syn::parse_quote!(()),
+                            ReturnType::Type(_, ty) => (**ty).clone(),
+                        };
+                        if quote!(#imported).to_string() != quote!(#declared).to_string() {
+                            return Err(format!(
+                                "{class}.{name} returns {}, but {source} maps to {}",
+                                quote!(#declared),
+                                quote!(#imported)
+                            ));
+                        }
+                    }
                     let mut params = Vec::new();
                     let mut types = Vec::new();
                     let mut args = Vec::new();
@@ -1000,6 +1052,35 @@ mod tests {
         );
         assert!(!generated.contains("wgpu.Power"));
         assert!(generated.contains("fn done (& Work) -> Future"));
+    }
+    #[test]
+    fn promise_operations_map_to_the_shared_future_carrier() {
+        let generated = generate(
+            "gpu",
+            r#"
+              trait Queue {
+                #[native(done)]
+                #[idl("GPUQueue.onSubmittedWorkDone")]
+                fn done(this: &Queue) -> Future;
+              }
+            "#,
+            "interface GPUQueue { Promise<undefined> onSubmittedWorkDone(); };",
+        )
+        .unwrap();
+        assert!(generated.contains("fn done (& Queue) -> Future"));
+
+        let wrong = generate(
+            "gpu",
+            r#"
+              trait Queue {
+                #[native(done)]
+                #[idl("GPUQueue.onSubmittedWorkDone")]
+                fn done(this: &Queue) -> i32;
+              }
+            "#,
+            "interface GPUQueue { Promise<undefined> onSubmittedWorkDone(); };",
+        );
+        assert!(wrong.is_err());
     }
     #[test]
     fn records_generate_required_optional_and_sequence_fields() {
