@@ -48,6 +48,10 @@ fn window_events_and_scale_callback_cross_wren() {
             "events",
             r#"
 import "window:Samples" for Samples
+import "window:Event" for Event
+import "window:ScaleSize" for ScaleSize
+import "window:TouchForce" for TouchForce
+import "window:TouchPhase" for TouchPhase
 var touch = Samples.echo(Samples.event(2))
 System.print(touch.constructor)
 System.print(touch.force.force)
@@ -61,6 +65,20 @@ var size = Samples.scale(Fn.new {|factor| Samples.physical(factor * 100, 720) },
 System.print(size.width)
 System.print(size.height)
 System.print(Fiber.new { Samples.scale(Fn.new {|factor| Fiber.abort("scale failure") }, 2) }.try())
+var made = Samples.scale(Fn.new {|factor| ScaleSize.Physical(factor * 10, 48) }, 2)
+System.print(made.width)
+System.print(Samples.scale(Fn.new {|factor| ScaleSize.Default }, 2).constructor)
+System.print(Samples.echo(Event.RedrawRequested).constructor)
+var touched = Samples.echo(Event.Touch(4, TouchPhase.Ended, 0.5, 1.5, TouchForce.None, 9))
+System.print(touched.phase.constructor)
+System.print(touched.id)
+System.print(Fiber.new { Event.Touch(4, 5, 0.5, 1.5, TouchForce.None, 9) }.try())
+var far = Samples.event(10)
+System.print(far.id.toString)
+System.print(Samples.echo(far).id == far.id)
+var copy = Samples.echo(Event.Touch(far.device_id, far.phase, far.x, far.y, far.force, far.id))
+System.print(copy.id == far.id)
+System.print(copy.id != touched.id)
 "#,
         )
     });
@@ -73,6 +91,10 @@ System.print(Fiber.new { Samples.scale(Fn.new {|factor| Fiber.abort("scale failu
     );
     assert_eq!(
         output,
-        "Touch\n2\nKeyA\né\ntrue\n255\nRedrawRequested\n125\n720\nscale failure\n"
+        concat!(
+            "Touch\n2\nKeyA\né\ntrue\n255\nRedrawRequested\n125\n720\nscale failure\n",
+            "20\nDefault\nRedrawRequested\nEnded\n9\nwindow.Event.Touch: invalid phase field\n",
+            "1152921504606846977\ntrue\ntrue\ntrue\n"
+        )
     );
 }

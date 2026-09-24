@@ -116,6 +116,15 @@ fn sample(which: i32) -> Event {
         7 => n::WindowEvent::RedrawRequested.into(),
         8 => n::WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::SHIFT.into()).into(),
         9 => n::WindowEvent::ThemeChanged(winit::window::Theme::Dark).into(),
+        // An id no double holds exactly.
+        10 => n::WindowEvent::Touch(n::Touch {
+            device_id,
+            phase: n::TouchPhase::Started,
+            location: (0.0, 0.0).into(),
+            force: None,
+            id: (1 << 60) + 1,
+        })
+        .into(),
         _ => Event::None,
     }
 }

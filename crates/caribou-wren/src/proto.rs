@@ -132,8 +132,9 @@ pub fn from_wren(v: WValue) -> Value {
 }
 
 /// A core value as a wren_lift value. An int becomes a number, Wren having
-/// no other, and so does a boxed `Int64`, as near as a double comes; a
-/// Wren object is translated back; a core `Str` becomes a Wren string; a
+/// no other, and so does a boxed `Int64` a double holds exactly; any other
+/// `Int64` stays the core's box, an instance of `Int64` to Wren, so it
+/// crosses back unchanged. A Wren object is translated back; a core `Str` becomes a Wren string; a
 /// proxy another language holds one of this VM's objects through
 /// becomes that object; any other object of another language becomes an
 /// instance of the class installed for its type (see `import`), or `None`
@@ -156,9 +157,15 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
         let s = vm.alloc_string(text.to_owned());
         return Some(made(vm, s));
     }
-    // Wren has the one number: an integer beyond i32 is its nearest.
+    // Wren has the one number. 2^63 is a double but not an i64, so the
+    // round trip alone would take i64::MAX's nearest double for exact.
     if Int64::is(v) {
-        return Some(WValue::num(Int64::of(v)? as f64));
+        let n = Int64::of(v)?;
+        let near = n as f64;
+        if near != 9_223_372_036_854_775_808.0 && near as i64 == n {
+            return Some(WValue::num(near));
+        }
+        return crate::import::proxy(vm, v);
     }
     // A cell holding one of this VM's own objects, whose start has the
     // record at word zero where any other object has its type: the

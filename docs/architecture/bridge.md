@@ -18,7 +18,7 @@ Two ABIs meet at every cross-language call. Typed HashLink code passes raw scala
 
 * **Descriptor contract:** An object `Value` that reaches the bridge must have a `TypeDesc` at word zero. An adapter whose native objects carry a bare `hl_type` wraps them before they cross.
 * **Value representation:** A `Value` holds an `i32`, a double, a bool, null, or an object pointer.
-* **Boxed values:** A value that a language has but a `Value` word cannot hold crosses as a core object. A string crosses as a `Str`. A 64-bit integer outside the `i32` range crosses as an `Int64` (defined in `caribou::error`). A language with 64-bit integers reads the box back exactly; a language with only doubles receives the nearest double.
+* **Boxed values:** A value that a language has but a `Value` word cannot hold crosses as a core object. A string crosses as a `Str`. A 64-bit integer outside the `i32` range crosses as an `Int64` (defined in `caribou::error`). A language with 64-bit integers reads the box back exactly. Wren, which has only doubles, receives a `Num` when a double holds the integer exactly, and otherwise an `Int64` instance that prints its digits, compares by value and crosses back as the same integer.
 
 ## The Protocol
 

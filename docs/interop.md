@@ -191,6 +191,7 @@ Parameters are never inferred; they are only declared, and they are where infere
 | Wren | Crossing | Haxe |
 |---|---|---|
 | `Num` | By value | `Float` (an `Int` going into Wren becomes a `Num`) |
+| `Int64`, for an integer no double holds exactly | By reference, the same integer | `haxe.Int64` |
 | `Bool` | By value | `Bool` |
 | `String` | By value, copied | `String` |
 | `null` | | `null` |

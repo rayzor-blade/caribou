@@ -38,7 +38,7 @@ use std::sync::OnceLock;
 
 use caribou::bridge;
 use caribou::cell;
-use caribou::error::{Error, Str};
+use caribou::error::{Error, Int64, Str};
 use caribou::hash::{AddressMap, BuildAddressHasher};
 use caribou::heap::TypeDesc;
 use caribou::protocol::{CallSite, Callable};
@@ -94,6 +94,10 @@ enum Kind {
     Count,
     Iterate,
     IteratorValue,
+    /// `toString` and `==(_)` or `!=(_)` of a core `Int64` a double cannot
+    /// hold: the decimal digits, and equality with any integer of that value.
+    Int64Text,
+    Int64Equals(bool),
 }
 
 pub(crate) struct Target {
@@ -154,6 +158,9 @@ pub(crate) struct Imports {
     function: Option<*mut ObjClass>,
     /// The class a foreign sequence is an instance of, once installed.
     sequence: Option<*mut ObjClass>,
+    /// The class a core `Int64` beyond a double's exact range is an
+    /// instance of, once installed.
+    int64: Option<*mut ObjClass>,
 }
 
 impl Imports {
@@ -760,9 +767,65 @@ fn sequence_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
     Ok(ptr)
 }
 
+pub const INT64_CLASS: &str = "Int64";
+const INT64_MODULE: &str = "caribou:Int64";
+
+/// The class a core `Int64` is an instance of when Wren's number cannot
+/// hold it exactly: it prints its digits and compares by value, and it
+/// crosses back as the same integer.
+fn int64_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
+    let rec = record_for(vm.object_class as *mut u8);
+    if let Some(class) = rec.imports().borrow().int64 {
+        return Ok(class);
+    }
+    let shell = Interface {
+        lang: caribou::world::LANG_CORE,
+        module: INT64_MODULE.to_owned(),
+        classes: vec![ClassIface {
+            name: INT64_CLASS.to_owned(),
+            type_name: INT64_CLASS.to_owned(),
+            superclass: None,
+            fields: Vec::new(),
+            statics: Vec::new(),
+            methods: Vec::new(),
+            ctor: None,
+            class_object: Value::null(),
+        }],
+        functions: Vec::new(),
+    };
+    let bytes = blob(&shell).map_err(|e| ImportError(format!("`{INT64_MODULE}`: {e}")))?;
+    if vm.interpret_bytecode(INT64_MODULE, &bytes) != InterpretResult::Success {
+        return Err(ImportError(format!("`{INT64_MODULE}` did not install")));
+    }
+    let value = vm
+        .find_imported_var_from(INT64_CLASS, INT64_MODULE)
+        .ok_or_else(|| ImportError(format!("`{INT64_MODULE}` installed no class")))?;
+    let ptr = value.as_object().unwrap_or(std::ptr::null_mut()) as *mut ObjClass;
+    let member = |sig: &str, kind: Kind, name: &str| {
+        (
+            sig.to_owned(),
+            Target::new(
+                kind,
+                format!("{INT64_CLASS}.{name}"),
+                Callable::Dynamic(Value::null()),
+            ),
+        )
+    };
+    let members = vec![
+        member("toString", Kind::Int64Text, "toString"),
+        member("==(_)", Kind::Int64Equals(true), "=="),
+        member("!=(_)", Kind::Int64Equals(false), "!="),
+    ];
+    let binding = bind_members(vm, ptr, INT64_CLASS, members)?;
+    let mut imports = rec.imports().borrow_mut();
+    imports.classes.insert(ptr as usize, Rc::new(binding));
+    imports.int64 = Some(ptr);
+    Ok(ptr)
+}
+
 /// `v` as an instance of the class installed for it: of the class
 /// installed for its type, of `Function` when `v` is a function, else of
-/// `Sequence` when `v` answers `len`. A cell gets the instance header
+/// `Sequence` when `v` answers `len`, else of `Int64` for a core `Int64`. A cell gets the instance header
 /// written into the view it keeps for Wren and is held through it; any
 /// other object gets an instance of the class holding it.
 pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
@@ -794,11 +857,13 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
                     .copied()
             })
         });
-        published.or_else(|| {
-            bridge::is_sequence(v)
-                .then(|| sequence_class(vm).ok())
-                .flatten()
-        })
+        published
+            .or_else(|| {
+                bridge::is_sequence(v)
+                    .then(|| sequence_class(vm).ok())
+                    .flatten()
+            })
+            .or_else(|| Int64::is(v).then(|| int64_class(vm).ok()).flatten())
     };
     let class = class?;
     // The object's cell, made here when it has none yet: a cell holds a
@@ -1063,6 +1128,20 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 Kind::ClassGetter(_) => bridge::get_at(class_object, name, &target.site, wren),
                 _ => bridge::set_at(class_object, name, &target.site, with_this[1], wren)
                     .map(|()| with_this[1]),
+            };
+            release(roots);
+            r
+        }
+        Kind::Int64Text | Kind::Int64Equals(_) => {
+            let n = foreign_of(recv).and_then(Int64::of).ok_or_else(|| {
+                release(roots);
+                format!("{} has no integer behind it", vm.class_name_of(recv))
+            })?;
+            let r = match target.kind {
+                Kind::Int64Equals(same) => {
+                    Ok(Value::bool((Int64::of(with_this[1]) == Some(n)) == same))
+                }
+                _ => Ok(Str::value(Str::new(&n.to_string()))),
             };
             release(roots);
             r
