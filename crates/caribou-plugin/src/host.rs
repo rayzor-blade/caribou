@@ -55,7 +55,8 @@ unsafe extern "C" fn future_ready(future: caribou_abi::Future) -> bool {
     let Some(future) = caribou::future::of(future.value()) else {
         return false;
     };
-    caribou::future::ready(future)
+    // SAFETY: `of` found a live future in the value.
+    unsafe { caribou::future::ready(future) }
 }
 
 unsafe extern "C" fn future_settle(
@@ -66,7 +67,8 @@ unsafe extern "C" fn future_settle(
     let Some(future) = caribou::future::of(future.value()) else {
         return false;
     };
-    caribou::future::settle(future, value, rejected)
+    // SAFETY: `of` found a live future in the value.
+    unsafe { caribou::future::settle(future, value, rejected) }
 }
 
 unsafe extern "C" fn future_resolve_object(
@@ -85,7 +87,8 @@ unsafe extern "C" fn future_resolve_object(
     };
     let _gc = heap::gc_guard();
     let value = super::wrap(desc, payload);
-    if caribou::future::settle(future, value, false) {
+    // SAFETY: `of` found a live future in the value.
+    if unsafe { caribou::future::settle(future, value, false) } {
         true
     } else {
         // `value` is now owned by the heap and its descriptor will release

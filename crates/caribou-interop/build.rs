@@ -41,6 +41,10 @@ fn main() {
             .current_dir(&manifest_dir)
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .env_remove("RUSTFLAGS")
+            // Under `cargo clippy` the outer build's lints would otherwise
+            // run on this nested build too, with the outer `-D warnings`.
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .env_remove("CLIPPY_ARGS")
             .status()
             .expect("cargo runs");
         assert!(status.success(), "the test plugins build");

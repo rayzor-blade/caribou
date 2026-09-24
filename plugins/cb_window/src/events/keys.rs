@@ -201,6 +201,8 @@ pub enum KeyCode {
     #[caribou(skip)]
     Unrecognized,
 }
+// winit's own variant names (`DVR`), which the conversion matches by name.
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
 #[caribou(name = "window.NamedKey", from = winit::keyboard::NamedKey, fallback = Self::Unrecognized)]
 pub enum NamedKey {

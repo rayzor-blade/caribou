@@ -54,7 +54,10 @@ pub fn buffer_new(bytes: &[u8]) -> *mut BufferData {
 }
 
 /// Share a live GC allocation; the buffer's trace retains the backing block.
-/// The caller must keep `bytes` rooted through this allocation.
+///
+/// # Safety
+/// `bytes` points at `len` bytes of a live GC allocation, which the caller
+/// keeps rooted through this allocation.
 pub unsafe fn buffer_share(bytes: *mut u8, len: usize) -> *mut BufferData {
     let root = Rooted::alloc(&BUFFER_DESC, size_of::<BufferData>());
     let p = root.ptr().cast::<BufferData>();
@@ -183,9 +186,18 @@ pub fn enum_of(v: Value) -> Option<*mut EnumData> {
     }
     Some(p.cast())
 }
+/// The payload values of an enum object.
+///
+/// # Safety
+/// `p` is a live enum object, as [`enum_of`] returns one; the slice must
+/// not outlive it.
 pub unsafe fn enum_fields<'a>(p: *const EnumData) -> &'a [Value] {
     unsafe { std::slice::from_raw_parts(p.add(1).cast(), (*p).len) }
 }
+/// The descriptor of an enum object's type.
+///
+/// # Safety
+/// `p` is a live enum object, as [`enum_of`] returns one.
 pub unsafe fn enum_descriptor(p: *const EnumData) -> &'static TypeDesc {
     unsafe { &*(*p).core.cast::<TypeDesc>() }
 }
@@ -309,6 +321,10 @@ static ENUM_PROTO: Protocol = Protocol {
 };
 
 /// Translate ABI declaration data once, while loading the plugin.
+///
+/// # Safety
+/// `d` and the names and variants it points at are a loaded plugin's
+/// declaration table, valid for as long as the call.
 pub unsafe fn describe_enum(d: &caribou_abi::EnumDesc) -> describe::EnumDesc {
     let variants = if d.variant_count == 0 {
         &[]

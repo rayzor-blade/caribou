@@ -408,16 +408,16 @@ impl WindowHandle {
         hotspot_y: u16,
     ) {
         with(this.handle, (), |open| {
-            if let Some(window) = open.app.window.as_ref() {
-                if let Ok(cursor) = winit::window::CustomCursor::from_rgba(
+            if let Some(window) = open.app.window.as_ref()
+                && let Ok(cursor) = winit::window::CustomCursor::from_rgba(
                     rgba.to_vec(),
                     width,
                     height,
                     hotspot_x,
                     hotspot_y,
-                ) {
-                    window.set_cursor(Cursor::Custom(open.event_loop.create_custom_cursor(cursor)));
-                }
+                )
+            {
+                window.set_cursor(Cursor::Custom(open.event_loop.create_custom_cursor(cursor)));
             }
         });
     }
@@ -527,7 +527,7 @@ impl WindowHandle {
 
     pub extern "C" fn has_focus(this: &WindowHandle) -> bool {
         with(this.handle, false, |open| {
-            open.app.window.as_ref().map_or(false, |w| w.has_focus())
+            open.app.window.as_ref().is_some_and(|w| w.has_focus())
         })
     }
 
@@ -706,10 +706,7 @@ impl WindowBuilder {
             WindowLevel::Normal => window::WindowLevel::Normal,
             WindowLevel::AlwaysOnTop => window::WindowLevel::AlwaysOnTop,
         };
-        this.attributes = this
-            .attributes
-            .clone()
-            .with_window_level(window_level.into());
+        this.attributes = this.attributes.clone().with_window_level(window_level);
         let new_box = Box::new(this.clone());
         let _ = this;
         new_box

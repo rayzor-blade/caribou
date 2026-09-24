@@ -65,7 +65,11 @@ pub fn of(value: Value) -> Option<*mut FutureData> {
         .then_some(object.cast())
 }
 
-pub fn ready(future: *const FutureData) -> bool {
+/// Whether the future has settled.
+///
+/// # Safety
+/// `future` is null or a future from [`new`] or [`of`] that is still alive.
+pub unsafe fn ready(future: *const FutureData) -> bool {
     if future.is_null() {
         return false;
     }
@@ -80,7 +84,10 @@ pub fn ready(future: *const FutureData) -> bool {
 }
 
 /// Complete once and wake all tasks that observed the pending state.
-pub fn settle(future: *mut FutureData, value: Value, rejected: bool) -> bool {
+///
+/// # Safety
+/// `future` is null or a future from [`new`] or [`of`] that is still alive.
+pub unsafe fn settle(future: *mut FutureData, value: Value, rejected: bool) -> bool {
     if future.is_null() {
         return false;
     }
@@ -295,8 +302,8 @@ mod tests {
             });
         }
         tick(None);
-        assert!(settle(future, Value::int(42), false));
-        assert!(!settle(future, Value::int(7), false));
+        assert!(unsafe { settle(future, Value::int(42), false) });
+        assert!(!unsafe { settle(future, Value::int(7), false) });
         tick(None);
         let mut values = seen.lock().unwrap().clone();
         values.sort();
