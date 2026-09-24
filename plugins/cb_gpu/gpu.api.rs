@@ -41,8 +41,18 @@ enum TextureViewDimension {}
 enum TextureAspect {}
 #[idl("GPUTextureDimension")]
 enum TextureDimension {}
+#[idl("GPUBufferBindingType")]
+enum BufferBindingType {}
+#[idl("GPUSamplerBindingType")]
+enum SamplerBindingType {}
+#[idl("GPUTextureSampleType")]
+enum TextureSampleType {}
+#[idl("GPUStorageTextureAccess")]
+enum StorageTextureAccess {}
 #[idl("GPUBufferUsage")]
 mod BufferUsage {}
+#[idl("GPUShaderStage")]
+mod ShaderStage {}
 #[idl("GPUTextureUsage")]
 mod TextureUsage {}
 #[idl("GPUColorWrite")]
@@ -67,6 +77,51 @@ struct GpuTextureDescriptor {
 struct GpuDeviceDescriptor {
     requiredFeatures: Vec<Enum<Feature>>,
     requiredLimits: Map<Enum<Limit>, i64>,
+}
+
+// Explicit layouts: what a pipeline's bind groups hold, declared ahead of
+// the shaders instead of inferred from one pipeline.
+#[idl("GPUBufferBindingLayout")]
+struct GpuBufferBindingLayout {}
+#[idl("GPUSamplerBindingLayout")]
+struct GpuSamplerBindingLayout {}
+#[idl("GPUTextureBindingLayout")]
+struct GpuTextureBindingLayout {}
+#[idl("GPUStorageTextureBindingLayout")]
+struct GpuStorageTextureBindingLayout {}
+#[idl("GPUExternalTextureBindingLayout")]
+struct GpuExternalTextureBindingLayout {}
+#[idl("GPUBindGroupLayoutEntry")]
+struct GpuBindGroupLayoutEntry {}
+#[idl("GPUBindGroupLayoutDescriptor")]
+struct GpuBindGroupLayoutDescriptor {}
+#[idl("GPUPipelineLayoutDescriptor")]
+struct GpuPipelineLayoutDescriptor {}
+
+// A bind group entry is one of these; each alternative is its own setter,
+// `resourceBuffer(buffer)`, `resourceBufferBinding(range)` and so on.
+// External textures are not exposed yet.
+#[idl("GPUBufferBinding")]
+struct GpuBufferBinding {}
+#[idl("GPUBindingResource")]
+enum BindingResource {
+    Sampler(GpuSampler),
+    Texture(GpuTexture),
+    TextureView(GpuTextureView),
+    Buffer(GpuBuffer),
+    BufferBinding(GpuBufferBinding),
+}
+#[idl("GPUBindGroupEntry")]
+struct GpuBindGroupEntry {}
+#[idl("GPUBindGroupDescriptor")]
+struct GpuBindGroupDescriptor {}
+
+#[idl("GPUProgrammableStage")]
+struct GpuProgrammableStage {}
+#[idl("GPUComputePipelineDescriptor")]
+struct GpuComputePipelineDescriptor {
+    // WebIDL's layout is a pipeline layout or "auto". Unset is "auto".
+    layout: Option<GpuPipelineLayout>,
 }
 
 #[idl("GPU")]
@@ -148,6 +203,14 @@ trait GpuDevice {
     fn pipeline(this: &GpuDevice) -> Box<GpuPipelineBuilder>;
     #[native(sampler_create)]
     fn sampler(this: &GpuDevice, descriptor: &GpuSamplerDescriptor) -> Box<GpuSampler>;
+    #[native(bind_group_layout_create)]
+    fn createBindGroupLayout(this: &GpuDevice, descriptor: &GpuBindGroupLayoutDescriptor) -> Box<GpuBindGroupLayout>;
+    #[native(pipeline_layout_create)]
+    fn createPipelineLayout(this: &GpuDevice, descriptor: &GpuPipelineLayoutDescriptor) -> Box<GpuPipelineLayout>;
+    #[native(bind_group_create_with)]
+    fn createBindGroup(this: &GpuDevice, descriptor: &GpuBindGroupDescriptor) -> Box<GpuBindGroup>;
+    #[native(compute_pipeline_create_with)]
+    fn createComputePipeline(this: &GpuDevice, descriptor: &GpuComputePipelineDescriptor) -> Box<GpuPipeline>;
     #[native(surface_configure)]
     fn configureSurface(this: &GpuDevice, surface: &GpuSurface, width: i32, height: i32, format: Enum<TextureFormat>);
 }
@@ -163,6 +226,7 @@ trait GpuQueue {
     fn presentSurface(this: &GpuQueue, surface: &GpuSurface);
 }
 
+#[idl("GPUBuffer")]
 trait GpuBuffer {
     #[native(is_valid)]
     fn valid(this: &GpuBuffer) -> bool;
@@ -174,6 +238,7 @@ trait GpuBuffer {
     fn destroy(this: &GpuBuffer);
 }
 
+#[idl("GPUShaderModule")]
 trait GpuShader {
     #[native(is_valid)]
     fn valid(this: &GpuShader) -> bool;
@@ -188,8 +253,27 @@ trait GpuPipeline {
     fn valid(this: &GpuPipeline) -> bool;
     #[native(pipeline_release)]
     fn destroy(this: &GpuPipeline);
+    #[native(pipeline_bind_group_layout)]
+    fn getBindGroupLayout(this: &GpuPipeline, index: i32) -> Box<GpuBindGroupLayout>;
 }
 
+#[idl("GPUBindGroupLayout")]
+trait GpuBindGroupLayout {
+    #[native(is_valid)]
+    fn valid(this: &GpuBindGroupLayout) -> bool;
+    #[native(bind_group_layout_destroy)]
+    fn destroy(this: &GpuBindGroupLayout);
+}
+
+#[idl("GPUPipelineLayout")]
+trait GpuPipelineLayout {
+    #[native(is_valid)]
+    fn valid(this: &GpuPipelineLayout) -> bool;
+    #[native(pipeline_layout_destroy)]
+    fn destroy(this: &GpuPipelineLayout);
+}
+
+#[idl("GPUBindGroup")]
 trait GpuBindGroup {
     #[native(is_valid)]
     fn valid(this: &GpuBindGroup) -> bool;
@@ -238,6 +322,26 @@ trait GpuEncoder {
     fn copyTextureToBuffer(this: &GpuEncoder, texture: &GpuTexture, buffer: &GpuBuffer, width: i32, height: i32, bytes_per_row: i32);
     #[native(render_set_bind_group)]
     fn renderSetBindGroup(this: &GpuEncoder, group: i32, bindgroup: &GpuBindGroup);
+    // Dynamic offsets as WebGPU's Uint32Array form: `count` offsets from
+    // element `start` of `offsets`, one per dynamic binding in binding order.
+    #[native(render_set_bind_group_offsets)]
+    fn renderSetBindGroupOffsets(this: &GpuEncoder, group: i32, bindgroup: &GpuBindGroup, offsets: Buffer, start: i64, count: i32);
+    // A compute pass open on the encoder until computeEnd, as a render pass
+    // is until renderEnd; compute() is the one-dispatch shorthand.
+    #[native(compute_begin)]
+    fn computeBegin(this: &GpuEncoder);
+    #[native(compute_set_pipeline)]
+    fn computeSetPipeline(this: &GpuEncoder, pipeline: &GpuPipeline);
+    #[native(compute_set_bind_group)]
+    fn computeSetBindGroup(this: &GpuEncoder, group: i32, bindgroup: &GpuBindGroup);
+    #[native(compute_set_bind_group_offsets)]
+    fn computeSetBindGroupOffsets(this: &GpuEncoder, group: i32, bindgroup: &GpuBindGroup, offsets: Buffer, start: i64, count: i32);
+    #[native(compute_dispatch)]
+    fn computeDispatch(this: &GpuEncoder, x: i32, y: i32, z: i32);
+    #[native(compute_dispatch_indirect)]
+    fn computeDispatchIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64);
+    #[native(compute_end)]
+    fn computeEnd(this: &GpuEncoder);
     #[native(render_set_index_buffer)]
     fn renderSetIndexBuffer(this: &GpuEncoder, buffer: &GpuBuffer, format: Enum<IndexFormat>);
     #[native(render_draw_indexed)]
@@ -260,6 +364,7 @@ trait GpuEncoder {
     fn insertDebugMarker(this: &GpuEncoder, label: Text);
 }
 
+#[idl("GPUTexture")]
 trait GpuTexture {
     #[native(is_valid)]
     fn valid(this: &GpuTexture) -> bool;
@@ -269,6 +374,7 @@ trait GpuTexture {
     fn destroy(this: &GpuTexture);
 }
 
+#[idl("GPUTextureView")]
 trait GpuTextureView {
     #[native(is_valid)]
     fn valid(this: &GpuTextureView) -> bool;
@@ -276,6 +382,7 @@ trait GpuTextureView {
     fn destroy(this: &GpuTextureView);
 }
 
+#[idl("GPUSampler")]
 trait GpuSampler {
     #[native(is_valid)]
     fn valid(this: &GpuSampler) -> bool;
@@ -290,6 +397,8 @@ trait GpuPipelineBuilder {
     fn valid(this: &GpuPipelineBuilder) -> bool;
     #[native(pipeline_shader)]
     fn shader(this: &GpuPipelineBuilder, shader: &GpuShader, vs: Text, fs: Text);
+    #[native(pipeline_layout)]
+    fn layout(this: &GpuPipelineBuilder, layout: &GpuPipelineLayout);
     #[native(pipeline_vertex_buffer)]
     fn vertexBuffer(this: &GpuPipelineBuilder, stride: i64, step: Enum<VertexStepMode>);
     #[native(pipeline_attribute_packed)]

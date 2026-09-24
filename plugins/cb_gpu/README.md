@@ -88,6 +88,31 @@ sequences become `addField(T)` methods. The declaration can also spell out
 the same shape as Rust fields when it needs a deliberate projection instead
 of the complete IDL dictionary.
 
+A WebIDL union is declared as a Rust enum whose variants each carry one
+declared type, and a record field of that type gets one setter per variant:
+
+```rust
+#[idl("GPUBindingResource")]
+enum BindingResource {
+    Sampler(GpuSampler),
+    TextureView(GpuTextureView),
+    Buffer(GpuBuffer),
+    BufferBinding(GpuBufferBinding),
+}
+```
+
+`GPUBindGroupEntry.resource` is typed `GPUBindingResource`, so
+`GpuBindGroupEntry` gets `resourceSampler(sampler)`,
+`resourceBufferBinding(range)` and so on. Bindgen checks each variant against
+the typedef's alternatives; leaving one out is a deliberate projection. A
+required union is not a constructor argument, and the backend refuses a
+record whose union was never set. A sequence of unions gets
+`addField<Variant>` methods. The union is a Rust type only: languages see
+the setters, not a dynamic value.
+
+WebIDL members named with a Rust keyword keep their name. The buffer and
+sampler binding layouts' `type` member is `layout.type(Storage)` in Haxe.
+
 WebIDL `record<K,V>` members become typed `addField(key, value)` methods and
 plugin-owned entry vectors. Nullable sequence elements add both
 `addField(value)` and `addFieldNull()`. String and buffer entries retain the
@@ -125,12 +150,12 @@ Constants become static methods such as `gpu.BufferUsage.STORAGE()` so they
 are available through the same plugin metadata in every frontend.
 
 The generator supports fieldless enums, integer constant namespaces,
-dictionary records and explicit resource method declarations. A method can
-name an IDL operation with `#[idl("Interface.operation")]`; Promise returns
-are checked against Caribou's shared `Future<T>` carrier. It does **not** yet
-choose language-neutral projections for arbitrary multi-type WebIDL unions
-or callback types, nor infer wgpu operations, overloads or scheduling from
-interfaces.
+dictionary records, declared unions and explicit resource method
+declarations. A method can name an IDL operation with
+`#[idl("Interface.operation")]`; Promise returns are checked against
+Caribou's shared `Future<T>` carrier. It does **not** yet project callback
+types, union-typed method parameters, or infer wgpu operations, overloads or
+scheduling from interfaces.
 As in hlwgpu, the native implementation and its API projections remain
 explicit. Texture and vertex formats currently expose the backend's declared
 subset in `gpu.api.rs`; this is not the complete browser WebGPU API.
@@ -151,6 +176,34 @@ a language-side annotation. Rejected operations raise their wgpu error.
 Native platforms drive asynchronous work on short-lived workers, while
 browser WebGPU uses its event loop. Completion callbacks retain a rooted
 Future rather than an unrooted Caribou value or a borrowed buffer.
+
+## Layouts and bind groups
+
+`createBindGroupLayout`, `createPipelineLayout`, `createBindGroup` and
+`createComputePipeline` take the WebGPU descriptors. A layout entry holds
+exactly one of `buffer`, `sampler`, `texture`, `storageTexture` or
+`externalTexture`; a buffer layout can take a dynamic offset and a minimum
+binding size. A `GpuBufferBinding` binds a range of a buffer, and a texture
+binds its default view. `GpuPipeline.getBindGroupLayout(i)` returns an
+inferred or explicit layout that other pipelines can share. The render
+pipeline builder's `layout(pipelineLayout)` replaces its inferred layout.
+
+`GpuProgrammableStage` names a shader module, an entry point and
+pipeline-overridable constants (`addConstants("bias", 1)`). A compute
+pipeline descriptor with no `layout` is WebGPU's `"auto"`.
+
+A compute pass stays open from `computeBegin()` to `computeEnd()`, as a
+render pass does from `passBegin()` to `renderEnd()`, so one pass can bind
+several groups and dispatch several times. Dynamic offsets use WebGPU's
+`Uint32Array` form: `computeSetBindGroupOffsets(index, group, offsets,
+start, count)` reads `count` 32-bit offsets from element `start` of a shared
+buffer, checked against its length first. `renderSetBindGroupOffsets` is
+the render pass equivalent. `compute()` remains the one-dispatch shorthand.
+
+The fixture's `explicitLayouts` binds a dynamic storage window and a uniform
+range, overrides a constant, and dispatches one bind group at two offsets.
+
+## Capabilities
 
 Adapters and devices expose `supports(Feature)` and `limit(Limit)`. Both
 catalogs are generated from the vendored WebGPU IDL. A
@@ -200,16 +253,15 @@ should also be exposed behind adapter capability checks.
 
 The largest missing groups are:
 
-- explicit bind-group and pipeline layouts, dynamic offsets and binding
-  ranges;
 - texture component-swizzle and binding-view extensions absent from wgpu 30,
   plus the three-element sequence spelling of texture extents;
 - all 101 IDL texture formats and all 42 IDL vertex formats are generated;
   `snorm10-10-10-2` is reported unavailable because wgpu 30 has no
   corresponding vertex format, and feature-gated texture families still
   require their adapter feature;
-- programmable constants, multiple shaders/stages, render pass load/store
-  choices and complete draw ranges;
+- render pipeline constants, multiple shaders/stages, render pass
+  load/store choices and complete draw ranges (compute constants and
+  explicit layouts are covered);
 - query sets, timestamps, occlusion queries, render bundles and external
   textures/images;
 - error scopes, device-lost reporting and structured compilation messages;
@@ -217,7 +269,8 @@ The largest missing groups are:
   space and frame latency;
 - wgpu extensions outside the WebGPU IDL, including native format features,
   pipeline statistics, encoder/pass timestamps, unrestricted mapped buffers,
-  binding arrays and non-uniform indexing, multi-draw, texture atomics,
+  binding arrays (layout entry counts) and non-uniform indexing, atomic
+  storage-texture access, multi-draw, texture atomics,
   64-bit shaders, subgroups, mesh shaders and ray tracing.
 
 These gaps affect expressiveness on every backend. They are separate from
@@ -229,7 +282,8 @@ remain conditional on the adapter and backend that implement them.
 
 `plugins/fixtures/gpu/src/Main.hx` creates a device, uploads four integers,
 runs a compute shader, reads the results into `haxe.io.Bytes`, and checks
-bounds errors and resource destruction. Returned object types are inferred.
+bounds errors and resource destruction. Its `explicitLayouts` part runs the
+layout, bind group, constant and dynamic offset path above. Returned object types are inferred.
 
 ```sh
 cargo test -p caribou-bindgen -p caribou-gpu --offline

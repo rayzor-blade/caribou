@@ -13,7 +13,9 @@ use std::sync::{Arc, LazyLock, Mutex};
 use crate::handles::{Slab, kind_of};
 use crate::types::Kind;
 use crate::{
-    GpuBufferDescriptor, GpuDeviceDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor,
+    BindingResource, GpuBindGroupDescriptor, GpuBindGroupLayoutDescriptor, GpuBindGroupLayoutEntry,
+    GpuBufferDescriptor, GpuComputePipelineDescriptor, GpuDeviceDescriptor,
+    GpuPipelineLayoutDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor,
     GpuTextureViewDescriptor,
 };
 use caribou_abi::{Buffer, ErrorKind, Future, Rooted, Text, Value, host};
@@ -40,6 +42,8 @@ struct DeviceEntry {
 struct EncoderEntry {
     encoder: Option<wgpu::CommandEncoder>,
     pass: Option<wgpu::RenderPass<'static>>,
+    /// The open compute pass, the same way. At most one of the two is open.
+    compute: Option<wgpu::ComputePass<'static>>,
     /// What the next pass will attach, in the order it was described. Held as
     /// handles rather than views because the views have to outlive the
     /// descriptor, and that is easier to arrange when the pass opens.
@@ -49,9 +53,10 @@ struct EncoderEntry {
 
 impl Drop for EncoderEntry {
     fn drop(&mut self) {
-        // A forgotten render-pass lifetime still requires ending the pass
-        // before releasing its encoder.
+        // A forgotten pass lifetime still requires ending the pass before
+        // releasing its encoder.
         self.pass.take();
+        self.compute.take();
         self.encoder.take();
     }
 }
@@ -662,6 +667,471 @@ pub unsafe fn bind_group_destroy(bindgroup: i32) {
     BINDGROUPS.lock().unwrap().remove(bindgroup);
 }
 
+// -- explicit layouts -----------------------------------------------------------
+
+slab!(
+    BIND_GROUP_LAYOUTS,
+    wgpu::BindGroupLayout,
+    Kind::BindGroupLayout
+);
+slab!(PIPELINE_LAYOUTS, wgpu::PipelineLayout, Kind::PipelineLayout);
+
+/// A descriptor the caller got wrong: raised in the caller's language, with
+/// no GPU work done.
+fn refuse(message: &str) -> i32 {
+    host::raise(ErrorKind::Type, message);
+    0
+}
+
+fn index(value: i32, what: &str) -> Result<u32, String> {
+    u32::try_from(value).map_err(|_| format!("{what} {value} is negative"))
+}
+
+fn size(value: i64, what: &str) -> Result<u64, String> {
+    u64::try_from(value).map_err(|_| format!("{what} {value} is negative"))
+}
+
+// The orders below are the WebGPU IDL's, which the generated enums carry.
+fn buffer_binding_type(which: i32) -> wgpu::BufferBindingType {
+    match which {
+        1 => wgpu::BufferBindingType::Storage { read_only: false },
+        2 => wgpu::BufferBindingType::Storage { read_only: true },
+        _ => wgpu::BufferBindingType::Uniform,
+    }
+}
+
+fn sampler_binding_type(which: i32) -> wgpu::SamplerBindingType {
+    match which {
+        1 => wgpu::SamplerBindingType::NonFiltering,
+        2 => wgpu::SamplerBindingType::Comparison,
+        _ => wgpu::SamplerBindingType::Filtering,
+    }
+}
+
+fn texture_sample_type(which: i32) -> wgpu::TextureSampleType {
+    match which {
+        1 => wgpu::TextureSampleType::Float { filterable: false },
+        2 => wgpu::TextureSampleType::Depth,
+        3 => wgpu::TextureSampleType::Sint,
+        4 => wgpu::TextureSampleType::Uint,
+        _ => wgpu::TextureSampleType::Float { filterable: true },
+    }
+}
+
+fn storage_texture_access(which: i32) -> wgpu::StorageTextureAccess {
+    match which {
+        1 => wgpu::StorageTextureAccess::ReadOnly,
+        2 => wgpu::StorageTextureAccess::ReadWrite,
+        _ => wgpu::StorageTextureAccess::WriteOnly,
+    }
+}
+
+/// What one layout entry binds: exactly one of its five layouts, each with
+/// the IDL's defaults for what was left unset.
+fn binding_type(entry: &GpuBindGroupLayoutEntry) -> Result<wgpu::BindingType, String> {
+    let mut chosen = Vec::with_capacity(1);
+    if let Some(buffer) = &entry.buffer {
+        let min = size(buffer.minBindingSize.unwrap_or(0), "minBindingSize")?;
+        chosen.push(wgpu::BindingType::Buffer {
+            ty: buffer_binding_type(buffer.r#type.unwrap_or(0)),
+            has_dynamic_offset: buffer.hasDynamicOffset.unwrap_or(false),
+            min_binding_size: std::num::NonZeroU64::new(min),
+        });
+    }
+    if let Some(sampler) = &entry.sampler {
+        chosen.push(wgpu::BindingType::Sampler(sampler_binding_type(
+            sampler.r#type.unwrap_or(0),
+        )));
+    }
+    if let Some(texture) = &entry.texture {
+        chosen.push(wgpu::BindingType::Texture {
+            sample_type: texture_sample_type(texture.sampleType.unwrap_or(0)),
+            view_dimension: texture_view_dimension(texture.viewDimension.unwrap_or(1)),
+            multisampled: texture.multisampled.unwrap_or(false),
+        });
+    }
+    if let Some(storage) = &entry.storageTexture {
+        chosen.push(wgpu::BindingType::StorageTexture {
+            access: storage_texture_access(storage.access.unwrap_or(0)),
+            format: texture_format(storage.format),
+            view_dimension: texture_view_dimension(storage.viewDimension.unwrap_or(1)),
+        });
+    }
+    if entry.externalTexture.is_some() {
+        chosen.push(wgpu::BindingType::ExternalTexture);
+    }
+    match (chosen.pop(), chosen.is_empty()) {
+        (Some(ty), true) => Ok(ty),
+        _ => Err(format!(
+            "binding {} needs exactly one of buffer, sampler, texture, storageTexture or externalTexture",
+            entry.binding
+        )),
+    }
+}
+
+pub unsafe fn bind_group_layout_create(
+    device: i32,
+    descriptor: &GpuBindGroupLayoutDescriptor,
+) -> i32 {
+    let entry = find!(DEVICES, device, 0);
+    let entries: Result<Vec<_>, String> = descriptor
+        .entries
+        .iter()
+        .map(|entry| {
+            Ok(wgpu::BindGroupLayoutEntry {
+                binding: index(entry.binding, "binding")?,
+                visibility: wgpu::ShaderStages::from_bits_truncate(entry.visibility as u32),
+                ty: binding_type(entry)?,
+                count: None,
+            })
+        })
+        .collect();
+    let entries = match entries {
+        Ok(entries) => entries,
+        Err(message) => return refuse(&message),
+    };
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
+    let layout = entry
+        .device
+        .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: label.as_ref().map(Text::as_str),
+            entries: &entries,
+        });
+    BIND_GROUP_LAYOUTS.lock().unwrap().put(layout)
+}
+
+pub unsafe fn bind_group_layout_destroy(layout: i32) {
+    BIND_GROUP_LAYOUTS.lock().unwrap().remove(layout);
+}
+
+pub unsafe fn pipeline_layout_create(device: i32, descriptor: &GpuPipelineLayoutDescriptor) -> i32 {
+    let entry = find!(DEVICES, device, 0);
+    // Resolved first so the descriptor below can borrow them. A null slot
+    // is a group the pipeline leaves empty.
+    let mut layouts = Vec::with_capacity(descriptor.bindGroupLayouts.len());
+    for (group, handle) in descriptor.bindGroupLayouts.iter().enumerate() {
+        match handle {
+            Some(handle) => match BIND_GROUP_LAYOUTS.lock().unwrap().get(*handle) {
+                Some(layout) => layouts.push(Some(layout)),
+                None => return refuse(&format!("bind group layout {group} was destroyed")),
+            },
+            None => layouts.push(None),
+        }
+    }
+    let immediate_size = match index(descriptor.immediateSize.unwrap_or(0), "immediateSize") {
+        Ok(size) => size,
+        Err(message) => return refuse(&message),
+    };
+    let borrowed: Vec<Option<&wgpu::BindGroupLayout>> =
+        layouts.iter().map(|layout| layout.as_deref()).collect();
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
+    let layout = entry
+        .device
+        .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: label.as_ref().map(Text::as_str),
+            bind_group_layouts: &borrowed,
+            immediate_size,
+        });
+    PIPELINE_LAYOUTS.lock().unwrap().put(layout)
+}
+
+pub unsafe fn pipeline_layout_destroy(layout: i32) {
+    PIPELINE_LAYOUTS.lock().unwrap().remove(layout);
+}
+
+/// One resolved bind group resource, held so the descriptor can borrow it.
+enum Resolved {
+    Buffer(Arc<wgpu::Buffer>, u64, Option<std::num::NonZeroU64>),
+    Sampler(Arc<wgpu::Sampler>),
+    View(Arc<wgpu::TextureView>),
+}
+
+fn resolve(binding: i32, resource: Option<&BindingResource>) -> Result<Resolved, String> {
+    let gone = |what: &str| format!("binding {binding}: the {what} was destroyed");
+    Ok(match resource {
+        None => return Err(format!("binding {binding} has no resource")),
+        Some(BindingResource::Sampler(handle)) => Resolved::Sampler(
+            SAMPLERS
+                .lock()
+                .unwrap()
+                .get(*handle)
+                .ok_or_else(|| gone("sampler"))?,
+        ),
+        Some(BindingResource::TextureView(handle)) => Resolved::View(
+            VIEWS
+                .lock()
+                .unwrap()
+                .get(*handle)
+                .ok_or_else(|| gone("texture view"))?,
+        ),
+        // A texture binds its default view, as WebGPU specifies.
+        Some(BindingResource::Texture(handle)) => {
+            let texture = TEXTURES
+                .lock()
+                .unwrap()
+                .get(*handle)
+                .ok_or_else(|| gone("texture"))?;
+            Resolved::View(Arc::new(texture.create_view(&Default::default())))
+        }
+        Some(BindingResource::Buffer(handle)) => Resolved::Buffer(
+            BUFFERS
+                .lock()
+                .unwrap()
+                .get(*handle)
+                .ok_or_else(|| gone("buffer"))?,
+            0,
+            None,
+        ),
+        Some(BindingResource::BufferBinding(range)) => {
+            let buffer = BUFFERS
+                .lock()
+                .unwrap()
+                .get(range.buffer)
+                .ok_or_else(|| gone("buffer"))?;
+            let offset = size(range.offset.unwrap_or(0), "offset")?;
+            let length = match range.size {
+                Some(length) => Some(
+                    std::num::NonZeroU64::new(size(length, "size")?)
+                        .ok_or_else(|| format!("binding {binding}: a buffer range of size 0"))?,
+                ),
+                None => None,
+            };
+            Resolved::Buffer(buffer, offset, length)
+        }
+    })
+}
+
+pub unsafe fn bind_group_create_with(device: i32, descriptor: &GpuBindGroupDescriptor) -> i32 {
+    let entry = find!(DEVICES, device, 0);
+    let Some(layout) = BIND_GROUP_LAYOUTS.lock().unwrap().get(descriptor.layout) else {
+        return refuse("the bind group layout was destroyed");
+    };
+    let mut resolved = Vec::with_capacity(descriptor.entries.len());
+    for one in &descriptor.entries {
+        let binding = match index(one.binding, "binding") {
+            Ok(binding) => binding,
+            Err(message) => return refuse(&message),
+        };
+        match resolve(one.binding, one.resource.as_ref()) {
+            Ok(resource) => resolved.push((binding, resource)),
+            Err(message) => return refuse(&message),
+        }
+    }
+    let entries: Vec<wgpu::BindGroupEntry> = resolved
+        .iter()
+        .map(|(binding, resource)| wgpu::BindGroupEntry {
+            binding: *binding,
+            resource: match resource {
+                Resolved::Buffer(buffer, offset, size) => {
+                    wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: *offset,
+                        size: *size,
+                    })
+                }
+                Resolved::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
+                Resolved::View(view) => wgpu::BindingResource::TextureView(view),
+            },
+        })
+        .collect();
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
+    let group = entry.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: label.as_ref().map(Text::as_str),
+        layout: &layout,
+        entries: &entries,
+    });
+    BINDGROUPS.lock().unwrap().put(group)
+}
+
+pub unsafe fn compute_pipeline_create_with(
+    device: i32,
+    descriptor: &GpuComputePipelineDescriptor,
+) -> i32 {
+    let entry = find!(DEVICES, device, 0);
+    let stage = &descriptor.compute;
+    let Some(module) = SHADERS.lock().unwrap().get(stage.module) else {
+        return refuse("the shader module was destroyed");
+    };
+    // Unset is WebGPU's "auto": the layout is inferred from the shader.
+    let layout = match descriptor.layout {
+        Some(handle) => match PIPELINE_LAYOUTS.lock().unwrap().get(handle) {
+            Some(layout) => Some(layout),
+            None => return refuse("the pipeline layout was destroyed"),
+        },
+        None => None,
+    };
+    let entry_point = stage.entryPoint.as_ref().map(caribou_abi::Rooted::get);
+    let names: Vec<(Text, f64)> = stage
+        .constants
+        .iter()
+        .map(|(name, value)| (name.get(), *value))
+        .collect();
+    let constants: Vec<(&str, f64)> = names
+        .iter()
+        .map(|(name, value)| (name.as_str(), *value))
+        .collect();
+    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
+    let pipeline = entry
+        .device
+        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: label.as_ref().map(Text::as_str),
+            layout: layout.as_deref(),
+            module: &module,
+            entry_point: entry_point.as_ref().map(Text::as_str),
+            compilation_options: wgpu::PipelineCompilationOptions {
+                constants: &constants,
+                ..Default::default()
+            },
+            cache: None,
+        });
+    PIPELINES.lock().unwrap().put(pipeline)
+}
+
+/// A pipeline's layout for group `index`, inferred or explicit. The layout
+/// outlives the pipeline and can build bind groups for other pipelines
+/// that share it.
+pub unsafe fn pipeline_bind_group_layout(pipeline: i32, index_of: i32) -> i32 {
+    let group = match index(index_of, "bind group index") {
+        Ok(group) => group,
+        Err(message) => return refuse(&message),
+    };
+    let layout = if kind_of(pipeline) == Kind::Renderpipeline as i32 {
+        find!(RENDER_PIPELINES, pipeline, 0).get_bind_group_layout(group)
+    } else {
+        find!(PIPELINES, pipeline, 0).get_bind_group_layout(group)
+    };
+    BIND_GROUP_LAYOUTS.lock().unwrap().put(layout)
+}
+
+// -- dynamic offsets and compute passes ------------------------------------------
+
+/// `count` dynamic offsets from element `start` of a shared buffer of
+/// 32-bit values, as WebGPU's Uint32Array overload of setBindGroup reads
+/// them. Checked against the buffer before anything is read.
+fn dynamic_offsets(data: &Buffer, start: i64, count: i32) -> Option<Vec<u32>> {
+    let (Ok(start), Ok(count)) = (usize::try_from(start), usize::try_from(count)) else {
+        host::raise(ErrorKind::Type, "negative dynamic offset range");
+        return None;
+    };
+    let end = start.checked_add(count).and_then(|end| end.checked_mul(4));
+    if end.is_none_or(|end| end > data.len()) {
+        host::raise(ErrorKind::Type, "dynamic offsets exceed the shared buffer");
+        return None;
+    }
+    let bytes = unsafe { &data.as_slice()[start * 4..(start + count) * 4] };
+    Some(
+        bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_ne_bytes(*word))
+            .collect(),
+    )
+}
+
+pub unsafe fn render_set_bind_group_offsets(
+    encoder: i32,
+    group: i32,
+    bindgroup: i32,
+    offsets: Buffer,
+    start: i64,
+    count: i32,
+) {
+    let entry = find!(ENCODERS, encoder);
+    let bind_group = find!(BINDGROUPS, bindgroup);
+    let Some(offsets) = dynamic_offsets(&offsets, start, count) else {
+        return;
+    };
+    let mut held = entry.lock().unwrap();
+    if let Some(pass) = held.pass.as_mut() {
+        pass.set_bind_group(group.max(0) as u32, &*bind_group, &offsets);
+    }
+}
+
+pub unsafe fn compute_begin(encoder: i32) {
+    let entry = find!(ENCODERS, encoder);
+    let mut held = entry.lock().unwrap();
+    if held.pass.is_some() || held.compute.is_some() {
+        host::raise(ErrorKind::Runtime, "a pass is already open on this encoder");
+        return;
+    }
+    let Some(encoder) = held.encoder.as_mut() else {
+        return;
+    };
+    let pass = encoder
+        .begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: None,
+            timestamp_writes: None,
+        })
+        .forget_lifetime();
+    held.compute = Some(pass);
+}
+
+/// Runs `body` on the encoder's open compute pass, or raises.
+fn computing(encoder: &Encoder, body: impl FnOnce(&mut wgpu::ComputePass<'static>)) {
+    let mut held = encoder.lock().unwrap();
+    match held.compute.as_mut() {
+        Some(pass) => body(pass),
+        None => host::raise(
+            ErrorKind::Runtime,
+            "no compute pass is open on this encoder",
+        ),
+    }
+}
+
+pub unsafe fn compute_set_pipeline(encoder: i32, pipeline: i32) {
+    let entry = find!(ENCODERS, encoder);
+    let pipeline = find!(PIPELINES, pipeline);
+    computing(&entry, |pass| pass.set_pipeline(&pipeline));
+}
+
+pub unsafe fn compute_set_bind_group(encoder: i32, group: i32, bindgroup: i32) {
+    let entry = find!(ENCODERS, encoder);
+    let bind_group = find!(BINDGROUPS, bindgroup);
+    computing(&entry, |pass| {
+        pass.set_bind_group(group.max(0) as u32, &*bind_group, &[])
+    });
+}
+
+pub unsafe fn compute_set_bind_group_offsets(
+    encoder: i32,
+    group: i32,
+    bindgroup: i32,
+    offsets: Buffer,
+    start: i64,
+    count: i32,
+) {
+    let entry = find!(ENCODERS, encoder);
+    let bind_group = find!(BINDGROUPS, bindgroup);
+    let Some(offsets) = dynamic_offsets(&offsets, start, count) else {
+        return;
+    };
+    computing(&entry, |pass| {
+        pass.set_bind_group(group.max(0) as u32, &*bind_group, &offsets)
+    });
+}
+
+pub unsafe fn compute_dispatch(encoder: i32, x: i32, y: i32, z: i32) {
+    let entry = find!(ENCODERS, encoder);
+    computing(&entry, |pass| {
+        pass.dispatch_workgroups(x.max(0) as u32, y.max(0) as u32, z.max(0) as u32)
+    });
+}
+
+pub unsafe fn compute_dispatch_indirect(encoder: i32, buffer: i32, offset: i64) {
+    let entry = find!(ENCODERS, encoder);
+    let buffer = find!(BUFFERS, buffer);
+    computing(&entry, |pass| {
+        pass.dispatch_workgroups_indirect(&buffer, offset.max(0) as u64)
+    });
+}
+
+pub unsafe fn compute_end(encoder: i32) {
+    let entry = find!(ENCODERS, encoder);
+    // Dropping the pass is what ends it.
+    entry.lock().unwrap().compute = None;
+}
+
 // -- commands ---------------------------------------------------------------
 
 pub unsafe fn encoder_create(device: i32) -> i32 {
@@ -669,12 +1139,9 @@ pub unsafe fn encoder_create(device: i32) -> i32 {
     let encoder = entry
         .device
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-    ENCODERS.lock().unwrap().put(Mutex::new(EncoderEntry {
-        encoder: Some(encoder),
-        pass: None,
-        colour: Vec::new(),
-        depth: None,
-    }))
+    let mut held = EncoderEntry::default();
+    held.encoder = Some(encoder);
+    ENCODERS.lock().unwrap().put(Mutex::new(held))
 }
 
 pub unsafe fn encoder_compute(encoder: i32, pipeline: i32, bindgroup: i32, x: i32, y: i32, z: i32) {
@@ -1115,6 +1582,10 @@ pub unsafe fn pass_depth(encoder: i32, view: i32, clear: f64, stencil_clear: i32
 pub unsafe fn pass_begin(encoder: i32) {
     let entry = find!(ENCODERS, encoder);
     let mut held = entry.lock().unwrap();
+    if held.pass.is_some() || held.compute.is_some() {
+        host::raise(ErrorKind::Runtime, "a pass is already open on this encoder");
+        return;
+    }
 
     // Resolved before the descriptor is built, so the views outlive it.
     let mut colour = Vec::with_capacity(held.colour.len());
@@ -1722,6 +2193,8 @@ pub unsafe fn surface_destroy(surface: i32) {
 struct PipelineBuild {
     device: i32,
     shader: i32,
+    /// An explicit pipeline layout, or 0 for one inferred from the shader.
+    layout: i32,
     vertex_entry: String,
     fragment_entry: String,
     buffers: Vec<(u64, wgpu::VertexStepMode, Vec<wgpu::VertexAttribute>)>,
@@ -1865,6 +2338,10 @@ pub unsafe fn pipeline_shader(builder: i32, shader: i32, vs: Text, fs: Text) {
     });
 }
 
+pub unsafe fn pipeline_layout(builder: i32, layout: i32) {
+    building(builder, |build| build.layout = layout);
+}
+
 pub unsafe fn pipeline_vertex_buffer(builder: i32, stride: i64, step: i32) {
     building(builder, |build| {
         build
@@ -1997,6 +2474,13 @@ pub unsafe fn render_pipeline_build(builder: i32) -> i32 {
     let build = entry.lock().unwrap();
     let device = find!(DEVICES, build.device, 0);
     let module = find!(SHADERS, build.shader, 0);
+    let layout = match build.layout {
+        0 => None,
+        handle => match PIPELINE_LAYOUTS.lock().unwrap().get(handle) {
+            Some(layout) => Some(layout),
+            None => return refuse("the pipeline layout was destroyed"),
+        },
+    };
 
     // Held so the descriptor below can borrow them.
     let layouts: Vec<wgpu::VertexBufferLayout> = build
@@ -2044,7 +2528,7 @@ pub unsafe fn render_pipeline_build(builder: i32) -> i32 {
         .device
         .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: None,
-            layout: None,
+            layout: layout.as_deref(),
             vertex: wgpu::VertexState {
                 module: &module,
                 entry_point: Some(build.vertex_entry.as_str()),
@@ -2251,6 +2735,12 @@ pub unsafe fn is_valid(handle: i32) -> bool {
         k if k == Kind::Surface as i32 => SURFACES.lock().unwrap().get(handle).is_some(),
         k if k == Kind::Builder as i32 => BUILDERS.lock().unwrap().get(handle).is_some(),
         k if k == Kind::Bindings as i32 => BINDINGS.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::BindGroupLayout as i32 => {
+            BIND_GROUP_LAYOUTS.lock().unwrap().get(handle).is_some()
+        }
+        k if k == Kind::PipelineLayout as i32 => {
+            PIPELINE_LAYOUTS.lock().unwrap().get(handle).is_some()
+        }
         _ => false,
     }
 }

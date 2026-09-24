@@ -18,4 +18,6 @@ pub enum Kind {
     Surface = 14,
     Builder = 15,
     Bindings = 16,
+    BindGroupLayout = 17,
+    PipelineLayout = 18,
 }

@@ -173,6 +173,78 @@ mod tests {
         assert!(!symbol("GpuTextureDescriptor", "addViewFormats").param_enums[1].is_null());
     }
     #[test]
+    fn explicit_layouts_bind_groups_and_unions_are_generated() {
+        let symbol = |class: &str, name: &str| {
+            __CARIBOU_SYMBOLS
+                .iter()
+                .find(|s| unsafe { s.class.as_str() == class && s.method.as_str() == name })
+                .unwrap_or_else(|| panic!("{class}.{name} is not exported"))
+        };
+        let class_of = |index: u8| unsafe { __CARIBOU_CLASSES[index as usize].name.as_str() };
+        let layout = symbol("GpuDevice", "createBindGroupLayout");
+        assert_eq!(
+            class_of(layout.param_classes[1]),
+            "GpuBindGroupLayoutDescriptor"
+        );
+        assert_eq!(class_of(layout.ret_class), "GpuBindGroupLayout");
+        assert_eq!(
+            class_of(symbol("GpuDevice", "createPipelineLayout").ret_class),
+            "GpuPipelineLayout"
+        );
+        assert_eq!(
+            class_of(symbol("GpuPipeline", "getBindGroupLayout").ret_class),
+            "GpuBindGroupLayout"
+        );
+        // WebIDL's `type` member keeps its name in every language.
+        assert!(!symbol("GpuBufferBindingLayout", "type").param_enums[1].is_null());
+        assert!(!symbol("GpuSamplerBindingLayout", "type").param_enums[1].is_null());
+        // One setter per union alternative, no dynamic value.
+        for (setter, class) in [
+            ("resourceSampler", "GpuSampler"),
+            ("resourceTexture", "GpuTexture"),
+            ("resourceTextureView", "GpuTextureView"),
+            ("resourceBuffer", "GpuBuffer"),
+            ("resourceBufferBinding", "GpuBufferBinding"),
+        ] {
+            assert_eq!(
+                class_of(symbol("GpuBindGroupEntry", setter).param_classes[1]),
+                class
+            );
+        }
+        assert!(
+            __CARIBOU_CLASSES
+                .iter()
+                .all(|class| unsafe { class.name.as_str() } != "BindingResource")
+        );
+        let mut entry = GpuBindGroupEntry::new(3);
+        assert!(entry.resource.is_none(), "a required union starts unset");
+        GpuBindGroupEntry::resourceBufferBinding(
+            &mut entry,
+            &GpuBufferBinding::new(&GpuBuffer { handle: 7 }),
+        );
+        assert!(matches!(
+            entry.resource,
+            Some(BindingResource::BufferBinding(GpuBufferBinding {
+                buffer: 7,
+                ..
+            }))
+        ));
+        assert_eq!(ShaderStage::COMPUTE(), 4);
+        assert_eq!(BufferBindingType::ReadOnlyStorage.native(), 2);
+        assert_eq!(StorageTextureAccess::ReadWrite.native(), 2);
+        assert_eq!(TextureSampleType::UnfilterableFloat.native(), 1);
+        let stage = symbol("GpuProgrammableStage", "addConstants");
+        assert_eq!(stage.params[1], <Text as caribou_abi::Param>::TAG);
+        assert_eq!(
+            class_of(symbol("GpuComputePipelineDescriptor", "layout").param_classes[1]),
+            "GpuPipelineLayout"
+        );
+        assert_eq!(
+            symbol("GpuEncoder", "computeSetBindGroupOffsets").params[3],
+            <Buffer as caribou_abi::Param>::TAG
+        );
+    }
+    #[test]
     fn generated_resource_methods_preserve_native_identity() {
         let bindings = GpuBindings::new();
         assert!(GpuBindings::valid(&bindings));
