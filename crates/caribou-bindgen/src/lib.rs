@@ -26,6 +26,21 @@ fn idl_name(attrs: &[syn::Attribute]) -> Result<Option<String>, String> {
         })
         .transpose()
 }
+/// `#[extension]` marks a member the backend has beyond the WebIDL source:
+/// an extra record field, enum value or union alternative.
+fn extension(attrs: &[syn::Attribute]) -> Result<bool, String> {
+    let mut found = false;
+    for attr in attrs {
+        if attr.path().is_ident("extension") {
+            attr.meta.require_path_only().map_err(error)?;
+            found = true;
+        } else if !attr.path().is_ident("doc") {
+            return Err("the only member attribute is #[extension]".into());
+        }
+    }
+    Ok(found)
+}
+
 /// A WebIDL member may be a Rust keyword (`type`); it stays itself as a raw
 /// identifier, which `plugin!` exports without the `r#`.
 fn ident(name: &str) -> Result<syn::Ident, String> {
@@ -436,7 +451,12 @@ fn dictionary_fields(
         } else {
             idl_type(ty, aliases, named, &mut HashSet::new())?
         };
-        if !required && generic(&ty, "Vec").is_none() && generic_pair(&ty, "Map").is_none() {
+        // An optional member is Option<_> unless an override already says so.
+        if !required
+            && generic(&ty, "Vec").is_none()
+            && generic_pair(&ty, "Map").is_none()
+            && generic(&ty, "Option").is_none()
+        {
             ty = syn::parse_quote!(Option<#ty>);
         }
         fields.push((field, ty));
@@ -627,6 +647,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
     // of that type takes one setter per alternative instead of a dynamic
     // value. Each variant holds exactly one declared type.
     let mut unions: HashMap<String, Vec<(syn::Ident, Type)>> = HashMap::new();
+    let mut union_extensions: HashSet<(String, String)> = HashSet::new();
     for item in &file.items {
         let Item::Enum(e) = item else { continue };
         if e.variants
@@ -648,6 +669,9 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     "union {}::{} needs one unnamed type",
                     e.ident, v.ident
                 ));
+            }
+            if extension(&v.attrs)? {
+                union_extensions.insert((e.ident.to_string(), v.ident.to_string()));
             }
             alternatives.push((v.ident.clone(), fields.unnamed[0].ty.clone()));
         }
@@ -729,7 +753,10 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                         .map(|ty| quote!(#ty).to_string())
                         .collect();
                     for (variant, ty) in alternatives {
-                        if !mapped.contains(&quote!(#ty).to_string()) {
+                        let extra = (name.to_string(), variant.to_string());
+                        if !union_extensions.contains(&extra)
+                            && !mapped.contains(&quote!(#ty).to_string())
+                        {
                             return Err(format!(
                                 "{name}::{variant} is not an alternative of {source}"
                             ));
@@ -757,37 +784,64 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                 let source = idl_name(&e.attrs)?;
                 // Native codes are evaluated here, so the generated code
                 // matches on plain integer literals.
-                let variants: Vec<(syn::Ident, i32)> =
-                    if let Some(source) = source.filter(|_| e.variants.is_empty()) {
-                        enum_values(&idl, &source)
-                            .or_else(|_| readonly_attribute_names(&idl, &source))?
-                            .into_iter()
-                            .enumerate()
-                            .map(|(i, v)| {
-                                let code = i32::try_from(i).map_err(error)?;
-                                Ok((ident(&pascal(&v))?, code))
-                            })
-                            .collect::<Result<_, String>>()?
-                    } else {
-                        let mut next = 0i32;
-                        let mut values = Vec::new();
-                        for v in &e.variants {
-                            if !matches!(v.fields, syn::Fields::Unit) {
-                                return Err("native enums must be fieldless".into());
-                            }
-                            let value = match &v.discriminant {
-                                Some((_, expr)) => discriminant(expr).ok_or_else(|| {
-                                    format!("{name}.{} needs an integer literal", v.ident)
-                                })?,
-                                None => next,
-                            };
-                            next = value
-                                .checked_add(1)
-                                .ok_or_else(|| format!("{name} overflows i32"))?;
-                            values.push((v.ident.clone(), value));
+                // An imported enum may add `#[extension]` values after the
+                // WebIDL ones; their codes continue from the last.
+                let all_extensions = e
+                    .variants
+                    .iter()
+                    .map(|v| extension(&v.attrs))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .all(|extra| extra);
+                let variants: Vec<(syn::Ident, i32)> = if let Some(source) =
+                    source.filter(|_| all_extensions)
+                {
+                    let mut values = enum_values(&idl, &source)
+                        .or_else(|_| readonly_attribute_names(&idl, &source))?
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            let code = i32::try_from(i).map_err(error)?;
+                            Ok((ident(&pascal(&v))?, code))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    for v in &e.variants {
+                        if !matches!(v.fields, syn::Fields::Unit) || v.discriminant.is_some() {
+                            return Err(format!(
+                                "{name}.{} extends a WebIDL enum: no fields or value",
+                                v.ident
+                            ));
                         }
-                        values
-                    };
+                        let code = i32::try_from(values.len()).map_err(error)?;
+                        values.push((v.ident.clone(), code));
+                    }
+                    values
+                } else {
+                    let mut next = 0i32;
+                    let mut values = Vec::new();
+                    for v in &e.variants {
+                        if !matches!(v.fields, syn::Fields::Unit) {
+                            return Err("native enums must be fieldless".into());
+                        }
+                        if extension(&v.attrs)? {
+                            return Err(format!(
+                                "{name}.{}: #[extension] needs an imported enum whose other values come from WebIDL",
+                                v.ident
+                            ));
+                        }
+                        let value = match &v.discriminant {
+                            Some((_, expr)) => discriminant(expr).ok_or_else(|| {
+                                format!("{name}.{} needs an integer literal", v.ident)
+                            })?,
+                            None => next,
+                        };
+                        next = value
+                            .checked_add(1)
+                            .ok_or_else(|| format!("{name} overflows i32"))?;
+                        values.push((v.ident.clone(), value));
+                    }
+                    values
+                };
                 if variants.is_empty() {
                     return Err(format!("empty enum {name}"));
                 }
@@ -821,17 +875,52 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             }
             Item::Mod(m) => {
                 let name = &m.ident;
-                let source =
-                    idl_name(&m.attrs)?.ok_or("constant modules require #[idl(\"Namespace\")]")?;
-                let body = body(&idl, "namespace", &source)?;
+                let mut constants: Vec<(syn::Ident, syn::LitInt)> = Vec::new();
+                if let Some(source) = idl_name(&m.attrs)? {
+                    let body = body(&idl, "namespace", &source)?;
+                    for statement in body.split(|s| s == ";").filter(|s| !s.is_empty()) {
+                        if statement.len() != 5 || statement[0] != "const" || statement[3] != "=" {
+                            return Err(format!("unsupported constant in {source}"));
+                        }
+                        constants.push((
+                            ident(&statement[2])?,
+                            syn::parse_str(&statement[4]).map_err(error)?,
+                        ));
+                    }
+                }
+                // Constants the backend has beyond the WebIDL namespace, or a
+                // namespace of its own: `const NAME: i32 = value;`.
+                for item in m
+                    .content
+                    .as_ref()
+                    .map(|(_, items)| items.as_slice())
+                    .unwrap_or(&[])
+                {
+                    let syn::Item::Const(constant) = item else {
+                        return Err(format!("{name} holds only i32 constants"));
+                    };
+                    let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Int(value),
+                        ..
+                    }) = &*constant.expr
+                    else {
+                        return Err(format!(
+                            "{name}::{} needs an integer literal",
+                            constant.ident
+                        ));
+                    };
+                    constants.push((constant.ident.clone(), value.clone()));
+                }
+                if constants.is_empty() {
+                    return Err(format!("{name} declares no constants"));
+                }
                 let mut methods = TokenStream::new();
                 let mut signatures = TokenStream::new();
-                for statement in body.split(|s| s == ";").filter(|s| !s.is_empty()) {
-                    if statement.len() != 5 || statement[0] != "const" || statement[3] != "=" {
-                        return Err(format!("unsupported constant in {source}"));
+                let mut seen = HashSet::new();
+                for (field, value) in constants {
+                    if !seen.insert(field.to_string()) {
+                        return Err(format!("duplicate constant {name}.{field}"));
                     }
-                    let field = ident(&statement[2])?;
-                    let value: syn::LitInt = syn::parse_str(&statement[4]).map_err(error)?;
                     methods.extend(quote!(pub extern "C" fn #field() -> i32 { #value }));
                     signatures.extend(quote!(fn #field() -> i32;));
                 }
@@ -847,19 +936,17 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     return Err("records need named fields".into());
                 };
                 let imported = idl_name(&s.attrs)?;
-                let explicit_fields: Vec<(syn::Ident, Type)> = fields
-                    .named
-                    .iter()
-                    .map(|field| {
-                        if !field.attrs.is_empty() {
-                            return Err(format!(
-                                "record field attributes are not supported on {class}"
-                            ));
-                        }
-                        Ok((field.ident.clone().expect("named field"), field.ty.clone()))
-                    })
-                    .collect::<Result<_, String>>()?;
-                let declared_fields: Vec<(syn::Ident, Type)> = if let Some(source) = imported {
+                let mut explicit_fields = Vec::new();
+                let mut extension_fields = Vec::new();
+                for field in &fields.named {
+                    let named = (field.ident.clone().expect("named field"), field.ty.clone());
+                    if extension(&field.attrs)? {
+                        extension_fields.push(named);
+                    } else {
+                        explicit_fields.push(named);
+                    }
+                }
+                let mut declared_fields: Vec<(syn::Ident, Type)> = if let Some(source) = imported {
                     let overrides: HashMap<_, _> = explicit_fields
                         .iter()
                         .map(|(name, ty)| (name.to_string(), ty.clone()))
@@ -869,7 +956,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     for name in overrides.keys() {
                         if !imported.iter().any(|(field, _)| field == name.as_str()) {
                             return Err(format!(
-                                "{class}.{name} does not override a member of {source}"
+                                "{class}.{name} does not override a member of {source}; mark a new member #[extension]"
                             ));
                         }
                     }
@@ -877,6 +964,8 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                 } else {
                     explicit_fields
                 };
+                // Members the backend has beyond the WebIDL dictionary.
+                declared_fields.extend(extension_fields);
                 let mut stored_fields = TokenStream::new();
                 let mut required_params = Vec::new();
                 let mut required_types = Vec::new();
@@ -1480,6 +1569,44 @@ mod tests {
             idl,
         );
         assert!(not_an_alternative.is_err());
+    }
+    #[test]
+    fn extensions_add_members_the_webidl_lacks() {
+        let generated = generate(
+            "gpu",
+            r#"
+              #[idl("GPUMode")] enum Mode { #[extension] Border }
+              trait Array {}
+              #[idl("GPUSampler")] trait Sampler {}
+              #[idl("GPUResource")]
+              enum Resource { Sampler(Sampler), #[extension] Array(Array) }
+              #[idl("GPUDescriptor")] struct Descriptor {
+                  /// Not in WebIDL.
+                  #[extension] count: Option<i32>,
+              }
+              mod Statistic { const VERTEX: i32 = 1; const FRAGMENT: i32 = 4; }
+              #[idl("GPUStage")] mod Stage { const EXTRA: i32 = 8; }
+            "#,
+            r#"
+              enum GPUMode { "clamp", "repeat" };
+              typedef (GPUSampler or GPUBuffer) GPUResource;
+              dictionary GPUDescriptor { required GPUResource resource; };
+              namespace GPUStage { const GPUFlags VERTEX = 0x1; };
+            "#,
+        )
+        .unwrap();
+        syn::parse_file(&generated).unwrap();
+        assert!(generated.contains("pub enum Mode { # [default] Clamp , Repeat , Border }"));
+        assert!(generated.contains("Self :: Border => 2"));
+        assert!(generated.contains("fn resourceArray (& mut Descriptor , & Array)"));
+        assert!(generated.contains("fn count (& mut Descriptor , i32)"));
+        assert!(generated.contains("fn FRAGMENT () -> i32"));
+        assert!(generated.contains("fn VERTEX () -> i32"));
+        assert!(generated.contains("fn EXTRA () -> i32"));
+        assert!(
+            generate("gpu", "enum E { A, #[extension] B }", "").is_err(),
+            "an extension needs WebIDL values to extend"
+        );
     }
     #[test]
     fn ambiguous_and_unsupported_declarations_fail_generation() {
