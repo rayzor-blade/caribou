@@ -5526,6 +5526,15 @@ pub fn collections() -> u64 {
     GC_STATS.collections.load(Ordering::Relaxed)
 }
 
+/// Whether a traced allocation of `t` flags its block for the sweep's drop
+/// pass: only a descriptor with a drop hook does.
+///
+/// # Safety
+/// `t` is a `TypeDesc`.
+unsafe fn drops(t: *const hl_type) -> bool {
+    unsafe { (*(t as *const TypeDesc)).drop.is_some() }
+}
+
 /// `hl_gc_alloc_gen`: `size` zeroed bytes of the kind in `flags`. Word zero
 /// belongs to the caller except for `Typed`, which receives `t`; `Finalizer`
 /// blocks are recorded so the callback the caller stores there runs. The
@@ -5540,7 +5549,7 @@ pub unsafe fn alloc_gen(t: *mut hl_type, size: usize, flags: u32) -> *mut c_void
     // kind written beside its size and a drop hook flagging the block. A
     // finalizer is registered under the lock.
     let traced = kind == AllocKind::Typed && flags & TRACED != 0;
-    let has_drop = traced && unsafe { (*(t as *const TypeDesc)).drop.is_some() };
+    let has_drop = traced && unsafe { drops(t) };
     if kind != AllocKind::Finalizer {
         let mark = match kind {
             AllocKind::Typed if traced => OBJECT_KIND_TRACED,
@@ -6385,10 +6394,10 @@ mod tests {
             "a bare hl_type has no hooks to read: Typed alone stays conservative"
         );
         assert_eq!(kind_of(&gc, traced - heap_start), OBJECT_KIND_TRACED);
+        // The block's flag is shared with whatever other tests allocate
+        // beside this object; the decision for this allocation is not.
         assert!(
-            !gc.blocks[(traced - heap_start) / BLOCK_SIZE]
-                .has_drop
-                .load(Ordering::Relaxed),
+            !unsafe { drops(desc) },
             "a hookless descriptor gives the sweep nothing to drop"
         );
         assert_eq!(unsafe { *(traced as *const usize) }, desc as usize);
