@@ -32,6 +32,8 @@ struct DeviceEntry {
     errors: Arc<Mutex<VecDeque<String>>>,
     /// Whether the device is lost, and whose futures wait to hear it.
     lost: Arc<Mutex<diagnostics::Lost>>,
+    /// Whether the program accepted DontCare loads for this device.
+    dont_care: bool,
 }
 
 /// An encoder and whatever pass is open on it.
@@ -50,6 +52,8 @@ struct EncoderEntry {
     /// descriptor, and that is easier to arrange when the pass opens.
     colour: Vec<(i32, wgpu::Color)>,
     depth: Option<(i32, f64, i32)>,
+    /// Its device's `dont_care`.
+    dont_care: bool,
 }
 
 impl Drop for EncoderEntry {
@@ -454,26 +458,20 @@ fn requested_limits(requested: &[(i32, i64)]) -> Result<wgpu::Limits, String> {
     Ok(limits.or_better_values_from(&defaults))
 }
 
-fn device_request_configured(
-    adapter: i32,
-    features: &[i32],
-    limits: &[(i32, i64)],
-    native_features: &[i32],
-    native_limits: &[(i32, i64)],
-    memory_hints: Option<i32>,
-    accept_experimental: bool,
-) -> Future<crate::GpuDevice> {
+fn device_request_configured(adapter: i32, d: &GpuDeviceDescriptor) -> Future<crate::GpuDevice> {
     let Some(adapter) = ADAPTERS.lock().unwrap().get(adapter) else {
         return rejected_future("adapter was destroyed");
     };
-    let requested_features = match requested_features(features)
-        .and_then(|webgpu| Ok(webgpu | native::requested_features(native_features)?))
+    let accept_experimental = d.experimentalFeatures.unwrap_or(false);
+    let dont_care = d.dontCareLoads.unwrap_or(false);
+    let requested_features = match requested_features(&d.requiredFeatures)
+        .and_then(|webgpu| Ok(webgpu | native::requested_features(&d.requiredNativeFeatures)?))
     {
         Ok(features) => features,
         Err(error) => return rejected_future(&error),
     };
-    let requested_limits = match requested_limits(limits)
-        .and_then(|limits| native::requested_limits(limits, native_limits))
+    let requested_limits = match requested_limits(&d.requiredLimits)
+        .and_then(|limits| native::requested_limits(limits, &d.requiredNativeLimits))
     {
         Ok(limits) => limits,
         Err(error) => return rejected_future(&error),
@@ -497,7 +495,7 @@ fn device_request_configured(
         required_features: requested_features,
         required_limits: requested_limits,
         experimental_features,
-        memory_hints: match memory_hints {
+        memory_hints: match d.memoryHints {
             Some(1) => wgpu::MemoryHints::MemoryUsage,
             _ => wgpu::MemoryHints::Performance,
         },
@@ -526,6 +524,7 @@ fn device_request_configured(
                     queue,
                     errors,
                     lost,
+                    dont_care,
                 });
                 if handle == 0 {
                     QUEUES.lock().unwrap().remove(queue);
@@ -553,22 +552,14 @@ fn device_request_configured(
 }
 
 pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
-    device_request_configured(adapter, &[], &[], &[], &[], None, false)
+    device_request_configured(adapter, &GpuDeviceDescriptor::new())
 }
 
 pub unsafe fn device_request_with(
     adapter: i32,
     descriptor: &GpuDeviceDescriptor,
 ) -> Future<crate::GpuDevice> {
-    device_request_configured(
-        adapter,
-        &descriptor.requiredFeatures,
-        &descriptor.requiredLimits,
-        &descriptor.requiredNativeFeatures,
-        &descriptor.requiredNativeLimits,
-        descriptor.memoryHints,
-        descriptor.experimentalFeatures.unwrap_or(false),
-    )
+    device_request_configured(adapter, descriptor)
 }
 
 pub unsafe fn device_take_error(device: i32) -> Text {
@@ -1382,6 +1373,7 @@ pub unsafe fn encoder_create(device: i32) -> i32 {
         .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     let mut held = EncoderEntry::default();
     held.encoder = Some(encoder);
+    held.dont_care = entry.dont_care;
     ENCODERS.lock().unwrap().put(Mutex::new(held))
 }
 

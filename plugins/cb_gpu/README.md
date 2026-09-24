@@ -233,7 +233,9 @@ entry point and constants. `createComputePipelineAsync` and
 `beginRenderPass` and `beginComputePass` take the pass descriptors. A color
 attachment takes a texture or a view, a resolve target, a load and a store
 operation and a clear value. A depth-stencil attachment takes the same per
-aspect, or read-only flags. Passes can write timestamps and hold an occlusion
+aspect, or read-only flags. wgpu's `DontCare` load leaves an attachment
+undefined until the pass writes it; a device allows it only with
+`dontCareLoads(true)` on its descriptor. Passes can write timestamps and hold an occlusion
 query set. Inside a render pass, draws take full ranges; `renderMultiDraw*`
 issue several indirect draws, and the `Count` forms read the count from a
 buffer. Immediate data, occlusion queries, pipeline statistics queries and
@@ -339,9 +341,9 @@ WebGPU's `GPUSize64`. Dimensions, counts, flags and shared-buffer lengths use
 
 - WebGPU members wgpu 30 does not have: texture component swizzle, texture
   binding view dimension, a buffer's map state, and reading a label back.
-- wgpu entry points that are `unsafe`: `LoadOp::DontCare`, pipeline caches,
-  passthrough shaders and backend handle interop. Their safety conditions
-  cannot be checked from the plugin.
+- wgpu entry points that are `unsafe` because of the data a call is given:
+  pipeline caches, passthrough shaders, shaders without runtime checks and
+  backend handle interop.
 - API tracing, which needs a wgpu build feature.
 - Browser image, canvas and video sources, which need the browser runtime.
 - The three-element sequence spelling of a texture extent; `GpuExtent3D` is

@@ -275,6 +275,13 @@ class Main {
             writes.endOfPassWriteIndex(1);
             pass.timestampWrites(writes);
         }
+        var careless = new GpuRenderPassColorAttachment(DontCare, Store);
+        careless.viewTexture(target);
+        var carelessPass = new GpuRenderPassDescriptor();
+        carelessPass.addColorAttachments(careless);
+        refused("a DontCare load ran without the device's opt-in",
+            () -> device.encoder().beginRenderPass(carelessPass));
+
         var encoder = device.encoder();
         encoder.beginRenderPass(pass);
         encoder.renderBeginOcclusionQuery(0);
@@ -816,6 +823,67 @@ class Main {
         Sys.println("gpu introspection ok");
     }
 
+    /**
+        A DontCare load on a device that accepted it: the pass writes every
+        pixel before it stores, so the target is defined.
+    **/
+    static function dontCareLoads(adapter:GpuAdapter) {
+        var requested = new GpuDeviceDescriptor();
+        requested.dontCareLoads(true);
+        var device = adapter.requestDeviceWith(requested).await();
+        var queue = device.queue();
+        var shader = device.createShader('
+            @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+                let x = f32(i32(i) / 2) * 4.0 - 1.0;
+                let y = f32(i32(i) % 2) * 4.0 - 1.0;
+                return vec4<f32>(x, y, 0.0, 1.0);
+            }
+            @fragment fn fs() -> @location(0) vec4<f32> {
+                return vec4<f32>(1.0, 0.0, 1.0, 1.0);
+            }');
+        var vertex = new GpuVertexState(shader);
+        vertex.entryPoint("vs");
+        var fragment = new GpuFragmentState(shader);
+        fragment.entryPoint("fs");
+        fragment.addTargets(new GpuColorTargetState(Rgba8unorm));
+        var descriptor = new GpuRenderPipelineDescriptor(vertex);
+        descriptor.fragment(fragment);
+        var pipeline = device.createRenderPipeline(descriptor);
+
+        var size = new GpuExtent3D(4);
+        size.height(4);
+        var target = device.texture(new GpuTextureDescriptor(size, Rgba8unorm,
+            TextureUsage.RENDER_ATTACHMENT() | TextureUsage.COPY_SRC()));
+        var pixels = device.createBuffer(new GpuBufferDescriptor(256 * 4,
+            BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
+        var colour = new GpuRenderPassColorAttachment(DontCare, Store);
+        colour.viewTexture(target);
+        var pass = new GpuRenderPassDescriptor();
+        pass.addColorAttachments(colour);
+        var encoder = device.encoder();
+        encoder.beginRenderPass(pass);
+        encoder.renderSetPipeline(pipeline);
+        encoder.renderDrawRange(3, 1, 0, 0);
+        encoder.renderEnd();
+        var into = new GpuTexelCopyBufferInfo(pixels);
+        into.bytesPerRow(256);
+        encoder.copyTextureToBufferWith(new GpuTexelCopyTextureInfo(target), into, size);
+        encoder.submit(queue);
+        device.queueWorkDone(queue).await();
+        device.mapBuffer(pixels, 0, 256 * 4).await();
+        var image = haxe.io.Bytes.alloc(256 * 4);
+        check(pixels.copyOut(0, image, image.length), "DontCare readback failed");
+        for (y in 0...4) for (x in 0...4) {
+            var at = y * 256 + x * 4;
+            check(image.get(at) == 255 && image.get(at + 1) == 0 && image.get(at + 2) == 255,
+                'DontCare pixel ($x, $y) was not written');
+        }
+        pixels.unmap();
+        check(device.takeError() == null, "GPU validation error with a DontCare load");
+        device.destroy();
+        Sys.println("gpu DontCare load ok");
+    }
+
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
@@ -889,6 +957,7 @@ class Main {
         renderingQueriesAndDiagnostics(adapter, device, queue, timestamps);
         deviceLoss(adapter);
         wgpuExtensions(adapter);
+        dontCareLoads(adapter);
         introspection(adapter);
         device.destroy();
         adapter.destroy();

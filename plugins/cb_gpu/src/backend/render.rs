@@ -417,12 +417,23 @@ fn attachment_view(view: Option<&AttachmentView>) -> Result<Arc<wgpu::TextureVie
     }
 }
 
-fn load<V>(op: i32, clear: V) -> wgpu::LoadOp<V> {
-    if op == 1 {
-        wgpu::LoadOp::Clear(clear)
-    } else {
-        wgpu::LoadOp::Load
-    }
+/// A load operation: `Load`, `Clear` or, where the device accepted it,
+/// `DontCare`.
+fn load<V>(op: i32, clear: V, dont_care: bool) -> Result<wgpu::LoadOp<V>, String> {
+    Ok(match op {
+        1 => wgpu::LoadOp::Clear(clear),
+        2 if dont_care => {
+            // The program set dontCareLoads on the device: its acceptance
+            // that the attachment is undefined until written.
+            wgpu::LoadOp::DontCare(unsafe { wgpu::LoadOpDontCare::enabled() })
+        }
+        2 => {
+            return Err(
+                "a DontCare load needs dontCareLoads(true) on the device descriptor".into(),
+            );
+        }
+        _ => wgpu::LoadOp::Load,
+    })
 }
 
 fn store(op: i32) -> wgpu::StoreOp {
@@ -472,7 +483,7 @@ struct PassPlan {
     occlusion: Option<Arc<QuerySetEntry>>,
 }
 
-fn render_plan_pass(d: &GpuRenderPassDescriptor) -> Result<PassPlan, String> {
+fn render_plan_pass(d: &GpuRenderPassDescriptor, dont_care: bool) -> Result<PassPlan, String> {
     let mut colors = Vec::with_capacity(d.colorAttachments.len());
     for attachment in &d.colorAttachments {
         let Some(a) = attachment else {
@@ -497,7 +508,7 @@ fn render_plan_pass(d: &GpuRenderPassDescriptor) -> Result<PassPlan, String> {
                 .transpose()?,
             depth_slice: a.depthSlice.map(|s| index(s, "depth slice")).transpose()?,
             ops: wgpu::Operations {
-                load: load(a.loadOp, clear),
+                load: load(a.loadOp, clear, dont_care)?,
                 store: store(a.storeOp),
             },
         }));
@@ -508,19 +519,30 @@ fn render_plan_pass(d: &GpuRenderPassDescriptor) -> Result<PassPlan, String> {
             // Read-only, or given no operations: the aspect is not written.
             let depth = (!a.depthReadOnly.unwrap_or(false)
                 && (a.depthLoadOp.is_some() || a.depthStoreOp.is_some()))
-            .then(|| wgpu::Operations {
-                load: load(a.depthLoadOp.unwrap_or(0), a.depthClearValue.unwrap_or(0.0)),
-                store: store(a.depthStoreOp.unwrap_or(0)),
-            });
+            .then(|| {
+                Ok::<_, String>(wgpu::Operations {
+                    load: load(
+                        a.depthLoadOp.unwrap_or(0),
+                        a.depthClearValue.unwrap_or(0.0),
+                        dont_care,
+                    )?,
+                    store: store(a.depthStoreOp.unwrap_or(0)),
+                })
+            })
+            .transpose()?;
             let stencil = (!a.stencilReadOnly.unwrap_or(false)
                 && (a.stencilLoadOp.is_some() || a.stencilStoreOp.is_some()))
-            .then(|| wgpu::Operations {
-                load: load(
-                    a.stencilLoadOp.unwrap_or(0),
-                    a.stencilClearValue.unwrap_or(0) as u32,
-                ),
-                store: store(a.stencilStoreOp.unwrap_or(0)),
-            });
+            .then(|| {
+                Ok::<_, String>(wgpu::Operations {
+                    load: load(
+                        a.stencilLoadOp.unwrap_or(0),
+                        a.stencilClearValue.unwrap_or(0) as u32,
+                        dont_care,
+                    )?,
+                    store: store(a.stencilStoreOp.unwrap_or(0)),
+                })
+            })
+            .transpose()?;
             Some(DepthPlan {
                 view: attachment_view(a.view.as_ref())?,
                 depth,
@@ -552,12 +574,13 @@ fn render_plan_pass(d: &GpuRenderPassDescriptor) -> Result<PassPlan, String> {
 /// a browser's indirect-draw bound; wgpu has no equivalent to pass it to.
 pub unsafe fn render_pass_begin_with(encoder: i32, descriptor: &GpuRenderPassDescriptor) {
     let entry = find!(ENCODERS, encoder);
+    let dont_care = entry.lock().unwrap().dont_care;
     let PassPlan {
         colors,
         depth,
         writes,
         occlusion,
-    } = match render_plan_pass(descriptor) {
+    } = match render_plan_pass(descriptor, dont_care) {
         Ok(plan) => plan,
         Err(message) => return raise(&message),
     };

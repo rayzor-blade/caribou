@@ -68,10 +68,13 @@ enum StorageTextureAccess {
     // wgpu's own, with TEXTURE_ATOMIC.
     #[extension] Atomic,
 }
-// wgpu's DontCare load op is left out: it takes an unsafe token, since
-// reading what it leaves is undefined behaviour.
+// wgpu's DontCare leaves an attachment undefined until it is written. A
+// device takes it only with dontCareLoads on its descriptor.
 #[idl("GPULoadOp")]
-enum LoadOp {}
+enum LoadOp {
+    #[extension]
+    DontCare,
+}
 #[idl("GPUStoreOp")]
 enum StoreOp {}
 #[idl("GPUQueryType")]
@@ -221,6 +224,9 @@ struct GpuDeviceDescriptor {
     // Accepts wgpu's terms for its EXPERIMENTAL_* features, which may still
     // have bugs that are undefined behaviour. Requesting one needs this.
     experimentalFeatures: Option<bool>,
+    // Accepts DontCare loads: an attachment loaded that way is undefined,
+    // and reading it before every pixel is written is undefined behaviour.
+    dontCareLoads: Option<bool>,
 }
 
 // Explicit layouts: what a pipeline's bind groups hold, declared ahead of
