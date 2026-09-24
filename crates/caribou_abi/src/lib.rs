@@ -17,7 +17,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
@@ -28,7 +28,7 @@ pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
 pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
 
 pub mod host;
-pub use host::{Kept, Rootable, Rooted, Text};
+pub use host::{Future, Kept, Rootable, Rooted, Text};
 pub mod data;
 pub use caribou_abi_derive::PluginEnum;
 pub use data::{Buffer, Enum, EnumDesc, EnumField, PluginEnum};
@@ -685,6 +685,7 @@ impl TypeTag {
     pub const ARRAY: TypeTag = TypeTag(hl::HARRAY as u8);
     pub const BUFFER: TypeTag = TypeTag(24);
     pub const ENUM: TypeTag = TypeTag(25);
+    pub const FUTURE: TypeTag = TypeTag(26);
     pub const ABSTRACT: TypeTag = TypeTag(hl::HABSTRACT as u8);
 
     pub const fn kind(self) -> hl::hl_type_kind {
@@ -823,6 +824,7 @@ tagged! {
     Value => TypeTag::DYN,
     Text => TypeTag::BYTES,
     Buffer => TypeTag::BUFFER,
+    Future => TypeTag::FUTURE,
 }
 
 impl<T: PluginClass> Param for &T {
@@ -1097,6 +1099,13 @@ mod tests {
         assert_eq!(size_of::<hl_obj_field>(), 24);
         assert_eq!(size_of::<hl_obj_proto>(), 24);
         assert_eq!(size_of::<hl_module_context>(), 24);
+    }
+
+    #[test]
+    fn rooted_future_can_cross_executor_threads() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<Rooted<Future>>();
+        assert_eq!(size_of::<Future>(), size_of::<usize>());
     }
 
     #[test]

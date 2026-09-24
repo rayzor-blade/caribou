@@ -84,6 +84,7 @@ System.print(Vec2.live() < 10)
 const DATA: &str = r#"
 import "math:Data" for Data
 import "math:Event" for Event
+import "core:Future" for Future
 var b = Data.bytes()
 System.print(b.count)
 System.print(b[0])
@@ -111,6 +112,16 @@ var rebuilt = Data.rebuild_nested(pair)
 System.print(rebuilt.first.label)
 System.print(rebuilt.first.bytes[0])
 System.print(Data.same_storage(pair.first.bytes, rebuilt.first.bytes))
+var future = Data.later(73)
+System.print(future.ready() || !future.ready())
+System.print(future.await())
+var manual = Future.new()
+System.print(manual.resolve(91))
+System.print(manual.resolve(92))
+System.print(manual.await())
+var rejected = Future.new()
+System.print(rejected.reject("future failed"))
+System.print(Fiber.new { rejected.await() }.try())
 "#;
 
 #[test]
@@ -122,7 +133,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 34);
+    assert_eq!(math.symbols().len(), 35);
     let hypot = math
         .symbols()
         .iter()
@@ -131,7 +142,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(hypot.param_count, 2);
     assert_eq!(hypot.params[0], TypeTag::F64);
     assert_eq!(hypot.ret, TypeTag::F64);
-    assert_eq!(ABI_VERSION, 2);
+    assert_eq!(ABI_VERSION, 3);
     assert_eq!(math.classes().len(), 4);
 
     let world = World::new(Config::default());
@@ -213,7 +224,7 @@ fn a_plugin_is_a_language_wren_imports() {
     );
     assert_eq!(
         output,
-        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\n"
+        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\ntrue\nfalse\n91\ntrue\nfuture failed\n"
     );
 
     // The temporaries die with Wren's cycle and the core's collection

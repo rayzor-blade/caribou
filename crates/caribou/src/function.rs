@@ -148,7 +148,10 @@ unsafe extern "C" fn trace(obj: *mut u8, tracer: *mut Tracer) {
     let held = match f.callable {
         Callable::Dynamic(v) => Some(v),
         Callable::WrenMethod { class, .. } => Some(class),
-        Callable::Typed { .. } | Callable::Cell { .. } => None,
+        Callable::Typed { .. }
+        | Callable::Cell { .. }
+        | Callable::ProtocolMethod { .. }
+        | Callable::Core(_) => None,
     };
     if let Some(v) = held {
         unsafe { (*tracer).mark_value(v.to_bits()) };

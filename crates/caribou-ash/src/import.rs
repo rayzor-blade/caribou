@@ -82,6 +82,11 @@ enum Kind {
     Len,
     Index,
     SetIndex,
+    FutureReady,
+    FutureAwait,
+    FutureNew,
+    FutureResolve,
+    FutureReject,
 }
 
 impl Kind {
@@ -96,6 +101,11 @@ impl Kind {
             "len" => Kind::Len,
             "index" => Kind::Index,
             "set_index" => Kind::SetIndex,
+            "future_ready" => Kind::FutureReady,
+            "future_await" => Kind::FutureAwait,
+            "future_new" => Kind::FutureNew,
+            "future_resolve" => Kind::FutureResolve,
+            "future_reject" => Kind::FutureReject,
             _ => return None,
         })
     }
@@ -194,6 +204,11 @@ pub fn sites() -> Vec<report::Site> {
                 Kind::Len => "caribou.Sequence.length".to_owned(),
                 Kind::Index => "caribou.Sequence.[]".to_owned(),
                 Kind::SetIndex => "caribou.Sequence.[]=".to_owned(),
+                Kind::FutureReady => "caribou.Future.ready".to_owned(),
+                Kind::FutureAwait => "caribou.Future.await".to_owned(),
+                Kind::FutureNew => "caribou.Future.new".to_owned(),
+                Kind::FutureResolve => "caribou.Future.resolve".to_owned(),
+                Kind::FutureReject => "caribou.Future.reject".to_owned(),
                 _ => s.name.clone(),
             },
             direct: s.site.direct().is_some(),
@@ -219,7 +234,14 @@ fn links(s: &Slot) -> bool {
         let class = &iface.classes[index];
         let member = match s.kind {
             Kind::Init => class.ctor.as_ref(),
-            Kind::Len | Kind::Index | Kind::SetIndex => None,
+            Kind::Len
+            | Kind::Index
+            | Kind::SetIndex
+            | Kind::FutureReady
+            | Kind::FutureAwait
+            | Kind::FutureNew
+            | Kind::FutureResolve
+            | Kind::FutureReject => None,
             Kind::Static => static_in_chain(&iface, index, s.member).map(|(_, m)| m),
             Kind::Method => class.methods.iter().find(|m| {
                 !m.is_static
@@ -473,12 +495,22 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
     if let Some(i) = bytecode.type_index_of("String") {
         proto::set_string_type(interpreter.c_type_of(i).cast());
     }
-    *FACES.write().unwrap() = Some(Faces {
+    let mut faces = Faces {
         by_class,
         fallback,
         by_type: HashMap::default(),
         views: AddressMap::default(),
-    });
+    };
+    // Future is a core class with handwritten Haxe methods rather than a
+    // macro-emitted foreign class, so bind its face directly by type.
+    if let Some(index) = bytecode.type_index_of("caribou.Future") {
+        let ty = interpreter.c_type_of(index) as usize;
+        let view = faces.view(ty).map_err(anyhow::Error::msg)?;
+        faces
+            .by_type
+            .insert((caribou::world::LANG_CORE, intern("caribou.Future")), view);
+    }
+    *FACES.write().unwrap() = Some(faces);
     Ok(())
 }
 
@@ -791,14 +823,32 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
     let args = unsafe { args[..params.len()].assume_init_ref() };
 
     let result = match s.kind {
-        Kind::Len | Kind::Index | Kind::SetIndex => {
+        Kind::FutureNew => {
+            let future = Value::object(caribou::future::new().cast());
+            unsafe { bind_face(receiver, wrenref::wrap_foreign(future)) };
+            Ok(Value::null())
+        }
+        Kind::Len
+        | Kind::Index
+        | Kind::SetIndex
+        | Kind::FutureReady
+        | Kind::FutureAwait
+        | Kind::FutureResolve
+        | Kind::FutureReject => {
             // A face's object, else the Haxe object itself, wrapped: a
             // Haxe array is a sequence to the bridge as it is.
             let target = unsafe { behind_face(receiver) }.unwrap_or_else(|| proto::wrap(receiver));
             match s.kind {
                 Kind::Len => bridge::len(target, haxe).map(|n| Value::int(n as i32)),
                 Kind::Index => bridge::index(target, args[0], haxe),
-                _ => bridge::set_index(target, args[0], args[1], haxe).map(|()| Value::null()),
+                Kind::SetIndex => {
+                    bridge::set_index(target, args[0], args[1], haxe).map(|()| Value::null())
+                }
+                Kind::FutureReady => bridge::invoke(target, intern("ready"), &[], haxe),
+                Kind::FutureAwait => bridge::invoke(target, intern("await"), &[], haxe),
+                Kind::FutureResolve => bridge::invoke(target, intern("resolve"), args, haxe),
+                Kind::FutureReject => bridge::invoke(target, intern("reject"), args, haxe),
+                _ => unreachable!(),
             }
         }
         Kind::Method => unsafe { behind(receiver) }

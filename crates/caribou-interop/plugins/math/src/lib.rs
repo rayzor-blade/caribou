@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use caribou_abi::{Buffer, Enum, ErrorKind, Kept, Text, Value, host};
+use caribou_abi::{Buffer, Enum, ErrorKind, Future, Kept, Rooted, Text, Value, host};
 
 pub extern "C" fn hypot(a: f64, b: f64) -> f64 {
     a.hypot(b)
@@ -211,6 +211,15 @@ impl Data {
     pub extern "C" fn rebuild_nested(value: Enum<Nested>) -> Enum<Nested> {
         value.get().into()
     }
+    pub extern "C" fn later(value: i32) -> Future {
+        let future = Future::new();
+        let completion = Rooted::new(future);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            completion.get().resolve(Value::int(value));
+        });
+        future
+    }
 }
 
 // Ordinary Rust data enums: no separate ABI enum definition or serializer.
@@ -257,6 +266,7 @@ caribou_abi::plugin! {
         fn nested(Enum<Event>) -> Enum<Nested>;
         fn pair() -> Enum<Nested>;
         fn rebuild_nested(Enum<Nested>) -> Enum<Nested>;
+        fn later(i32) -> Future;
     }
     fn hypot(f64, f64) -> f64;
     fn twice(i32) -> i32;

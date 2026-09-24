@@ -958,6 +958,21 @@ fn call_at_opt(
             );
             settle(outcome, segment, name, caller)
         }
+        Callable::ProtocolMethod { name: method } => {
+            let Some((&receiver, rest)) = args.split_first() else {
+                return settle(
+                    Outcome::Fault(
+                        ErrorKind::Type,
+                        format!("`{}` takes a receiver", method.name()),
+                    ),
+                    LANG_CORE,
+                    name,
+                    caller,
+                );
+            };
+            invoke_named(receiver, method, rest, caller, || name, site)
+        }
+        Callable::Core(function) => function(args),
         Callable::Typed {
             func,
             signature,

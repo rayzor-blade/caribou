@@ -436,7 +436,7 @@ fn scalar(ty: &Type) -> bool {
     type_name(ty).is_some_and(|s| {
         matches!(
             s.as_str(),
-            "i32" | "u32" | "i64" | "f32" | "f64" | "bool" | "Text" | "Buffer"
+            "i32" | "u32" | "i64" | "f32" | "f64" | "bool" | "Text" | "Buffer" | "Future"
         )
     })
 }
@@ -922,6 +922,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                                 let fallback = match type_name(ty).as_deref() {
                                     Some("Text") => quote!(Text::NULL),
                                     Some("Buffer") => quote!(Buffer::NULL),
+                                    Some("Future") => quote!(Future::NULL),
                                     _ => quote!(Default::default()),
                                 };
                                 (quote!(value), fallback)
@@ -984,6 +985,7 @@ mod tests {
             #[native(shader)] fn shader(this: &Device, source: Text, data: Buffer, power: Enum<Power>) -> Box<Shader>;
           }
           trait Shader { #[native(name)] fn name(this: &Shader) -> Text; }
+          trait Work { #[native(done)] fn done(this: &Work) -> Future; }
         "#, r#"enum Power { "low-power", "high-performance" }; namespace Usage { const Flags COPY = 0x4; };"#).unwrap();
         syn::parse_file(&generated).unwrap();
         assert!(generated.contains("gpu.Power"));
@@ -997,6 +999,7 @@ mod tests {
             )
         );
         assert!(!generated.contains("wgpu.Power"));
+        assert!(generated.contains("fn done (& Work) -> Future"));
     }
     #[test]
     fn records_generate_required_optional_and_sequence_fields() {

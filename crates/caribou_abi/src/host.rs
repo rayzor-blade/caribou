@@ -24,6 +24,12 @@ pub struct Host {
     ) -> *const crate::data::EnumData,
     pub enum_of:
         unsafe extern "C" fn(Value, *const crate::EnumDesc) -> *const crate::data::EnumData,
+    pub future_new: unsafe extern "C" fn() -> Future,
+    pub future_of: unsafe extern "C" fn(Value) -> Future,
+    pub future_ready: unsafe extern "C" fn(Future) -> bool,
+    /// Settle a pending future. `rejected` makes `value` the error raised by
+    /// `Future.await()`. Returns false when another completion won the race.
+    pub future_settle: unsafe extern "C" fn(Future, Value, bool) -> bool,
     pub i64_new: unsafe extern "C" fn(i64) -> Value,
     pub i64_of: unsafe extern "C" fn(Value) -> i64,
     /// A core string of `len` bytes of UTF-8 at `ptr`, copied; unrooted,
@@ -169,6 +175,67 @@ impl core::fmt::Display for Text {
     }
 }
 
+/// A core-owned, language-neutral eventual value.
+///
+/// The carrier is borrowed unless rooted. Keep a future in a callback or
+/// worker as `Rooted<Future>`; settling it wakes every Caribou fiber waiting
+/// on the same object without copying the result. `Rooted<Future>` is
+/// `Send + Sync`, so it may be moved into `tokio::spawn` or another executor.
+/// It is a completion handle, not an implementation of `core::future::Future`.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct Future(*const c_void);
+
+impl Future {
+    pub const NULL: Future = Future(core::ptr::null());
+
+    pub fn new() -> Future {
+        unsafe { (host().future_new)() }
+    }
+
+    pub fn of(value: Value) -> Option<Future> {
+        let future = unsafe { (host().future_of)(value) };
+        (!future.0.is_null()).then_some(future)
+    }
+
+    pub const unsafe fn from_raw(p: *const c_void) -> Future {
+        Future(p)
+    }
+
+    pub fn is_null(self) -> bool {
+        self.0.is_null()
+    }
+
+    pub fn value(self) -> Value {
+        if self.0.is_null() {
+            Value::null()
+        } else {
+            Value::object(self.0)
+        }
+    }
+
+    pub fn ready(self) -> bool {
+        unsafe { (host().future_ready)(self) }
+    }
+
+    pub fn resolve(self, value: Value) -> bool {
+        unsafe { (host().future_settle)(self, value, false) }
+    }
+
+    pub fn reject(self, error: Value) -> bool {
+        unsafe { (host().future_settle)(self, error, true) }
+    }
+}
+
+impl Rootable for Future {
+    fn value(self) -> Value {
+        Future::value(self)
+    }
+    fn of(value: Value) -> Option<Self> {
+        Future::of(value)
+    }
+}
+
 /// A core value a plugin holds across calls: rooted until dropped, so
 /// the collector keeps what it refers to. What a plugin stores in its
 /// own structures in place of a bare [`Value`], which the collector
@@ -244,6 +311,12 @@ impl<T: Rootable> Clone for Rooted<T> {
         Self::new(self.get())
     }
 }
+
+// A future's mutable state is synchronized by the core and a root is only a
+// handle into the core's synchronized handle table. This is the carrier a
+// backend callback moves to its completion thread.
+unsafe impl Send for Rooted<Future> {}
+unsafe impl Sync for Rooted<Future> {}
 
 impl Rootable for Text {
     fn value(self) -> Value {

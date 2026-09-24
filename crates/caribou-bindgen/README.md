@@ -10,11 +10,18 @@ crate name. Resource traits contain signatures annotated with
 WebIDL declaration using `#[idl("Name")]`.
 
 Resource methods use explicit `this: &Resource` parameters. Supported carriers
-are Caribou `Text`, `Buffer`, `Enum<T>`, `Box<Resource>` results and borrowed
+are Caribou `Text`, `Buffer`, `Future`, `Enum<T>`, `Box<Resource>` results and borrowed
 resource parameters, plus numeric/boolean scalars. Backends receive integer
 resource handles and declared native enum codes. Generated objects use the
 normal `plugin!` class metadata and finalizers; the backend defines explicit
 native resource lifetime operations.
+
+`Future` is the shared dynamic-result carrier. A backend creates one with
+`Future::new()`, roots it as `Rooted<Future>` while work is outstanding, and
+calls `resolve(Value)` or `reject(Value)` from its completion callback. The
+core wakes every waiting language fiber. A declaration chooses where an
+asynchronous boundary belongs; WebIDL `Promise<T>` syntax does not create a
+backend operation by itself.
 
 The WebIDL reader extracts enum strings and numeric constant namespaces. It
 is deliberately not a general WebIDL-to-Rust interface translator: an IDL

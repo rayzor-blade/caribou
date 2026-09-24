@@ -60,6 +60,17 @@ class UseData {
             default: throw "wrong wide constructor";
         }
         check(Data.area(Wide(haxe.Int64.make(2, 3))) == 2, "Haxe 64-bit payload");
+        var future = Data.later(73);
+        check(future.await() == 73, "future result");
+        var manual = new caribou.Future<Int>();
+        check(!manual.ready(), "new future ready");
+        check(manual.resolve(91) && !manual.resolve(92), "future settled twice");
+        check(manual.await() == 91, "manual future result");
+        var rejected = new caribou.Future<Int>();
+        check(rejected.reject("future failed"), "future rejection");
+        var rejectedCaught = false;
+        try rejected.await() catch (error:Dynamic) rejectedCaught = true;
+        check(rejectedCaught, "rejected future returned");
         var pair = Data.pair();
         hl.Gc.major();
         // Decode into ordinary Rust nested enums, then encode them again.

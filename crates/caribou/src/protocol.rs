@@ -650,6 +650,11 @@ pub enum Callable {
     },
     /// An object that answers `call`. Its language is its descriptor's.
     Dynamic(Value),
+    /// A method implemented by the receiver's language-neutral protocol.
+    /// The first argument is the receiver and the rest are sent by `name`.
+    ProtocolMethod { name: Symbol },
+    /// A core implementation published as an ordinary module member.
+    Core(fn(&[Value]) -> Result<Value, Value>),
     /// A method of a Wren class, sent by its Wren signature (`hit(_)`,
     /// `hp`, `hp=(_)`, `new(_)`) through the receiver's protocol: the
     /// first argument for an instance method, `class` for a static or a

@@ -24,6 +24,10 @@ pub static HOST: Host = Host {
     buffer_of,
     enum_new,
     enum_of,
+    future_new,
+    future_of,
+    future_ready,
+    future_settle,
     i64_new,
     i64_of,
     text_new,
@@ -35,6 +39,34 @@ pub static HOST: Host = Host {
     raise,
     raise_value,
 };
+
+unsafe extern "C" fn future_new() -> caribou_abi::Future {
+    unsafe { caribou_abi::Future::from_raw(caribou::future::new().cast()) }
+}
+
+unsafe extern "C" fn future_of(v: Value) -> caribou_abi::Future {
+    unsafe {
+        caribou_abi::Future::from_raw(caribou::future::of(v).map_or(std::ptr::null(), |p| p.cast()))
+    }
+}
+
+unsafe extern "C" fn future_ready(future: caribou_abi::Future) -> bool {
+    let Some(future) = caribou::future::of(future.value()) else {
+        return false;
+    };
+    caribou::future::ready(future)
+}
+
+unsafe extern "C" fn future_settle(
+    future: caribou_abi::Future,
+    value: Value,
+    rejected: bool,
+) -> bool {
+    let Some(future) = caribou::future::of(future.value()) else {
+        return false;
+    };
+    caribou::future::settle(future, value, rejected)
+}
 
 unsafe fn text_at(ptr: *const u8, len: usize) -> &'static str {
     if len == 0 {

@@ -167,6 +167,9 @@ pub fn language_name(lang: LangId) -> String {
 
 /// The id most recently registered under `name`, in any world.
 pub fn language_id(name: &str) -> Option<LangId> {
+    if name == "core" {
+        return Some(LANG_CORE);
+    }
     LANG_IDS.lock().unwrap().get(name).copied()
 }
 
@@ -175,6 +178,7 @@ impl World {
     /// an earlier world published.
     pub fn new(config: Config) -> World {
         heap::init();
+        crate::future::publish();
         // Materialise this thread's scheduler and install the heap's poll hook.
         let _ = sched::world_id();
         registry::set_namespaces(config.namespaces);

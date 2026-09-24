@@ -282,6 +282,9 @@ class Bridge {
 		}
 		if (Reflect.hasField(ty, "Object")) {
 			var typeName:String = Reflect.field(ty, "Object");
+			if (typeName == "caribou.Future") {
+				return macro :caribou.Future<Dynamic>;
+			}
 			for (c in classes) {
 				if (c.type_name == typeName) {
 					return TPath({pack: pack, name: c.name});

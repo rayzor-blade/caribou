@@ -288,6 +288,9 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
         if tag == TypeTag::ENUM {
             return TypeRef::Enum(unsafe { (*enumeration).name.as_str() }.to_owned());
         }
+        if tag == TypeTag::FUTURE {
+            return TypeRef::Object("caribou.Future".to_owned());
+        }
         if class == NO_CLASS {
             native::type_ref(tag.kind())
         } else {
@@ -567,6 +570,9 @@ fn arg_type(
         return data::enum_type(unsafe { (*enumeration).name.as_str() }).expect("registered enum")
             as *const TypeDesc as *const hl_type;
     }
+    if tag == TypeTag::FUTURE {
+        return &caribou::future::FUTURE_DESC as *const TypeDesc as *const hl_type;
+    }
     if class != NO_CLASS {
         return descs[class as usize] as *const TypeDesc as *const hl_type;
     }
@@ -610,7 +616,10 @@ unsafe extern "C-unwind" fn dispatch(
         // An object's type is its class's descriptor; the payload crosses.
         if unsafe { heap::is_descriptor(t) } {
             let desc = t as *const TypeDesc;
-            if std::ptr::eq(desc, &data::BUFFER_DESC) || data::is_enum(unsafe { &*desc }) {
+            if std::ptr::eq(desc, &data::BUFFER_DESC)
+                || std::ptr::eq(desc, &caribou::future::FUTURE_DESC)
+                || data::is_enum(unsafe { &*desc })
+            {
                 let value = cell::unwrap(v);
                 let p = value.as_object().filter(|p| !p.is_null()).filter(|p| {
                     std::ptr::eq(unsafe { caribou::protocol::desc_of(p.cast()) }, desc)
@@ -623,6 +632,8 @@ unsafe extern "C-unwind" fn dispatch(
                             i + 1,
                             if std::ptr::eq(desc, &data::BUFFER_DESC) {
                                 "caribou.Buffer"
+                            } else if std::ptr::eq(desc, &caribou::future::FUTURE_DESC) {
+                                "caribou.Future"
                             } else {
                                 &data::enum_schema(unsafe { &*desc }).name
                             },
@@ -683,6 +694,9 @@ unsafe extern "C-unwind" fn dispatch(
         && (std::ptr::eq(
             ret_type,
             &data::BUFFER_DESC as *const TypeDesc as *const hl_type,
+        ) || std::ptr::eq(
+            ret_type,
+            &caribou::future::FUTURE_DESC as *const TypeDesc as *const hl_type,
         ) || data::is_enum(unsafe { &*ret_type.cast::<TypeDesc>() }))
     {
         if word == 0 {
