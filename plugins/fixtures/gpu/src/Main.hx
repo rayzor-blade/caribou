@@ -1,4 +1,7 @@
 import gpu.GpuInstance;
+import gpu.GpuPassthroughEntryPoint;
+import gpu.GpuPassthroughShaderDescriptor;
+import gpu.GpuShaderModuleDescriptor;
 import gpu.Backends;
 import gpu.GpuInstanceDescriptor;
 import gpu.GpuRequestAdapterOptions;
@@ -884,6 +887,90 @@ class Main {
         Sys.println("gpu DontCare load ok");
     }
 
+    static final TRIPLE = '
+        @group(0) @binding(0) var<storage, read_write> values: array<u32, 4>;
+        @compute @workgroup_size(4) fn main(@builtin(local_invocation_index) i: u32) {
+            values[i] = values[i] * 3u;
+        }';
+
+    /** Runs `pipeline` over four integers in a storage buffer and checks each tripled. */
+    static function tripled(device:GpuDevice, queue:GpuQueue, pipeline:GpuPipeline, layout:gpu.GpuBindGroupLayout,
+            what:String) {
+        var values = device.createBuffer(new GpuBufferDescriptor(16,
+            BufferUsage.STORAGE() | BufferUsage.COPY_DST() | BufferUsage.COPY_SRC()));
+        var data = haxe.io.Bytes.alloc(16);
+        for (i in 0...4) data.setInt32(i * 4, i + 1);
+        queue.writeBuffer(values, 0, data, 16);
+        var entry = new GpuBindGroupEntry(0);
+        entry.resourceBuffer(values);
+        var group = new GpuBindGroupDescriptor(layout);
+        group.addEntries(entry);
+        var out = dispatchOnce(device, queue, pipeline, device.createBindGroup(group), values, 16);
+        for (i in 0...4) check(out.getInt32(i * 4) == (i + 1) * 3, '$what: value $i was not tripled');
+    }
+
+    /**
+        Shaders wgpu does not check, on a device that vouches for them: WGSL
+        with every runtime check off, and on Metal an MSL kernel handed to
+        the backend as it is.
+    **/
+    static function trustedShaders(adapter:GpuAdapter, device:GpuDevice) {
+        var checked = device.createShaderModule(new GpuShaderModuleDescriptor(TRIPLE));
+        check(checked.valid(), "a checked shader module was refused");
+        var unchecked = new GpuShaderModuleDescriptor(TRIPLE);
+        unchecked.boundsChecks(false);
+        refused("a shader without bounds checks was accepted untrusted", () -> device.createShaderModule(unchecked));
+        var msl = new GpuPassthroughShaderDescriptor();
+        msl.msl("kernel void triple() {}");
+        refused("a passthrough shader was accepted untrusted", () -> device.createShaderPassthrough(msl));
+
+        var requested = new GpuDeviceDescriptor();
+        requested.trustedShaders(true);
+        var passthrough = adapter.supportsNative(PassthroughShaders) && Type.enumEq(adapter.backend(), Metal);
+        if (passthrough) requested.addRequiredNativeFeatures(PassthroughShaders);
+        var trusted = adapter.requestDeviceWith(requested).await();
+        var queue = trusted.queue();
+
+        var fast = new GpuShaderModuleDescriptor(TRIPLE);
+        for (off in [fast.boundsChecks, fast.forceLoopBounding, fast.rayQueryInitializationTracking,
+                fast.taskShaderDispatchTracking, fast.meshShaderPrimitiveIndicesClamp, fast.intDivChecks])
+            off(false);
+        var pipeline = trusted.createComputePipeline(new GpuComputePipelineDescriptor(
+            new GpuProgrammableStage(trusted.createShaderModule(fast))));
+        tripled(trusted, queue, pipeline, pipeline.getBindGroupLayout(0), "unchecked WGSL");
+
+        if (passthrough) {
+            // Metal numbers buffers in layout order, so binding 0 is buffer 0.
+            var source = new GpuPassthroughShaderDescriptor();
+            source.msl('
+                #include <metal_stdlib>
+                using namespace metal;
+                kernel void triple(device uint* values [[buffer(0)]], uint i [[thread_position_in_grid]]) {
+                    values[i] = values[i] * 3u;
+                }');
+            var point = new GpuPassthroughEntryPoint("triple");
+            point.workgroupX(4);
+            source.addEntryPoints(point);
+            var writable = new GpuBufferBindingLayout();
+            writable.type(Storage);
+            var binding = new GpuBindGroupLayoutEntry(0, ShaderStage.COMPUTE());
+            binding.buffer(writable);
+            var layoutDescriptor = new GpuBindGroupLayoutDescriptor();
+            layoutDescriptor.addEntries(binding);
+            var layout = trusted.createBindGroupLayout(layoutDescriptor);
+            var pipelineLayout = new GpuPipelineLayoutDescriptor();
+            pipelineLayout.addBindGroupLayouts(layout);
+            var stage = new GpuProgrammableStage(trusted.createShaderPassthrough(source));
+            stage.entryPoint("triple");
+            var descriptor = new GpuComputePipelineDescriptor(stage);
+            descriptor.layout(trusted.createPipelineLayout(pipelineLayout));
+            tripled(trusted, queue, trusted.createComputePipeline(descriptor), layout, "passthrough MSL");
+        }
+        check(trusted.takeError() == null, "GPU validation error with trusted shaders");
+        trusted.destroy();
+        Sys.println('gpu trusted shaders ok${passthrough ? ": unchecked WGSL, passthrough MSL" : ": unchecked WGSL"}');
+    }
+
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
@@ -958,6 +1045,7 @@ class Main {
         deviceLoss(adapter);
         wgpuExtensions(adapter);
         dontCareLoads(adapter);
+        trustedShaders(adapter, device);
         introspection(adapter);
         device.destroy();
         adapter.destroy();

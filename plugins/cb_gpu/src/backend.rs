@@ -34,6 +34,8 @@ struct DeviceEntry {
     lost: Arc<Mutex<diagnostics::Lost>>,
     /// Whether the program accepted DontCare loads for this device.
     dont_care: bool,
+    /// Whether the program vouches for shaders wgpu does not check.
+    trusted_shaders: bool,
 }
 
 /// An encoder and whatever pass is open on it.
@@ -464,6 +466,7 @@ fn device_request_configured(adapter: i32, d: &GpuDeviceDescriptor) -> Future<cr
     };
     let accept_experimental = d.experimentalFeatures.unwrap_or(false);
     let dont_care = d.dontCareLoads.unwrap_or(false);
+    let trusted_shaders = d.trustedShaders.unwrap_or(false);
     let requested_features = match requested_features(&d.requiredFeatures)
         .and_then(|webgpu| Ok(webgpu | native::requested_features(&d.requiredNativeFeatures)?))
     {
@@ -525,6 +528,7 @@ fn device_request_configured(adapter: i32, d: &GpuDeviceDescriptor) -> Future<cr
                     errors,
                     lost,
                     dont_care,
+                    trusted_shaders,
                 });
                 if handle == 0 {
                     QUEUES.lock().unwrap().remove(queue);
@@ -3117,6 +3121,7 @@ mod native;
 mod queries;
 mod ray_tracing;
 mod render;
+mod shaders;
 mod surfaces;
 pub use bundles::*;
 pub use copies::*;
@@ -3128,4 +3133,5 @@ pub use native::*;
 pub use queries::*;
 pub use ray_tracing::*;
 pub use render::*;
+pub use shaders::*;
 pub use surfaces::*;

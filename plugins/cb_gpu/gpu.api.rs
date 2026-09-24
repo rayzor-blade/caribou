@@ -227,6 +227,43 @@ struct GpuDeviceDescriptor {
     // Accepts DontCare loads: an attachment loaded that way is undefined,
     // and reading it before every pixel is written is undefined behaviour.
     dontCareLoads: Option<bool>,
+    // Accepts shaders wgpu does not check: passthrough shaders, and shader
+    // modules with runtime checks turned off. The program promises that the
+    // code is valid for the backend, stays in bounds and terminates.
+    trustedShaders: Option<bool>,
+}
+
+// A WGSL module with wgpu's runtime checks, each on unless turned off.
+// Turning one off needs trustedShaders on the device.
+struct GpuShaderModuleDescriptor {
+    code: Text,
+    label: Option<Text>,
+    boundsChecks: Option<bool>,
+    forceLoopBounding: Option<bool>,
+    rayQueryInitializationTracking: Option<bool>,
+    taskShaderDispatchTracking: Option<bool>,
+    meshShaderPrimitiveIndicesClamp: Option<bool>,
+    intDivChecks: Option<bool>,
+}
+// A shader handed to the backend as it is, with PASSTHROUGH_SHADERS and
+// trustedShaders. The backend in use takes its own source: SPIR-V words on
+// Vulkan, DXIL or HLSL on DX12, a metallib or MSL on Metal, WGSL in the
+// browser. Metal reads each compute entry point's workgroup size from here.
+struct GpuPassthroughEntryPoint {
+    name: Text,
+    workgroupX: Option<i32>,
+    workgroupY: Option<i32>,
+    workgroupZ: Option<i32>,
+}
+struct GpuPassthroughShaderDescriptor {
+    label: Option<Text>,
+    entryPoints: Vec<GpuPassthroughEntryPoint>,
+    spirv: Option<Buffer>,
+    dxil: Option<Buffer>,
+    hlsl: Option<Text>,
+    metallib: Option<Buffer>,
+    msl: Option<Text>,
+    wgsl: Option<Text>,
 }
 
 // Explicit layouts: what a pipeline's bind groups hold, declared ahead of
@@ -619,6 +656,10 @@ trait GpuDevice {
     fn mapBufferWith(this: &GpuDevice, buffer: &GpuBuffer, mode: i32, offset: i64, size: i64) -> Future<()>;
     #[native(shader_create)]
     fn createShader(this: &GpuDevice, wgsl: Text) -> Box<GpuShader>;
+    #[native(shader_create_with)]
+    fn createShaderModule(this: &GpuDevice, descriptor: &GpuShaderModuleDescriptor) -> Box<GpuShader>;
+    #[native(shader_create_passthrough)]
+    fn createShaderPassthrough(this: &GpuDevice, descriptor: &GpuPassthroughShaderDescriptor) -> Box<GpuShader>;
     #[native(compute_pipeline_create)]
     fn computePipeline(this: &GpuDevice, shader: &GpuShader, entry: Text) -> Box<GpuPipeline>;
     #[native(bind_group_create)]

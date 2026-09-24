@@ -249,6 +249,19 @@ Copies between buffers and textures take WebGPU's full copy descriptions:
 mip level, origin, aspect, buffer layout and extent. `queue.writeTextureWith`
 uploads through the same layout.
 
+## Shaders wgpu does not check
+
+`createShaderModule` takes WGSL with wgpu's runtime checks, each on unless
+the descriptor turns it off: bounds checks, loop bounding, ray query and
+task dispatch tracking, mesh index clamping and integer division checks.
+`createShaderPassthrough` hands backend code to the driver as it is: SPIR-V
+on Vulkan, DXIL or HLSL on DX12, a metallib or MSL on Metal, WGSL in the
+browser, with the `PassthroughShaders` native feature. Neither is
+validated, so both need `trustedShaders(true)` on the device descriptor:
+the program's promise that its code is valid for the backend, stays in
+bounds and terminates. A passthrough compute pipeline needs an explicit
+layout; Metal numbers buffers in the layout's order.
+
 ## Errors and loss
 
 `pushErrorScope(filter)` and `popErrorScope()` catch validation,
@@ -341,9 +354,8 @@ WebGPU's `GPUSize64`. Dimensions, counts, flags and shared-buffer lengths use
 
 - WebGPU members wgpu 30 does not have: texture component swizzle, texture
   binding view dimension, a buffer's map state, and reading a label back.
-- wgpu entry points that are `unsafe` because of the data a call is given:
-  pipeline caches, passthrough shaders, shaders without runtime checks and
-  backend handle interop.
+- wgpu's pipeline caches, whose saved data wgpu has to trust, and backend
+  handle interop, which has no portable form.
 - API tracing, which needs a wgpu build feature.
 - Browser image, canvas and video sources, which need the browser runtime.
 - The three-element sequence spelling of a texture extent; `GpuExtent3D` is
