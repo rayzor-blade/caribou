@@ -1232,7 +1232,9 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             if !classes.contains(&target) {
                                 return Err(format!("unknown resource {target}"));
                             }
-                            if i == 0 && *class != target {
+                            // A record first is an argument to a static
+                            // function; a resource first is the receiver.
+                            if i == 0 && *class != target && resources.contains(&target) {
                                 return Err(format!(
                                     "first object parameter must be the {class} receiver"
                                 ));
@@ -1606,6 +1608,24 @@ mod tests {
         assert!(
             generate("gpu", "enum E { A, #[extension] B }", "").is_err(),
             "an extension needs WebIDL values to extend"
+        );
+    }
+    #[test]
+    fn a_static_function_can_take_a_record_first() {
+        let api = r#"
+          struct Options { level: Option<i32> }
+          trait Device {
+              #[native(create_with)] fn createWith(options: &Options) -> Box<Device>;
+          }
+          trait Other {}
+        "#;
+        let generated = generate("gpu", api, "").unwrap();
+        syn::parse_file(&generated).unwrap();
+        assert!(generated.contains("fn createWith (& Options) -> Box < Device >"));
+        let foreign = api.replace("options: &Options", "other: &Other");
+        assert!(
+            generate("gpu", &foreign, "").is_err(),
+            "a resource first must be the receiver"
         );
     }
     #[test]
