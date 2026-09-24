@@ -27,4 +27,7 @@ pub enum Kind {
     LostInfo = 23,
     CompilationInfo = 24,
     SurfaceCapabilities = 25,
+    ExternalTexture = 26,
+    Blas = 27,
+    Tlas = 28,
 }

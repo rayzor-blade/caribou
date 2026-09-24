@@ -118,12 +118,21 @@ enum NativeLimit {
     MaxRayDispatchCount,
     MaxRayRecursionDepth,
 }
+// wgpu's own bits follow the IDL's.
 #[idl("GPUBufferUsage")]
-mod BufferUsage {}
+mod BufferUsage {
+    const BLAS_INPUT: i32 = 1024;
+    const TLAS_INPUT: i32 = 2048;
+}
 #[idl("GPUShaderStage")]
-mod ShaderStage {}
+mod ShaderStage {
+    const TASK: i32 = 8;
+    const MESH: i32 = 16;
+}
 #[idl("GPUTextureUsage")]
-mod TextureUsage {}
+mod TextureUsage {
+    const STORAGE_ATOMIC: i32 = 65536;
+}
 #[idl("GPUColorWrite")]
 mod ColorWrite {}
 // What a pipeline statistics query counts.
@@ -188,18 +197,40 @@ struct GpuTextureBindingLayout {}
 struct GpuStorageTextureBindingLayout {}
 #[idl("GPUExternalTextureBindingLayout")]
 struct GpuExternalTextureBindingLayout {}
+// wgpu's own binding kinds: a top-level acceleration structure, and a
+// binding array of `count` elements of any kind.
+struct GpuAccelerationStructureBindingLayout {
+    vertexReturn: Option<bool>,
+}
 #[idl("GPUBindGroupLayoutEntry")]
-struct GpuBindGroupLayoutEntry {}
+struct GpuBindGroupLayoutEntry {
+    #[extension]
+    count: Option<i32>,
+    #[extension]
+    accelerationStructure: Option<GpuAccelerationStructureBindingLayout>,
+}
 #[idl("GPUBindGroupLayoutDescriptor")]
 struct GpuBindGroupLayoutDescriptor {}
 #[idl("GPUPipelineLayoutDescriptor")]
 struct GpuPipelineLayoutDescriptor {}
 
 // A bind group entry is one of these; each alternative is its own setter,
-// `resourceBuffer(buffer)`, `resourceBufferBinding(range)` and so on.
-// External textures are not exposed yet.
+// `resourceBuffer(buffer)`, `resourceBufferBinding(range)` and so on. The
+// arrays fill a layout entry with a count.
 #[idl("GPUBufferBinding")]
 struct GpuBufferBinding {}
+struct GpuBufferArray {
+    buffers: Vec<GpuBufferBinding>,
+}
+struct GpuSamplerArray {
+    samplers: Vec<GpuSampler>,
+}
+struct GpuTextureViewArray {
+    views: Vec<GpuTextureView>,
+}
+struct GpuTlasArray {
+    tlases: Vec<GpuTlas>,
+}
 #[idl("GPUBindingResource")]
 enum BindingResource {
     Sampler(GpuSampler),
@@ -207,6 +238,17 @@ enum BindingResource {
     TextureView(GpuTextureView),
     Buffer(GpuBuffer),
     BufferBinding(GpuBufferBinding),
+    ExternalTexture(GpuExternalTexture),
+    #[extension]
+    BufferArray(GpuBufferArray),
+    #[extension]
+    SamplerArray(GpuSamplerArray),
+    #[extension]
+    TextureViewArray(GpuTextureViewArray),
+    #[extension]
+    AccelerationStructure(GpuTlas),
+    #[extension]
+    AccelerationStructureArray(GpuTlasArray),
 }
 #[idl("GPUBindGroupEntry")]
 struct GpuBindGroupEntry {}
@@ -304,6 +346,124 @@ struct GpuQuerySetDescriptor {
 }
 #[idl("GPURenderBundleEncoderDescriptor")]
 struct GpuRenderBundleEncoderDescriptor {}
+
+// wgpu's mesh pipelines, with EXPERIMENTAL_MESH_SHADER: an optional task
+// stage and a mesh stage in place of vertex input. `multiview` is the
+// attachments' layer count.
+struct GpuMeshPipelineDescriptor {
+    mesh: GpuProgrammableStage,
+    label: Option<Text>,
+    layout: Option<GpuPipelineLayout>,
+    task: Option<GpuProgrammableStage>,
+    primitive: Option<GpuPrimitiveState>,
+    depthStencil: Option<GpuDepthStencilState>,
+    multisample: Option<GpuMultisampleState>,
+    fragment: Option<GpuFragmentState>,
+    multiview: Option<i32>,
+}
+
+// wgpu's external textures: one to three planes, and how sampling turns
+// them into RGBA. WebIDL's descriptor takes a browser video frame instead.
+// Unset matrices and transforms are the identity; a width and height of 0
+// are the first plane's.
+enum ExternalTextureFormat { Rgba, Nv12, Yu12 }
+struct GpuExternalTextureTransferFunction {
+    a: f32,
+    b: f32,
+    g: f32,
+    k: f32,
+}
+struct GpuExternalTextureDescriptor {
+    format: Enum<ExternalTextureFormat>,
+    planes: Vec<GpuTextureView>,
+    label: Option<Text>,
+    width: Option<i32>,
+    height: Option<i32>,
+    // Column-major 4x4, 3x3, 3x2 and 3x2.
+    yuvConversionMatrix: Vec<f32>,
+    gamutConversionMatrix: Vec<f32>,
+    sampleTransform: Vec<f32>,
+    loadTransform: Vec<f32>,
+    srcTransferFunction: Option<GpuExternalTextureTransferFunction>,
+    dstTransferFunction: Option<GpuExternalTextureTransferFunction>,
+}
+
+// Ray tracing, wgpu's own with EXPERIMENTAL_RAY_QUERY. A bottom-level
+// structure (BLAS) holds triangles or boxes; a top-level one (TLAS) holds
+// transformed instances of BLASes and binds to shaders' ray queries.
+mod AccelerationStructureFlag {
+    const ALLOW_UPDATE: i32 = 1;
+    const ALLOW_COMPACTION: i32 = 2;
+    const PREFER_FAST_TRACE: i32 = 4;
+    const PREFER_FAST_BUILD: i32 = 8;
+    const LOW_MEMORY: i32 = 16;
+    const USE_TRANSFORM: i32 = 32;
+    const ALLOW_RAY_HIT_VERTEX_RETURN: i32 = 64;
+}
+mod AccelerationStructureGeometryFlag {
+    const OPAQUE: i32 = 1;
+    const NO_DUPLICATE_ANY_HIT_INVOCATION: i32 = 2;
+}
+enum AccelerationStructureUpdateMode { Build, PreferUpdate }
+struct GpuBlasTriangleGeometrySize {
+    vertexFormat: Enum<VertexFormat>,
+    vertexCount: i32,
+    indexFormat: Option<Enum<IndexFormat>>,
+    indexCount: Option<i32>,
+    flags: Option<i32>,
+}
+struct GpuBlasAabbGeometrySize {
+    primitiveCount: i32,
+    flags: Option<i32>,
+}
+// Triangles or boxes, not both.
+struct GpuBlasDescriptor {
+    label: Option<Text>,
+    flags: Option<i32>,
+    updateMode: Option<Enum<AccelerationStructureUpdateMode>>,
+    triangles: Vec<GpuBlasTriangleGeometrySize>,
+    aabbs: Vec<GpuBlasAabbGeometrySize>,
+}
+struct GpuTlasDescriptor {
+    maxInstances: i32,
+    label: Option<Text>,
+    flags: Option<i32>,
+    updateMode: Option<Enum<AccelerationStructureUpdateMode>>,
+}
+// `transform` is a row-major 3x4 matrix, the identity when unset.
+// `customData` is 24 bits and `mask` 8, all set when unset.
+struct GpuTlasInstance {
+    blas: GpuBlas,
+    transform: Vec<f32>,
+    customData: Option<i32>,
+    mask: Option<i32>,
+}
+// Each geometry's size must be the one its BLAS was created with.
+struct GpuBlasTriangleGeometry {
+    size: GpuBlasTriangleGeometrySize,
+    vertexBuffer: GpuBuffer,
+    vertexStride: i64,
+    firstVertex: Option<i32>,
+    indexBuffer: Option<GpuBuffer>,
+    firstIndex: Option<i32>,
+    transformBuffer: Option<GpuBuffer>,
+    transformBufferOffset: Option<i64>,
+}
+struct GpuBlasAabbGeometry {
+    size: GpuBlasAabbGeometrySize,
+    aabbBuffer: GpuBuffer,
+    stride: i64,
+    primitiveOffset: Option<i32>,
+}
+struct GpuBlasBuildEntry {
+    blas: GpuBlas,
+    triangles: Vec<GpuBlasTriangleGeometry>,
+    aabbs: Vec<GpuBlasAabbGeometry>,
+}
+struct GpuAccelerationStructureBuild {
+    blases: Vec<GpuBlasBuildEntry>,
+    tlases: Vec<GpuTlas>,
+}
 
 // A native surface's configuration: WebGPU's canvas configuration, sized
 // and with wgpu's present modes, latency and color spaces.
@@ -439,6 +599,16 @@ trait GpuDevice {
     fn popErrorScope(this: &GpuDevice) -> Future<GpuError>;
     #[native(device_lost)]
     fn lost(this: &GpuDevice) -> Future<GpuDeviceLostInfo>;
+    #[native(mesh_pipeline_create)]
+    fn createMeshPipeline(this: &GpuDevice, descriptor: &GpuMeshPipelineDescriptor) -> Box<GpuPipeline>;
+    #[native(mesh_pipeline_create_async)]
+    fn createMeshPipelineAsync(this: &GpuDevice, descriptor: &GpuMeshPipelineDescriptor) -> Future<GpuPipeline>;
+    #[native(external_texture_create)]
+    fn createExternalTexture(this: &GpuDevice, descriptor: &GpuExternalTextureDescriptor) -> Box<GpuExternalTexture>;
+    #[native(blas_create)]
+    fn createBlas(this: &GpuDevice, descriptor: &GpuBlasDescriptor) -> Box<GpuBlas>;
+    #[native(tlas_create)]
+    fn createTlas(this: &GpuDevice, descriptor: &GpuTlasDescriptor) -> Box<GpuTlas>;
     #[native(surface_configure_with)]
     fn configureSurfaceWith(this: &GpuDevice, surface: &GpuSurface, configuration: &GpuSurfaceConfiguration);
     #[native(surface_configure)]
@@ -459,6 +629,9 @@ trait GpuQueue {
     // Nanoseconds per timestamp query tick.
     #[native(queue_timestamp_period)]
     fn timestampPeriod(this: &GpuQueue) -> f64;
+    // A compacted copy of a BLAS whose prepareCompaction has resolved.
+    #[native(queue_compact_blas)]
+    fn compactBlas(this: &GpuQueue, blas: &GpuBlas) -> Box<GpuBlas>;
 }
 
 #[idl("GPUBuffer")]
@@ -632,6 +805,17 @@ trait GpuEncoder {
     fn resolveQuerySet(this: &GpuEncoder, query_set: &GpuQuerySet, first: i32, count: i32, destination: &GpuBuffer, offset: i64);
     #[native(render_execute_bundle)]
     fn renderExecuteBundle(this: &GpuEncoder, bundle: &GpuRenderBundle);
+    #[native(render_draw_mesh_tasks)]
+    fn renderDrawMeshTasks(this: &GpuEncoder, x: i32, y: i32, z: i32);
+    #[native(render_draw_mesh_tasks_indirect)]
+    fn renderDrawMeshTasksIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64);
+    #[native(render_multi_draw_mesh_tasks_indirect)]
+    fn renderMultiDrawMeshTasksIndirect(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64, count: i32);
+    #[native(render_multi_draw_mesh_tasks_indirect_count)]
+    fn renderMultiDrawMeshTasksIndirectCount(this: &GpuEncoder, buffer: &GpuBuffer, offset: i64, count_buffer: &GpuBuffer, count_offset: i64, max_count: i32);
+    // Outside any pass. A TLAS's instances are the ones set when this runs.
+    #[native(encoder_build_acceleration_structures)]
+    fn buildAccelerationStructures(this: &GpuEncoder, build: &GpuAccelerationStructureBuild);
     #[native(encoder_copy_buffer_to_texture_with)]
     fn copyBufferToTextureWith(this: &GpuEncoder, source: &GpuTexelCopyBufferInfo, destination: &GpuTexelCopyTextureInfo, size: &GpuExtent3D);
     #[native(encoder_copy_texture_to_buffer_with)]
@@ -865,4 +1049,37 @@ trait GpuBindings {
     fn sampler(this: &GpuBindings, sampler: &GpuSampler);
     #[native(bindings_destroy)]
     fn destroy(this: &GpuBindings);
+}
+
+#[idl("GPUExternalTexture")]
+trait GpuExternalTexture {
+    #[native(is_valid)]
+    fn valid(this: &GpuExternalTexture) -> bool;
+    #[native(external_texture_destroy)]
+    fn destroy(this: &GpuExternalTexture);
+}
+
+trait GpuBlas {
+    #[native(is_valid)]
+    fn valid(this: &GpuBlas) -> bool;
+    #[native(blas_destroy)]
+    fn destroy(this: &GpuBlas);
+    // Resolves once the BLAS's builds finish and it can be compacted.
+    #[native(blas_prepare_compaction)]
+    fn prepareCompaction(this: &GpuBlas) -> Future<()>;
+    #[native(blas_ready_for_compaction)]
+    fn readyForCompaction(this: &GpuBlas) -> bool;
+}
+
+trait GpuTlas {
+    #[native(is_valid)]
+    fn valid(this: &GpuTlas) -> bool;
+    #[native(tlas_destroy)]
+    fn destroy(this: &GpuTlas);
+    #[native(tlas_max_instances)]
+    fn maxInstances(this: &GpuTlas) -> i32;
+    #[native(tlas_set_instance)]
+    fn setInstance(this: &GpuTlas, index: i32, instance: &GpuTlasInstance);
+    #[native(tlas_clear_instance)]
+    fn clearInstance(this: &GpuTlas, index: i32);
 }

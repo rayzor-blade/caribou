@@ -1,4 +1,25 @@
 import gpu.GpuInstance;
+import gpu.AccelerationStructureFlag;
+import gpu.AccelerationStructureGeometryFlag;
+import gpu.GpuAccelerationStructureBuild;
+import gpu.GpuBindGroup;
+import gpu.GpuBlasBuildEntry;
+import gpu.GpuBlasDescriptor;
+import gpu.GpuBlasTriangleGeometry;
+import gpu.GpuBlasTriangleGeometrySize;
+import gpu.GpuBuffer;
+import gpu.GpuBufferArray;
+import gpu.GpuEncoder;
+import gpu.GpuExternalTextureDescriptor;
+import gpu.GpuMeshPipelineDescriptor;
+import gpu.GpuPipeline;
+import gpu.GpuTexture;
+import gpu.GpuTextureBindingLayout;
+import gpu.GpuTextureViewArray;
+import gpu.GpuTextureViewDescriptor;
+import gpu.GpuTlasDescriptor;
+import gpu.GpuTlasInstance;
+import gpu.NativeLimit;
 import gpu.GpuBindings;
 import gpu.GpuBindGroupDescriptor;
 import gpu.GpuBindGroupEntry;
@@ -360,6 +381,358 @@ class Main {
         Sys.println("gpu device loss ok");
     }
 
+    /** Runs one workgroup of `pipeline` with `group` bound at 0 and reads `out` back. */
+    static function dispatchOnce(device:GpuDevice, queue:GpuQueue, pipeline:GpuPipeline, group:GpuBindGroup,
+            out:GpuBuffer, size:Int, ?before:GpuEncoder->Void):haxe.io.Bytes {
+        var readback = device.createBuffer(new GpuBufferDescriptor(size,
+            BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
+        var encoder = device.encoder();
+        if (before != null) before(encoder);
+        encoder.computeBegin();
+        encoder.computeSetPipeline(pipeline);
+        encoder.computeSetBindGroup(0, group);
+        encoder.computeDispatch(1, 1, 1);
+        encoder.computeEnd();
+        encoder.copyBuffer(out, 0, readback, 0, size);
+        encoder.submit(queue);
+        device.queueWorkDone(queue).await();
+        var error = device.takeError();
+        check(error == null, error);
+        device.mapBuffer(readback, 0, size).await();
+        var bytes = haxe.io.Bytes.alloc(size);
+        check(readback.copyOut(0, bytes, size), "readback failed");
+        readback.unmap();
+        readback.destroy();
+        return bytes;
+    }
+
+    /** A 1x1 rgba8unorm texture holding one texel. */
+    static function texel(device:GpuDevice, queue:GpuQueue, r:Int, g:Int, b:Int, a:Int):GpuTexture {
+        var texture = device.texture(new GpuTextureDescriptor(new GpuExtent3D(1), Rgba8unorm,
+            TextureUsage.TEXTURE_BINDING() | TextureUsage.COPY_DST()));
+        var bytes = haxe.io.Bytes.alloc(4);
+        bytes.set(0, r);
+        bytes.set(1, g);
+        bytes.set(2, b);
+        bytes.set(3, a);
+        queue.writeTexture(texture, bytes, 1, 1, 4);
+        return texture;
+    }
+
+    static function storageOut(device:GpuDevice, size:Int):GpuBuffer {
+        return device.createBuffer(new GpuBufferDescriptor(size, BufferUsage.STORAGE() | BufferUsage.COPY_SRC()));
+    }
+
+    /** Arrays of textures and of storage buffers, each two long, read by constant index. */
+    static function bindingArrays(device:GpuDevice, queue:GpuQueue) {
+        var first = texel(device, queue, 10, 0, 0, 255);
+        var second = texel(device, queue, 20, 0, 0, 255);
+        var inputs = [for (value in [7, 9]) {
+            var buffer = device.createBuffer(new GpuBufferDescriptor(4, BufferUsage.STORAGE() | BufferUsage.COPY_DST()));
+            var bytes = haxe.io.Bytes.alloc(4);
+            bytes.setInt32(0, value);
+            queue.writeBuffer(buffer, 0, bytes, 4);
+            buffer;
+        }];
+        var out = storageOut(device, 16);
+
+        var textures = new GpuBindGroupLayoutEntry(0, ShaderStage.COMPUTE());
+        textures.texture(new GpuTextureBindingLayout());
+        textures.count(2);
+        var readOnly = new GpuBufferBindingLayout();
+        readOnly.type(ReadOnlyStorage);
+        var buffers = new GpuBindGroupLayoutEntry(1, ShaderStage.COMPUTE());
+        buffers.buffer(readOnly);
+        buffers.count(2);
+        var writable = new GpuBufferBindingLayout();
+        writable.type(Storage);
+        var output = new GpuBindGroupLayoutEntry(2, ShaderStage.COMPUTE());
+        output.buffer(writable);
+        var layoutDescriptor = new GpuBindGroupLayoutDescriptor();
+        layoutDescriptor.addEntries(textures);
+        layoutDescriptor.addEntries(buffers);
+        layoutDescriptor.addEntries(output);
+        var layout = device.createBindGroupLayout(layoutDescriptor);
+        var pipelineLayout = new GpuPipelineLayoutDescriptor();
+        pipelineLayout.addBindGroupLayouts(layout);
+
+        var shader = device.createShader('
+            enable wgpu_binding_array;
+            struct Value { v: u32 };
+            @group(0) @binding(0) var textures: binding_array<texture_2d<f32>, 2>;
+            @group(0) @binding(1) var<storage, read> inputs: binding_array<Value, 2>;
+            @group(0) @binding(2) var<storage, read_write> out: array<u32, 4>;
+            @compute @workgroup_size(1) fn main() {
+                out[0] = u32(textureLoad(textures[0], vec2<i32>(0, 0), 0).r * 255.0 + 0.5);
+                out[1] = u32(textureLoad(textures[1], vec2<i32>(0, 0), 0).r * 255.0 + 0.5);
+                out[2] = inputs[0].v;
+                out[3] = inputs[1].v;
+            }');
+        var descriptor = new GpuComputePipelineDescriptor(new GpuProgrammableStage(shader));
+        descriptor.layout(device.createPipelineLayout(pipelineLayout));
+        var pipeline = device.createComputePipeline(descriptor);
+
+        var views = new GpuTextureViewArray();
+        views.addViews(first.createView(new GpuTextureViewDescriptor()));
+        views.addViews(second.createView(new GpuTextureViewDescriptor()));
+        var ranges = new GpuBufferArray();
+        for (buffer in inputs) ranges.addBuffers(new GpuBufferBinding(buffer));
+        var viewsEntry = new GpuBindGroupEntry(0);
+        viewsEntry.resourceTextureViewArray(views);
+        var rangesEntry = new GpuBindGroupEntry(1);
+        rangesEntry.resourceBufferArray(ranges);
+        var outEntry = new GpuBindGroupEntry(2);
+        outEntry.resourceBuffer(out);
+        var groupDescriptor = new GpuBindGroupDescriptor(layout);
+        groupDescriptor.addEntries(viewsEntry);
+        groupDescriptor.addEntries(rangesEntry);
+        groupDescriptor.addEntries(outEntry);
+        var group = device.createBindGroup(groupDescriptor);
+
+        var result = dispatchOnce(device, queue, pipeline, group, out, 16);
+        check(result.getInt32(0) == 10 && result.getInt32(4) == 20, "texture array read the wrong texels");
+        check(result.getInt32(8) == 7 && result.getInt32(12) == 9, "buffer array read the wrong values");
+    }
+
+    /** One RGBA plane sampled through texture_external. */
+    static function externalTexture(device:GpuDevice, queue:GpuQueue) {
+        var plane = texel(device, queue, 40, 80, 120, 255);
+        var descriptor = new GpuExternalTextureDescriptor(Rgba);
+        descriptor.addPlanes(plane.createView(new GpuTextureViewDescriptor()));
+        var video = device.createExternalTexture(descriptor);
+        check(video.valid(), "external texture was not created");
+        var twoPlanes = new GpuExternalTextureDescriptor(Rgba);
+        twoPlanes.addPlanes(plane.createView(new GpuTextureViewDescriptor()));
+        twoPlanes.addPlanes(plane.createView(new GpuTextureViewDescriptor()));
+        refused("an RGBA external texture took two planes", () -> device.createExternalTexture(twoPlanes));
+
+        var shader = device.createShader('
+            @group(0) @binding(0) var video: texture_external;
+            @group(0) @binding(1) var<storage, read_write> out: array<u32, 4>;
+            @compute @workgroup_size(1) fn main() {
+                let texel = textureLoad(video, vec2<u32>(0u, 0u));
+                out[0] = u32(texel.r * 255.0 + 0.5);
+                out[1] = u32(texel.g * 255.0 + 0.5);
+                out[2] = u32(texel.b * 255.0 + 0.5);
+                out[3] = u32(texel.a * 255.0 + 0.5);
+            }');
+        var pipeline = device.createComputePipeline(new GpuComputePipelineDescriptor(new GpuProgrammableStage(shader)));
+        var out = storageOut(device, 16);
+        var videoEntry = new GpuBindGroupEntry(0);
+        videoEntry.resourceExternalTexture(video);
+        var outEntry = new GpuBindGroupEntry(1);
+        outEntry.resourceBuffer(out);
+        var groupDescriptor = new GpuBindGroupDescriptor(pipeline.getBindGroupLayout(0));
+        groupDescriptor.addEntries(videoEntry);
+        groupDescriptor.addEntries(outEntry);
+        var result = dispatchOnce(device, queue, pipeline, device.createBindGroup(groupDescriptor), out, 16);
+        var rgba = [for (i in 0...4) result.getInt32(i * 4)];
+        check(rgba.join(",") == "40,80,120,255", 'external texture read ${rgba.join(",")}');
+    }
+
+    /**
+        One triangle in a BLAS, placed one unit along z by its TLAS instance.
+        A ray down z hits it at t = 3 and reports the instance's custom data;
+        a ray beside it misses. The BLAS is then compacted and the scene
+        rebuilt from the compacted copy.
+    **/
+    static function rayQuery(device:GpuDevice, queue:GpuQueue) {
+        var corners = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        var bytes = haxe.io.Bytes.alloc(corners.length * 4);
+        for (i in 0...corners.length) bytes.setFloat(i * 4, corners[i]);
+        var vertices = device.createBuffer(new GpuBufferDescriptor(bytes.length,
+            BufferUsage.BLAS_INPUT() | BufferUsage.COPY_DST()));
+        queue.writeBuffer(vertices, 0, bytes, bytes.length);
+
+        // Opaque, so a hit commits without the shader confirming it.
+        var triangle = new GpuBlasTriangleGeometrySize(Float32x3, 3);
+        triangle.flags(AccelerationStructureGeometryFlag.OPAQUE());
+        var blasDescriptor = new GpuBlasDescriptor();
+        blasDescriptor.flags(AccelerationStructureFlag.PREFER_FAST_TRACE() | AccelerationStructureFlag.ALLOW_COMPACTION());
+        blasDescriptor.addTriangles(triangle);
+        var blas = device.createBlas(blasDescriptor);
+        var tlas = device.createTlas(new GpuTlasDescriptor(1));
+        check(tlas.maxInstances() == 1, "TLAS capacity");
+
+        function place(blas) {
+            var instance = new GpuTlasInstance(blas);
+            for (value in [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]) instance.addTransform(value);
+            instance.customData(42);
+            tlas.setInstance(0, instance);
+        }
+        place(blas);
+        var wide = new GpuTlasInstance(blas);
+        wide.customData(1 << 24);
+        refused("custom data past 24 bits was accepted", () -> tlas.setInstance(0, wide));
+        refused("an instance past the TLAS was accepted", () -> tlas.setInstance(1, new GpuTlasInstance(blas)));
+
+        var shader = device.createShader('
+            enable wgpu_ray_query;
+            @group(0) @binding(0) var scene: acceleration_structure;
+            @group(0) @binding(1) var<storage, read_write> out: array<f32, 4>;
+            fn shoot(origin: vec3<f32>) -> RayIntersection {
+                var query: ray_query;
+                rayQueryInitialize(&query, scene, RayDesc(0u, 0xFFu, 0.0, 100.0, origin, vec3<f32>(0.0, 0.0, 1.0)));
+                rayQueryProceed(&query);
+                return rayQueryGetCommittedIntersection(&query);
+            }
+            @compute @workgroup_size(1) fn main() {
+                let hit = shoot(vec3<f32>(0.25, 0.25, -2.0));
+                out[0] = f32(hit.kind);
+                out[1] = hit.t;
+                out[2] = f32(hit.instance_custom_data);
+                out[3] = f32(shoot(vec3<f32>(5.0, 5.0, -2.0)).kind);
+            }');
+        var pipeline = device.createComputePipeline(new GpuComputePipelineDescriptor(new GpuProgrammableStage(shader)));
+        var out = storageOut(device, 16);
+        var sceneEntry = new GpuBindGroupEntry(0);
+        sceneEntry.resourceAccelerationStructure(tlas);
+        var outEntry = new GpuBindGroupEntry(1);
+        outEntry.resourceBuffer(out);
+        var groupDescriptor = new GpuBindGroupDescriptor(pipeline.getBindGroupLayout(0));
+        groupDescriptor.addEntries(sceneEntry);
+        groupDescriptor.addEntries(outEntry);
+        var group = device.createBindGroup(groupDescriptor);
+
+        function traceScene(build:GpuAccelerationStructureBuild, what:String) {
+            var result = dispatchOnce(device, queue, pipeline, group, out, 16,
+                encoder -> encoder.buildAccelerationStructures(build));
+            check(result.getFloat(0) == 1, '$what: the ray missed the triangle');
+            check(Math.abs(result.getFloat(4) - 3) < 1e-4, '$what: hit at t = ${result.getFloat(4)}');
+            check(result.getFloat(8) == 42, '$what: custom data ${result.getFloat(8)}');
+            check(result.getFloat(12) == 0, '$what: the ray beside the triangle hit');
+        }
+        var entry = new GpuBlasBuildEntry(blas);
+        entry.addTriangles(new GpuBlasTriangleGeometry(triangle, vertices, 12));
+        var build = new GpuAccelerationStructureBuild();
+        build.addBlases(entry);
+        build.addTlases(tlas);
+        traceScene(build, "built");
+
+        blas.prepareCompaction().await();
+        check(blas.readyForCompaction(), "the BLAS is not ready to compact");
+        var compacted = queue.compactBlas(blas);
+        check(compacted.valid(), "compaction made no BLAS");
+        place(compacted);
+        blas.destroy();
+        var rebuild = new GpuAccelerationStructureBuild();
+        rebuild.addTlases(tlas);
+        traceScene(rebuild, "compacted");
+    }
+
+    /** A task shader hands a colour to a mesh shader that covers the target. */
+    static function meshShader(device:GpuDevice, queue:GpuQueue) {
+        var shader = device.createShader('
+            enable wgpu_mesh_shader;
+            struct Payload { green: f32 };
+            var<task_payload> payload: Payload;
+            @task @payload(payload) @workgroup_size(1)
+            fn ts() -> @builtin(mesh_task_size) vec3<u32> {
+                payload.green = 1.0;
+                return vec3<u32>(1u, 1u, 1u);
+            }
+            struct Vertex { @builtin(position) position: vec4<f32>, @location(0) green: f32 };
+            struct Primitive { @builtin(triangle_indices) indices: vec3<u32> };
+            struct Mesh {
+                @builtin(vertices) vertices: array<Vertex, 3>,
+                @builtin(primitives) primitives: array<Primitive, 1>,
+                @builtin(vertex_count) vertex_count: u32,
+                @builtin(primitive_count) primitive_count: u32,
+            };
+            var<workgroup> mesh: Mesh;
+            @mesh(mesh) @payload(payload) @workgroup_size(1)
+            fn ms() {
+                mesh.vertex_count = 3u;
+                mesh.primitive_count = 1u;
+                mesh.vertices[0] = Vertex(vec4<f32>(-1.0, -1.0, 0.0, 1.0), payload.green);
+                mesh.vertices[1] = Vertex(vec4<f32>(3.0, -1.0, 0.0, 1.0), payload.green);
+                mesh.vertices[2] = Vertex(vec4<f32>(-1.0, 3.0, 0.0, 1.0), payload.green);
+                mesh.primitives[0].indices = vec3<u32>(0u, 1u, 2u);
+            }
+            @fragment fn fs(v: Vertex) -> @location(0) vec4<f32> {
+                return vec4<f32>(0.0, v.green, 0.0, 1.0);
+            }');
+        var mesh = new GpuProgrammableStage(shader);
+        mesh.entryPoint("ms");
+        var task = new GpuProgrammableStage(shader);
+        task.entryPoint("ts");
+        var fragment = new GpuFragmentState(shader);
+        fragment.entryPoint("fs");
+        fragment.addTargets(new GpuColorTargetState(Rgba8unorm));
+        var descriptor = new GpuMeshPipelineDescriptor(mesh);
+        descriptor.task(task);
+        descriptor.fragment(fragment);
+        var pipeline = device.createMeshPipelineAsync(descriptor).await();
+        check(pipeline.valid(), "mesh pipeline failed");
+
+        var size = new GpuExtent3D(4);
+        size.height(4);
+        var target = device.texture(new GpuTextureDescriptor(size, Rgba8unorm,
+            TextureUsage.RENDER_ATTACHMENT() | TextureUsage.COPY_SRC()));
+        var pixels = device.createBuffer(new GpuBufferDescriptor(256 * 4,
+            BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
+        var colour = new GpuRenderPassColorAttachment(Clear, Store);
+        colour.viewTexture(target);
+        colour.clearValue(new GpuColor(0, 0, 1, 1));
+        var pass = new GpuRenderPassDescriptor();
+        pass.addColorAttachments(colour);
+        var encoder = device.encoder();
+        encoder.beginRenderPass(pass);
+        encoder.renderSetPipeline(pipeline);
+        encoder.renderDrawMeshTasks(1, 1, 1);
+        encoder.renderEnd();
+        var into = new GpuTexelCopyBufferInfo(pixels);
+        into.bytesPerRow(256);
+        encoder.copyTextureToBufferWith(new GpuTexelCopyTextureInfo(target), into, size);
+        encoder.submit(queue);
+        device.queueWorkDone(queue).await();
+        device.mapBuffer(pixels, 0, 256 * 4).await();
+        var image = haxe.io.Bytes.alloc(256 * 4);
+        check(pixels.copyOut(0, image, image.length), "mesh readback failed");
+        for (y in 0...4) for (x in 0...4) {
+            var at = y * 256 + x * 4;
+            check(image.get(at) == 0 && image.get(at + 1) == 255 && image.get(at + 2) == 0,
+                'mesh pixel ($x, $y) is ${image.get(at)},${image.get(at + 1)},${image.get(at + 2)}');
+        }
+        pixels.unmap();
+    }
+
+    /**
+        wgpu's own extensions where the adapter has them, on a device that
+        asks for them and for every native limit the adapter reports:
+        binding arrays, ray queries and mesh shaders all default to none.
+    **/
+    static function wgpuExtensions(adapter:GpuAdapter) {
+        var requested = new GpuDeviceDescriptor();
+        for (feature in [TextureBindingArray, BufferBindingArray, StorageResourceBindingArray, ExternalTexture,
+                ExperimentalRayQuery, ExperimentalMeshShader])
+            if (adapter.supportsNative(feature)) requested.addRequiredNativeFeatures(feature);
+        for (limit in Type.allEnums(NativeLimit)) requested.addRequiredNativeLimits(limit, adapter.nativeLimit(limit));
+        var device = adapter.requestDeviceWith(requested).await();
+        var queue = device.queue();
+        var ran = [];
+        if (device.supportsNative(TextureBindingArray) && device.supportsNative(BufferBindingArray)
+                && device.supportsNative(StorageResourceBindingArray)) {
+            bindingArrays(device, queue);
+            ran.push("binding arrays");
+        }
+        if (device.supportsNative(ExternalTexture)) {
+            externalTexture(device, queue);
+            ran.push("external texture");
+        }
+        if (device.supportsNative(ExperimentalRayQuery)) {
+            rayQuery(device, queue);
+            ran.push("ray query");
+        }
+        if (device.supportsNative(ExperimentalMeshShader)) {
+            meshShader(device, queue);
+            ran.push("mesh shader");
+        }
+        check(device.takeError() == null, "GPU validation error in wgpu extensions");
+        device.destroy();
+        Sys.println('gpu wgpu extensions ok: ${ran.join(", ")}');
+    }
+
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
@@ -432,6 +805,7 @@ class Main {
         explicitLayouts(device, queue);
         renderingQueriesAndDiagnostics(adapter, device, queue, timestamps);
         deviceLoss(adapter);
+        wgpuExtensions(adapter);
         device.destroy();
         adapter.destroy();
         instance.destroy();

@@ -74,7 +74,10 @@ fn buffer_of(handle: i32) -> Result<Arc<wgpu::Buffer>, String> {
 }
 
 /// Runs `body` on the encoder outside any pass, raising what it refuses.
-fn copying(handle: i32, body: impl FnOnce(&mut wgpu::CommandEncoder) -> Result<(), String>) {
+pub(super) fn copying(
+    handle: i32,
+    body: impl FnOnce(&mut wgpu::CommandEncoder) -> Result<(), String>,
+) {
     let Some(entry) = ENCODERS.lock().unwrap().get(handle) else {
         return;
     };

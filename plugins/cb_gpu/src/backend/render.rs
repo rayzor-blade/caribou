@@ -16,14 +16,14 @@ fn raise(message: &str) {
 }
 
 /// One programmable stage, owned, so a pipeline can be built on a worker.
-struct Stage {
-    module: Arc<wgpu::ShaderModule>,
-    entry: Option<String>,
+pub(super) struct Stage {
+    pub(super) module: Arc<wgpu::ShaderModule>,
+    pub(super) entry: Option<String>,
     constants: Vec<(String, f64)>,
 }
 
 impl Stage {
-    fn of(
+    pub(super) fn of(
         module: i32,
         entry: &Option<caribou_abi::Rooted<Text>>,
         constants: &[(caribou_abi::Rooted<Text>, f64)],
@@ -42,7 +42,7 @@ impl Stage {
         })
     }
 
-    fn pairs(&self) -> Vec<(&str, f64)> {
+    pub(super) fn pairs(&self) -> Vec<(&str, f64)> {
         self.constants
             .iter()
             .map(|(name, value)| (name.as_str(), *value))
@@ -50,14 +50,16 @@ impl Stage {
     }
 }
 
-fn options<'a>(constants: &'a [(&'a str, f64)]) -> wgpu::PipelineCompilationOptions<'a> {
+pub(super) fn options<'a>(constants: &'a [(&'a str, f64)]) -> wgpu::PipelineCompilationOptions<'a> {
     wgpu::PipelineCompilationOptions {
         constants,
         ..Default::default()
     }
 }
 
-fn pipeline_layout(handle: Option<i32>) -> Result<Option<Arc<wgpu::PipelineLayout>>, String> {
+pub(super) fn pipeline_layout(
+    handle: Option<i32>,
+) -> Result<Option<Arc<wgpu::PipelineLayout>>, String> {
     // Unset is WebGPU's "auto": the layout is inferred from the shaders.
     handle
         .map(|handle| {
@@ -70,7 +72,7 @@ fn pipeline_layout(handle: Option<i32>) -> Result<Option<Arc<wgpu::PipelineLayou
         .transpose()
 }
 
-fn label(label: &Option<caribou_abi::Rooted<Text>>) -> Option<String> {
+pub(super) fn label(label: &Option<caribou_abi::Rooted<Text>>) -> Option<String> {
     label.as_ref().map(|text| text.get().as_str().to_owned())
 }
 
@@ -142,7 +144,7 @@ pub unsafe fn compute_pipeline_create_async(
     future
 }
 
-fn settle_pipeline(completion: &Rooted<Future<crate::GpuPipeline>>, handle: i32) {
+pub(super) fn settle_pipeline(completion: &Rooted<Future<crate::GpuPipeline>>, handle: i32) {
     if handle == 0 {
         completion
             .get()
@@ -181,7 +183,7 @@ pub(super) fn index_format(value: i32) -> wgpu::IndexFormat {
 }
 
 // Defaults below are WebGPU's, in the IDL enums' orders.
-fn primitive(p: Option<&GpuPrimitiveState>) -> wgpu::PrimitiveState {
+pub(super) fn primitive(p: Option<&GpuPrimitiveState>) -> wgpu::PrimitiveState {
     let Some(p) = p else {
         return wgpu::PrimitiveState::default();
     };
@@ -212,7 +214,7 @@ fn stencil_face(face: Option<&GpuStencilFaceState>) -> wgpu::StencilFaceState {
     }
 }
 
-fn depth_stencil(d: &GpuDepthStencilState) -> wgpu::DepthStencilState {
+pub(super) fn depth_stencil(d: &GpuDepthStencilState) -> wgpu::DepthStencilState {
     wgpu::DepthStencilState {
         format: texture_format(d.format),
         depth_write_enabled: d.depthWriteEnabled,
@@ -232,7 +234,9 @@ fn depth_stencil(d: &GpuDepthStencilState) -> wgpu::DepthStencilState {
     }
 }
 
-fn multisample(m: Option<&GpuMultisampleState>) -> Result<wgpu::MultisampleState, String> {
+pub(super) fn multisample(
+    m: Option<&GpuMultisampleState>,
+) -> Result<wgpu::MultisampleState, String> {
     let Some(m) = m else {
         return Ok(wgpu::MultisampleState::default());
     };
@@ -251,7 +255,7 @@ fn blend_component(c: &GpuBlendComponent) -> wgpu::BlendComponent {
     }
 }
 
-fn color_target(t: &GpuColorTargetState) -> wgpu::ColorTargetState {
+pub(super) fn color_target(t: &GpuColorTargetState) -> wgpu::ColorTargetState {
     wgpu::ColorTargetState {
         format: texture_format(t.format),
         blend: t.blend.as_ref().map(|blend| wgpu::BlendState {
@@ -644,7 +648,7 @@ pub unsafe fn compute_pass_begin_with(encoder: i32, descriptor: &GpuComputePassD
 // -- commands inside a render pass ----------------------------------------------------------
 
 /// Runs `body` on the encoder's open render pass, or raises.
-fn rendering(encoder: &Encoder, body: impl FnOnce(&mut wgpu::RenderPass<'static>)) {
+pub(super) fn rendering(encoder: &Encoder, body: impl FnOnce(&mut wgpu::RenderPass<'static>)) {
     let mut held = encoder.lock().unwrap();
     match held.pass.as_mut() {
         Some(pass) => body(pass),
@@ -652,7 +656,7 @@ fn rendering(encoder: &Encoder, body: impl FnOnce(&mut wgpu::RenderPass<'static>
     }
 }
 
-fn count(value: i32, what: &str) -> Option<u32> {
+pub(super) fn count(value: i32, what: &str) -> Option<u32> {
     match index(value, what) {
         Ok(value) => Some(value),
         Err(message) => {

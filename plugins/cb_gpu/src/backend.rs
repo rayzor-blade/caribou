@@ -426,9 +426,19 @@ fn device_request_configured(
         Ok(limits) => limits,
         Err(error) => return rejected_future(&error),
     };
+    // Requesting an EXPERIMENTAL_* feature is the program's acceptance of
+    // wgpu's terms for them: they may still have bugs that are undefined
+    // behaviour. Nothing else turns them on.
+    let experimental_features =
+        if requested_features.intersects(wgpu::Features::all_experimental_mask()) {
+            unsafe { wgpu::ExperimentalFeatures::enabled() }
+        } else {
+            wgpu::ExperimentalFeatures::disabled()
+        };
     let descriptor = wgpu::DeviceDescriptor {
         required_features: requested_features,
         required_limits: requested_limits,
+        experimental_features,
         ..Default::default()
     };
     let future = Future::new();
@@ -731,6 +741,14 @@ slab!(
     surfaces::Capabilities,
     Kind::SurfaceCapabilities
 );
+slab!(
+    EXTERNAL_TEXTURES,
+    wgpu::ExternalTexture,
+    Kind::ExternalTexture
+);
+slab!(BLASES, ray_tracing::BlasEntry, Kind::Blas);
+// A TLAS's instances are set through `&mut`, so it sits behind a lock.
+slab!(TLASES, Mutex<wgpu::Tlas>, Kind::Tlas);
 
 /// A descriptor the caller got wrong: raised in the caller's language, with
 /// no GPU work done.
@@ -816,10 +834,15 @@ fn binding_type(entry: &GpuBindGroupLayoutEntry) -> Result<wgpu::BindingType, St
     if entry.externalTexture.is_some() {
         chosen.push(wgpu::BindingType::ExternalTexture);
     }
+    if let Some(structure) = &entry.accelerationStructure {
+        chosen.push(wgpu::BindingType::AccelerationStructure {
+            vertex_return: structure.vertexReturn.unwrap_or(false),
+        });
+    }
     match (chosen.pop(), chosen.is_empty()) {
         (Some(ty), true) => Ok(ty),
         _ => Err(format!(
-            "binding {} needs exactly one of buffer, sampler, texture, storageTexture or externalTexture",
+            "binding {} needs exactly one of buffer, sampler, texture, storageTexture, externalTexture or accelerationStructure",
             entry.binding
         )),
     }
@@ -838,7 +861,13 @@ pub unsafe fn bind_group_layout_create(
                 binding: index(entry.binding, "binding")?,
                 visibility: wgpu::ShaderStages::from_bits_truncate(entry.visibility as u32),
                 ty: binding_type(entry)?,
-                count: None,
+                count: match entry.count {
+                    None => None,
+                    Some(count) => Some(
+                        std::num::NonZeroU32::new(index(count, "count")?)
+                            .ok_or("a binding array of 0 elements")?,
+                    ),
+                },
             })
         })
         .collect();
@@ -896,30 +925,86 @@ pub unsafe fn pipeline_layout_destroy(layout: i32) {
 }
 
 /// One resolved bind group resource, held so the descriptor can borrow it.
+/// A TLAS is an index into the bind group's distinct locked TLASes.
 enum Resolved {
     Buffer(Arc<wgpu::Buffer>, u64, Option<std::num::NonZeroU64>),
     Sampler(Arc<wgpu::Sampler>),
     View(Arc<wgpu::TextureView>),
+    External(Arc<wgpu::ExternalTexture>),
+    Buffers(Vec<(Arc<wgpu::Buffer>, u64, Option<std::num::NonZeroU64>)>),
+    Samplers(Vec<Arc<wgpu::Sampler>>),
+    Views(Vec<Arc<wgpu::TextureView>>),
+    Tlas(usize),
+    Tlases(Vec<usize>),
 }
 
-fn resolve(binding: i32, resource: Option<&BindingResource>) -> Result<Resolved, String> {
+/// The TLASes a bind group names, each once, so each is locked once.
+#[derive(Default)]
+struct Distinct(Vec<Arc<Mutex<wgpu::Tlas>>>);
+
+impl Distinct {
+    fn slot(&mut self, handle: i32) -> Result<usize, String> {
+        let tlas = TLASES
+            .lock()
+            .unwrap()
+            .get(handle)
+            .ok_or("the TLAS was destroyed")?;
+        Ok(
+            match self.0.iter().position(|seen| Arc::ptr_eq(seen, &tlas)) {
+                Some(at) => at,
+                None => {
+                    self.0.push(tlas);
+                    self.0.len() - 1
+                }
+            },
+        )
+    }
+}
+
+fn buffer_range(
+    binding: i32,
+    range: &crate::GpuBufferBinding,
+) -> Result<(Arc<wgpu::Buffer>, u64, Option<std::num::NonZeroU64>), String> {
+    let buffer = BUFFERS
+        .lock()
+        .unwrap()
+        .get(range.buffer)
+        .ok_or_else(|| format!("binding {binding}: the buffer was destroyed"))?;
+    let offset = size(range.offset.unwrap_or(0), "offset")?;
+    let length = match range.size {
+        Some(length) => Some(
+            std::num::NonZeroU64::new(size(length, "size")?)
+                .ok_or_else(|| format!("binding {binding}: a buffer range of size 0"))?,
+        ),
+        None => None,
+    };
+    Ok((buffer, offset, length))
+}
+
+fn resolve(
+    binding: i32,
+    resource: Option<&BindingResource>,
+    tlases: &mut Distinct,
+) -> Result<Resolved, String> {
     let gone = |what: &str| format!("binding {binding}: the {what} was destroyed");
+    let sampler = |handle: i32| {
+        SAMPLERS
+            .lock()
+            .unwrap()
+            .get(handle)
+            .ok_or_else(|| gone("sampler"))
+    };
+    let view = |handle: i32| {
+        VIEWS
+            .lock()
+            .unwrap()
+            .get(handle)
+            .ok_or_else(|| gone("texture view"))
+    };
     Ok(match resource {
         None => return Err(format!("binding {binding} has no resource")),
-        Some(BindingResource::Sampler(handle)) => Resolved::Sampler(
-            SAMPLERS
-                .lock()
-                .unwrap()
-                .get(*handle)
-                .ok_or_else(|| gone("sampler"))?,
-        ),
-        Some(BindingResource::TextureView(handle)) => Resolved::View(
-            VIEWS
-                .lock()
-                .unwrap()
-                .get(*handle)
-                .ok_or_else(|| gone("texture view"))?,
-        ),
+        Some(BindingResource::Sampler(handle)) => Resolved::Sampler(sampler(*handle)?),
+        Some(BindingResource::TextureView(handle)) => Resolved::View(view(*handle)?),
         // A texture binds its default view, as WebGPU specifies.
         Some(BindingResource::Texture(handle)) => {
             let texture = TEXTURES
@@ -939,22 +1024,57 @@ fn resolve(binding: i32, resource: Option<&BindingResource>) -> Result<Resolved,
             None,
         ),
         Some(BindingResource::BufferBinding(range)) => {
-            let buffer = BUFFERS
-                .lock()
-                .unwrap()
-                .get(range.buffer)
-                .ok_or_else(|| gone("buffer"))?;
-            let offset = size(range.offset.unwrap_or(0), "offset")?;
-            let length = match range.size {
-                Some(length) => Some(
-                    std::num::NonZeroU64::new(size(length, "size")?)
-                        .ok_or_else(|| format!("binding {binding}: a buffer range of size 0"))?,
-                ),
-                None => None,
-            };
+            let (buffer, offset, length) = buffer_range(binding, range)?;
             Resolved::Buffer(buffer, offset, length)
         }
+        Some(BindingResource::ExternalTexture(handle)) => Resolved::External(
+            EXTERNAL_TEXTURES
+                .lock()
+                .unwrap()
+                .get(*handle)
+                .ok_or_else(|| gone("external texture"))?,
+        ),
+        Some(BindingResource::BufferArray(array)) => Resolved::Buffers(
+            array
+                .buffers
+                .iter()
+                .map(|range| buffer_range(binding, range))
+                .collect::<Result<_, _>>()?,
+        ),
+        Some(BindingResource::SamplerArray(array)) => Resolved::Samplers(
+            array
+                .samplers
+                .iter()
+                .map(|&handle| sampler(handle))
+                .collect::<Result<_, _>>()?,
+        ),
+        Some(BindingResource::TextureViewArray(array)) => Resolved::Views(
+            array
+                .views
+                .iter()
+                .map(|&handle| view(handle))
+                .collect::<Result<_, _>>()?,
+        ),
+        Some(BindingResource::AccelerationStructure(handle)) => {
+            Resolved::Tlas(tlases.slot(*handle)?)
+        }
+        Some(BindingResource::AccelerationStructureArray(array)) => Resolved::Tlases(
+            array
+                .tlases
+                .iter()
+                .map(|&handle| tlases.slot(handle))
+                .collect::<Result<_, _>>()?,
+        ),
     })
+}
+
+/// A resolved array as the slice wgpu borrows.
+enum Lent<'a> {
+    None,
+    Buffers(Vec<wgpu::BufferBinding<'a>>),
+    Samplers(Vec<&'a wgpu::Sampler>),
+    Views(Vec<&'a wgpu::TextureView>),
+    Tlases(Vec<&'a wgpu::Tlas>),
 }
 
 pub unsafe fn bind_group_create_with(device: i32, descriptor: &GpuBindGroupDescriptor) -> i32 {
@@ -962,31 +1082,61 @@ pub unsafe fn bind_group_create_with(device: i32, descriptor: &GpuBindGroupDescr
     let Some(layout) = BIND_GROUP_LAYOUTS.lock().unwrap().get(descriptor.layout) else {
         return refuse("the bind group layout was destroyed");
     };
+    let mut tlases = Distinct::default();
     let mut resolved = Vec::with_capacity(descriptor.entries.len());
     for one in &descriptor.entries {
         let binding = match index(one.binding, "binding") {
             Ok(binding) => binding,
             Err(message) => return refuse(&message),
         };
-        match resolve(one.binding, one.resource.as_ref()) {
+        match resolve(one.binding, one.resource.as_ref(), &mut tlases) {
             Ok(resource) => resolved.push((binding, resource)),
             Err(message) => return refuse(&message),
         }
     }
+    let locked: Vec<_> = tlases.0.iter().map(|tlas| tlas.lock().unwrap()).collect();
+    let lent: Vec<Lent> = resolved
+        .iter()
+        .map(|(_, resource)| match resource {
+            Resolved::Buffers(list) => Lent::Buffers(
+                list.iter()
+                    .map(|(buffer, offset, size)| wgpu::BufferBinding {
+                        buffer,
+                        offset: *offset,
+                        size: *size,
+                    })
+                    .collect(),
+            ),
+            Resolved::Samplers(list) => Lent::Samplers(list.iter().map(|s| &**s).collect()),
+            Resolved::Views(list) => Lent::Views(list.iter().map(|v| &**v).collect()),
+            Resolved::Tlases(list) => Lent::Tlases(list.iter().map(|&at| &*locked[at]).collect()),
+            _ => Lent::None,
+        })
+        .collect();
     let entries: Vec<wgpu::BindGroupEntry> = resolved
         .iter()
-        .map(|(binding, resource)| wgpu::BindGroupEntry {
+        .zip(&lent)
+        .map(|((binding, resource), lent)| wgpu::BindGroupEntry {
             binding: *binding,
-            resource: match resource {
-                Resolved::Buffer(buffer, offset, size) => {
+            resource: match (resource, lent) {
+                (Resolved::Buffer(buffer, offset, size), _) => {
                     wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer,
                         offset: *offset,
                         size: *size,
                     })
                 }
-                Resolved::Sampler(sampler) => wgpu::BindingResource::Sampler(sampler),
-                Resolved::View(view) => wgpu::BindingResource::TextureView(view),
+                (Resolved::Sampler(sampler), _) => wgpu::BindingResource::Sampler(sampler),
+                (Resolved::View(view), _) => wgpu::BindingResource::TextureView(view),
+                (Resolved::External(texture), _) => wgpu::BindingResource::ExternalTexture(texture),
+                (Resolved::Tlas(at), _) => {
+                    wgpu::BindingResource::AccelerationStructure(&locked[*at])
+                }
+                (_, Lent::Buffers(list)) => wgpu::BindingResource::BufferArray(list),
+                (_, Lent::Samplers(list)) => wgpu::BindingResource::SamplerArray(list),
+                (_, Lent::Views(list)) => wgpu::BindingResource::TextureViewArray(list),
+                (_, Lent::Tlases(list)) => wgpu::BindingResource::AccelerationStructureArray(list),
+                (_, Lent::None) => unreachable!("every array resolves to a lent slice"),
             },
         })
         .collect();
@@ -2793,6 +2943,11 @@ pub unsafe fn is_valid(handle: i32) -> bool {
         k if k == Kind::SurfaceCapabilities as i32 => {
             CAPABILITIES.lock().unwrap().get(handle).is_some()
         }
+        k if k == Kind::ExternalTexture as i32 => {
+            EXTERNAL_TEXTURES.lock().unwrap().get(handle).is_some()
+        }
+        k if k == Kind::Blas as i32 => BLASES.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::Tlas as i32 => TLASES.lock().unwrap().get(handle).is_some(),
         _ => false,
     }
 }
@@ -2884,14 +3039,20 @@ pub unsafe fn builder_destroy(builder: i32) {
 mod bundles;
 mod copies;
 mod diagnostics;
+mod external;
+mod mesh;
 mod native;
 mod queries;
+mod ray_tracing;
 mod render;
 mod surfaces;
 pub use bundles::*;
 pub use copies::*;
 pub use diagnostics::*;
+pub use external::*;
+pub use mesh::*;
 pub use native::*;
 pub use queries::*;
+pub use ray_tracing::*;
 pub use render::*;
 pub use surfaces::*;
