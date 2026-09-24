@@ -32,6 +32,8 @@ class Checker {
 	var inLoop : Bool;
 	var inWhile : Bool;
 	public var inits : Array<{ v : TVar, e : TExpr }>;
+	/** Functions a framework declares without HXSL bodies; a call to one stays a call. **/
+	public var externs : Array<{ name : String, variants : Array<FunType> }> = [];
 
 	public function new() {
 		globals = initGlobals();
@@ -289,6 +291,8 @@ class Checker {
 
 	public function check( name : String, shader : Expr ) : ShaderData {
 		vars = new Map();
+		for( f in externs )
+			vars.set(f.name, { id : Tools.allocVarId(), name : f.name, kind : Function, type : TFun(f.variants) });
 		inits = [];
 		inLoop = false;
 		inWhile = false;

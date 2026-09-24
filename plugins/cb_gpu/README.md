@@ -256,27 +256,71 @@ field of `output` is a color target, in declaration order. The macro also
 adds constants for everything the program binds, so a misspelled name is a
 compile error too:
 
-- `PARAMS_SIZE` and `PARAM_tint`: params and globals share one uniform
-  buffer at group 0, binding 0, laid out by WGSL's uniform rules; each
-  constant is a byte offset. A `Bool` param is a 32-bit integer there.
-- `TEXTURE_picture`: a texture's binding; its sampler is the next one.
-- `BUFFER_values`: the binding of a buffer or storage texture.
+- `PARAMS_SIZE`, `PARAMS_GROUP`, `PARAMS_BINDING` and `PARAMS_tint`:
+  params and globals share the uniform block `params`, laid out by WGSL's
+  uniform rules; the last is a member's byte offset. A `Bool` is a 32-bit
+  integer there. An extension can put members in other blocks, which get
+  constants of the same form under their own names.
+- `TEXTURE_picture` and `TEXTURE_picture_GROUP`: a texture's binding and
+  bind group; its sampler is the next binding.
+- `BUFFER_values` and `BUFFER_values_GROUP`: a buffer or storage texture.
 - `INPUT_position`: a vertex attribute's location, in declaration order.
 - `TARGET_color`: a color target.
 - `CONST_steps`: the pipeline-constant key of a `@const`, which is a WGSL
   override.
+
+In each bind group, uniform blocks take the first bindings, then textures
+and their samplers, then buffers, in declaration order.
 
 `@:import Other;` brings another shader's variables and helper functions
 into this one, and a class with only helpers is a module other shaders
 import; it prints no WGSL. `@:extends Base;` takes another shader's stages
 too, and a function declared again replaces the inherited one.
 
-Arrays of textures and atomics are not printed yet. Heaps' channels, bindless
-resources and barycentrics have no WGSL here.
+Arrays of textures and atomics are not printed yet.
+
+### Extending HXSL
+
+The compiler does not stop at stock HXSL. A framework subclasses
+`caribou.hxsl.Extension`, overrides what it needs, and registers it from
+its library's extra params, for its own shader interface or for every
+shader:
+
+```haxe
+// myengine/extraParams.hxml: --macro myengine.Shaders.register()
+class Shaders extends caribou.hxsl.Extension {
+	public static function register()
+		caribou.hxsl.Extensions.register(new Shaders(), "myengine.EngineShader");
+
+	override function prelude()
+		return macro { @global var time : Float; };
+	override function block(v, path)
+		return v.kind == Global ? "frame" : null;
+	override function group(name)
+		return name == "frame" ? 1 : null;
+}
+```
+
+- `functions()` adds functions: overloads the checker checks as HXSL's own,
+  and the WGSL a call prints, with helpers it declares.
+- `prelude()` is HXSL each of the family's shaders starts with: globals,
+  inputs, `@:import`s of the framework's modules.
+- `transform()` is a pass over each checked shader.
+- `builtin()` prints one of HXSL's built-ins the printer has none of. Heaps'
+  barycentrics, for one, read `@builtin(barycentric)` through
+  `out.input("barycentric", ...)`; channels and bindless resources are the
+  same kind of addition.
+- `block()` and `group()` choose uniform blocks and bind groups.
+- `output()` says what an `output` field is: the position, a color target,
+  the fragment depth, or unused.
+
+The gpu fixture's `Framework` is a small example. Programs add the
+framework's library and nothing else.
 
 The checker, evaluator, linker, stage splitter and dead-code pass under
-`haxe/caribou/hxsl` are Heaps' own, from `9c51d45f`, under its MIT notice
-in `LICENSE.heaps`; `WgslOut` and the build macro are Caribou's.
+`haxe/caribou/hxsl` are adapted from Heaps at `9c51d45f`, under its MIT
+notice in `LICENSE.heaps`; `WgslOut`, the extensions and the build macro
+are Caribou's.
 
 ## Pipelines and passes
 

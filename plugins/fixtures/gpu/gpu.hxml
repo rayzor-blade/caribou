@@ -1,4 +1,5 @@
 -cp src
 -lib caribou
+--macro Framework.register()
 -main Main
 -hl gpu.hl

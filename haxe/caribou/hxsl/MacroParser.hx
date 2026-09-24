@@ -200,8 +200,10 @@ class MacroParser {
 						kind : null,
 						expr : null,
 					};
-					for( m in f.meta )
-						applyMeta(m,v);
+					// A field built by macro reification has no meta array.
+					if( f.meta != null )
+						for( m in f.meta )
+							applyMeta(m,v);
 					{ id : 0, name : v.name, type : v.type, kind : v.kind, qualifiers : v.qualifiers };
 				default:
 					error("Only variables are allowed in structures", f.pos);

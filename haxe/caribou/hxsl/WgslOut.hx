@@ -1,19 +1,21 @@
 package caribou.hxsl;
 
 import caribou.hxsl.Ast;
+import caribou.hxsl.Extension;
 
 using caribou.hxsl.Ast;
 
 /** Where a program finds what the WGSL declares. **/
 typedef WgslLayout = {
-	/** Bytes of the params uniform buffer at group 0, binding 0; 0 when there is none. **/
-	var paramsSize:Int;
-	/** Each param's byte offset in that buffer, by its path with `_` for `.`. **/
-	var params:Array<{name:String, offset:Int}>;
-	/** Each texture's binding; its sampler is the next binding. **/
-	var textures:Array<{name:String, binding:Int}>;
-	/** Each buffer's or storage texture's binding. **/
-	var buffers:Array<{name:String, binding:Int}>;
+	/**
+		Each uniform block: its bind group, binding and size in bytes, and
+		each member's byte offset, by its path with `_` for `.`.
+	**/
+	var blocks:Array<{name:String, group:Int, binding:Int, size:Int, members:Array<{name:String, offset:Int}>}>;
+	/** Each texture's group and binding; its sampler is the next binding. **/
+	var textures:Array<{name:String, group:Int, binding:Int}>;
+	/** Each buffer's or storage texture's group and binding. **/
+	var buffers:Array<{name:String, group:Int, binding:Int}>;
 	/** Each vertex input's location, in declaration order. **/
 	var inputs:Array<{name:String, location:Int}>;
 	/** Each fragment output's color target, in `output`'s declaration order. **/
@@ -26,14 +28,15 @@ typedef WgslLayout = {
 	Prints linked HXSL stages as one WGSL module: `vertex` and `fragment`
 	entry points, or `main` for a compute shader.
 
-	All params and globals sit in one uniform struct at group 0, binding 0,
-	laid out by WGSL's uniform rules; textures (each with its sampler after
-	it), buffers and storage textures take the next bindings in declaration
+	Params and globals sit in uniform blocks, `params` unless an extension
+	chooses another, each a struct laid out by WGSL's uniform rules. In each
+	bind group the blocks take the first bindings, then textures (each with
+	its sampler after it), then buffers and storage textures, in declaration
 	order. Every variable a stage keeps, locals included, is a private
 	module variable, as Heaps' GLSL output keeps its locals global: a block
 	used as a value then becomes a function that reads them.
 **/
-class WgslOut {
+class WgslOut implements WgslContext {
 	/** WGSL's keywords and reserved words, its predeclared types and functions, and this printer's own names. **/
 	static var WORDS = "
 		alias break case const const_assert continue continuing default diagnostic discard else enable false fn for if let loop
@@ -55,7 +58,7 @@ class WgslOut {
 		smoothstep length distance dot cross normalize reflect radians degrees saturate select all any round transpose bitcast
 		textureSample textureSampleLevel textureLoad textureStore textureDimensions textureNumLayers dpdx dpdy fwidth
 		unpack4x8snorm unpack4x8unorm firstTrailingBit firstLeadingBit countOneBits workgroupBarrier
-		params vin vout fin fout input vertex fragment main
+		vin vout fin fout input vertex fragment main
 	";
 	static var RESERVED = [for (w in new EReg("\\s+", "g").split(WORDS)) if (w != "") w => true];
 
@@ -70,13 +73,22 @@ class WgslOut {
 	var order:Map<String, Int>;
 	/** The paths declared `@const`; evaluation drops the qualifier from what it copies. **/
 	var consts = new Map<String, Bool>();
-	var stage:FunctionKind;
+	var stageKind:FunctionKind;
 	var compute:Bool;
 	/** In an entry point's body, where `return` returns the stage's output. **/
 	var inEntry:Bool;
 	var workgroup = [1, 1, 1];
 
+	var exts:Array<Extension>;
+	var externs = new Map<String, ExternFunction>();
+	/** Each `output` field's role, by the field's name. **/
+	var roles:Map<String, OutputRole>;
+	var enables:Array<String> = [];
+	/** The built-ins each stage reads, by attribute: the private variable, parameter type and conversion. **/
+	var stageInputs = new Map<String, {name:String, parameterType:String, convert:String->String, stages:Map<String, Bool>}>();
+
 	var params:Array<TVar> = [];
+	/** A value param's access, `params.tint`, by id. **/
 	var paramFields = new Map<Int, String>();
 	var textures = new Map<Int, {texture:String, sampler:String, type:Type}>();
 	var bindings = new Map<Int, String>();
@@ -86,7 +98,6 @@ class WgslOut {
 	var targets:Array<TVar> = [];
 	var fields = new Map<Int, String>();
 	var positionField:String;
-	var builtins = new Map<String, String>();
 
 	public var layout(default, null):WgslLayout;
 
@@ -97,7 +108,12 @@ class WgslOut {
 		`declared` is the shader as written, whose order fixes locations and
 		offsets; `paths` holds the linked variables' paths.
 	**/
-	public function new(declared:Array<TVar>, paths:Map<Int, String>) {
+	public function new(declared:Array<TVar>, paths:Map<Int, String>, exts:Array<Extension>, roles:Map<String, OutputRole>) {
+		this.exts = exts;
+		this.roles = roles;
+		for (x in exts)
+			for (f in x.functions())
+				externs.set(f.name, f);
 		this.paths = new Map();
 		order = new Map();
 		var index = 0;
@@ -116,8 +132,7 @@ class WgslOut {
 			walk(v);
 		this.paths = paths;
 		layout = {
-			paramsSize: 0,
-			params: [],
+			blocks: [],
 			textures: [],
 			buffers: [],
 			inputs: [],
@@ -323,44 +338,89 @@ class WgslOut {
 		privates.push('var<private> $n: ${type(v.type, null)};');
 	}
 
+	function extensionGroup(name:String):Int {
+		for (x in exts) {
+			var g = x.group(name);
+			if (g != null)
+				return g;
+		}
+		return 0;
+	}
+
 	function declare() {
-		// Params, in declaration order, then the bindings after them.
 		params.sort((a, b) -> rank(a) - rank(b));
-		var values = [for (v in params) if (!textures.exists(v.id) && !bindings.exists(v.id)) v];
-		var binding = 0;
-		if (values.length > 0) {
+		// Bindings count up within each group: blocks, textures, then buffers.
+		var next = new Map<Int, Int>();
+		function bind(name:String):{group:Int, binding:Int} {
+			var group = extensionGroup(name);
+			var binding = next.exists(group) ? next.get(group) : 0;
+			next.set(group, binding + 1);
+			return {group: group, binding: binding};
+		}
+
+		var blockOrder:Array<String> = [];
+		var members = new Map<String, Array<TVar>>();
+		for (v in params) {
+			if (textures.exists(v.id) || bindings.exists(v.id))
+				continue;
+			var block = "params";
+			for (x in exts) {
+				var b = x.block(v, fullPath(v));
+				if (b != null) {
+					block = b;
+					break;
+				}
+			}
+			if (!members.exists(block)) {
+				members.set(block, []);
+				blockOrder.push(block);
+			}
+			members.get(block).push(v);
+		}
+		for (block in blockOrder) {
+			var variable = fresh(block);
+			var structName = fresh(block.charAt(0).toUpperCase() + block.substr(1) + "Block");
 			var offset = 0;
 			var align = 16;
 			var body = [];
 			var used = new Map();
-			for (v in values) {
+			var offsets = [];
+			for (v in members.get(block)) {
 				var n = unique(path(v), used);
-				paramFields.set(v.id, n);
-				var l = uniformLayout(v.type, v.getName(), null);
+				paramFields.set(v.id, '$variable.$n');
+				var l = uniformLayout(v.type, fullPath(v), null);
 				offset = roundUp(offset, l.align);
-				layout.params.push({name: path(v), offset: offset});
+				offsets.push({name: path(v), offset: offset});
 				// A uniform holds no bool; it is a u32, read as `!= 0u`.
 				body.push('\t$n: ${v.type == TBool ? "u32" : type(v.type, null)},');
 				offset += l.size;
 				if (l.align > align)
 					align = l.align;
 			}
-			layout.paramsSize = roundUp(offset, align);
-			decls.push('struct Params {\n${body.join("\n")}\n};');
-			decls.push('@group(0) @binding(${binding++}) var<uniform> params: Params;');
+			var at = bind(block);
+			var size = roundUp(offset, align);
+			layout.blocks.push({name: block, group: at.group, binding: at.binding, size: size, members: offsets});
+			decls.push('struct $structName {\n${body.join("\n")}\n};');
+			decls.push('@group(${at.group}) @binding(${at.binding}) var<uniform> $variable: $structName;');
 		}
 		for (v in params) {
 			if (textures.exists(v.id)) {
 				var t = fresh(path(v));
 				var s = fresh(t + "_sampler");
 				textures.set(v.id, {texture: t, sampler: s, type: v.type});
-				layout.textures.push({name: path(v), binding: binding});
-				decls.push('@group(0) @binding(${binding++}) var $t: ${textureType(v.type, null)};');
-				decls.push('@group(0) @binding(${binding++}) var $s: sampler;');
-			} else if (bindings.exists(v.id)) {
+				var at = bind(path(v));
+				layout.textures.push({name: path(v), group: at.group, binding: at.binding});
+				decls.push('@group(${at.group}) @binding(${at.binding}) var $t: ${textureType(v.type, null)};');
+				next.set(at.group, at.binding + 2);
+				decls.push('@group(${at.group}) @binding(${at.binding + 1}) var $s: sampler;');
+			}
+		}
+		for (v in params) {
+			if (bindings.exists(v.id)) {
 				var n = fresh(path(v));
 				bindings.set(v.id, n);
-				layout.buffers.push({name: path(v), binding: binding});
+				var at = bind(path(v));
+				layout.buffers.push({name: path(v), group: at.group, binding: at.binding});
 				var decl = switch (v.type) {
 					case TBuffer(t, size, kind):
 						var el = type(t, null);
@@ -377,7 +437,7 @@ class WgslOut {
 						'var $n: ${textureType(v.type, null)}';
 					default: error('${v.name}: arrays of storage textures need binding arrays', null);
 				}
-				decls.push('@group(0) @binding(${binding++}) $decl;');
+				decls.push('@group(${at.group}) @binding(${at.binding}) $decl;');
 			}
 		}
 
@@ -421,6 +481,12 @@ class WgslOut {
 				var name = v.getName();
 				var n = unique(name, used);
 				fields.set(v.id, n);
+				if (roles.get(name) == Depth) {
+					if (v.type != TFloat)
+						error('output.$name is the fragment depth, a Float', null);
+					body.push('\t@builtin(frag_depth) $n: f32,');
+					continue;
+				}
 				layout.targets.push({name: name, location: location});
 				body.push('\t@location(${location++}) $n: ${type(v.type, null)},');
 			}
@@ -446,7 +512,7 @@ class WgslOut {
 					return o;
 				var f = paramFields.get(v.id);
 				if (f != null)
-					return v.type == TBool ? '(params.$f != 0u)' : 'params.$f';
+					return v.type == TBool ? '($f != 0u)' : f;
 				var b = bindings.get(v.id);
 				if (b != null)
 					return b;
@@ -454,9 +520,9 @@ class WgslOut {
 			case Input:
 				return 'vin.${fields.get(v.id)}';
 			case Var:
-				return (stage == Fragment ? "fin." : "vout.") + fields.get(v.id);
+				return (stageKind == Fragment ? "fin." : "vout.") + fields.get(v.id);
 			case Output:
-				return stage == Fragment ? 'fout.${fields.get(v.id)}' : 'vout.$positionField';
+				return stageKind == Fragment ? 'fout.${fields.get(v.id)}' : 'vout.$positionField';
 			case Local:
 				addPrivate(v);
 				return names.get(v.id);
@@ -465,14 +531,34 @@ class WgslOut {
 		}
 	}
 
-	function builtin(kind:String, wgsl:String, t:String, read:String):String {
-		var n = builtins.get(kind);
-		if (n == null) {
-			n = fresh(kind);
-			builtins.set(kind, n);
-			privates.push('var<private> $n: $t;');
+	public function stage():FunctionKind {
+		return compute ? Main : stageKind;
+	}
+
+	public function helper(code:String):Void {
+		if (functions.indexOf(code) < 0)
+			functions.unshift(code);
+	}
+
+	public function enable(name:String):Void {
+		if (enables.indexOf(name) < 0)
+			enables.push(name);
+	}
+
+	public function input(attribute:String, parameterType:String, type:String, ?convert:String->String):String {
+		var known = stageInputs.get(attribute);
+		if (known == null) {
+			known = {
+				name: fresh(attribute),
+				parameterType: parameterType,
+				convert: convert == null ? v -> v : convert,
+				stages: new Map()
+			};
+			stageInputs.set(attribute, known);
+			privates.push('var<private> ${known.name}: $type;');
 		}
-		return n;
+		known.stages.set(Std.string(stage()), true);
+		return known.name;
 	}
 
 	// -- expressions -----------------------------------------------------------------------
@@ -504,9 +590,8 @@ class WgslOut {
 		}
 	}
 
-	function helper(name:String, code:String):String {
-		if (functions.indexOf(code) < 0)
-			functions.unshift(code);
+	function named(name:String, code:String):String {
+		helper(code);
 		return name;
 	}
 
@@ -530,7 +615,7 @@ class WgslOut {
 		var tex = textureOf(args[0]);
 		var coords = coordinates(tex.type, args[1]);
 		// Implicit derivatives exist only in fragment code.
-		if (lod == null && stage == Fragment)
+		if (lod == null && stageKind == Fragment)
 			return 'textureSample(${tex.texture}, ${tex.sampler}, ${coords.join(", ")})';
 		return 'textureSampleLevel(${tex.texture}, ${tex.sampler}, ${coords.join(", ")}, ${lod == null ? "0.0" : lod})';
 	}
@@ -567,7 +652,7 @@ class WgslOut {
 				if (rt == TInt || rt.match(TVec(_, VInt)))
 					'(${spread(args[0], rt)} % ${spread(args[1], rt)})';
 				else
-					'${helper("hxsl_mod", modHelper(rt))}(${spread(args[0], rt)}, ${spread(args[1], rt)})';
+					'${named("hxsl_mod", modHelper(rt))}(${spread(args[0], rt)}, ${spread(args[1], rt)})';
 			case Min: spreadAll("min");
 			case Max: spreadAll("max");
 			case Clamp: spreadAll("clamp");
@@ -575,7 +660,7 @@ class WgslOut {
 				// WGSL takes a scalar blend factor with vectors itself.
 				'mix(${spread(args[0], rt)}, ${spread(args[1], rt)}, ${a(2)})';
 			case InvLerp:
-				'${helper("hxsl_invLerp", "fn hxsl_invLerp(v: f32, a: f32, b: f32) -> f32 { return saturate((v - a) / (b - a)); }")}(${a(0)}, ${a(1)}, ${a(2)})';
+				'${named("hxsl_invLerp", "fn hxsl_invLerp(v: f32, a: f32, b: f32) -> f32 { return saturate((v - a) / (b - a)); }")}(${a(0)}, ${a(1)}, ${a(2)})';
 			case Step: 'step(${spread(args[0], rt)}, ${spread(args[1], rt)})';
 			case Smoothstep: 'smoothstep(${spread(args[0], rt)}, ${spread(args[1], rt)}, ${spread(args[2], rt)})';
 			case Length: all("length");
@@ -623,13 +708,13 @@ class WgslOut {
 				}
 			case Saturate: all("saturate");
 			case Pack:
-				'${helper("hxsl_pack", "fn hxsl_pack(v: f32) -> vec4<f32> { let c = fract(v * vec4<f32>(1.0, 255.0, 65025.0, 16581375.0)); return c - c.yzww * vec4<f32>(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0); }")}(${a(0)})';
+				'${named("hxsl_pack", "fn hxsl_pack(v: f32) -> vec4<f32> { let c = fract(v * vec4<f32>(1.0, 255.0, 65025.0, 16581375.0)); return c - c.yzww * vec4<f32>(1.0 / 255.0, 1.0 / 255.0, 1.0 / 255.0, 0.0); }")}(${a(0)})';
 			case Unpack:
-				'${helper("hxsl_unpack", "fn hxsl_unpack(c: vec4<f32>) -> f32 { return dot(c, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0)); }")}(${a(0)})';
+				'${named("hxsl_unpack", "fn hxsl_unpack(c: vec4<f32>) -> f32 { return dot(c, vec4<f32>(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0)); }")}(${a(0)})';
 			case PackNormal:
-				'${helper("hxsl_packNormal", "fn hxsl_packNormal(v: vec3<f32>) -> vec4<f32> { return vec4<f32>((v + vec3<f32>(1.0)) * vec3<f32>(0.5), 1.0); }")}(${a(0)})';
+				'${named("hxsl_packNormal", "fn hxsl_packNormal(v: vec3<f32>) -> vec4<f32> { return vec4<f32>((v + vec3<f32>(1.0)) * vec3<f32>(0.5), 1.0); }")}(${a(0)})';
 			case UnpackNormal:
-				'${helper("hxsl_unpackNormal", "fn hxsl_unpackNormal(v: vec4<f32>) -> vec3<f32> { let xy = (v.xy - vec2<f32>(0.5)) * vec2<f32>(2.0); return vec3<f32>(xy, sqrt(1.0 - saturate(dot(xy, xy)))); }")}(${a(0)})';
+				'${named("hxsl_unpackNormal", "fn hxsl_unpackNormal(v: vec4<f32>) -> vec3<f32> { let xy = (v.xy - vec2<f32>(0.5)) * vec2<f32>(2.0); return vec3<f32>(xy, sqrt(1.0 - saturate(dot(xy, xy)))); }")}(${a(0)})';
 			case ScreenToUv:
 				'(${a(0)} * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5))';
 			case UvToScreen:
@@ -660,8 +745,18 @@ class WgslOut {
 				}
 				'textureStore($target, ${convert(args[1], VInt)}, $value)';
 			default:
-				error('${g.toString()} is not in this HXSL yet', p);
+				extended(g, args, p);
 		}
+	}
+
+	/** A built-in an extension prints, or an error naming it. **/
+	function extended(g:TGlobal, args:Array<TExpr>, p:Position):String {
+		for (x in exts) {
+			var wgsl = x.builtin(g, args, this);
+			if (wgsl != null)
+				return wgsl;
+		}
+		return error('${g.toString()} has no WGSL here; an extension can give it one', p);
 	}
 
 	function modHelper(t:Type):String {
@@ -672,16 +767,16 @@ class WgslOut {
 	function globalValue(g:TGlobal, p:Position):String {
 		return switch (g) {
 			case FragCoord:
-				if (stage != Fragment) error("fragCoord is fragment data", p);
+				if (stageKind != Fragment) error("fragCoord is fragment data", p);
 				'fin.$positionField';
-			case FrontFacing: builtin("front_facing", "front_facing", "bool", "");
-			case VertexID: builtin("vertex_index", "vertex_index", "i32", "");
-			case InstanceID: builtin("instance_index", "instance_index", "i32", "");
-			case ComputeVar_GlobalInvocation: builtin("global_invocation_id", "", "vec3<i32>", "");
-			case ComputeVar_LocalInvocation: builtin("local_invocation_id", "", "vec3<i32>", "");
-			case ComputeVar_WorkGroup: builtin("workgroup_id", "", "vec3<i32>", "");
-			case ComputeVar_LocalInvocationIndex: builtin("local_invocation_index", "", "i32", "");
-			default: error('${g.toString()} is a function', p);
+			case FrontFacing: input("front_facing", "bool", "bool");
+			case VertexID: input("vertex_index", "u32", "i32", v -> 'i32($v)');
+			case InstanceID: input("instance_index", "u32", "i32", v -> 'i32($v)');
+			case ComputeVar_GlobalInvocation: input("global_invocation_id", "vec3<u32>", "vec3<i32>", v -> 'vec3<i32>($v)');
+			case ComputeVar_LocalInvocation: input("local_invocation_id", "vec3<u32>", "vec3<i32>", v -> 'vec3<i32>($v)');
+			case ComputeVar_WorkGroup: input("workgroup_id", "vec3<u32>", "vec3<i32>", v -> 'vec3<i32>($v)');
+			case ComputeVar_LocalInvocationIndex: input("local_invocation_index", "u32", "i32", v -> 'i32($v)');
+			default: extended(g, [], p);
 		}
 	}
 
@@ -714,7 +809,7 @@ class WgslOut {
 			case [OpMult, TVec(3, VFloat), TMat3x4]:
 				'(vec4<f32>(${expr(e1)}, 1.0) * ${expr(e2)})';
 			case [OpMod, _, _] if (rt != TInt && !rt.match(TVec(_, VInt))):
-				'${helper("hxsl_mod", modHelper(rt))}(${spread(e1, rt)}, ${spread(e2, rt)})';
+				'${named("hxsl_mod", modHelper(rt))}(${spread(e1, rt)}, ${spread(e2, rt)})';
 			case [OpShl | OpShr, _, _]:
 				'(${expr(e1)} ${opStr(op)} u32(${expr(e2)}))';
 			case [OpUShr, _, _]:
@@ -736,7 +831,7 @@ class WgslOut {
 		}
 	}
 
-	function expr(e:TExpr):String {
+	public function expr(e:TExpr):String {
 		return switch (e.e) {
 			case TConst(CInt(v)): Std.string(v);
 			case TConst(CFloat(f)): float(f);
@@ -752,7 +847,14 @@ class WgslOut {
 			case TUnop(OpNegBits, e1): '~(${expr(e1)})';
 			case TUnop(_, _): error("++ and -- are statements in WGSL", e.p);
 			case TCall({e: TGlobal(g)}, args): call(g, args, e.t, e.p);
-			case TCall(_, _): error("only HXSL's own functions remain after inlining", e.p);
+			case TCall({e: TVar(v)}, args) if (v.kind == Function && externs.exists(v.name)):
+				externs.get(v.name).print({
+					args: [for (a in args) expr(a)],
+					types: [for (a in args) a.t],
+					ret: e.t,
+					out: this
+				});
+			case TCall(_, _): error("only HXSL's own and extensions' functions remain after inlining", e.p);
 			case TSwiz(inner, regs):
 				switch (inner.t) {
 					case TFloat | TInt | TBool if (regs.length > 1):
@@ -830,7 +932,7 @@ class WgslOut {
 	}
 
 	function stageReturn():String {
-		return compute ? "return" : stage == Fragment ? (targets.length > 0 ? "return fout" : "return") : "return vout";
+		return compute ? "return" : stageKind == Fragment ? (targets.length > 0 ? "return fout" : "return") : "return vout";
 	}
 
 	function statement(e:TExpr, tabs:String):String {
@@ -905,7 +1007,7 @@ class WgslOut {
 
 	function entry(s:ShaderData):String {
 		var f = s.funs[0];
-		stage = compute ? Main : f.kind;
+		stageKind = compute ? Main : f.kind;
 		inEntry = true;
 		var statements = switch (f.expr.e) {
 			case TBlock(el): [for (x in el) statement(x, "\t")].join("");
@@ -914,32 +1016,24 @@ class WgslOut {
 		inEntry = false;
 		var args = [];
 		var copies = [];
-		function pass(kind:String, attribute:String, t:String, convert:String->String) {
-			var n = builtins.get(kind);
-			if (n == null)
-				return;
-			args.push('@builtin($attribute) in_$kind: $t');
-			copies.push('\t$n = ${convert('in_$kind')};\n');
-		}
+		var here = Std.string(stage());
+		for (attribute => b in stageInputs)
+			if (b.stages.exists(here)) {
+				args.push('@builtin($attribute) in_$attribute: ${b.parameterType}');
+				copies.push('\t${b.name} = ${b.convert('in_$attribute')};\n');
+			}
 		var head:String;
 		if (compute) {
-			pass("global_invocation_id", "global_invocation_id", "vec3<u32>", v -> 'vec3<i32>($v)');
-			pass("local_invocation_id", "local_invocation_id", "vec3<u32>", v -> 'vec3<i32>($v)');
-			pass("workgroup_id", "workgroup_id", "vec3<u32>", v -> 'vec3<i32>($v)');
-			pass("local_invocation_index", "local_invocation_index", "u32", v -> 'i32($v)');
 			head = '@compute @workgroup_size(${workgroup.join(", ")})\nfn main(${args.join(", ")}) {\n';
-		} else if (stage == Vertex) {
+		} else if (stageKind == Vertex) {
 			if (inputs.length > 0) {
-				args.push("attributes: VertexInput");
-				copies.push("\tvin = attributes;\n");
+				args.unshift("attributes: VertexInput");
+				copies.unshift("\tvin = attributes;\n");
 			}
-			pass("vertex_index", "vertex_index", "u32", v -> 'i32($v)');
-			pass("instance_index", "instance_index", "u32", v -> 'i32($v)');
 			head = '@vertex\nfn vertex(${args.join(", ")}) -> Varyings {\n';
 		} else {
-			args.push("varyings: Varyings");
-			copies.push("\tfin = varyings;\n");
-			pass("front_facing", "front_facing", "bool", v -> v);
+			args.unshift("varyings: Varyings");
+			copies.unshift("\tfin = varyings;\n");
 			head = '@fragment\nfn fragment(${args.join(", ")})${targets.length > 0 ? " -> FragmentOutput" : ""} {\n';
 		}
 		var tail = compute ? "" : '\t${stageReturn()};\n';
@@ -954,6 +1048,7 @@ class WgslOut {
 		declare();
 		var entries = [for (s in stages) entry(s)];
 		var out = [
+			[for (e in enables) 'enable $e;'].join("\n"),
 			// HXSL samples textures in any control flow, as GLSL and HLSL allow.
 			"diagnostic(off, derivative_uniformity);",
 			decls.join("\n"),

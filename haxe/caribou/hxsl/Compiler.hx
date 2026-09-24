@@ -1,6 +1,7 @@
 package caribou.hxsl;
 
 import caribou.hxsl.Ast;
+import caribou.hxsl.Extension;
 import caribou.hxsl.WgslOut.WgslLayout;
 
 using caribou.hxsl.Ast;
@@ -13,22 +14,27 @@ using caribou.hxsl.Ast;
 class Compiler {
 	/**
 		`source` is the HXSL block of the shader `name`; `load` finds the block
-		of a shader it imports or extends. Null for a module of helpers alone,
-		which has nothing to print.
+		of a shader it imports or extends. `exts` are the extensions of the
+		shader's family. Null for a module of helpers alone, which has nothing
+		to print.
 	**/
 	public static function compile(name:String, source:haxe.macro.Expr, load:String->Expr,
-			warning:(String, Position) -> Void):Null<{wgsl:String, layout:WgslLayout}> {
+			warning:(String, Position) -> Void, exts:Array<Extension>):Null<{wgsl:String, layout:WgslLayout}> {
 		var checker = new Checker();
 		checker.warning = warning;
 		checker.loadShader = load;
+		checker.externs = [for (x in exts) for (f in x.functions()) {name: f.name, variants: f.variants}];
 		var data = checker.check(name, new MacroParser().parseExpr(source));
+		for (x in exts)
+			data = x.transform(data);
 		if (!Lambda.exists(data.funs, f -> f.kind == Vertex || f.kind == Fragment || f.kind == Main))
 			return null;
 		var eval = new Eval();
 		eval.inlineCalls = true;
 		var evaluated = eval.eval(data);
 		var compute = Lambda.exists(data.funs, f -> f.kind == Main);
-		var shaders = compute ? [evaluated] : [evaluated, outputs(evaluated, source.pos)];
+		var roles = new Map<String, OutputRole>();
+		var shaders = compute ? [evaluated] : [evaluated, outputs(evaluated, source.pos, exts, roles)];
 		var linker = new Linker(compute ? Compute : Default);
 		var linked = linker.link(shaders);
 		var splitter = new Splitter();
@@ -41,23 +47,36 @@ class Compiler {
 			if (split != null)
 				paths.set(split.id, a.path);
 		}
-		var out = new WgslOut(data.vars, paths);
+		var out = new WgslOut(data.vars, paths, exts, roles);
 		return {wgsl: out.run(stages, compute), layout: out.layout};
 	}
 
 	/**
 		What the stages produce, as Heaps' cache declares it for a driver:
 		`output.position` from the vertex stage, and every other field of
-		the shader's `output` from the fragment stage, in declaration order.
+		the shader's `output` from the fragment stage, in declaration order,
+		unless an extension gives a field another role. `roles` receives
+		each field's role.
 	**/
-	static function outputs(shader:ShaderData, pos:Position):ShaderData {
+	static function outputs(shader:ShaderData, pos:Position, exts:Array<Extension>, roles:Map<String, OutputRole>):ShaderData {
 		var declared = Lambda.find(shader.vars, v -> v.name == "output");
 		var fields = switch (declared == null ? null : declared.type) {
 			case TStruct(vl): vl;
 			default: throw new Error("a render shader declares var output : { position : Vec4, color : Vec4 }", pos);
 		}
-		if (!Lambda.exists(fields, f -> f.name == "position"))
-			throw new Error("output has no position for the vertex stage", pos);
+		for (f in fields) {
+			var role = f.name == "position" ? Position : Target;
+			for (x in exts) {
+				var r = x.output(f.name);
+				if (r != null) {
+					role = r;
+					break;
+				}
+			}
+			roles.set(f.name, role);
+		}
+		if (Lambda.count(fields, f -> roles.get(f.name) == Position) != 1)
+			throw new Error("output has one position for the vertex stage", pos);
 		var output:TVar = {
 			id: Tools.allocVarId(),
 			name: "output",
@@ -97,8 +116,8 @@ class Compiler {
 				expr: {e: TBlock(body), t: TVoid, p: pos}
 			});
 		}
-		stage(Vertex, [for (f in fields) if (f.name == "position") assign(f)]);
-		stage(Fragment, [for (f in fields) if (f.name != "position") assign(f)]);
+		stage(Vertex, [for (f in fields) if (roles.get(f.name) == Position) assign(f)]);
+		stage(Fragment, [for (f in fields) if (roles.get(f.name) == Target || roles.get(f.name) == Depth) assign(f)]);
 		return link;
 	}
 

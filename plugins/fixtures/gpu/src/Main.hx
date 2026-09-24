@@ -1,4 +1,5 @@
 import gpu.GpuInstance;
+import gpu.GpuPrimitiveState;
 import gpu.GpuSamplerDescriptor;
 import gpu.GpuVertexAttribute;
 import gpu.GpuVertexBufferLayout;
@@ -115,6 +116,20 @@ class ScaleValues implements caribou.hxsl.Shader {
 			setLayout(4);
 			var i = computeVar.globalInvocation.x;
 			values[i] = scaled(values[i], gain);
+		}
+	};
+}
+
+/** A framework's shader: its `exposure` global and `luma` come from the framework's extension. **/
+class Exposed implements FrameworkShader {
+	static var SRC = {
+		var output : { position : Vec4, color : Vec4 };
+		@param var tint : Vec4;
+		function vertex() {
+			output.position = vec4(0, 0, 0, 1);
+		}
+		function fragment() {
+			output.color = vec4(vec3(luma(tint.rgb) * exposure), 1);
 		}
 	};
 }
@@ -1087,8 +1102,8 @@ class Main {
         queue.writeBuffer(vertices, 0, bytes, bytes.length);
 
         var params = haxe.io.Bytes.alloc(TintedQuad.PARAMS_SIZE);
-        for (i => v in [1.0, 0.5, 0.25, 1.0]) params.setFloat(TintedQuad.PARAM_tint + i * 4, v);
-        params.setFloat(TintedQuad.PARAM_scale, 2);
+        for (i => v in [1.0, 0.5, 0.25, 1.0]) params.setFloat(TintedQuad.PARAMS_tint + i * 4, v);
+        params.setFloat(TintedQuad.PARAMS_scale, 2);
         var uniforms = device.createBuffer(new GpuBufferDescriptor(TintedQuad.PARAMS_SIZE,
             BufferUsage.UNIFORM() | BufferUsage.COPY_DST()));
         queue.writeBuffer(uniforms, 0, params, params.length);
@@ -1148,7 +1163,7 @@ class Main {
         for (i in 0...4) numbers.setFloat(i * 4, i + 1);
         queue.writeBuffer(values, 0, numbers, 16);
         var gain = haxe.io.Bytes.alloc(ScaleValues.PARAMS_SIZE);
-        gain.setFloat(ScaleValues.PARAM_gain, 3);
+        gain.setFloat(ScaleValues.PARAMS_gain, 3);
         var gainBuffer = device.createBuffer(new GpuBufferDescriptor(ScaleValues.PARAMS_SIZE,
             BufferUsage.UNIFORM() | BufferUsage.COPY_DST()));
         queue.writeBuffer(gainBuffer, 0, gain, gain.length);
@@ -1162,6 +1177,60 @@ class Main {
         var result = dispatchOnce(device, queue, compute, device.createBindGroup(computeGroup), values, 16);
         for (i in 0...4)
             check(result.getFloat(i * 4) == (i + 1) * 3 + 1, 'HXSL compute value $i is ${result.getFloat(i * 4)}');
+        // A framework's extension: its global in a block of its own, bind group 1.
+        check(Exposed.FRAME_GROUP == 1 && Exposed.PARAMS_GROUP == 0, "the framework's block is not in its group");
+        var point = new GpuVertexState(device.createShader(Exposed.WGSL));
+        point.entryPoint("vertex");
+        var framed = new GpuFragmentState(device.createShader(Exposed.WGSL));
+        framed.entryPoint("fragment");
+        framed.addTargets(new GpuColorTargetState(Rgba8unorm));
+        var exposedDescriptor = new GpuRenderPipelineDescriptor(point);
+        exposedDescriptor.fragment(framed);
+        var points = new GpuPrimitiveState();
+        points.topology(PointList);
+        exposedDescriptor.primitive(points);
+        var exposed = device.createRenderPipeline(exposedDescriptor);
+        function block(size:Int, values:Map<Int, Float>, group:Int, binding:Int) {
+            var bytes = haxe.io.Bytes.alloc(size);
+            for (offset => v in values) bytes.setFloat(offset, v);
+            var buffer = device.createBuffer(new GpuBufferDescriptor(size, BufferUsage.UNIFORM() | BufferUsage.COPY_DST()));
+            queue.writeBuffer(buffer, 0, bytes, size);
+            var entry = new GpuBindGroupEntry(binding);
+            entry.resourceBuffer(buffer);
+            var descriptor = new GpuBindGroupDescriptor(exposed.getBindGroupLayout(group));
+            descriptor.addEntries(entry);
+            return device.createBindGroup(descriptor);
+        }
+        var paramsGroup = block(Exposed.PARAMS_SIZE, [Exposed.PARAMS_tint => 1, Exposed.PARAMS_tint + 4 => 1, Exposed.PARAMS_tint + 8 => 1],
+            Exposed.PARAMS_GROUP, Exposed.PARAMS_BINDING);
+        var frameGroup = block(Exposed.FRAME_SIZE, [Exposed.FRAME_exposure => 0.5], Exposed.FRAME_GROUP, Exposed.FRAME_BINDING);
+        var one = new GpuExtent3D(1);
+        var dot = device.texture(new GpuTextureDescriptor(one, Rgba8unorm,
+            TextureUsage.RENDER_ATTACHMENT() | TextureUsage.COPY_SRC()));
+        var dotPixels = device.createBuffer(new GpuBufferDescriptor(256, BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
+        var dotColour = new GpuRenderPassColorAttachment(Clear, Store);
+        dotColour.viewTexture(dot);
+        var dotPass = new GpuRenderPassDescriptor();
+        dotPass.addColorAttachments(dotColour);
+        var encoder = device.encoder();
+        encoder.beginRenderPass(dotPass);
+        encoder.renderSetPipeline(exposed);
+        encoder.renderSetBindGroup(Exposed.PARAMS_GROUP, paramsGroup);
+        encoder.renderSetBindGroup(Exposed.FRAME_GROUP, frameGroup);
+        encoder.renderDraw(1, 1);
+        encoder.renderEnd();
+        var dotInto = new GpuTexelCopyBufferInfo(dotPixels);
+        dotInto.bytesPerRow(256);
+        encoder.copyTextureToBufferWith(new GpuTexelCopyTextureInfo(dot), dotInto, one);
+        encoder.submit(queue);
+        device.queueWorkDone(queue).await();
+        device.mapBuffer(dotPixels, 0, 256).await();
+        var dotImage = haxe.io.Bytes.alloc(4);
+        check(dotPixels.copyOut(0, dotImage, 4), "framework readback failed");
+        // luma(1, 1, 1) is 1, times an exposure of 0.5.
+        check(Math.abs(dotImage.get(0) - 128) <= 1, 'the framework shader drew ${dotImage.get(0)}');
+        dotPixels.unmap();
+
         check(device.takeError() == null, "GPU validation error with HXSL shaders");
         Sys.println("gpu hxsl ok");
     }

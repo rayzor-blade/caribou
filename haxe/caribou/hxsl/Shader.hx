@@ -6,5 +6,7 @@ package caribou.hxsl;
 	the program compiles and replaces it with `static inline var WGSL`, the
 	source the gpu plugin compiles.
 **/
+#if !macro
 @:autoBuild(caribou.hxsl.Build.shader())
+#end
 interface Shader {}

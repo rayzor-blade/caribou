@@ -20,8 +20,9 @@ class Build {
 	public static function shader():Array<Field> {
 		var fields = Context.getBuildFields();
 		var src = Lambda.find(fields, f -> f.name == "SRC");
-		if (src == null)
-			Context.error("an HXSL shader declares static var SRC", Context.currentPos());
+		// A framework's shader interface or base class has no source of its own.
+		if (src == null || Context.getLocalClass().get().isInterface)
+			return fields;
 		var expr = switch (src.kind) {
 			case FVar(_, e) if (e != null): e;
 			default: Context.error("SRC is the shader's source", src.pos);
@@ -29,8 +30,11 @@ class Build {
 		var local = Context.getLocalClass().get();
 		local.meta.add(":src", [expr], expr.pos);
 		fields.remove(src);
+		var exts = Extensions.of(local);
+		var preludes = [for (x in exts) x.prelude()].filter(p -> p != null);
+		var full = preludes.length == 0 ? expr : {expr: EBlock(preludes.concat([expr])), pos: expr.pos};
 		try {
-			var compiled = Compiler.compile(local.name, expr, source, (msg, pos) -> Context.warning(msg, pos));
+			var compiled = Compiler.compile(local.name, full, source, (msg, pos) -> Context.warning(msg, pos), exts);
 			// Only helpers: a module other shaders import, with nothing to print.
 			if (compiled == null)
 				return fields;
@@ -46,13 +50,22 @@ class Build {
 				});
 			constant("WGSL", macro $v{wgsl}, "The shader as WGSL, for `device.createShader`.");
 			var l = compiled.layout;
-			constant("PARAMS_SIZE", macro $v{l.paramsSize}, "Bytes of the params uniform buffer at group 0, binding 0.");
-			for (p in l.params)
-				constant('PARAM_${p.name}', macro $v{p.offset}, 'Byte offset of `${p.name}` in the params buffer.');
-			for (t in l.textures)
+			for (b in l.blocks) {
+				var B = b.name.toUpperCase();
+				constant('${B}_SIZE', macro $v{b.size}, 'Bytes of the `${b.name}` uniform buffer.');
+				constant('${B}_GROUP', macro $v{b.group}, 'Bind group of the `${b.name}` uniform buffer.');
+				constant('${B}_BINDING', macro $v{b.binding}, 'Binding of the `${b.name}` uniform buffer.');
+				for (m in b.members)
+					constant('${B}_${m.name}', macro $v{m.offset}, 'Byte offset of `${m.name}` in the `${b.name}` uniform buffer.');
+			}
+			for (t in l.textures) {
 				constant('TEXTURE_${t.name}', macro $v{t.binding}, 'Binding of `${t.name}`; its sampler is the next binding.');
-			for (b in l.buffers)
+				constant('TEXTURE_${t.name}_GROUP', macro $v{t.group}, 'Bind group of `${t.name}` and its sampler.');
+			}
+			for (b in l.buffers) {
 				constant('BUFFER_${b.name}', macro $v{b.binding}, 'Binding of `${b.name}`.');
+				constant('BUFFER_${b.name}_GROUP', macro $v{b.group}, 'Bind group of `${b.name}`.');
+			}
 			for (i in l.inputs)
 				constant('INPUT_${i.name}', macro $v{i.location}, 'Vertex attribute location of `${i.name}`.');
 			for (t in l.targets)
