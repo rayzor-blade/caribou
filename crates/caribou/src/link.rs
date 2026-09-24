@@ -48,7 +48,7 @@ impl CType {
             TypeRef::Int => CType::Int32,
             TypeRef::Float => CType::Double,
             TypeRef::Str => CType::Str,
-            TypeRef::Object(_) => CType::Object,
+            TypeRef::Object(_) | TypeRef::Future(_) => CType::Object,
             // A list and a typed function cross as the bridge values they
             // are; only their use inside the callee is dynamic.
             TypeRef::Array(_) | TypeRef::Function { .. } => CType::Value,

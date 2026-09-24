@@ -51,6 +51,7 @@ wgpu = { version = "30", optional = true, default-features = false, features = [
 # which are definitionally single-threaded; threaded wasm will need local
 # resource tables instead of the native process-wide mutexes.
 [target.'cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))'.dependencies]
+wasm-bindgen-futures = "0.4"
 wgpu = { version = "30", optional = true, default-features = false, features = [
   "std", "parking_lot", "wgsl", "webgpu", "fragile-send-sync-non-atomic-wasm",
 ] }

@@ -44,8 +44,25 @@ mod tests {
         let request = symbol("GpuInstance", "requestAdapter");
         assert!(!request.param_enums[1].is_null());
         assert_eq!(
-            unsafe { __CARIBOU_CLASSES[request.ret_class as usize].name.as_str() },
+            unsafe {
+                __CARIBOU_CLASSES[request.future_ret_class as usize]
+                    .name
+                    .as_str()
+            },
             "GpuAdapter"
+        );
+        assert_eq!(request.ret, caribou_abi::TypeTag::FUTURE);
+        assert_eq!(request.future_ret, caribou_abi::TypeTag::OBJ);
+        let device = symbol("GpuAdapter", "requestDevice");
+        assert_eq!(device.ret, caribou_abi::TypeTag::FUTURE);
+        assert_eq!(device.future_ret, caribou_abi::TypeTag::OBJ);
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[device.future_ret_class as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuDevice"
         );
         assert_eq!(BlendFactor::OneMinusSrcAlpha.native(), 5);
         assert_eq!(AddressMode::MirrorRepeat.native(), 2);
@@ -53,9 +70,11 @@ mod tests {
         assert_eq!(TextureUsage::RENDER_ATTACHMENT(), 16);
 
         let map = symbol("GpuDevice", "mapBuffer");
-        assert_eq!(map.ret, <Future as caribou_abi::Returned>::TAG);
+        assert_eq!(map.ret, <Future<()> as caribou_abi::Returned>::TAG);
+        assert_eq!(map.future_ret, caribou_abi::TypeTag::VOID);
         let submitted = symbol("GpuDevice", "queueWorkDone");
-        assert_eq!(submitted.ret, <Future as caribou_abi::Returned>::TAG);
+        assert_eq!(submitted.ret, <Future<()> as caribou_abi::Returned>::TAG);
+        assert_eq!(submitted.future_ret, caribou_abi::TypeTag::VOID);
         assert!(
             __CARIBOU_CLASSES
                 .iter()

@@ -28,6 +28,7 @@ pub static HOST: Host = Host {
     future_of,
     future_ready,
     future_settle,
+    future_resolve_object,
     i64_new,
     i64_of,
     text_new,
@@ -66,6 +67,31 @@ unsafe extern "C" fn future_settle(
         return false;
     };
     caribou::future::settle(future, value, rejected)
+}
+
+unsafe extern "C" fn future_resolve_object(
+    future: caribou_abi::Future,
+    class: caribou_abi::Str,
+    payload: *mut c_void,
+    drop_payload: unsafe extern "C" fn(*mut c_void),
+) -> bool {
+    let Some(future) = caribou::future::of(future.value()) else {
+        unsafe { drop_payload(payload) };
+        return false;
+    };
+    let Some(desc) = super::class_type(unsafe { class.as_str() }) else {
+        unsafe { drop_payload(payload) };
+        return false;
+    };
+    let _gc = heap::gc_guard();
+    let value = super::wrap(desc, payload);
+    if caribou::future::settle(future, value, false) {
+        true
+    } else {
+        // `value` is now owned by the heap and its descriptor will release
+        // the payload when it becomes unreachable.
+        false
+    }
 }
 
 unsafe fn text_at(ptr: *const u8, len: usize) -> &'static str {

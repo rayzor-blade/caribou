@@ -41,9 +41,9 @@ class Main {
         check(window.width() > 0 && window.height() > 0, "window creation failed");
 
         var instance = new GpuInstance();
-        var adapter = instance.requestAdapter(HighPerformance);
+        var adapter = instance.requestAdapter(HighPerformance).await();
         check(adapter.valid(), "no GPU adapter is available");
-        var device = adapter.requestDevice();
+        var device = adapter.requestDevice().await();
         check(device.valid(), "GPU device creation failed");
         var queue = device.queue();
 

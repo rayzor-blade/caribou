@@ -114,6 +114,7 @@ unsafe fn matches_type(t: *const hl_type, ty: &TypeRef) -> bool {
         TypeRef::Bool => kind == hl::HBOOL,
         TypeRef::Str => unsafe { proto::obj_name_is(t, "String") },
         TypeRef::Buffer => unsafe { proto::obj_name_is(t, "haxe.io.Bytes") },
+        TypeRef::Future(_) => unsafe { proto::obj_name_is(t, "caribou.Future") },
         TypeRef::Enum(n) => kind == hl::HENUM && unsafe { name((*(*t).detail.tenum).name) == *n },
         TypeRef::Dyn => kind == hl::HDYN,
         _ => false,

@@ -60,15 +60,18 @@ Locks, semaphores, conditions, deques, and sleeps are all built on `park` and `w
 ## Shared Futures
 
 `caribou.Future` is a core heap object over the same wait tokens. Plugins use
-the one-word `caribou_abi::Future` carrier and retain outstanding work as
-`Rooted<Future>`. `resolve(Value)` and `reject(Value)` are first-completion
-wins and may run on a backend callback thread. The settled value remains in
-the core object, where the collector traces it, and no adapter copies it.
+the one-word `caribou_abi::Future<T>` carrier and retain outstanding work as
+`Rooted<Future<T>>`. Its ABI descriptor carries `T`, so typed frontends infer
+the result of `await()`. `resolve(Value)`, `resolve_boxed(Box<T>)`, and
+`reject(Value)` are first-completion wins and may run on a backend callback
+thread. A boxed plugin result is installed directly in its core object rather
+than serialized. The settled value remains in the future, where the collector
+traces it, and no adapter copies it.
 
 Every frontend can construct a pending future and sees the same `ready()`,
 `await()`, `resolve(value)`, and `reject(error)` methods. Settlement is
 first-completion wins and returns whether the call won. `await()` parks
-the current Caribou task and either returns the dynamic value or raises the
+the current Caribou task and either returns the declared value or raises the
 rejection value. Haxe exposes these methods through `caribou.Future<T>`;
 Wren installs the core-published class on first crossing. Zyntax async and a
 browser Wren `Future` can adapt their syntax to this object while retaining

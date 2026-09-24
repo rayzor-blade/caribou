@@ -17,7 +17,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
@@ -734,6 +734,10 @@ pub struct SymbolDesc {
     pub param_classes: [u8; MAX_PARAMS],
     pub ret_enum: *const EnumDesc,
     pub param_enums: [*const EnumDesc; MAX_PARAMS],
+    /// The value produced by a FUTURE result. VOID for other results.
+    pub future_ret: TypeTag,
+    pub future_ret_class: u8,
+    pub future_ret_enum: *const EnumDesc,
 }
 
 unsafe impl Sync for SymbolDesc {}
@@ -777,6 +781,7 @@ unsafe impl Send for PluginInfo {}
 /// table, implemented by [`plugin!`] for each `class` it declares.
 pub trait PluginClass {
     const NAME: &'static str;
+    const TYPE_NAME: &'static str;
 }
 
 /// A Rust type a plugin function takes, and how it crosses: a scalar or a
@@ -794,6 +799,16 @@ pub trait Param {
 /// tag; a [`Text`] made by [`host::text`]; `Box<T>` of a [`PluginClass`]
 /// as a new object of that class, owned by the core from then on.
 pub trait Returned {
+    const TAG: TypeTag;
+    const CLASS: Option<&'static str> = None;
+    const ENUM: *const EnumDesc = core::ptr::null();
+    const FUTURE_TAG: TypeTag = TypeTag::VOID;
+    const FUTURE_CLASS: Option<&'static str> = None;
+    const FUTURE_ENUM: *const EnumDesc = core::ptr::null();
+}
+
+/// A value type carried by a typed [`Future`].
+pub trait FutureResult {
     const TAG: TypeTag;
     const CLASS: Option<&'static str> = None;
     const ENUM: *const EnumDesc = core::ptr::null();
@@ -824,7 +839,38 @@ tagged! {
     Value => TypeTag::DYN,
     Text => TypeTag::BYTES,
     Buffer => TypeTag::BUFFER,
-    Future => TypeTag::FUTURE,
+}
+
+macro_rules! future_results {
+    ($($ty:ty),* $(,)?) => { $(
+        impl FutureResult for $ty {
+            const TAG: TypeTag = <$ty as Returned>::TAG;
+            const CLASS: Option<&'static str> = <$ty as Returned>::CLASS;
+            const ENUM: *const EnumDesc = <$ty as Returned>::ENUM;
+        }
+    )* };
+}
+future_results!((), u8, u16, i32, i64, f32, f64, bool, Value, Text, Buffer);
+
+impl<T: PluginClass> FutureResult for T {
+    const TAG: TypeTag = TypeTag::OBJ;
+    const CLASS: Option<&'static str> = Some(T::NAME);
+}
+
+impl<T: PluginEnum> FutureResult for Enum<T> {
+    const TAG: TypeTag = TypeTag::ENUM;
+    const ENUM: *const EnumDesc = T::DESC;
+}
+
+impl<T: FutureResult> Param for Future<T> {
+    const TAG: TypeTag = TypeTag::FUTURE;
+}
+
+impl<T: FutureResult> Returned for Future<T> {
+    const TAG: TypeTag = TypeTag::FUTURE;
+    const FUTURE_TAG: TypeTag = T::TAG;
+    const FUTURE_CLASS: Option<&'static str> = T::CLASS;
+    const FUTURE_ENUM: *const EnumDesc = T::ENUM;
 }
 
 impl<T: PluginClass> Param for &T {
@@ -984,6 +1030,7 @@ macro_rules! plugin {
         $(
             impl $crate::PluginClass for $declared {
                 const NAME: &'static str = stringify!($declared);
+                const TYPE_NAME: &'static str = concat!($name, ".", stringify!($declared));
             }
         )*
 
@@ -1013,6 +1060,9 @@ macro_rules! plugin {
                     params: $crate::padded(&[ $( <$ty as $crate::Param>::TAG ),* ]),
                     ret_enum: <$crate::plugin!(@ret_type $($ret)?) as $crate::Returned>::ENUM,
                     param_enums: $crate::data::padded_enums(&[$(<$ty as $crate::Param>::ENUM),*]),
+                    future_ret: <$crate::plugin!(@ret_type $($ret)?) as $crate::Returned>::FUTURE_TAG,
+                    future_ret_class: $crate::class_index(&__CARIBOU_CLASSES, <$crate::plugin!(@ret_type $($ret)?) as $crate::Returned>::FUTURE_CLASS),
+                    future_ret_enum: <$crate::plugin!(@ret_type $($ret)?) as $crate::Returned>::FUTURE_ENUM,
                     ret_class: $crate::class_index(&__CARIBOU_CLASSES, $crate::plugin!(@ret_class $($ret)?)),
                     param_classes: $crate::padded_classes(&[
                         $( $crate::class_index(&__CARIBOU_CLASSES, <$ty as $crate::Param>::CLASS) ),*
@@ -1249,6 +1299,9 @@ mod tests {
             param_classes: [NO_CLASS; MAX_PARAMS],
             ret_enum: core::ptr::null(),
             param_enums: [core::ptr::null(); MAX_PARAMS],
+            future_ret: TypeTag::VOID,
+            future_ret_class: NO_CLASS,
+            future_ret_enum: core::ptr::null(),
         }];
         static INFO: PluginInfo = PluginInfo {
             abi_version: ABI_VERSION,

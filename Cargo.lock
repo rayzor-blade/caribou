@@ -762,6 +762,7 @@ dependencies = [
  "caribou_abi",
  "pollster",
  "raw-window-handle",
+ "wasm-bindgen-futures",
  "wgpu",
 ]
 

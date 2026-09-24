@@ -280,6 +280,10 @@ class Bridge {
 			var name = parts.pop();
 			return TPath({pack: parts, name: name});
 		}
+		if (Reflect.hasField(ty, "Future")) {
+			var result = haxeType(Reflect.field(ty, "Future"), pack, classes);
+			return TPath({pack: ["caribou"], name: "Future", params: [TPType(result)]});
+		}
 		if (Reflect.hasField(ty, "Object")) {
 			var typeName:String = Reflect.field(ty, "Object");
 			if (typeName == "caribou.Future") {

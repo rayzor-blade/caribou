@@ -7,6 +7,7 @@
 #![allow(clippy::too_many_arguments)]
 
 use std::collections::VecDeque;
+use std::future::Future as StdFuture;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use crate::handles::{Slab, kind_of};
@@ -111,10 +112,20 @@ fn bytes(data: &Buffer, len: i32) -> Option<&[u8]> {
     Some(unsafe { &data.as_slice()[..len] })
 }
 
-fn rejected_future(message: &str) -> Future {
+fn rejected_future<T>(message: &str) -> Future<T> {
     let future = Future::new();
     future.reject(Text::new(message).value());
     future
+}
+
+#[cfg(not(all(target_arch = "wasm32", not(target_os = "emscripten"))))]
+fn spawn_gpu(work: impl StdFuture<Output = ()> + Send + 'static) {
+    std::thread::spawn(move || pollster::block_on(work));
+}
+
+#[cfg(all(target_arch = "wasm32", not(target_os = "emscripten")))]
+fn spawn_gpu(work: impl StdFuture<Output = ()> + 'static) {
+    wasm_bindgen_futures::spawn_local(work);
 }
 
 /// Native callbacks only run when wgpu is polled. Browser WebGPU is driven by
@@ -145,8 +156,10 @@ pub unsafe fn instance_destroy(inst: i32) {
 
 // -- adapter ----------------------------------------------------------------
 
-pub unsafe fn adapter_request(inst: i32, power: i32) -> i32 {
-    let instance = find!(INSTANCES, inst, 0);
+pub unsafe fn adapter_request(inst: i32, power: i32) -> Future<crate::GpuAdapter> {
+    let Some(instance) = INSTANCES.lock().unwrap().get(inst) else {
+        return rejected_future("instance was destroyed");
+    };
     let options = wgpu::RequestAdapterOptions {
         power_preference: match power {
             1 => wgpu::PowerPreference::HighPerformance,
@@ -155,10 +168,24 @@ pub unsafe fn adapter_request(inst: i32, power: i32) -> i32 {
         },
         ..Default::default()
     };
-    match pollster::block_on(instance.request_adapter(&options)) {
-        Ok(adapter) => ADAPTERS.lock().unwrap().put(adapter),
-        Err(_) => 0,
-    }
+    let future = Future::new();
+    let completion = Rooted::new(future);
+    spawn_gpu(async move {
+        match instance.request_adapter(&options).await {
+            Ok(adapter) => {
+                let handle = ADAPTERS.lock().unwrap().put(adapter);
+                completion
+                    .get()
+                    .resolve_boxed(Box::new(crate::GpuAdapter { handle }));
+            }
+            Err(error) => {
+                completion
+                    .get()
+                    .reject(Text::new(&error.to_string()).value());
+            }
+        }
+    });
+    future
 }
 
 pub unsafe fn adapter_name(adapter: i32) -> Text {
@@ -201,24 +228,41 @@ pub unsafe fn adapter_destroy(adapter: i32) {
 
 // -- device -----------------------------------------------------------------
 
-pub unsafe fn device_request(adapter: i32) -> i32 {
-    let adapter = find!(ADAPTERS, adapter, 0);
-    match pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())) {
-        Ok((device, queue)) => {
-            let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
-            let reported = errors.clone();
-            device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-                reported.lock().unwrap().push_back(error.to_string());
-            }));
-            let queue = QUEUES.lock().unwrap().put(queue);
-            DEVICES.lock().unwrap().put(DeviceEntry {
-                device,
-                queue,
-                errors,
-            })
+pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
+    let Some(adapter) = ADAPTERS.lock().unwrap().get(adapter) else {
+        return rejected_future("adapter was destroyed");
+    };
+    let future = Future::new();
+    let completion = Rooted::new(future);
+    spawn_gpu(async move {
+        match adapter
+            .request_device(&wgpu::DeviceDescriptor::default())
+            .await
+        {
+            Ok((device, queue)) => {
+                let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
+                let reported = errors.clone();
+                device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+                    reported.lock().unwrap().push_back(error.to_string());
+                }));
+                let queue = QUEUES.lock().unwrap().put(queue);
+                let handle = DEVICES.lock().unwrap().put(DeviceEntry {
+                    device,
+                    queue,
+                    errors,
+                });
+                completion
+                    .get()
+                    .resolve_boxed(Box::new(crate::GpuDevice { handle }));
+            }
+            Err(error) => {
+                completion
+                    .get()
+                    .reject(Text::new(&error.to_string()).value());
+            }
         }
-        Err(_) => 0,
-    }
+    });
+    future
 }
 
 pub unsafe fn device_take_error(device: i32) -> Text {
@@ -274,7 +318,7 @@ pub unsafe fn queue_write_buffer(queue: i32, buffer: i32, offset: i64, data: Buf
     queue.write_buffer(&buffer, offset.max(0) as u64, bytes);
 }
 
-pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64) -> Future {
+pub unsafe fn buffer_map_begin(device: i32, buffer: i32, offset: i64, size: i64) -> Future<()> {
     let Some(buffer) = BUFFERS.lock().unwrap().get(buffer) else {
         return rejected_future("buffer was destroyed");
     };
@@ -482,7 +526,7 @@ pub unsafe fn encoder_submit(encoder: i32, queue: i32) {
     ENCODERS.lock().unwrap().remove(handle);
 }
 
-pub unsafe fn queue_work_done(device: i32, queue: i32) -> Future {
+pub unsafe fn queue_work_done(device: i32, queue: i32) -> Future<()> {
     let Some(queue) = QUEUES.lock().unwrap().get(queue) else {
         return rejected_future("queue was destroyed");
     };
@@ -1734,12 +1778,10 @@ pub unsafe fn shader_messages(shader: i32) -> Text {
     text_out(&text)
 }
 
-// Native adapter/device requests still settle before returning. Their typed
-// asynchronous form needs Promise<T> result metadata in the plugin ABI.
-pub unsafe fn adapter_open(instance: i32, power: i32) -> i32 {
+pub unsafe fn adapter_open(instance: i32, power: i32) -> Future<crate::GpuAdapter> {
     unsafe { adapter_request(instance, power) }
 }
-pub unsafe fn device_open(adapter: i32) -> i32 {
+pub unsafe fn device_open(adapter: i32) -> Future<crate::GpuDevice> {
     unsafe { device_request(adapter) }
 }
 pub unsafe fn adapter_driver(adapter: i32) -> Text {

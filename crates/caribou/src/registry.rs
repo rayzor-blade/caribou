@@ -50,6 +50,8 @@ pub enum TypeRef {
     /// An object of the named type, in the owning language's own terms:
     /// what [`ClassIface::type_name`] holds for the class that defines it.
     Object(String),
+    /// A language-neutral eventual value and the type produced by awaiting it.
+    Future(Box<TypeRef>),
     Array(Box<TypeRef>),
     /// Anything; the value's own type decides at the crossing.
     Dyn,

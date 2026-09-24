@@ -29,9 +29,11 @@
 //! What a spoke sees of a plugin is what the driver loaded: no plugin is
 //! reached by a path from inside a language.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, RwLock};
 
 use caribou::error::Error as CoreError;
 use caribou::heap::{self, TypeDesc};
@@ -267,6 +269,12 @@ impl Adapter for Runtime {
                 .iter()
                 .map(|c| class_descriptor(&plugin.name, c, lang))
                 .collect();
+            {
+                let mut classes = CLASS_TYPES.write().unwrap();
+                for &desc in &descs {
+                    classes.insert(type_name_of(desc).to_owned(), desc);
+                }
+            }
             for iface in interfaces(plugin, lang, &descs) {
                 if let Err(e) = registry::publish(iface) {
                     eprintln!("caribou: plugin {}: {e}", plugin.name);
@@ -281,15 +289,12 @@ impl Adapter for Runtime {
 /// of a class is typed by the class's name; a static `new` returning its
 /// own class is the class's constructor.
 fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec<Interface> {
-    let type_of = |tag: TypeTag, class: u8, enumeration: *const caribou_abi::EnumDesc| {
+    let value_type = |tag: TypeTag, class: u8, enumeration: *const caribou_abi::EnumDesc| {
         if tag == TypeTag::BUFFER {
             return TypeRef::Buffer;
         }
         if tag == TypeTag::ENUM {
             return TypeRef::Enum(unsafe { (*enumeration).name.as_str() }.to_owned());
-        }
-        if tag == TypeTag::FUTURE {
-            return TypeRef::Object("caribou.Future".to_owned());
         }
         if class == NO_CLASS {
             native::type_ref(tag.kind())
@@ -326,9 +331,23 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 .zip(classes)
                 .enumerate()
                 .skip(declared)
-                .map(|(i, (&t, &c))| type_of(t, c, desc.param_enums[i]))
+                .map(|(i, (&t, &c))| {
+                    if t == TypeTag::FUTURE {
+                        TypeRef::Future(Box::new(TypeRef::Dyn))
+                    } else {
+                        value_type(t, c, desc.param_enums[i])
+                    }
+                })
                 .collect(),
-            ret: type_of(desc.ret, desc.ret_class, desc.ret_enum),
+            ret: if desc.ret == TypeTag::FUTURE {
+                TypeRef::Future(Box::new(value_type(
+                    desc.future_ret,
+                    desc.future_ret_class,
+                    desc.future_ret_enum,
+                )))
+            } else {
+                value_type(desc.ret, desc.ret_class, desc.ret_enum)
+            },
             target: Callable::Typed {
                 func: desc.func,
                 signature: native::signature(
@@ -435,6 +454,13 @@ struct Class {
     type_name: Symbol,
 }
 
+static CLASS_TYPES: LazyLock<RwLock<HashMap<String, &'static TypeDesc>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+pub(crate) fn class_type(name: &str) -> Option<&'static TypeDesc> {
+    CLASS_TYPES.read().unwrap().get(name).copied()
+}
+
 fn class_of(desc: &TypeDesc) -> &'static Class {
     unsafe { &*(desc.ext as *const Class) }
 }
@@ -483,7 +509,7 @@ unsafe extern "C" fn drop_object(obj: *mut u8) {
 
 /// A new object of `desc` holding `payload`: unrooted, for the caller to
 /// hand on at once.
-fn wrap(desc: &'static TypeDesc, payload: *mut c_void) -> Value {
+pub(crate) fn wrap(desc: &'static TypeDesc, payload: *mut c_void) -> Value {
     if payload.is_null() {
         return Value::null();
     }

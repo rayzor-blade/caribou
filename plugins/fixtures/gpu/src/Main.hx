@@ -11,13 +11,13 @@ class Main {
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
-        var adapter = instance.requestAdapter(HighPerformance);
+        var adapter = instance.requestAdapter(HighPerformance).await();
         if (!adapter.valid()) {
             instance.destroy();
             throw "No GPU adapter is available";
         }
         Sys.println('GPU: ${adapter.name()} (${adapter.backend()})');
-        var device = adapter.requestDevice();
+        var device = adapter.requestDevice().await();
         check(device.valid(), "device request failed");
         var queue = device.queue();
         var data = haxe.io.Bytes.alloc(16);

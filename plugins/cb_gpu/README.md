@@ -20,9 +20,9 @@ import gpu.Power;
 import gpu.BufferUsage;
 
 var instance = new GpuInstance();
-var adapter = instance.requestAdapter(HighPerformance);
+var adapter = instance.requestAdapter(HighPerformance).await();
 if (!adapter.valid()) throw "No GPU adapter available";
-var device = adapter.requestDevice();
+var device = adapter.requestDevice().await();
 if (!device.valid()) throw "Could not open the GPU device";
 var descriptor = new GpuBufferDescriptor(1024,
     BufferUsage.STORAGE() | BufferUsage.COPY_DST());
@@ -123,7 +123,7 @@ are available through the same plugin metadata in every frontend.
 The generator supports fieldless enums, integer constant namespaces,
 dictionary records and explicit resource method declarations. A method can
 name an IDL operation with `#[idl("Interface.operation")]`; Promise returns
-are checked against Caribou's shared `Future` carrier. It does **not** yet
+are checked against Caribou's shared `Future<T>` carrier. It does **not** yet
 choose language-neutral projections for arbitrary multi-type WebIDL unions
 or callback types, nor infer wgpu operations, overloads or scheduling from
 interfaces.
@@ -140,13 +140,13 @@ wgpu's own references. Repeated destruction is harmless and `valid()` checks
 whether the handle still resolves. Encoders and pipeline builders are consumed
 by `submit()` and `build()` respectively.
 
-`requestAdapter()` and `requestDevice()` still settle synchronously on this
-native backend and return the actual resource. Buffer mapping and queue
-completion return `caribou.Future`; `await()` parks the current Caribou task
-and rejected mapping operations raise their wgpu error. Native platforms
-drive the required device poll on a short-lived worker, while browser WebGPU
-uses its event loop. Completion callbacks retain a rooted Future rather than
-an unrooted Caribou value or a borrowed buffer.
+`requestAdapter()` and `requestDevice()` return typed `caribou.Future<T>`
+values, as do buffer mapping and queue completion. `await()` parks the current
+Caribou task and preserves the concrete adapter or device result type without
+a language-side annotation. Rejected operations raise their wgpu error.
+Native platforms drive asynchronous work on short-lived workers, while
+browser WebGPU uses its event loop. Completion callbacks retain a rooted
+Future rather than an unrooted Caribou value or a borrowed buffer.
 
 Shader sources and immediate labels borrow `Text.as_str()`. Pipeline builder
 entry names are copied because they survive the call. Uploads borrow
@@ -167,12 +167,9 @@ DX12 on Windows, Vulkan on desktop Unix, Vulkan/GLES on Android, browser
 WebGPU on `wasm32-unknown-unknown`, and GLES on Emscripten. This keeps the
 plugin ABI and resource model buildable for Caribou's future wasm runtime.
 Browser execution is not complete yet: Caribou must statically register the
-plugin, preserve typed adapter/device Promise results through plugin metadata,
-and provide an HTML or offscreen canvas handle. Buffer mapping and queue
-completion are already expressed as shared Futures. The current
-`requestAdapter()` and `requestDevice()` methods synchronously settle wgpu
-futures for native use and must not be used as the browser implementation of
-those operations.
+plugin and provide an HTML or offscreen canvas handle. The plugin ABI already
+preserves typed Promise results, and the GPU requests use a local browser task
+instead of blocking the event loop.
 
 Buffer sizes, ranges, offsets and adapter limits use 64-bit integers, matching
 WebGPU's `GPUSize64`. Dimensions, counts, flags and shared-buffer lengths use

@@ -30,6 +30,12 @@ pub struct Host {
     /// Settle a pending future. `rejected` makes `value` the error raised by
     /// `Future.await()`. Returns false when another completion won the race.
     pub future_settle: unsafe extern "C" fn(Future, Value, bool) -> bool,
+    pub future_resolve_object: unsafe extern "C" fn(
+        Future,
+        crate::Str,
+        *mut c_void,
+        unsafe extern "C" fn(*mut c_void),
+    ) -> bool,
     pub i64_new: unsafe extern "C" fn(i64) -> Value,
     pub i64_of: unsafe extern "C" fn(Value) -> i64,
     /// A core string of `len` bytes of UTF-8 at `ptr`, copied; unrooted,
@@ -183,23 +189,30 @@ impl core::fmt::Display for Text {
 /// `Send + Sync`, so it may be moved into `tokio::spawn` or another executor.
 /// It is a completion handle, not an implementation of `core::future::Future`.
 #[repr(transparent)]
-#[derive(Clone, Copy)]
-pub struct Future(*const c_void);
+pub struct Future<T = Value>(*const c_void, PhantomData<fn() -> T>);
 
-impl Future {
-    pub const NULL: Future = Future(core::ptr::null());
+impl<T> Clone for Future<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Future<T> {}
 
-    pub fn new() -> Future {
-        unsafe { (host().future_new)() }
+impl<T> Future<T> {
+    pub const NULL: Future<T> = Future(core::ptr::null(), PhantomData);
+
+    pub fn new() -> Future<T> {
+        let future = unsafe { (host().future_new)() };
+        Future(future.0, PhantomData)
     }
 
-    pub fn of(value: Value) -> Option<Future> {
+    pub fn of(value: Value) -> Option<Future<T>> {
         let future = unsafe { (host().future_of)(value) };
-        (!future.0.is_null()).then_some(future)
+        (!future.0.is_null()).then_some(Future(future.0, PhantomData))
     }
 
-    pub const unsafe fn from_raw(p: *const c_void) -> Future {
-        Future(p)
+    pub const unsafe fn from_raw(p: *const c_void) -> Future<T> {
+        Future(p, PhantomData)
     }
 
     pub fn is_null(self) -> bool {
@@ -215,19 +228,37 @@ impl Future {
     }
 
     pub fn ready(self) -> bool {
-        unsafe { (host().future_ready)(self) }
+        unsafe { (host().future_ready)(self.erased()) }
     }
 
     pub fn resolve(self, value: Value) -> bool {
-        unsafe { (host().future_settle)(self, value, false) }
+        unsafe { (host().future_settle)(self.erased(), value, false) }
     }
 
     pub fn reject(self, error: Value) -> bool {
-        unsafe { (host().future_settle)(self, error, true) }
+        unsafe { (host().future_settle)(self.erased(), error, true) }
+    }
+
+    fn erased(self) -> Future<Value> {
+        Future(self.0, PhantomData)
     }
 }
 
-impl Rootable for Future {
+impl<T: crate::PluginClass> Future<T> {
+    pub fn resolve_boxed(self, value: alloc::boxed::Box<T>) -> bool {
+        let payload = alloc::boxed::Box::into_raw(value).cast::<c_void>();
+        unsafe {
+            (host().future_resolve_object)(
+                self.erased(),
+                crate::Str::new(T::TYPE_NAME),
+                payload,
+                crate::drop_boxed::<T>,
+            )
+        }
+    }
+}
+
+impl<T> Rootable for Future<T> {
     fn value(self) -> Value {
         Future::value(self)
     }
@@ -315,8 +346,8 @@ impl<T: Rootable> Clone for Rooted<T> {
 // A future's mutable state is synchronized by the core and a root is only a
 // handle into the core's synchronized handle table. This is the carrier a
 // backend callback moves to its completion thread.
-unsafe impl Send for Rooted<Future> {}
-unsafe impl Sync for Rooted<Future> {}
+unsafe impl<T> Send for Rooted<Future<T>> {}
+unsafe impl<T> Sync for Rooted<Future<T>> {}
 
 impl Rootable for Text {
     fn value(self) -> Value {

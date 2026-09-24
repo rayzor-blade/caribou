@@ -220,6 +220,15 @@ impl Data {
         });
         future
     }
+    pub extern "C" fn later_vec() -> Future<Vec2> {
+        let future = Future::new();
+        let completion = Rooted::new(future);
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            completion.get().resolve_boxed(Vec2::new(6.0, 8.0));
+        });
+        future
+    }
 }
 
 // Ordinary Rust data enums: no separate ABI enum definition or serializer.
@@ -267,6 +276,7 @@ caribou_abi::plugin! {
         fn pair() -> Enum<Nested>;
         fn rebuild_nested(Enum<Nested>) -> Enum<Nested>;
         fn later(i32) -> Future;
+        fn later_vec() -> Future<Vec2>;
     }
     fn hypot(f64, f64) -> f64;
     fn twice(i32) -> i32;

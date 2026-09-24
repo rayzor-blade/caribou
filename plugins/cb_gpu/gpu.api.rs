@@ -62,6 +62,7 @@ struct GpuTextureDescriptor {
     size: GpuExtent3D,
 }
 
+#[idl("GPU")]
 trait GpuInstance {
     #[native(is_valid)]
     fn valid(this: &GpuInstance) -> bool;
@@ -70,11 +71,13 @@ trait GpuInstance {
     #[native(instance_destroy)]
     fn destroy(this: &GpuInstance);
     #[native(adapter_open)]
-    fn requestAdapter(this: &GpuInstance, power: Enum<Power>) -> Box<GpuAdapter>;
+    #[idl("GPU.requestAdapter")]
+    fn requestAdapter(this: &GpuInstance, power: Enum<Power>) -> Future<GpuAdapter>;
     #[native(surface_create)]
     fn surface(this: &GpuInstance, platform: i32, wa: i64, wb: i64, da: i64, db: i64) -> Box<GpuSurface>;
 }
 
+#[idl("GPUAdapter")]
 trait GpuAdapter {
     #[native(is_valid)]
     fn valid(this: &GpuAdapter) -> bool;
@@ -87,13 +90,15 @@ trait GpuAdapter {
     #[native(adapter_destroy)]
     fn destroy(this: &GpuAdapter);
     #[native(device_open)]
-    fn requestDevice(this: &GpuAdapter) -> Box<GpuDevice>;
+    #[idl("GPUAdapter.requestDevice")]
+    fn requestDevice(this: &GpuAdapter) -> Future<GpuDevice>;
     #[native(adapter_driver)]
     fn driver(this: &GpuAdapter) -> Text;
     #[native(adapter_driver_info)]
     fn driverInfo(this: &GpuAdapter) -> Text;
 }
 
+#[idl("GPUDevice")]
 trait GpuDevice {
     #[native(is_valid)]
     fn valid(this: &GpuDevice) -> bool;
@@ -109,7 +114,7 @@ trait GpuDevice {
     fn createBuffer(this: &GpuDevice, descriptor: &GpuBufferDescriptor) -> Box<GpuBuffer>;
     #[native(buffer_map_begin)]
     #[idl("GPUBuffer.mapAsync")]
-    fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Future;
+    fn mapBuffer(this: &GpuDevice, buffer: &GpuBuffer, offset: i64, size: i64) -> Future<()>;
     #[native(shader_create)]
     fn createShader(this: &GpuDevice, wgsl: Text) -> Box<GpuShader>;
     #[native(compute_pipeline_create)]
@@ -120,7 +125,7 @@ trait GpuDevice {
     fn encoder(this: &GpuDevice) -> Box<GpuEncoder>;
     #[native(queue_work_done)]
     #[idl("GPUQueue.onSubmittedWorkDone")]
-    fn queueWorkDone(this: &GpuDevice, queue: &GpuQueue) -> Future;
+    fn queueWorkDone(this: &GpuDevice, queue: &GpuQueue) -> Future<()>;
     #[native(texture_create)]
     fn texture(this: &GpuDevice, descriptor: &GpuTextureDescriptor) -> Box<GpuTexture>;
     #[native(pipeline_begin)]

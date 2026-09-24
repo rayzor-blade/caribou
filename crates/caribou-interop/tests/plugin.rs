@@ -115,6 +115,7 @@ System.print(Data.same_storage(pair.first.bytes, rebuilt.first.bytes))
 var future = Data.later(73)
 System.print(future.ready() || !future.ready())
 System.print(future.await())
+System.print(Data.later_vec().await().len())
 var manual = Future.new()
 System.print(manual.resolve(91))
 System.print(manual.resolve(92))
@@ -133,7 +134,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 35);
+    assert_eq!(math.symbols().len(), 36);
     let hypot = math
         .symbols()
         .iter()
@@ -142,7 +143,22 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(hypot.param_count, 2);
     assert_eq!(hypot.params[0], TypeTag::F64);
     assert_eq!(hypot.ret, TypeTag::F64);
-    assert_eq!(ABI_VERSION, 3);
+    let later_vec = math
+        .symbols()
+        .iter()
+        .find(|s| unsafe { s.method.as_str() } == "later_vec")
+        .unwrap();
+    assert_eq!(later_vec.ret, TypeTag::FUTURE);
+    assert_eq!(later_vec.future_ret, TypeTag::OBJ);
+    assert_eq!(
+        unsafe {
+            math.classes()[later_vec.future_ret_class as usize]
+                .name
+                .as_str()
+        },
+        "Vec2"
+    );
+    assert_eq!(ABI_VERSION, 4);
     assert_eq!(math.classes().len(), 4);
 
     let world = World::new(Config::default());
@@ -166,6 +182,18 @@ fn a_plugin_is_a_language_wren_imports() {
         "new is the constructor"
     );
     assert_eq!(iface.classes[index].type_name, "math.Vec2");
+    let (data, data_index) = registry::lookup_class("math", "Data", "Data").expect("published");
+    let later_vec = data.classes[data_index]
+        .methods
+        .iter()
+        .find(|method| method.name == "later_vec")
+        .expect("typed future method");
+    assert_eq!(
+        later_vec.ret,
+        caribou::registry::TypeRef::Future(Box::new(caribou::registry::TypeRef::Object(
+            "math.Vec2".into()
+        )))
+    );
 
     let errors = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&errors);
@@ -224,7 +252,7 @@ fn a_plugin_is_a_language_wren_imports() {
     );
     assert_eq!(
         output,
-        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\ntrue\nfalse\n91\ntrue\nfuture failed\n"
+        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\n10\ntrue\nfalse\n91\ntrue\nfuture failed\n"
     );
 
     // The temporaries die with Wren's cycle and the core's collection

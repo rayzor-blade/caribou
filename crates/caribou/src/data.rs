@@ -245,6 +245,7 @@ fn accepts(ty: &TypeRef, v: Value) -> bool {
         TypeRef::Bool => v.is_bool(),
         TypeRef::Str => unsafe { Str::from_value(v).is_some() },
         TypeRef::Buffer => buffer_of(v).is_some(),
+        TypeRef::Future(_) => crate::future::of(v).is_some(),
         TypeRef::Enum(name) => {
             enum_of(v).is_some_and(|p| unsafe { enum_schema(enum_descriptor(p)).name == *name })
         }

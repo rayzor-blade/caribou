@@ -10,18 +10,18 @@ crate name. Resource traits contain signatures annotated with
 WebIDL declaration using `#[idl("Name")]`.
 
 Resource methods use explicit `this: &Resource` parameters. Supported carriers
-are Caribou `Text`, `Buffer`, `Future`, `Enum<T>`, `Box<Resource>` results and borrowed
-resource parameters, plus numeric/boolean scalars. Backends receive integer
+are Caribou `Text`, `Buffer`, `Future<T>`, `Enum<T>`, `Box<Resource>` results and
+borrowed resource parameters, plus numeric/boolean scalars. Backends receive integer
 resource handles and declared native enum codes. Generated objects use the
 normal `plugin!` class metadata and finalizers; the backend defines explicit
 native resource lifetime operations.
 
-`Future` is the shared dynamic-result carrier. A backend creates one with
-`Future::new()`, roots it as `Rooted<Future>` while work is outstanding, and
-calls `resolve(Value)` or `reject(Value)` from its completion callback. The
-core wakes every waiting language fiber. Annotating a resource method with
+`Future<T>` is the shared eventual-result carrier. A backend creates one with
+`Future::new()`, roots it as `Rooted<Future<T>>` while work is outstanding, and
+calls `resolve(Value)`, `resolve_boxed(Box<T>)`, or `reject(Value)` from its
+completion callback. The core wakes every waiting language fiber. Annotating a resource method with
 `#[idl("Interface.operation")]` imports its WebIDL return contract;
-`Promise<T>` must be exposed as the shared `Future` carrier. A declaration
+`Promise<T>` is exposed as the shared typed `Future<T>` carrier. A declaration
 still chooses the plugin method name, arguments and native backend function.
 
 The WebIDL reader extracts enum strings, numeric constant namespaces,

@@ -308,11 +308,14 @@ fn idl_type(
         if parts.len() != 1 {
             return Err("WebIDL Promise needs one result type".into());
         }
-        // Validate the promised value even though the ABI carrier is dynamic.
-        // The concrete result remains in caribou.Future and is projected by
-        // the frontend after await().
-        let _ = idl_type(parts[0], aliases, named, resolving)?;
-        return Ok(syn::parse_quote!(Future));
+        let mut inner = idl_type(parts[0], aliases, named, resolving)?;
+        // A rejected future represents the WebIDL operation's absence/error
+        // path. Caribou frontends therefore expose a nullable Promise result
+        // as the same typed result as a non-null Promise.
+        if let Some(value) = generic(&inner, "Option") {
+            inner = value;
+        }
+        return Ok(syn::parse_quote!(Future<#inner>));
     }
     let spelling = tokens.join(" ");
     let primitive = match spelling.as_str() {
@@ -471,6 +474,9 @@ fn type_name(ty: &Type) -> Option<String> {
     p.path.get_ident().map(ToString::to_string)
 }
 fn scalar(ty: &Type) -> bool {
+    if generic(ty, "Future").is_some() {
+        return true;
+    }
     type_name(ty).is_some_and(|s| {
         matches!(
             s.as_str(),
@@ -977,6 +983,11 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                                     Some("Future") => quote!(Future::NULL),
                                     _ => quote!(Default::default()),
                                 };
+                                let fallback = if generic(ty, "Future").is_some() {
+                                    quote!(Future::NULL)
+                                } else {
+                                    fallback
+                                };
                                 (quote!(value), fallback)
                             } else {
                                 return Err("unsupported return type".into());
@@ -1061,13 +1072,13 @@ mod tests {
               trait Queue {
                 #[native(done)]
                 #[idl("GPUQueue.onSubmittedWorkDone")]
-                fn done(this: &Queue) -> Future;
+                fn done(this: &Queue) -> Future<()>;
               }
             "#,
             "interface GPUQueue { Promise<undefined> onSubmittedWorkDone(); };",
         )
         .unwrap();
-        assert!(generated.contains("fn done (& Queue) -> Future"));
+        assert!(generated.contains("fn done (& Queue) -> Future < () >"));
 
         let wrong = generate(
             "gpu",
