@@ -68,6 +68,28 @@ mod tests {
         assert_eq!(AddressMode::MirrorRepeat.native(), 2);
         assert_eq!(BufferUsage::STORAGE(), 128);
         assert_eq!(TextureUsage::RENDER_ATTACHMENT(), 16);
+        assert_eq!(Feature::ShaderF16.native(), 10);
+        assert_eq!(Feature::Subgroups.native(), 17);
+        assert_eq!(Limit::MaxBufferSize.native(), 24);
+        assert_eq!(VertexFormat::Float32x2.native(), 28);
+        assert_eq!(VertexFormat::Unorm1010102.native(), 39);
+        assert_eq!(VertexFormat::Unorm8x4Bgra.native(), 40);
+        assert_eq!(TextureFormat::Rgba8unorm.native(), 21);
+        assert_eq!(TextureFormat::Depth32floatStencil8.native(), 48);
+        assert_eq!(TextureFormat::Bc7RgbaUnorm.native(), 61);
+        assert_eq!(TextureFormat::Astc12x12UnormSrgb.native(), 100);
+
+        let configured = symbol("GpuAdapter", "requestDeviceWith");
+        assert_eq!(configured.ret, caribou_abi::TypeTag::FUTURE);
+        assert_eq!(configured.future_ret, caribou_abi::TypeTag::OBJ);
+        assert_eq!(
+            unsafe {
+                __CARIBOU_CLASSES[configured.param_classes[1] as usize]
+                    .name
+                    .as_str()
+            },
+            "GpuDeviceDescriptor"
+        );
 
         let map = symbol("GpuDevice", "mapBuffer");
         assert_eq!(map.ret, <Future<()> as caribou_abi::Returned>::TAG);
@@ -95,6 +117,16 @@ mod tests {
         assert_eq!(descriptor.mappedAtCreation, None);
         GpuBufferDescriptor::mappedAtCreation(&mut descriptor, true);
         assert_eq!(descriptor.mappedAtCreation, Some(true));
+        let mut requested = GpuDeviceDescriptor::new();
+        requested.requiredFeatures.push(Feature::ShaderF16.native());
+        requested
+            .requiredLimits
+            .push((Limit::MaxBindGroups.native(), 8));
+        assert_eq!(requested.requiredFeatures, [Feature::ShaderF16.native()]);
+        assert_eq!(
+            requested.requiredLimits,
+            [(Limit::MaxBindGroups.native(), 8)]
+        );
 
         let sampler = symbol("GpuDevice", "sampler");
         assert_eq!(

@@ -1,7 +1,10 @@
 import gpu.GpuInstance;
 import gpu.GpuBindings;
 import gpu.GpuBufferDescriptor;
+import gpu.GpuDeviceDescriptor;
 import gpu.BufferUsage;
+import gpu.Feature;
+import gpu.Limit;
 import gpu.Power;
 
 class Main {
@@ -17,8 +20,13 @@ class Main {
             throw "No GPU adapter is available";
         }
         Sys.println('GPU: ${adapter.name()} (${adapter.backend()})');
-        var device = adapter.requestDevice().await();
+        Sys.println('shader-f16: ${adapter.supports(ShaderF16)}');
+        check(adapter.limit(MaxBufferSize) >= 16, "adapter buffer limit is too small");
+        var requested = new GpuDeviceDescriptor();
+        requested.addRequiredLimits(MaxBindGroups, 4);
+        var device = adapter.requestDeviceWith(requested).await();
         check(device.valid(), "device request failed");
+        check(device.limit(MaxBindGroups) >= 4, "negotiated bind-group limit missing");
         var queue = device.queue();
         var data = haxe.io.Bytes.alloc(16);
         for (i in 0...4) data.setInt32(i * 4, i + 1);

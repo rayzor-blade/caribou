@@ -3,11 +3,14 @@
 // not the layout of Caribou enums. WebIDL is vendored for reproducible builds.
 enum Power { None = -1, LowPower = 0, HighPerformance = 1 }
 enum Backend { Noop = 0, Vulkan = 1, Metal = 2, Dx12 = 3, Gl = 4, BrowserWebGpu = 5 }
-enum Limit { MaxTextureDimension1D, MaxTextureDimension2D, MaxTextureDimension3D, MaxBindGroups, MaxBufferSize, MaxComputeWorkgroupSizeX, MaxComputeInvocationsPerWorkgroup }
-// These formats are the subset supported by the imported backend.
+#[idl("GPUFeatureName")]
+enum Feature {}
+#[idl("GPUSupportedLimits")]
+enum Limit {}
 #[idl("GPUTextureFormat")]
-enum TextureFormat { Unknown = -1, Rgba8Unorm = 0, Bgra8Unorm = 1, Rgba8UnormSrgb = 2, Depth32Float = 3, Bgra8UnormSrgb = 4, Depth24PlusStencil8 = 5 }
-enum VertexFormat { Float32x2, Float32x3, Float32x4, Uint32 }
+enum TextureFormat {}
+#[idl("GPUVertexFormat")]
+enum VertexFormat {}
 #[idl("GPUBlendFactor")]
 enum BlendFactor {}
 #[idl("GPUBlendOperation")]
@@ -61,6 +64,10 @@ struct GpuTextureDescriptor {
     // cross-language API explicit and avoids a dynamic union.
     size: GpuExtent3D,
 }
+struct GpuDeviceDescriptor {
+    requiredFeatures: Vec<Enum<Feature>>,
+    requiredLimits: Map<Enum<Limit>, i64>,
+}
 
 #[idl("GPU")]
 trait GpuInstance {
@@ -87,11 +94,16 @@ trait GpuAdapter {
     fn backend(this: &GpuAdapter) -> Enum<Backend>;
     #[native(adapter_limit)]
     fn limit(this: &GpuAdapter, which: Enum<Limit>) -> i64;
+    #[native(adapter_feature)]
+    fn supports(this: &GpuAdapter, feature: Enum<Feature>) -> bool;
     #[native(adapter_destroy)]
     fn destroy(this: &GpuAdapter);
     #[native(device_open)]
     #[idl("GPUAdapter.requestDevice")]
     fn requestDevice(this: &GpuAdapter) -> Future<GpuDevice>;
+    #[native(device_open_with)]
+    #[idl("GPUAdapter.requestDevice")]
+    fn requestDeviceWith(this: &GpuAdapter, descriptor: &GpuDeviceDescriptor) -> Future<GpuDevice>;
     #[native(adapter_driver)]
     fn driver(this: &GpuAdapter) -> Text;
     #[native(adapter_driver_info)]
@@ -108,6 +120,10 @@ trait GpuDevice {
     fn queue(this: &GpuDevice) -> Box<GpuQueue>;
     #[native(device_poll)]
     fn poll(this: &GpuDevice);
+    #[native(device_limit)]
+    fn limit(this: &GpuDevice, which: Enum<Limit>) -> i64;
+    #[native(device_feature)]
+    fn supports(this: &GpuDevice, feature: Enum<Feature>) -> bool;
     #[native(device_destroy)]
     fn destroy(this: &GpuDevice);
     #[native(buffer_create)]

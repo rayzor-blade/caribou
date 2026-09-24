@@ -16,13 +16,17 @@ A Haxe program uses `-lib caribou` and places the plugin library in the
 ```haxe
 import gpu.GpuInstance;
 import gpu.GpuBufferDescriptor;
+import gpu.GpuDeviceDescriptor;
 import gpu.Power;
 import gpu.BufferUsage;
+import gpu.Limit;
 
 var instance = new GpuInstance();
 var adapter = instance.requestAdapter(HighPerformance).await();
 if (!adapter.valid()) throw "No GPU adapter available";
-var device = adapter.requestDevice().await();
+var requirements = new GpuDeviceDescriptor();
+requirements.addRequiredLimits(MaxBindGroups, 4);
+var device = adapter.requestDeviceWith(requirements).await();
 if (!device.valid()) throw "Could not open the GPU device";
 var descriptor = new GpuBufferDescriptor(1024,
     BufferUsage.STORAGE() | BufferUsage.COPY_DST());
@@ -148,6 +152,15 @@ Native platforms drive asynchronous work on short-lived workers, while
 browser WebGPU uses its event loop. Completion callbacks retain a rooted
 Future rather than an unrooted Caribou value or a borrowed buffer.
 
+Adapters and devices expose `supports(Feature)` and `limit(Limit)`. Both
+catalogs are generated from the vendored WebGPU IDL. A
+`GpuDeviceDescriptor` collects required features and limits, and
+`requestDeviceWith()` passes them to wgpu device creation. Values below the
+WebGPU default are ignored as required by the specification; values outside
+the adapter's capability reject the returned Future. Draft WebGPU features or
+limits absent from wgpu 30 report unsupported instead of being silently
+enabled. `requestDevice()` remains the default-capability convenience call.
+
 Shader sources and immediate labels borrow `Text.as_str()`. Pipeline builder
 entry names are copied because they survive the call. Uploads borrow
 `Buffer` storage without an intermediate byte allocation; readback copies
@@ -187,13 +200,14 @@ should also be exposed behind adapter capability checks.
 
 The largest missing groups are:
 
-- feature enumeration and required feature/limit negotiation;
 - explicit bind-group and pipeline layouts, dynamic offsets and binding
   ranges;
 - texture component-swizzle and binding-view extensions absent from wgpu 30,
   plus the three-element sequence spelling of texture extents;
-- the complete format catalogs (the IDL has 105 texture formats and 42 vertex
-  formats; the plugin currently exposes six and four respectively);
+- all 101 IDL texture formats and all 42 IDL vertex formats are generated;
+  `snorm10-10-10-2` is reported unavailable because wgpu 30 has no
+  corresponding vertex format, and feature-gated texture families still
+  require their adapter feature;
 - programmable constants, multiple shaders/stages, render pass load/store
   choices and complete draw ranges;
 - query sets, timestamps, occlusion queries, render bundles and external

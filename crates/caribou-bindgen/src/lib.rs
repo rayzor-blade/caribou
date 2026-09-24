@@ -436,6 +436,30 @@ fn enum_values(tokens: &[String], name: &str) -> Result<Vec<String>, String> {
     }
     Ok(values)
 }
+
+/// Names of readonly attributes on an interface. Finite interface catalogs
+/// such as `GPUSupportedLimits` can therefore generate a Caribou enum without
+/// copying their member list into the declaration.
+fn readonly_attribute_names(tokens: &[String], name: &str) -> Result<Vec<String>, String> {
+    let body = body(tokens, "interface", name)?;
+    let mut values = Vec::new();
+    for statement in body.split(|token| token == ";").filter(|s| !s.is_empty()) {
+        if statement.first().is_some_and(|token| token == "readonly")
+            && statement.get(1).is_some_and(|token| token == "attribute")
+        {
+            values.push(
+                statement
+                    .last()
+                    .ok_or_else(|| format!("attribute without a name in {name}"))?
+                    .clone(),
+            );
+        }
+    }
+    if values.is_empty() {
+        return Err(format!("interface {name} has no readonly attributes"));
+    }
+    Ok(values)
+}
 fn generic(ty: &Type, name: &str) -> Option<Type> {
     let Type::Path(p) = ty else { return None };
     let segment = p.path.segments.last()?;
@@ -615,7 +639,8 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                 let source = idl_name(&e.attrs)?;
                 let variants: Vec<(syn::Ident, syn::Expr)> =
                     if let Some(source) = source.filter(|_| e.variants.is_empty()) {
-                        enum_values(&idl, &source)?
+                        enum_values(&idl, &source)
+                            .or_else(|_| readonly_attribute_names(&idl, &source))?
                             .into_iter()
                             .enumerate()
                             .map(|(i, v)| Ok((ident(&pascal(&v))?, syn::parse_quote!(#i))))
@@ -1037,6 +1062,17 @@ mod tests {
         assert_eq!(pascal("one-minus-src"), "OneMinusSrc");
         assert!(enum_values(&idl, "Missing").is_err());
         assert!(tokens("/* unterminated").is_err());
+    }
+    #[test]
+    fn readonly_interface_attributes_can_generate_a_catalog_enum() {
+        let generated = generate(
+            "gpu",
+            r#"#[idl("GPUSupportedLimits")] enum Limit {}"#,
+            "interface GPUSupportedLimits { readonly attribute unsigned long maxTextureDimension1D; readonly attribute unsigned long long maxBufferSize; };",
+        )
+        .unwrap();
+        assert!(generated.contains("MaxTextureDimension1D"));
+        assert!(generated.contains("MaxBufferSize"));
     }
     #[test]
     fn generated_code_contains_typed_objects_and_no_foreign_string_abi() {

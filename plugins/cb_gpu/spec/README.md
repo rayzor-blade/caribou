@@ -19,11 +19,16 @@ enum BlendFactor {}
 
 #[idl("GPUBufferUsage")]
 mod BufferUsage {}
+
+#[idl("GPUSupportedLimits")]
+enum Limit {}
 ```
 
 The `caribou-bindgen` build dependency reads these declarations and generates:
 
 - Caribou enum schemas and Rust enum types, such as `gpu.BlendFactor`.
+- Finite catalogs from readonly interface attributes, such as every member of
+  `GPUSupportedLimits`.
 - Static constant accessors, such as `gpu.BufferUsage.STORAGE()`.
 - Typed resource and descriptor wrappers and the `plugin!` export table from
   the declarations in `gpu.api.rs`.
@@ -38,8 +43,9 @@ The IDL is a source for enum values and constants, and a reference for future
 API coverage. Its presence does **not** mean the plugin implements every
 WebGPU operation or descriptor. Resource methods are explicitly declared in
 `gpu.api.rs` and implemented in [`../src/backend.rs`](../src/backend.rs).
-Texture and vertex formats currently expose the subset listed in that API
-declaration.
+Texture and vertex formats are generated from their complete IDL catalogs.
+The backend rejects the one draft vertex format that has no wgpu 30
+equivalent; feature-gated texture formats remain conditional on the adapter.
 
 The previous hlwgpu coverage figures do not describe this plugin. See the
 [GPU plugin README](../README.md) for the supported operations, Caribou types,

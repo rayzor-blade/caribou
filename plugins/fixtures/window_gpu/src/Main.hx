@@ -3,7 +3,6 @@ import gpu.ColorWrite;
 import gpu.GpuInstance;
 import gpu.GpuBufferDescriptor;
 import gpu.Power;
-import gpu.TextureFormat;
 import gpu.VertexFormat;
 import gpu.VertexStepMode;
 import window.Event;
@@ -56,7 +55,6 @@ class Main {
         );
         check(surface.valid(), "this window cannot create a GPU surface");
         var format = surface.preferredFormat(adapter);
-        check(format != TextureFormat.Unknown, "the surface format is unsupported");
 
         function configure() {
             device.configureSurface(surface, window.width(), window.height(), format);

@@ -13,7 +13,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 use crate::handles::{Slab, kind_of};
 use crate::types::Kind;
 use crate::{
-    GpuBufferDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor, GpuTextureViewDescriptor,
+    GpuBufferDescriptor, GpuDeviceDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor,
+    GpuTextureViewDescriptor,
 };
 use caribou_abi::{Buffer, ErrorKind, Future, Rooted, Text, Value, host};
 
@@ -174,9 +175,18 @@ pub unsafe fn adapter_request(inst: i32, power: i32) -> Future<crate::GpuAdapter
         match instance.request_adapter(&options).await {
             Ok(adapter) => {
                 let handle = ADAPTERS.lock().unwrap().put(adapter);
-                completion
+                if handle == 0 {
+                    completion
+                        .get()
+                        .reject(Text::new("adapter resource table is full").value());
+                    return;
+                }
+                if !completion
                     .get()
-                    .resolve_boxed(Box::new(crate::GpuAdapter { handle }));
+                    .resolve_boxed(Box::new(crate::GpuAdapter { handle }))
+                {
+                    ADAPTERS.lock().unwrap().remove(handle);
+                }
             }
             Err(error) => {
                 completion
@@ -205,21 +215,101 @@ pub unsafe fn adapter_backend(adapter: i32) -> i32 {
     }
 }
 
-pub unsafe fn adapter_limit(adapter: i32, which: i32) -> i64 {
-    let adapter = find!(ADAPTERS, adapter, 0);
-    let limits = adapter.limits();
-    // Native limit codes declared by gpu.api.rs.
-    let value: u64 = match which {
+/// WebGPU feature ordinal to wgpu's capability bit.
+fn feature(which: i32) -> Option<wgpu::Features> {
+    Some(match which {
+        // wgpu 30 predates the explicit core-features-and-limits feature.
+        0 => return None,
+        1 => wgpu::Features::DEPTH_CLIP_CONTROL,
+        2 => wgpu::Features::DEPTH32FLOAT_STENCIL8,
+        3 => wgpu::Features::TEXTURE_COMPRESSION_BC,
+        4 => wgpu::Features::TEXTURE_COMPRESSION_BC_SLICED_3D,
+        5 => wgpu::Features::TEXTURE_COMPRESSION_ETC2,
+        6 => wgpu::Features::TEXTURE_COMPRESSION_ASTC,
+        7 => wgpu::Features::TEXTURE_COMPRESSION_ASTC_SLICED_3D,
+        8 => wgpu::Features::TIMESTAMP_QUERY,
+        9 => wgpu::Features::INDIRECT_FIRST_INSTANCE,
+        10 => wgpu::Features::SHADER_F16,
+        11 => wgpu::Features::RG11B10UFLOAT_RENDERABLE,
+        12 => wgpu::Features::BGRA8UNORM_STORAGE,
+        13 => wgpu::Features::FLOAT32_FILTERABLE,
+        14 => wgpu::Features::FLOAT32_BLENDABLE,
+        15 => wgpu::Features::CLIP_DISTANCES,
+        16 => wgpu::Features::DUAL_SOURCE_BLENDING,
+        17 => wgpu::Features::SUBGROUP,
+        20 => wgpu::Features::PRIMITIVE_INDEX,
+        // The remaining WebGPU draft features have no wgpu 30 equivalent.
+        18 | 19 | 21 | 22 | 23 => return None,
+        _ => return None,
+    })
+}
+
+fn supports(features: wgpu::Features, which: i32) -> bool {
+    match feature(which) {
+        Some(required) => required.is_empty() || features.contains(required),
+        None => false,
+    }
+}
+
+pub unsafe fn adapter_feature(adapter: i32, which: i32) -> bool {
+    let adapter = find!(ADAPTERS, adapter, false);
+    supports(adapter.features(), which)
+}
+
+pub unsafe fn device_feature(device: i32, which: i32) -> bool {
+    let device = find!(DEVICES, device, false);
+    supports(device.device.features(), which)
+}
+
+fn limit_value(limits: &wgpu::Limits, which: i32) -> Option<i64> {
+    let value = match which {
         0 => limits.max_texture_dimension_1d as u64,
         1 => limits.max_texture_dimension_2d as u64,
         2 => limits.max_texture_dimension_3d as u64,
-        3 => limits.max_bind_groups as u64,
-        4 => limits.max_buffer_size,
-        5 => limits.max_compute_workgroup_size_x as u64,
-        6 => limits.max_compute_invocations_per_workgroup as u64,
-        _ => 0,
+        3 => limits.max_texture_array_layers as u64,
+        4 => limits.max_bind_groups as u64,
+        5 => limits.max_bind_groups_plus_vertex_buffers as u64,
+        6 => limits.max_immediate_size as u64,
+        7 => limits.max_bindings_per_bind_group as u64,
+        8 => limits.max_dynamic_uniform_buffers_per_pipeline_layout as u64,
+        9 => limits.max_dynamic_storage_buffers_per_pipeline_layout as u64,
+        10 => limits.max_sampled_textures_per_shader_stage as u64,
+        11 => limits.max_samplers_per_shader_stage as u64,
+        12 => limits.max_storage_buffers_per_shader_stage as u64,
+        13 | 14 => return None,
+        15 => limits.max_storage_textures_per_shader_stage as u64,
+        16 | 17 => return None,
+        18 => limits.max_uniform_buffers_per_shader_stage as u64,
+        19 => limits.max_uniform_buffer_binding_size,
+        20 => limits.max_storage_buffer_binding_size,
+        21 => limits.min_uniform_buffer_offset_alignment as u64,
+        22 => limits.min_storage_buffer_offset_alignment as u64,
+        23 => limits.max_vertex_buffers as u64,
+        24 => limits.max_buffer_size,
+        25 => limits.max_vertex_attributes as u64,
+        26 => limits.max_vertex_buffer_array_stride as u64,
+        27 => limits.max_inter_stage_shader_variables as u64,
+        28 => limits.max_color_attachments as u64,
+        29 => limits.max_color_attachment_bytes_per_sample as u64,
+        30 => limits.max_compute_workgroup_storage_size as u64,
+        31 => limits.max_compute_invocations_per_workgroup as u64,
+        32 => limits.max_compute_workgroup_size_x as u64,
+        33 => limits.max_compute_workgroup_size_y as u64,
+        34 => limits.max_compute_workgroup_size_z as u64,
+        35 => limits.max_compute_workgroups_per_dimension as u64,
+        _ => return None,
     };
-    value.min(i64::MAX as u64) as i64
+    Some(value.min(i64::MAX as u64) as i64)
+}
+
+pub unsafe fn adapter_limit(adapter: i32, which: i32) -> i64 {
+    let adapter = find!(ADAPTERS, adapter, 0);
+    limit_value(&adapter.limits(), which).unwrap_or(-1)
+}
+
+pub unsafe fn device_limit(device: i32, which: i32) -> i64 {
+    let device = find!(DEVICES, device, 0);
+    limit_value(&device.device.limits(), which).unwrap_or(-1)
 }
 
 pub unsafe fn adapter_destroy(adapter: i32) {
@@ -228,17 +318,100 @@ pub unsafe fn adapter_destroy(adapter: i32) {
 
 // -- device -----------------------------------------------------------------
 
-pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
+fn requested_features(requested: &[i32]) -> Result<wgpu::Features, String> {
+    let mut enabled = wgpu::Features::empty();
+    for &which in requested {
+        let Some(value) = feature(which) else {
+            return Err(format!(
+                "requested WebGPU feature {which} is unavailable in wgpu 30"
+            ));
+        };
+        enabled |= value;
+    }
+    Ok(enabled)
+}
+
+fn requested_limits(requested: &[(i32, i64)]) -> Result<wgpu::Limits, String> {
+    fn u32_value(value: i64) -> Result<u32, String> {
+        u32::try_from(value).map_err(|_| format!("GPU limit value {value} is outside u32"))
+    }
+    fn u64_value(value: i64) -> Result<u64, String> {
+        u64::try_from(value).map_err(|_| format!("GPU limit value {value} is negative"))
+    }
+
+    let defaults = wgpu::Limits::default();
+    let mut limits = defaults.clone();
+    for &(which, value) in requested {
+        match which {
+            0 => limits.max_texture_dimension_1d = u32_value(value)?,
+            1 => limits.max_texture_dimension_2d = u32_value(value)?,
+            2 => limits.max_texture_dimension_3d = u32_value(value)?,
+            3 => limits.max_texture_array_layers = u32_value(value)?,
+            4 => limits.max_bind_groups = u32_value(value)?,
+            5 => limits.max_bind_groups_plus_vertex_buffers = u32_value(value)?,
+            6 => limits.max_immediate_size = u32_value(value)?,
+            7 => limits.max_bindings_per_bind_group = u32_value(value)?,
+            8 => limits.max_dynamic_uniform_buffers_per_pipeline_layout = u32_value(value)?,
+            9 => limits.max_dynamic_storage_buffers_per_pipeline_layout = u32_value(value)?,
+            10 => limits.max_sampled_textures_per_shader_stage = u32_value(value)?,
+            11 => limits.max_samplers_per_shader_stage = u32_value(value)?,
+            12 => limits.max_storage_buffers_per_shader_stage = u32_value(value)?,
+            13 | 14 => {
+                return Err("per-stage storage-buffer limits are unavailable in wgpu 30".into());
+            }
+            15 => limits.max_storage_textures_per_shader_stage = u32_value(value)?,
+            16 | 17 => {
+                return Err("per-stage storage-texture limits are unavailable in wgpu 30".into());
+            }
+            18 => limits.max_uniform_buffers_per_shader_stage = u32_value(value)?,
+            19 => limits.max_uniform_buffer_binding_size = u64_value(value)?,
+            20 => limits.max_storage_buffer_binding_size = u64_value(value)?,
+            21 => limits.min_uniform_buffer_offset_alignment = u32_value(value)?,
+            22 => limits.min_storage_buffer_offset_alignment = u32_value(value)?,
+            23 => limits.max_vertex_buffers = u32_value(value)?,
+            24 => limits.max_buffer_size = u64_value(value)?,
+            25 => limits.max_vertex_attributes = u32_value(value)?,
+            26 => limits.max_vertex_buffer_array_stride = u32_value(value)?,
+            27 => limits.max_inter_stage_shader_variables = u32_value(value)?,
+            28 => limits.max_color_attachments = u32_value(value)?,
+            29 => limits.max_color_attachment_bytes_per_sample = u32_value(value)?,
+            30 => limits.max_compute_workgroup_storage_size = u32_value(value)?,
+            31 => limits.max_compute_invocations_per_workgroup = u32_value(value)?,
+            32 => limits.max_compute_workgroup_size_x = u32_value(value)?,
+            33 => limits.max_compute_workgroup_size_y = u32_value(value)?,
+            34 => limits.max_compute_workgroup_size_z = u32_value(value)?,
+            35 => limits.max_compute_workgroups_per_dimension = u32_value(value)?,
+            _ => return Err(format!("unknown GPU limit {which}")),
+        }
+    }
+    Ok(limits.or_better_values_from(&defaults))
+}
+
+fn device_request_configured(
+    adapter: i32,
+    features: &[i32],
+    limits: &[(i32, i64)],
+) -> Future<crate::GpuDevice> {
     let Some(adapter) = ADAPTERS.lock().unwrap().get(adapter) else {
         return rejected_future("adapter was destroyed");
+    };
+    let requested_features = match requested_features(features) {
+        Ok(features) => features,
+        Err(error) => return rejected_future(&error),
+    };
+    let requested_limits = match requested_limits(limits) {
+        Ok(limits) => limits,
+        Err(error) => return rejected_future(&error),
+    };
+    let descriptor = wgpu::DeviceDescriptor {
+        required_features: requested_features,
+        required_limits: requested_limits,
+        ..Default::default()
     };
     let future = Future::new();
     let completion = Rooted::new(future);
     spawn_gpu(async move {
-        match adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await
-        {
+        match adapter.request_device(&descriptor).await {
             Ok((device, queue)) => {
                 let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
                 let reported = errors.clone();
@@ -246,14 +419,31 @@ pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
                     reported.lock().unwrap().push_back(error.to_string());
                 }));
                 let queue = QUEUES.lock().unwrap().put(queue);
+                if queue == 0 {
+                    completion
+                        .get()
+                        .reject(Text::new("queue resource table is full").value());
+                    return;
+                }
                 let handle = DEVICES.lock().unwrap().put(DeviceEntry {
                     device,
                     queue,
                     errors,
                 });
-                completion
+                if handle == 0 {
+                    QUEUES.lock().unwrap().remove(queue);
+                    completion
+                        .get()
+                        .reject(Text::new("device resource table is full").value());
+                    return;
+                }
+                if !completion
                     .get()
-                    .resolve_boxed(Box::new(crate::GpuDevice { handle }));
+                    .resolve_boxed(Box::new(crate::GpuDevice { handle }))
+                {
+                    DEVICES.lock().unwrap().remove(handle);
+                    QUEUES.lock().unwrap().remove(queue);
+                }
             }
             Err(error) => {
                 completion
@@ -263,6 +453,21 @@ pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
         }
     });
     future
+}
+
+pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
+    device_request_configured(adapter, &[], &[])
+}
+
+pub unsafe fn device_request_with(
+    adapter: i32,
+    descriptor: &GpuDeviceDescriptor,
+) -> Future<crate::GpuDevice> {
+    device_request_configured(
+        adapter,
+        &descriptor.requiredFeatures,
+        &descriptor.requiredLimits,
+    )
 }
 
 pub unsafe fn device_take_error(device: i32) -> Text {
@@ -544,26 +749,243 @@ pub unsafe fn queue_work_done(device: i32, queue: i32) -> Future<()> {
 
 // -- textures ---------------------------------------------------------------
 
-/// Native codes explicitly declared by gpu.api.rs.
 fn texture_format(which: i32) -> wgpu::TextureFormat {
+    use wgpu::{AstcBlock as B, AstcChannel as C, TextureFormat as F};
     match which {
-        0 => wgpu::TextureFormat::Rgba8Unorm,
-        1 => wgpu::TextureFormat::Bgra8Unorm,
-        2 => wgpu::TextureFormat::Rgba8UnormSrgb,
-        3 => wgpu::TextureFormat::Depth32Float,
-        4 => wgpu::TextureFormat::Bgra8UnormSrgb,
-        5 => wgpu::TextureFormat::Depth24PlusStencil8,
-        _ => panic!("unsupported texture format"),
+        0 => F::R8Unorm,
+        1 => F::R8Snorm,
+        2 => F::R8Uint,
+        3 => F::R8Sint,
+        4 => F::R16Unorm,
+        5 => F::R16Snorm,
+        6 => F::R16Uint,
+        7 => F::R16Sint,
+        8 => F::R16Float,
+        9 => F::Rg8Unorm,
+        10 => F::Rg8Snorm,
+        11 => F::Rg8Uint,
+        12 => F::Rg8Sint,
+        13 => F::R32Uint,
+        14 => F::R32Sint,
+        15 => F::R32Float,
+        16 => F::Rg16Unorm,
+        17 => F::Rg16Snorm,
+        18 => F::Rg16Uint,
+        19 => F::Rg16Sint,
+        20 => F::Rg16Float,
+        21 => F::Rgba8Unorm,
+        22 => F::Rgba8UnormSrgb,
+        23 => F::Rgba8Snorm,
+        24 => F::Rgba8Uint,
+        25 => F::Rgba8Sint,
+        26 => F::Bgra8Unorm,
+        27 => F::Bgra8UnormSrgb,
+        28 => F::Rgb9e5Ufloat,
+        29 => F::Rgb10a2Uint,
+        30 => F::Rgb10a2Unorm,
+        31 => F::Rg11b10Ufloat,
+        32 => F::Rg32Uint,
+        33 => F::Rg32Sint,
+        34 => F::Rg32Float,
+        35 => F::Rgba16Unorm,
+        36 => F::Rgba16Snorm,
+        37 => F::Rgba16Uint,
+        38 => F::Rgba16Sint,
+        39 => F::Rgba16Float,
+        40 => F::Rgba32Uint,
+        41 => F::Rgba32Sint,
+        42 => F::Rgba32Float,
+        43 => F::Stencil8,
+        44 => F::Depth16Unorm,
+        45 => F::Depth24Plus,
+        46 => F::Depth24PlusStencil8,
+        47 => F::Depth32Float,
+        48 => F::Depth32FloatStencil8,
+        49 => F::Bc1RgbaUnorm,
+        50 => F::Bc1RgbaUnormSrgb,
+        51 => F::Bc2RgbaUnorm,
+        52 => F::Bc2RgbaUnormSrgb,
+        53 => F::Bc3RgbaUnorm,
+        54 => F::Bc3RgbaUnormSrgb,
+        55 => F::Bc4RUnorm,
+        56 => F::Bc4RSnorm,
+        57 => F::Bc5RgUnorm,
+        58 => F::Bc5RgSnorm,
+        59 => F::Bc6hRgbUfloat,
+        60 => F::Bc6hRgbFloat,
+        61 => F::Bc7RgbaUnorm,
+        62 => F::Bc7RgbaUnormSrgb,
+        63 => F::Etc2Rgb8Unorm,
+        64 => F::Etc2Rgb8UnormSrgb,
+        65 => F::Etc2Rgb8A1Unorm,
+        66 => F::Etc2Rgb8A1UnormSrgb,
+        67 => F::Etc2Rgba8Unorm,
+        68 => F::Etc2Rgba8UnormSrgb,
+        69 => F::EacR11Unorm,
+        70 => F::EacR11Snorm,
+        71 => F::EacRg11Unorm,
+        72 => F::EacRg11Snorm,
+        73 => F::Astc {
+            block: B::B4x4,
+            channel: C::Unorm,
+        },
+        74 => F::Astc {
+            block: B::B4x4,
+            channel: C::UnormSrgb,
+        },
+        75 => F::Astc {
+            block: B::B5x4,
+            channel: C::Unorm,
+        },
+        76 => F::Astc {
+            block: B::B5x4,
+            channel: C::UnormSrgb,
+        },
+        77 => F::Astc {
+            block: B::B5x5,
+            channel: C::Unorm,
+        },
+        78 => F::Astc {
+            block: B::B5x5,
+            channel: C::UnormSrgb,
+        },
+        79 => F::Astc {
+            block: B::B6x5,
+            channel: C::Unorm,
+        },
+        80 => F::Astc {
+            block: B::B6x5,
+            channel: C::UnormSrgb,
+        },
+        81 => F::Astc {
+            block: B::B6x6,
+            channel: C::Unorm,
+        },
+        82 => F::Astc {
+            block: B::B6x6,
+            channel: C::UnormSrgb,
+        },
+        83 => F::Astc {
+            block: B::B8x5,
+            channel: C::Unorm,
+        },
+        84 => F::Astc {
+            block: B::B8x5,
+            channel: C::UnormSrgb,
+        },
+        85 => F::Astc {
+            block: B::B8x6,
+            channel: C::Unorm,
+        },
+        86 => F::Astc {
+            block: B::B8x6,
+            channel: C::UnormSrgb,
+        },
+        87 => F::Astc {
+            block: B::B8x8,
+            channel: C::Unorm,
+        },
+        88 => F::Astc {
+            block: B::B8x8,
+            channel: C::UnormSrgb,
+        },
+        89 => F::Astc {
+            block: B::B10x5,
+            channel: C::Unorm,
+        },
+        90 => F::Astc {
+            block: B::B10x5,
+            channel: C::UnormSrgb,
+        },
+        91 => F::Astc {
+            block: B::B10x6,
+            channel: C::Unorm,
+        },
+        92 => F::Astc {
+            block: B::B10x6,
+            channel: C::UnormSrgb,
+        },
+        93 => F::Astc {
+            block: B::B10x8,
+            channel: C::Unorm,
+        },
+        94 => F::Astc {
+            block: B::B10x8,
+            channel: C::UnormSrgb,
+        },
+        95 => F::Astc {
+            block: B::B10x10,
+            channel: C::Unorm,
+        },
+        96 => F::Astc {
+            block: B::B10x10,
+            channel: C::UnormSrgb,
+        },
+        97 => F::Astc {
+            block: B::B12x10,
+            channel: C::Unorm,
+        },
+        98 => F::Astc {
+            block: B::B12x10,
+            channel: C::UnormSrgb,
+        },
+        99 => F::Astc {
+            block: B::B12x12,
+            channel: C::Unorm,
+        },
+        100 => F::Astc {
+            block: B::B12x12,
+            channel: C::UnormSrgb,
+        },
+        _ => panic!("unknown texture format"),
     }
 }
 
-/// Vertex formats currently supported by the pipeline builder.
 fn vertex_format(which: i32) -> wgpu::VertexFormat {
     match which {
-        1 => wgpu::VertexFormat::Float32x3,
-        2 => wgpu::VertexFormat::Float32x4,
-        3 => wgpu::VertexFormat::Uint32,
-        _ => wgpu::VertexFormat::Float32x2,
+        0 => wgpu::VertexFormat::Uint8,
+        1 => wgpu::VertexFormat::Uint8x2,
+        2 => wgpu::VertexFormat::Uint8x4,
+        3 => wgpu::VertexFormat::Sint8,
+        4 => wgpu::VertexFormat::Sint8x2,
+        5 => wgpu::VertexFormat::Sint8x4,
+        6 => wgpu::VertexFormat::Unorm8,
+        7 => wgpu::VertexFormat::Unorm8x2,
+        8 => wgpu::VertexFormat::Unorm8x4,
+        9 => wgpu::VertexFormat::Snorm8,
+        10 => wgpu::VertexFormat::Snorm8x2,
+        11 => wgpu::VertexFormat::Snorm8x4,
+        12 => wgpu::VertexFormat::Uint16,
+        13 => wgpu::VertexFormat::Uint16x2,
+        14 => wgpu::VertexFormat::Uint16x4,
+        15 => wgpu::VertexFormat::Sint16,
+        16 => wgpu::VertexFormat::Sint16x2,
+        17 => wgpu::VertexFormat::Sint16x4,
+        18 => wgpu::VertexFormat::Unorm16,
+        19 => wgpu::VertexFormat::Unorm16x2,
+        20 => wgpu::VertexFormat::Unorm16x4,
+        21 => wgpu::VertexFormat::Snorm16,
+        22 => wgpu::VertexFormat::Snorm16x2,
+        23 => wgpu::VertexFormat::Snorm16x4,
+        24 => wgpu::VertexFormat::Float16,
+        25 => wgpu::VertexFormat::Float16x2,
+        26 => wgpu::VertexFormat::Float16x4,
+        27 => wgpu::VertexFormat::Float32,
+        28 => wgpu::VertexFormat::Float32x2,
+        29 => wgpu::VertexFormat::Float32x3,
+        30 => wgpu::VertexFormat::Float32x4,
+        31 => wgpu::VertexFormat::Uint32,
+        32 => wgpu::VertexFormat::Uint32x2,
+        33 => wgpu::VertexFormat::Uint32x3,
+        34 => wgpu::VertexFormat::Uint32x4,
+        35 => wgpu::VertexFormat::Sint32,
+        36 => wgpu::VertexFormat::Sint32x2,
+        37 => wgpu::VertexFormat::Sint32x3,
+        38 => wgpu::VertexFormat::Sint32x4,
+        39 => wgpu::VertexFormat::Unorm10_10_10_2,
+        40 => wgpu::VertexFormat::Unorm8x4Bgra,
+        41 => panic!("snorm10-10-10-2 is unavailable in wgpu 30"),
+        _ => panic!("unknown vertex format"),
     }
 }
 
@@ -1213,10 +1635,10 @@ pub unsafe fn surface_preferred_format(surface: i32, adapter: i32) -> i32 {
     formats
         .into_iter()
         .find_map(|format| match format {
-            wgpu::TextureFormat::Rgba8Unorm => Some(0),
-            wgpu::TextureFormat::Bgra8Unorm => Some(1),
-            wgpu::TextureFormat::Rgba8UnormSrgb => Some(2),
-            wgpu::TextureFormat::Bgra8UnormSrgb => Some(4),
+            wgpu::TextureFormat::Rgba8Unorm => Some(21),
+            wgpu::TextureFormat::Rgba8UnormSrgb => Some(22),
+            wgpu::TextureFormat::Bgra8Unorm => Some(26),
+            wgpu::TextureFormat::Bgra8UnormSrgb => Some(27),
             _ => None,
         })
         .unwrap_or(-1)
@@ -1784,6 +2206,12 @@ pub unsafe fn adapter_open(instance: i32, power: i32) -> Future<crate::GpuAdapte
 pub unsafe fn device_open(adapter: i32) -> Future<crate::GpuDevice> {
     unsafe { device_request(adapter) }
 }
+pub unsafe fn device_open_with(
+    adapter: i32,
+    descriptor: &GpuDeviceDescriptor,
+) -> Future<crate::GpuDevice> {
+    unsafe { device_request_with(adapter, descriptor) }
+}
 pub unsafe fn adapter_driver(adapter: i32) -> Text {
     let adapter = find!(ADAPTERS, adapter, Text::NULL);
     Text::new(&adapter.get_info().driver)
@@ -1824,6 +2252,59 @@ pub unsafe fn is_valid(handle: i32) -> bool {
         k if k == Kind::Builder as i32 => BUILDERS.lock().unwrap().get(handle).is_some(),
         k if k == Kind::Bindings as i32 => BINDINGS.lock().unwrap().get(handle).is_some(),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod capability_tests {
+    use super::*;
+
+    #[test]
+    fn webgpu_features_map_to_wgpu_capabilities() {
+        assert_eq!(feature(0), None);
+        assert_eq!(feature(10), Some(wgpu::Features::SHADER_F16));
+        assert_eq!(feature(17), Some(wgpu::Features::SUBGROUP));
+        assert_eq!(feature(18), None);
+        assert_eq!(
+            requested_features(&[3, 10]).unwrap(),
+            wgpu::Features::TEXTURE_COMPRESSION_BC | wgpu::Features::SHADER_F16
+        );
+    }
+
+    #[test]
+    fn requested_limits_preserve_defaults_and_validate_values() {
+        let defaults = wgpu::Limits::default();
+        let requested = requested_limits(&[(4, 1), (24, 1 << 30)]).unwrap();
+        assert_eq!(requested.max_bind_groups, defaults.max_bind_groups);
+        assert_eq!(requested.max_buffer_size, 1 << 30);
+        assert!(requested_limits(&[(24, -1)]).is_err());
+        assert!(requested_limits(&[(13, 8)]).is_err());
+    }
+
+    #[test]
+    fn idl_vertex_formats_map_to_wgpu_ordinals() {
+        assert_eq!(vertex_format(0), wgpu::VertexFormat::Uint8);
+        assert_eq!(vertex_format(28), wgpu::VertexFormat::Float32x2);
+        assert_eq!(vertex_format(39), wgpu::VertexFormat::Unorm10_10_10_2);
+        assert_eq!(vertex_format(40), wgpu::VertexFormat::Unorm8x4Bgra);
+    }
+
+    #[test]
+    fn idl_texture_formats_map_to_wgpu_ordinals() {
+        assert_eq!(texture_format(0), wgpu::TextureFormat::R8Unorm);
+        assert_eq!(texture_format(21), wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(
+            texture_format(48),
+            wgpu::TextureFormat::Depth32FloatStencil8
+        );
+        assert_eq!(texture_format(61), wgpu::TextureFormat::Bc7RgbaUnorm);
+        assert_eq!(
+            texture_format(100),
+            wgpu::TextureFormat::Astc {
+                block: wgpu::AstcBlock::B12x12,
+                channel: wgpu::AstcChannel::UnormSrgb,
+            }
+        );
     }
 }
 

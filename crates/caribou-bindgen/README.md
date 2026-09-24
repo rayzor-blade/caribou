@@ -24,8 +24,8 @@ completion callback. The core wakes every waiting language fiber. Annotating a r
 `Promise<T>` is exposed as the shared typed `Future<T>` carrier. A declaration
 still chooses the plugin method name, arguments and native backend function.
 
-The WebIDL reader extracts enum strings, numeric constant namespaces,
-dictionary members and operation return contracts. It
+The WebIDL reader extracts enum strings, readonly interface attribute
+catalogs, numeric constant namespaces, dictionary members and operation return contracts. It
 is deliberately not a general WebIDL-to-Rust interface translator: an IDL
 interface cannot specify how a Rust backend owns GPU resources or implements
 asynchronous operations. Those choices belong in the resource declaration
