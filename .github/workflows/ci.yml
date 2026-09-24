@@ -61,7 +61,7 @@ jobs:
           components: rustfmt # bindgen pretty-prints through it
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
-      - uses: krdlab/setup-haxe@v1
+      - uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -94,7 +94,7 @@ jobs:
           components: rustfmt, clippy
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
-      - uses: krdlab/setup-haxe@v1
+      - uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
       - uses: Swatinem/rust-cache@v2

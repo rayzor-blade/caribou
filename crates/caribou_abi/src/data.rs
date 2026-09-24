@@ -116,7 +116,10 @@ pub struct EnumDesc {
 }
 unsafe impl Sync for EnumDesc {}
 
-#[repr(C)]
+/// The payload values follow the header at `add(1)`. The alignment keeps
+/// them 8-byte aligned where pointers are 4 bytes; on 64-bit targets it
+/// changes nothing.
+#[repr(C, align(8))]
 pub struct EnumData {
     pub core: *const c_void,
     pub index: u32,

@@ -284,6 +284,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     #[test]
+    #[cfg_attr(
+        target_family = "wasm",
+        ignore = "a parked fiber needs the host's suspension on wasm"
+    )]
     fn completion_wakes_all_waiters_and_keeps_one_result() {
         let _heap = heap::gc_guard();
         let future = new();
