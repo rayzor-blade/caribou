@@ -17,6 +17,9 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # The plugin fixtures' build script compiles their Haxe programs; the
+  # checked-in .hl files are built with this version.
+  HAXE_VERSION: "4.3.6"
 
 jobs:
   core:
@@ -58,6 +61,9 @@ jobs:
           components: rustfmt # bindgen pretty-prints through it
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
+      - uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
@@ -88,6 +94,9 @@ jobs:
           components: rustfmt, clippy
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
+      - uses: krdlab/setup-haxe@v1
+        with:
+          haxe-version: ${{ env.HAXE_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |

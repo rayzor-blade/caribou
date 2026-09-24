@@ -93,7 +93,11 @@ fn main() {
             .arg(&target)
             .current_dir(&root)
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
-            .env_remove("RUSTFLAGS"),
+            .env_remove("RUSTFLAGS")
+            // Under `cargo clippy` the outer build's lints would otherwise
+            // run on this nested build too, with the outer `-D warnings`.
+            .env_remove("RUSTC_WORKSPACE_WRAPPER")
+            .env_remove("CLIPPY_ARGS"),
         "building the fixture plugins and descriptor command",
     );
 

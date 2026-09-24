@@ -5,7 +5,7 @@
 # checkout's target directory, so a job that builds caribou-ash builds
 # `ash_std` in `ash/` first, after its cache is restored.
 name: Sibling checkouts
-description: Clone ash and zyntax beside caribou at the revs its manifest pins.
+description: Clone ash, wren_lift and zyntax beside caribou at the revs its manifest pins.
 runs:
   using: composite
   steps:
@@ -15,12 +15,18 @@ runs:
       run: |
         rev() { grep -E "^$1 = \{ git = " caribou/Cargo.toml | sed -E 's/.*rev = "([0-9a-f]+)".*/\1/'; }
         echo "ash=$(rev ash_std)" >> "$GITHUB_OUTPUT"
+        echo "wren_lift=$(rev wren_lift)" >> "$GITHUB_OUTPUT"
         echo "zyntax=$(rev zyntax_embed)" >> "$GITHUB_OUTPUT"
     - uses: actions/checkout@v4
       with:
         repository: rayzor-blade/ash
         ref: ${{ steps.revs.outputs.ash }}
         path: ash
+    - uses: actions/checkout@v4
+      with:
+        repository: wrenlift/WrenLift
+        ref: ${{ steps.revs.outputs.wren_lift }}
+        path: wren_lift
     - uses: actions/checkout@v4
       with:
         repository: darmie/zyntax
