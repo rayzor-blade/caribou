@@ -84,6 +84,11 @@ sequences become `addField(T)` methods. The declaration can also spell out
 the same shape as Rust fields when it needs a deliberate projection instead
 of the complete IDL dictionary.
 
+WebIDL `record<K,V>` members become typed `addField(key, value)` methods and
+plugin-owned entry vectors. Nullable sequence elements add both
+`addField(value)` and `addFieldNull()`. String and buffer entries retain the
+underlying Caribou value instead of copying it.
+
 A resource method borrows the generated Rust record directly, so the
 descriptor is not serialized or lowered through a dynamic map. Scalars
 remain inline, enums are converted to their native codes, resource fields
@@ -117,8 +122,9 @@ are available through the same plugin metadata in every frontend.
 
 The generator supports fieldless enums, integer constant namespaces,
 dictionary records and explicit resource method declarations. It does **not**
-yet map every WebIDL union, record, nullable collection or callback type, nor
-infer wgpu operations, overloads or Promise scheduling from interfaces.
+yet choose language-neutral projections for arbitrary multi-type WebIDL
+unions or callback types, nor infer wgpu operations, overloads or Promise
+scheduling from interfaces.
 As in hlwgpu, the native implementation and its API projections remain
 explicit. Texture and vertex formats currently expose the backend's declared
 subset in `gpu.api.rs`; this is not the complete browser WebGPU API.

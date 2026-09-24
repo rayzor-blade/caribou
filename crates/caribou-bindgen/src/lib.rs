@@ -218,6 +218,59 @@ fn strip_attributes(mut ty: &[String]) -> &[String] {
     ty
 }
 
+fn idl_generic<'a>(tokens: &'a [String], name: &str) -> Option<Vec<&'a [String]>> {
+    if tokens.len() < 4 || tokens[0] != name || tokens[1] != "<" || tokens.last()? != ">" {
+        return None;
+    }
+    let inner = &tokens[2..tokens.len() - 1];
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut angle = 0usize;
+    let mut paren = 0usize;
+    for (i, token) in inner.iter().enumerate() {
+        match token.as_str() {
+            "<" => angle += 1,
+            ">" => angle = angle.saturating_sub(1),
+            "(" => paren += 1,
+            ")" => paren = paren.saturating_sub(1),
+            "," if angle == 0 && paren == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    Some(parts)
+}
+
+fn idl_union_without_undefined(tokens: &[String]) -> Option<&[String]> {
+    if tokens.first()? != "(" || tokens.last()? != ")" {
+        return None;
+    }
+    let inner = &tokens[1..tokens.len() - 1];
+    let mut angle = 0usize;
+    let mut parts = Vec::new();
+    let mut start = 0;
+    for (i, token) in inner.iter().enumerate() {
+        match token.as_str() {
+            "<" => angle += 1,
+            ">" => angle = angle.saturating_sub(1),
+            "or" if angle == 0 => {
+                parts.push(&inner[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&inner[start..]);
+    let mut concrete = parts
+        .into_iter()
+        .filter(|part| *part != ["undefined"] && *part != ["null"]);
+    let only = concrete.next()?;
+    concrete.next().is_none().then_some(only)
+}
+
 fn idl_type(
     tokens: &[String],
     aliases: &HashMap<String, Vec<String>>,
@@ -225,9 +278,31 @@ fn idl_type(
     resolving: &mut HashSet<String>,
 ) -> Result<Type, String> {
     let tokens = strip_attributes(tokens);
-    if tokens.len() == 4 && tokens[0] == "sequence" && tokens[1] == "<" && tokens[3] == ">" {
-        let inner = idl_type(&tokens[2..3], aliases, named, resolving)?;
+    if tokens.last().is_some_and(|token| token == "?") {
+        let inner = idl_type(&tokens[..tokens.len() - 1], aliases, named, resolving)?;
+        return Ok(syn::parse_quote!(Option<#inner>));
+    }
+    if let Some(inner) = idl_union_without_undefined(tokens) {
+        let inner = idl_type(inner, aliases, named, resolving)?;
+        return Ok(syn::parse_quote!(Option<#inner>));
+    }
+    if let Some(parts) = idl_generic(tokens, "sequence") {
+        if parts.len() != 1 {
+            return Err("WebIDL sequence needs one element type".into());
+        }
+        let inner = idl_type(parts[0], aliases, named, resolving)?;
         return Ok(syn::parse_quote!(Vec<#inner>));
+    }
+    if let Some(parts) = idl_generic(tokens, "record") {
+        if parts.len() != 2 {
+            return Err("WebIDL record needs key and value types".into());
+        }
+        let key = idl_type(parts[0], aliases, named, resolving)?;
+        let mut value = idl_type(parts[1], aliases, named, resolving)?;
+        if let Some(inner) = generic(&value, "Option") {
+            value = inner;
+        }
+        return Ok(syn::parse_quote!(Map<#key, #value>));
     }
     let spelling = tokens.join(" ");
     let primitive = match spelling.as_str() {
@@ -296,7 +371,7 @@ fn dictionary_fields(
         } else {
             idl_type(ty, aliases, named, &mut HashSet::new())?
         };
-        if !required && generic(&ty, "Vec").is_none() {
+        if !required && generic(&ty, "Vec").is_none() && generic_pair(&ty, "Map").is_none() {
             ty = syn::parse_quote!(Option<#ty>);
         }
         fields.push((field, ty));
@@ -336,6 +411,22 @@ fn generic(ty: &Type, name: &str) -> Option<Type> {
         GenericArgument::Type(t) => Some(t.clone()),
         _ => None,
     }
+}
+fn generic_pair(ty: &Type, name: &str) -> Option<(Type, Type)> {
+    let Type::Path(p) = ty else { return None };
+    let segment = p.path.segments.last()?;
+    if segment.ident != name {
+        return None;
+    }
+    let PathArguments::AngleBracketed(args) = &segment.arguments else {
+        return None;
+    };
+    let mut types = args.args.iter().filter_map(|arg| match arg {
+        GenericArgument::Type(ty) => Some(ty.clone()),
+        _ => None,
+    });
+    let pair = (types.next()?, types.next()?);
+    types.next().is_none().then_some(pair)
 }
 fn type_name(ty: &Type) -> Option<String> {
     let Type::Path(p) = ty else { return None };
@@ -599,6 +690,42 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     if !field_names.insert(field_name.to_string()) {
                         return Err(format!("duplicate field {class}.{field_name}"));
                     }
+                    if let Some((key_ty, value_ty)) = generic_pair(&field_ty, "Map") {
+                        for ty in [&key_ty, &value_ty] {
+                            if let Some(enumeration) = generic(ty, "Enum") {
+                                if !enums.contains(&type_name(&enumeration).unwrap_or_default()) {
+                                    return Err(format!("unknown enum in {class}.{field_name}"));
+                                }
+                            }
+                        }
+                        let (stored_key, parameter_key, convert_key) =
+                            stored_value(&key_ty, &resources, &records)?;
+                        let (stored_value_ty, parameter_value, convert_value) =
+                            stored_value(&value_ty, &resources, &records)?;
+                        stored_fields.extend(
+                            quote!(pub(crate) #field_name: Vec<(#stored_key, #stored_value_ty)>,),
+                        );
+                        initial_values.push(quote!(#field_name: Vec::new()));
+                        let add = ident(&format!("add{}", pascal(&field_name.to_string())))?;
+                        if !method_names.insert(add.to_string()) {
+                            return Err(format!("generated method {class}.{add} is duplicated"));
+                        }
+                        methods.extend(quote! {
+                            pub extern "C" fn #add(
+                                this: &mut #class,
+                                key: #parameter_key,
+                                value: #parameter_value,
+                            ) {
+                                let key = { let value = key; #convert_key };
+                                let value = { #convert_value };
+                                this.#field_name.push((key, value));
+                            }
+                        });
+                        signatures.extend(
+                            quote!(fn #add(&mut #class, #parameter_key, #parameter_value);),
+                        );
+                        continue;
+                    }
                     let (container, value_ty) = if let Some(inner) = generic(&field_ty, "Option") {
                         ("option", inner)
                     } else if let Some(inner) = generic(&field_ty, "Vec") {
@@ -606,13 +733,18 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     } else {
                         ("required", field_ty)
                     };
-                    if let Some(enumeration) = generic(&value_ty, "Enum") {
+                    let lowered_ty = if container == "sequence" {
+                        generic(&value_ty, "Option").unwrap_or_else(|| value_ty.clone())
+                    } else {
+                        value_ty.clone()
+                    };
+                    if let Some(enumeration) = generic(&lowered_ty, "Enum") {
                         if !enums.contains(&type_name(&enumeration).unwrap_or_default()) {
                             return Err(format!("unknown enum in {class}.{field_name}"));
                         }
                     }
                     let (stored, parameter, convert) =
-                        stored_value(&value_ty, &resources, &records)?;
+                        stored_value(&lowered_ty, &resources, &records)?;
                     match container {
                         "required" => {
                             stored_fields.extend(quote!(pub(crate) #field_name: #stored,));
@@ -637,13 +769,40 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             signatures.extend(quote!(fn #field_name(&mut #class, #parameter);));
                         }
                         "sequence" => {
-                            stored_fields.extend(quote!(pub(crate) #field_name: Vec<#stored>,));
+                            let nullable = generic(&value_ty, "Option");
+                            if nullable.is_some() {
+                                stored_fields
+                                    .extend(quote!(pub(crate) #field_name: Vec<Option<#stored>>,));
+                            } else {
+                                stored_fields.extend(quote!(pub(crate) #field_name: Vec<#stored>,));
+                            }
                             initial_values.push(quote!(#field_name: Vec::new()));
                             let add = ident(&format!("add{}", pascal(&field_name.to_string())))?;
                             if !method_names.insert(add.to_string()) {
                                 return Err(format!(
                                     "generated method {class}.{add} is duplicated"
                                 ));
+                            }
+                            if nullable.is_some() {
+                                let add_null = ident(&format!("{add}Null"))?;
+                                if !method_names.insert(add_null.to_string()) {
+                                    return Err(format!(
+                                        "generated method {class}.{add_null} is duplicated"
+                                    ));
+                                }
+                                methods.extend(quote! {
+                                    pub extern "C" fn #add(this: &mut #class, value: #parameter) {
+                                        this.#field_name.push(Some(#convert));
+                                    }
+                                    pub extern "C" fn #add_null(this: &mut #class) {
+                                        this.#field_name.push(None);
+                                    }
+                                });
+                                signatures.extend(quote! {
+                                    fn #add(&mut #class, #parameter);
+                                    fn #add_null(&mut #class);
+                                });
+                                continue;
                             }
                             methods.extend(quote! {
                                 pub extern "C" fn #add(this: &mut #class, value: #parameter) {
@@ -894,6 +1053,8 @@ mod tests {
                 required GPUExtentUnion extent;
                 boolean enabled = false;
                 sequence<GPUFormat> formats = [];
+                record<DOMString, (GPUSize or undefined)> limits = {};
+                sequence<GPUExtent?> layouts = [];
               };
             "#,
         )
@@ -906,8 +1067,16 @@ mod tests {
         assert!(generated.contains("pub (crate) extent : Extent"));
         assert!(generated.contains("pub (crate) enabled : Option < bool >"));
         assert!(generated.contains("pub (crate) formats : Vec < i32 >"));
+        assert!(
+            generated
+                .contains("pub (crate) limits : Vec < (caribou_abi :: Rooted < Text > , i64) >")
+        );
+        assert!(generated.contains("pub (crate) layouts : Vec < Option < Extent >>"));
         assert!(generated.contains("fn new (i64 , & Extent) -> Box < Descriptor >"));
         assert!(generated.contains("fn addFormats (& mut Descriptor , Enum < Format >)"));
+        assert!(generated.contains("fn addLimits (& mut Descriptor , Text , i64)"));
+        assert!(generated.contains("fn addLayouts (& mut Descriptor , & Extent)"));
+        assert!(generated.contains("fn addLayoutsNull (& mut Descriptor)"));
     }
     #[test]
     fn ambiguous_and_unsupported_declarations_fail_generation() {
