@@ -22,6 +22,9 @@ vulkan = ["wgpu/vulkan"]
 
 [build-dependencies]
 caribou-bindgen = { path = "../../crates/caribou-bindgen" }
+# The feature catalog: every wgpu feature, named as wgpu names it. The same
+# version as the runtime's wgpu, so the order matches the backend's.
+wgpu-types = "30"
 # One backend each, the one the platform actually uses. wgpu will compile
 # every backend it is given and only some are gated out by target, so leaving
 # the defaults on builds Vulkan into a macOS library that will never call it.

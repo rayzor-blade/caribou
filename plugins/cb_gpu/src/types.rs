@@ -20,4 +20,11 @@ pub enum Kind {
     Bindings = 16,
     BindGroupLayout = 17,
     PipelineLayout = 18,
+    QuerySet = 19,
+    BundleEncoder = 20,
+    Bundle = 21,
+    Error = 22,
+    LostInfo = 23,
+    CompilationInfo = 24,
+    SurfaceCapabilities = 25,
 }

@@ -2,6 +2,9 @@ import gpu.BufferUsage;
 import gpu.ColorWrite;
 import gpu.GpuInstance;
 import gpu.GpuBufferDescriptor;
+import gpu.GpuSurfaceConfiguration;
+import gpu.PresentMode;
+import gpu.TextureUsage;
 import gpu.Power;
 import gpu.VertexFormat;
 import gpu.VertexStepMode;
@@ -9,6 +12,8 @@ import window.Event;
 import window.WindowBuilder;
 
 /** A triangle rendered through the gpu plugin into a window plugin surface. */
+using Lambda;
+
 class Main {
     static final SHADER = '
         @vertex
@@ -56,8 +61,22 @@ class Main {
         check(surface.valid(), "this window cannot create a GPU surface");
         var format = surface.preferredFormat(adapter);
 
+        // What this surface supports on this adapter; Fifo is always there.
+        var capabilities = surface.capabilities(adapter);
+        var formats = [for (i in 0...capabilities.formatCount()) capabilities.format(i)];
+        check(formats.exists(f -> Type.enumEq(f, format)), "the preferred format is not supported");
+        var modes = [for (i in 0...capabilities.presentModeCount()) capabilities.presentMode(i)];
+        check(modes.exists(m -> Type.enumEq(m, PresentMode.Fifo)), "the surface lacks Fifo presentation");
+        check(capabilities.alphaModeCount() > 0, "the surface reports no alpha mode");
+        check((capabilities.usages() & TextureUsage.RENDER_ATTACHMENT()) != 0, "the surface cannot be rendered to");
+        var alpha = capabilities.alphaMode(0);
+
         function configure() {
-            device.configureSurface(surface, window.width(), window.height(), format);
+            var configuration = new GpuSurfaceConfiguration(format, window.width(), window.height());
+            configuration.presentMode(Fifo);
+            configuration.alphaMode(alpha);
+            configuration.desiredMaximumFrameLatency(2);
+            device.configureSurfaceWith(surface, configuration);
         }
         configure();
 

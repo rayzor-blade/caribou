@@ -14,9 +14,8 @@ use crate::handles::{Slab, kind_of};
 use crate::types::Kind;
 use crate::{
     BindingResource, GpuBindGroupDescriptor, GpuBindGroupLayoutDescriptor, GpuBindGroupLayoutEntry,
-    GpuBufferDescriptor, GpuComputePipelineDescriptor, GpuDeviceDescriptor,
-    GpuPipelineLayoutDescriptor, GpuSamplerDescriptor, GpuTextureDescriptor,
-    GpuTextureViewDescriptor,
+    GpuBufferDescriptor, GpuDeviceDescriptor, GpuPipelineLayoutDescriptor, GpuSamplerDescriptor,
+    GpuTextureDescriptor, GpuTextureViewDescriptor,
 };
 use caribou_abi::{Buffer, ErrorKind, Future, Rooted, Text, Value, host};
 
@@ -31,6 +30,8 @@ struct DeviceEntry {
     /// message naming neither the cause nor the caller. A queue instead, and
     /// `device_take_error` hands them over.
     errors: Arc<Mutex<VecDeque<String>>>,
+    /// Whether the device is lost, and whose futures wait to hear it.
+    lost: Arc<Mutex<diagnostics::Lost>>,
 }
 
 /// An encoder and whatever pass is open on it.
@@ -116,6 +117,17 @@ fn bytes(data: &Buffer, len: i32) -> Option<&[u8]> {
         return None;
     }
     Some(unsafe { &data.as_slice()[..len] })
+}
+
+/// What went wrong, in full: wgpu's Display for an error names only its
+/// kind; the description carries the cause.
+fn error_text(error: &wgpu::Error) -> String {
+    match error {
+        wgpu::Error::Validation { description, .. } | wgpu::Error::Internal { description, .. } => {
+            description.clone()
+        }
+        wgpu::Error::OutOfMemory { source } => format!("Out of memory: {source}"),
+    }
 }
 
 fn rejected_future<T>(message: &str) -> Future<T> {
@@ -396,15 +408,21 @@ fn device_request_configured(
     adapter: i32,
     features: &[i32],
     limits: &[(i32, i64)],
+    native_features: &[i32],
+    native_limits: &[(i32, i64)],
 ) -> Future<crate::GpuDevice> {
     let Some(adapter) = ADAPTERS.lock().unwrap().get(adapter) else {
         return rejected_future("adapter was destroyed");
     };
-    let requested_features = match requested_features(features) {
+    let requested_features = match requested_features(features)
+        .and_then(|webgpu| Ok(webgpu | native::requested_features(native_features)?))
+    {
         Ok(features) => features,
         Err(error) => return rejected_future(&error),
     };
-    let requested_limits = match requested_limits(limits) {
+    let requested_limits = match requested_limits(limits)
+        .and_then(|limits| native::requested_limits(limits, native_limits))
+    {
         Ok(limits) => limits,
         Err(error) => return rejected_future(&error),
     };
@@ -421,7 +439,7 @@ fn device_request_configured(
                 let errors: Arc<Mutex<VecDeque<String>>> = Arc::default();
                 let reported = errors.clone();
                 device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-                    reported.lock().unwrap().push_back(error.to_string());
+                    reported.lock().unwrap().push_back(error_text(&error));
                 }));
                 let queue = QUEUES.lock().unwrap().put(queue);
                 if queue == 0 {
@@ -430,10 +448,12 @@ fn device_request_configured(
                         .reject(Text::new("queue resource table is full").value());
                     return;
                 }
+                let lost = diagnostics::watch(&device);
                 let handle = DEVICES.lock().unwrap().put(DeviceEntry {
                     device,
                     queue,
                     errors,
+                    lost,
                 });
                 if handle == 0 {
                     QUEUES.lock().unwrap().remove(queue);
@@ -461,7 +481,7 @@ fn device_request_configured(
 }
 
 pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
-    device_request_configured(adapter, &[], &[])
+    device_request_configured(adapter, &[], &[], &[], &[])
 }
 
 pub unsafe fn device_request_with(
@@ -472,6 +492,8 @@ pub unsafe fn device_request_with(
         adapter,
         &descriptor.requiredFeatures,
         &descriptor.requiredLimits,
+        &descriptor.requiredNativeFeatures,
+        &descriptor.requiredNativeLimits,
     )
 }
 
@@ -494,12 +516,27 @@ pub unsafe fn device_poll(device: i32) {
     let _ = entry.device.poll(wgpu::PollType::Poll);
 }
 
+/// Destroys the device, as WebGPU's destroy does: its lost future resolves
+/// with Destroyed once a poll sees the queue drained. wgpu reaches the queue
+/// weakly, so it stays alive until that poll.
 pub unsafe fn device_destroy(device: i32) {
-    let queue = DEVICES.lock().unwrap().get(device).map(|e| e.queue);
-    if let Some(queue) = queue {
-        QUEUES.lock().unwrap().remove(queue);
-    }
+    let Some(entry) = DEVICES.lock().unwrap().get(device) else {
+        return;
+    };
     DEVICES.lock().unwrap().remove(device);
+    let queue = QUEUES.lock().unwrap().get(entry.queue);
+    QUEUES.lock().unwrap().remove(entry.queue);
+    entry.device.destroy();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let device = entry.device.clone();
+        std::thread::spawn(move || {
+            let _ = device.poll(wgpu::PollType::wait_indefinitely());
+            drop(queue);
+        });
+    }
+    #[cfg(target_arch = "wasm32")]
+    drop(queue);
 }
 
 // -- buffers ----------------------------------------------------------------
@@ -675,6 +712,25 @@ slab!(
     Kind::BindGroupLayout
 );
 slab!(PIPELINE_LAYOUTS, wgpu::PipelineLayout, Kind::PipelineLayout);
+slab!(QUERY_SETS, QuerySetEntry, Kind::QuerySet);
+slab!(
+    BUNDLE_ENCODERS,
+    Mutex<bundles::Recording>,
+    Kind::BundleEncoder
+);
+slab!(BUNDLES, wgpu::RenderBundle, Kind::Bundle);
+slab!(ERRORS, diagnostics::ErrorEntry, Kind::Error);
+slab!(LOST_INFOS, diagnostics::LostEntry, Kind::LostInfo);
+slab!(
+    COMPILATIONS,
+    Vec<diagnostics::Message>,
+    Kind::CompilationInfo
+);
+slab!(
+    CAPABILITIES,
+    surfaces::Capabilities,
+    Kind::SurfaceCapabilities
+);
 
 /// A descriptor the caller got wrong: raised in the caller's language, with
 /// no GPU work done.
@@ -941,50 +997,6 @@ pub unsafe fn bind_group_create_with(device: i32, descriptor: &GpuBindGroupDescr
         entries: &entries,
     });
     BINDGROUPS.lock().unwrap().put(group)
-}
-
-pub unsafe fn compute_pipeline_create_with(
-    device: i32,
-    descriptor: &GpuComputePipelineDescriptor,
-) -> i32 {
-    let entry = find!(DEVICES, device, 0);
-    let stage = &descriptor.compute;
-    let Some(module) = SHADERS.lock().unwrap().get(stage.module) else {
-        return refuse("the shader module was destroyed");
-    };
-    // Unset is WebGPU's "auto": the layout is inferred from the shader.
-    let layout = match descriptor.layout {
-        Some(handle) => match PIPELINE_LAYOUTS.lock().unwrap().get(handle) {
-            Some(layout) => Some(layout),
-            None => return refuse("the pipeline layout was destroyed"),
-        },
-        None => None,
-    };
-    let entry_point = stage.entryPoint.as_ref().map(caribou_abi::Rooted::get);
-    let names: Vec<(Text, f64)> = stage
-        .constants
-        .iter()
-        .map(|(name, value)| (name.get(), *value))
-        .collect();
-    let constants: Vec<(&str, f64)> = names
-        .iter()
-        .map(|(name, value)| (name.as_str(), *value))
-        .collect();
-    let label = descriptor.label.as_ref().map(caribou_abi::Rooted::get);
-    let pipeline = entry
-        .device
-        .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: label.as_ref().map(Text::as_str),
-            layout: layout.as_deref(),
-            module: &module,
-            entry_point: entry_point.as_ref().map(Text::as_str),
-            compilation_options: wgpu::PipelineCompilationOptions {
-                constants: &constants,
-                ..Default::default()
-            },
-            cache: None,
-        });
-    PIPELINES.lock().unwrap().put(pipeline)
 }
 
 /// A pipeline's layout for group `index`, inferred or explicit. The layout
@@ -1404,8 +1416,20 @@ fn texture_format(which: i32) -> wgpu::TextureFormat {
             block: B::B12x12,
             channel: C::UnormSrgb,
         },
+        // wgpu's own, after the WebGPU list.
+        101 => F::R64Uint,
+        102 => F::NV12,
+        103 => F::P010,
         _ => panic!("unknown texture format"),
     }
+}
+
+/// The highest texture format code.
+const LAST_TEXTURE_FORMAT: i32 = 103;
+
+/// The code of a wgpu format, for what the backend reports back.
+fn texture_format_code(format: wgpu::TextureFormat) -> Option<i32> {
+    (0..=LAST_TEXTURE_FORMAT).find(|&code| texture_format(code) == format)
 }
 
 fn vertex_format(which: i32) -> wgpu::VertexFormat {
@@ -1452,6 +1476,11 @@ fn vertex_format(which: i32) -> wgpu::VertexFormat {
         39 => wgpu::VertexFormat::Unorm10_10_10_2,
         40 => wgpu::VertexFormat::Unorm8x4Bgra,
         41 => panic!("snorm10-10-10-2 is unavailable in wgpu 30"),
+        // wgpu's own, after the WebGPU list.
+        42 => wgpu::VertexFormat::Float64,
+        43 => wgpu::VertexFormat::Float64x2,
+        44 => wgpu::VertexFormat::Float64x3,
+        45 => wgpu::VertexFormat::Float64x4,
         _ => panic!("unknown vertex format"),
     }
 }
@@ -1858,7 +1887,17 @@ fn sampler_address(value: i32) -> wgpu::AddressMode {
     match value {
         1 => wgpu::AddressMode::Repeat,
         2 => wgpu::AddressMode::MirrorRepeat,
+        3 => wgpu::AddressMode::ClampToBorder,
         _ => wgpu::AddressMode::ClampToEdge,
+    }
+}
+
+fn border_color(value: i32) -> wgpu::SamplerBorderColor {
+    match value {
+        1 => wgpu::SamplerBorderColor::OpaqueBlack,
+        2 => wgpu::SamplerBorderColor::OpaqueWhite,
+        3 => wgpu::SamplerBorderColor::Zero,
+        _ => wgpu::SamplerBorderColor::TransparentBlack,
     }
 }
 
@@ -1880,7 +1919,7 @@ pub unsafe fn sampler_create(device: i32, descriptor: &GpuSamplerDescriptor) -> 
             .maxAnisotropy
             .unwrap_or(1)
             .clamp(1, u16::MAX as i32) as u16,
-        border_color: None,
+        border_color: descriptor.borderColor.map(border_color),
     });
     SAMPLERS.lock().unwrap().put(sampler)
 }
@@ -2106,10 +2145,10 @@ pub unsafe fn surface_preferred_format(surface: i32, adapter: i32) -> i32 {
     formats
         .into_iter()
         .find_map(|format| match format {
-            wgpu::TextureFormat::Rgba8Unorm => Some(21),
-            wgpu::TextureFormat::Rgba8UnormSrgb => Some(22),
-            wgpu::TextureFormat::Bgra8Unorm => Some(26),
-            wgpu::TextureFormat::Bgra8UnormSrgb => Some(27),
+            wgpu::TextureFormat::Rgba8Unorm
+            | wgpu::TextureFormat::Rgba8UnormSrgb
+            | wgpu::TextureFormat::Bgra8Unorm
+            | wgpu::TextureFormat::Bgra8UnormSrgb => texture_format_code(format),
             _ => None,
         })
         .unwrap_or(-1)
@@ -2741,6 +2780,19 @@ pub unsafe fn is_valid(handle: i32) -> bool {
         k if k == Kind::PipelineLayout as i32 => {
             PIPELINE_LAYOUTS.lock().unwrap().get(handle).is_some()
         }
+        k if k == Kind::QuerySet as i32 => QUERY_SETS.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::BundleEncoder as i32 => {
+            BUNDLE_ENCODERS.lock().unwrap().get(handle).is_some()
+        }
+        k if k == Kind::Bundle as i32 => BUNDLES.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::Error as i32 => ERRORS.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::LostInfo as i32 => LOST_INFOS.lock().unwrap().get(handle).is_some(),
+        k if k == Kind::CompilationInfo as i32 => {
+            COMPILATIONS.lock().unwrap().get(handle).is_some()
+        }
+        k if k == Kind::SurfaceCapabilities as i32 => {
+            CAPABILITIES.lock().unwrap().get(handle).is_some()
+        }
         _ => false,
     }
 }
@@ -2826,3 +2878,20 @@ pub unsafe fn encoder_destroy(encoder: i32) {
 pub unsafe fn builder_destroy(builder: i32) {
     BUILDERS.lock().unwrap().remove(builder);
 }
+
+// The groups below live in their own files; they reach this file's tables
+// and helpers through `super`.
+mod bundles;
+mod copies;
+mod diagnostics;
+mod native;
+mod queries;
+mod render;
+mod surfaces;
+pub use bundles::*;
+pub use copies::*;
+pub use diagnostics::*;
+pub use native::*;
+pub use queries::*;
+pub use render::*;
+pub use surfaces::*;

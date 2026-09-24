@@ -764,6 +764,7 @@ dependencies = [
  "raw-window-handle",
  "wasm-bindgen-futures",
  "wgpu",
+ "wgpu-types",
 ]
 
 [[package]]
