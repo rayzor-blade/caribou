@@ -461,6 +461,7 @@ fn device_request_configured(
     native_features: &[i32],
     native_limits: &[(i32, i64)],
     memory_hints: Option<i32>,
+    accept_experimental: bool,
 ) -> Future<crate::GpuDevice> {
     let Some(adapter) = ADAPTERS.lock().unwrap().get(adapter) else {
         return rejected_future("adapter was destroyed");
@@ -477,15 +478,21 @@ fn device_request_configured(
         Ok(limits) => limits,
         Err(error) => return rejected_future(&error),
     };
-    // Requesting an EXPERIMENTAL_* feature is the program's acceptance of
-    // wgpu's terms for them: they may still have bugs that are undefined
-    // behaviour. Nothing else turns them on.
-    let experimental_features =
-        if requested_features.intersects(wgpu::Features::all_experimental_mask()) {
-            unsafe { wgpu::ExperimentalFeatures::enabled() }
-        } else {
-            wgpu::ExperimentalFeatures::disabled()
-        };
+    let experimental = requested_features & wgpu::Features::all_experimental_mask();
+    if !experimental.is_empty() && !accept_experimental {
+        let names: Vec<&str> = experimental.iter_names().map(|(name, _)| name).collect();
+        return rejected_future(&format!(
+            "{} may still have bugs that are undefined behaviour; \
+             set experimentalFeatures(true) on the device descriptor to accept that",
+            names.join(", ")
+        ));
+    }
+    // The program set experimentalFeatures: its acceptance of wgpu's terms.
+    let experimental_features = if accept_experimental {
+        unsafe { wgpu::ExperimentalFeatures::enabled() }
+    } else {
+        wgpu::ExperimentalFeatures::disabled()
+    };
     let descriptor = wgpu::DeviceDescriptor {
         required_features: requested_features,
         required_limits: requested_limits,
@@ -546,7 +553,7 @@ fn device_request_configured(
 }
 
 pub unsafe fn device_request(adapter: i32) -> Future<crate::GpuDevice> {
-    device_request_configured(adapter, &[], &[], &[], &[], None)
+    device_request_configured(adapter, &[], &[], &[], &[], None, false)
 }
 
 pub unsafe fn device_request_with(
@@ -560,6 +567,7 @@ pub unsafe fn device_request_with(
         &descriptor.requiredNativeFeatures,
         &descriptor.requiredNativeLimits,
         descriptor.memoryHints,
+        descriptor.experimentalFeatures.unwrap_or(false),
     )
 }
 

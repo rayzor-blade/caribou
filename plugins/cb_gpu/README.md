@@ -278,8 +278,9 @@ limits as well as features. `textureFormatFeatures` and
 
 wgpu marks some features `EXPERIMENTAL_*`: mesh shaders and ray queries among
 them. wgpu warns that these may still have bugs that are undefined behaviour.
-Requesting one in `requiredNativeFeatures` is how a program accepts that; the
-plugin turns on wgpu's experimental features for that device and no other.
+A program accepts that with `experimentalFeatures(true)` on the device
+descriptor, wgpu's own opt-in for that device and no other. Requesting an
+experimental feature without it rejects the device request.
 
 `GpuInstance.createWith` chooses backends and instance flags, and
 `requestAdapterWith` takes a power preference, a fallback flag and a surface

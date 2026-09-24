@@ -707,6 +707,8 @@ class Main {
         wgpu's own extensions where the adapter has them, on a device that
         asks for them and for every native limit the adapter reports:
         binding arrays, ray queries and mesh shaders all default to none.
+        Ray queries and mesh shaders are experimental, which the device
+        descriptor has to accept.
     **/
     static function wgpuExtensions(adapter:GpuAdapter) {
         var requested = new GpuDeviceDescriptor();
@@ -714,6 +716,10 @@ class Main {
                 ExperimentalRayQuery, ExperimentalMeshShader])
             if (adapter.supportsNative(feature)) requested.addRequiredNativeFeatures(feature);
         for (limit in Type.allEnums(NativeLimit)) requested.addRequiredNativeLimits(limit, adapter.nativeLimit(limit));
+        if (adapter.supportsNative(ExperimentalRayQuery) || adapter.supportsNative(ExperimentalMeshShader))
+            refused("an experimental feature was granted without the opt-in",
+                () -> adapter.requestDeviceWith(requested).await());
+        requested.experimentalFeatures(true);
         var device = adapter.requestDeviceWith(requested).await();
         var queue = device.queue();
         var ran = [];

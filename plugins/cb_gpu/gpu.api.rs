@@ -218,6 +218,9 @@ struct GpuDeviceDescriptor {
     requiredNativeFeatures: Vec<Enum<NativeFeature>>,
     requiredNativeLimits: Map<Enum<NativeLimit>, i64>,
     memoryHints: Option<Enum<MemoryHints>>,
+    // Accepts wgpu's terms for its EXPERIMENTAL_* features, which may still
+    // have bugs that are undefined behaviour. Requesting one needs this.
+    experimentalFeatures: Option<bool>,
 }
 
 // Explicit layouts: what a pipeline's bind groups hold, declared ahead of
