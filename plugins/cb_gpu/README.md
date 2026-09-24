@@ -4,9 +4,11 @@
 Rust's `wgpu` backend. Its public namespace is **`gpu`**, matching the
 `window` plugin's naming convention.
 
-The API includes adapter/device creation, buffers and asynchronous readback,
-compute pipelines and dispatch, textures and samplers, render-pipeline
-builders, render commands, and window surfaces. Resources cross the boundary
+The API covers WebGPU and wgpu's own features beyond it: adapters and devices
+with their features and limits, buffers and mapping, textures, samplers,
+explicit layouts, compute and render pipelines, passes, queries, render
+bundles, copies, error scopes, device loss, surfaces, binding arrays,
+external textures, mesh shaders and ray queries. Resources cross the boundary
 as typed Caribou objects; strings use `Text`, binary data uses shared `Buffer`
 storage, and choices such as power preference use Caribou enums.
 
@@ -149,6 +151,23 @@ Enum names become Caribou constructors such as `OneMinusSrcAlpha`.
 Constants become static methods such as `gpu.BufferUsage.STORAGE()` so they
 are available through the same plugin metadata in every frontend.
 
+wgpu has members that WebGPU lacks. `#[extension]` adds one to an imported
+declaration: a record field, an enum value after the IDL's values, or a union
+alternative. A `mod` can declare its own constants beside the imported ones:
+
+```rust
+#[idl("GPUAddressMode")]
+enum AddressMode {
+    #[extension]
+    ClampToBorder,
+}
+#[idl("GPUBufferUsage")]
+mod BufferUsage {
+    const BLAS_INPUT: i32 = 1024;
+    const TLAS_INPUT: i32 = 2048;
+}
+```
+
 The generator supports fieldless enums, integer constant namespaces,
 dictionary records, declared unions and explicit resource method
 declarations. A method can name an IDL operation with
@@ -157,8 +176,7 @@ Caribou's shared `Future<T>` carrier. It does **not** yet project callback
 types, union-typed method parameters, or infer wgpu operations, overloads or
 scheduling from interfaces.
 As in hlwgpu, the native implementation and its API projections remain
-explicit. Texture and vertex formats currently expose the backend's declared
-subset in `gpu.api.rs`; this is not the complete browser WebGPU API.
+explicit.
 
 ## Ownership and calls
 
@@ -181,9 +199,9 @@ Future rather than an unrooted Caribou value or a borrowed buffer.
 
 `createBindGroupLayout`, `createPipelineLayout`, `createBindGroup` and
 `createComputePipeline` take the WebGPU descriptors. A layout entry holds
-exactly one of `buffer`, `sampler`, `texture`, `storageTexture` or
-`externalTexture`; a buffer layout can take a dynamic offset and a minimum
-binding size. A `GpuBufferBinding` binds a range of a buffer, and a texture
+exactly one of `buffer`, `sampler`, `texture`, `storageTexture`,
+`externalTexture` or `accelerationStructure`; a buffer layout can take a
+dynamic offset and a minimum binding size. A `GpuBufferBinding` binds a range of a buffer, and a texture
 binds its default view. `GpuPipeline.getBindGroupLayout(i)` returns an
 inferred or explicit layout that other pipelines can share. The render
 pipeline builder's `layout(pipelineLayout)` replaces its inferred layout.
@@ -203,6 +221,42 @@ the render pass equivalent. `compute()` remains the one-dispatch shorthand.
 The fixture's `explicitLayouts` binds a dynamic storage window and a uniform
 range, overrides a constant, and dispatches one bind group at two offsets.
 
+## Pipelines and passes
+
+`createRenderPipeline` takes WebGPU's render pipeline descriptor: vertex
+buffers and attributes, primitive, depth-stencil and multisample state, and a
+fragment stage with its targets and blending. Each stage takes its own module,
+entry point and constants. `createComputePipelineAsync` and
+`createRenderPipelineAsync` compile on a worker and return a
+`Future<GpuPipeline>`.
+
+`beginRenderPass` and `beginComputePass` take the pass descriptors. A color
+attachment takes a texture or a view, a resolve target, a load and a store
+operation and a clear value. A depth-stencil attachment takes the same per
+aspect, or read-only flags. Passes can write timestamps and hold an occlusion
+query set. Inside a render pass, draws take full ranges; `renderMultiDraw*`
+issue several indirect draws, and the `Count` forms read the count from a
+buffer. Immediate data, occlusion queries, pipeline statistics queries and
+render bundles are recorded the same way.
+
+`createQuerySet` makes occlusion, timestamp and pipeline statistics queries,
+and `resolveQuerySet` writes their results into a buffer at a 256-byte
+aligned offset. `queue.timestampPeriod()` gives nanoseconds per tick.
+`createRenderBundleEncoder` records draws once for any number of passes.
+Copies between buffers and textures take WebGPU's full copy descriptions:
+mip level, origin, aspect, buffer layout and extent. `queue.writeTextureWith`
+uploads through the same layout.
+
+## Errors and loss
+
+`pushErrorScope(filter)` and `popErrorScope()` catch validation,
+out-of-memory and internal errors; the popped future resolves null when
+nothing went wrong. wgpu keeps scopes per thread, so pop from the task that
+pushed. Errors outside any scope queue up for `takeError()`. `device.lost()`
+resolves with a reason and a message, `Destroyed` after `destroy()`.
+`getCompilationInfo()` returns a shader's messages with their line, column,
+offset and length.
+
 ## Capabilities
 
 Adapters and devices expose `supports(Feature)` and `limit(Limit)`. Both
@@ -213,6 +267,45 @@ WebGPU default are ignored as required by the specification; values outside
 the adapter's capability reject the returned Future. Draft WebGPU features or
 limits absent from wgpu 30 report unsupported instead of being silently
 enabled. `requestDevice()` remains the default-capability convenience call.
+
+wgpu's own features and limits are `NativeFeature` and `NativeLimit`, queried
+with `supportsNative` and `nativeLimit` and requested through
+`requiredNativeFeatures` and `requiredNativeLimits`. `NativeFeature` is
+generated from wgpu's feature flags. Binding arrays, mesh shaders and ray
+queries all default to limits of zero, so a device that uses them requests
+limits as well as features. `textureFormatFeatures` and
+`textureFormatUsages` report what the adapter allows for each texture format.
+
+wgpu marks some features `EXPERIMENTAL_*`: mesh shaders and ray queries among
+them. wgpu warns that these may still have bugs that are undefined behaviour.
+Requesting one in `requiredNativeFeatures` is how a program accepts that; the
+plugin turns on wgpu's experimental features for that device and no other.
+
+`GpuInstance.createWith` chooses backends and instance flags, and
+`requestAdapterWith` takes a power preference, a fallback flag and a surface
+the adapter must be able to present to. A device descriptor can take memory
+hints. Adapters report their PCI ids, device type and subgroup sizes; buffers
+and textures report their size, shape, format and usage.
+
+## wgpu's own features
+
+A layout entry with a `count` is a binding array. Its bind group entry takes
+`resourceBufferArray`, `resourceSamplerArray`, `resourceTextureViewArray` or
+`resourceAccelerationStructureArray`.
+
+`createExternalTexture` makes an external texture from one to three planes
+(RGBA, NV12 or YU12), with the conversion matrices and transfer functions
+that sampling applies. It binds to WGSL's `texture_external`.
+
+`createMeshPipeline` takes an optional task stage and a mesh stage in place of
+vertex input, and `renderDrawMeshTasks` and its indirect forms draw with it.
+
+Ray queries search acceleration structures. `createBlas` makes a bottom-level
+structure for triangles or boxes, and `createTlas` a top-level one of up to
+`maxInstances` instances. `setInstance` places a BLAS with a transform, custom
+data and a mask. `buildAccelerationStructures` builds both kinds on an
+encoder, a TLAS binds like any other resource, and `prepareCompaction` with
+`queue.compactBlas` shrinks a built BLAS.
 
 Shader sources and immediate labels borrow `Text.as_str()`. Pipeline builder
 entry names are copied because they survive the call. Uploads borrow
@@ -241,49 +334,31 @@ Buffer sizes, ranges, offsets and adapter limits use 64-bit integers, matching
 WebGPU's `GPUSize64`. Dimensions, counts, flags and shared-buffer lengths use
 32-bit integers.
 
-## wgpu API coverage
+## What is not exposed
 
-The plugin is sufficient for basic compute, buffer readback, textured or
-indexed rendering, and presentation. It does not yet expose all of wgpu.
-The vendored WebGPU IDL gives binding generation a head start with common
-interfaces, descriptors, enums and constants. It is neither the plugin's
-public contract nor its feature ceiling. Portable WebGPU concepts should be
-generated from it where useful, while wgpu-only and native backend features
-should also be exposed behind adapter capability checks.
+- WebGPU members wgpu 30 does not have: texture component swizzle, texture
+  binding view dimension, a buffer's map state, and reading a label back.
+- wgpu entry points that are `unsafe`: `LoadOp::DontCare`, pipeline caches,
+  passthrough shaders and backend handle interop. Their safety conditions
+  cannot be checked from the plugin.
+- API tracing, which needs a wgpu build feature.
+- Browser image, canvas and video sources, which need the browser runtime.
+- The three-element sequence spelling of a texture extent; `GpuExtent3D` is
+  the dictionary spelling.
 
-The largest missing groups are:
-
-- texture component-swizzle and binding-view extensions absent from wgpu 30,
-  plus the three-element sequence spelling of texture extents;
-- all 101 IDL texture formats and all 42 IDL vertex formats are generated;
-  `snorm10-10-10-2` is reported unavailable because wgpu 30 has no
-  corresponding vertex format, and feature-gated texture families still
-  require their adapter feature;
-- render pipeline constants, multiple shaders/stages, render pass
-  load/store choices and complete draw ranges (compute constants and
-  explicit layouts are covered);
-- query sets, timestamps, occlusion queries, render bundles and external
-  textures/images;
-- error scopes, device-lost reporting and structured compilation messages;
-- configurable surface usage, present mode, alpha mode, view formats, color
-  space and frame latency;
-- wgpu extensions outside the WebGPU IDL, including native format features,
-  pipeline statistics, encoder/pass timestamps, unrestricted mapped buffers,
-  binding arrays (layout entry counts) and non-uniform indexing, atomic
-  storage-texture access, multi-draw, texture atomics,
-  64-bit shaders, subgroups, mesh shaders and ray tracing.
-
-These gaps affect expressiveness on every backend. They are separate from
-the target support above: compiling on a platform does not imply complete
-wgpu coverage or runtime validation on that platform. Individual extensions
-remain conditional on the adapter and backend that implement them.
+Features remain conditional on the adapter and backend that implement them.
+Compiling on a platform does not mean the platform has been run.
 
 ## Example and checks
 
 `plugins/fixtures/gpu/src/Main.hx` creates a device, uploads four integers,
 runs a compute shader, reads the results into `haxe.io.Bytes`, and checks
-bounds errors and resource destruction. Its `explicitLayouts` part runs the
-layout, bind group, constant and dynamic offset path above. Returned object types are inferred.
+bounds errors and resource destruction. Further parts run explicit layouts,
+rendering with queries and bundles, error scopes and device loss, then binding
+arrays, an external texture, a ray query and a mesh shader where the adapter
+has them, and the introspection calls. `plugins/fixtures/window_gpu` checks
+surface capabilities and configuration and presents frames. Returned object
+types are inferred.
 
 ```sh
 cargo test -p caribou-bindgen -p caribou-gpu --offline
@@ -302,9 +377,8 @@ target/debug/caribou run plugins/fixtures/gpu/gpu.hl
 The fixture requires an available GPU adapter and fails explicitly if none
 is available. The Rust generator/catalog/handle tests require no GPU.
 
-The compute fixture has been exercised on Apple M1 Pro/Metal, normally and
-with `ASH_GC_STRESS=1 WLIFT_GC_STRESS=1`. Surface presentation, rendering and
-other platforms have not been exercised by this fixture.
+Both fixtures have been run on Apple M1 Pro/Metal, the GPU fixture also with
+`ASH_GC_STRESS=1 WLIFT_GC_STRESS=1`. Other platforms have not been run.
 
 Frontend limitations remain tracked in git-bug: Wren's general enum
 constructors and lossless 64-bit integers (`80d0ccf`), and Zyntax's shared
