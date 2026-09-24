@@ -888,6 +888,16 @@ impl<T: PluginClass> Returned for alloc::boxed::Box<T> {
     const CLASS: Option<&'static str> = Some(T::NAME);
 }
 
+/// A method's exported name: a raw identifier (`r#type`) keeps its Rust
+/// escape out of the name the languages see.
+#[doc(hidden)]
+pub const fn unraw(name: &'static str) -> &'static str {
+    match name.as_bytes() {
+        [b'r', b'#', ..] => name.split_at(2).1,
+        _ => name,
+    }
+}
+
 /// `tags` at the front of a full parameter list, for a [`SymbolDesc`].
 pub const fn padded(tags: &[TypeTag]) -> [TypeTag; MAX_PARAMS] {
     let mut out = [TypeTag::VOID; MAX_PARAMS];
@@ -1052,7 +1062,7 @@ macro_rules! plugin {
             $(
                 $crate::SymbolDesc {
                     class: $crate::Str::new($crate::plugin!(@class $class)),
-                    method: $crate::Str::new(stringify!($method)),
+                    method: $crate::Str::new($crate::unraw(stringify!($method))),
                     func: $($path)* as *const ::core::ffi::c_void,
                     flags: $crate::plugin!(@flags $class; $($ty),*),
                     param_count: $crate::plugin!(@count $($ty)*) as u8,

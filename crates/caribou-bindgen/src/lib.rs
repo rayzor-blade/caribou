@@ -1,12 +1,15 @@
 //! Typed native binding declarations to Rust wrappers and `plugin!` exports.
 //! Traits describe resource classes; structs describe plugin-owned records;
-//! `#[native(name)]` selects a backend function. `#[idl("Name")]` imports
-//! enum values or namespace constants from a vendored WebIDL source. This
+//! enums whose variants carry a type describe unions, which records set
+//! through one setter per variant; `#[native(name)]` selects a backend
+//! function. `#[idl("Name")]` imports enum values, namespace constants,
+//! dictionary members or union alternatives from a vendored WebIDL source. This
 //! does not infer native GPU semantics from WebIDL interfaces or generate a
 //! language-specific heap layout.
 use proc_macro2::TokenStream;
 use quote::quote;
 use std::collections::{HashMap, HashSet};
+use syn::ext::IdentExt;
 use syn::{FnArg, GenericArgument, Item, PathArguments, ReturnType, TraitItem, Type};
 
 fn error(message: impl std::fmt::Display) -> String {
@@ -23,8 +26,18 @@ fn idl_name(attrs: &[syn::Attribute]) -> Result<Option<String>, String> {
         })
         .transpose()
 }
+/// A WebIDL member may be a Rust keyword (`type`); it stays itself as a raw
+/// identifier, which `plugin!` exports without the `r#`.
 fn ident(name: &str) -> Result<syn::Ident, String> {
-    syn::parse_str(name).map_err(error)
+    syn::parse_str(name).or_else(|e| {
+        let raw = !matches!(name, "self" | "Self" | "super" | "crate" | "_")
+            && syn::parse_str::<syn::Ident>(&format!("r#{name}")).is_ok();
+        if raw {
+            Ok(syn::Ident::new_raw(name, proc_macro2::Span::call_site()))
+        } else {
+            Err(error(e))
+        }
+    })
 }
 fn pascal(name: &str) -> String {
     let mut result = String::new();
@@ -36,7 +49,7 @@ fn pascal(name: &str) -> String {
         }
     }
     if result.starts_with(|c: char| c.is_ascii_digit()) {
-        result.insert_str(0, "D");
+        result.insert(0, 'D');
     }
     result
 }
@@ -244,19 +257,24 @@ fn idl_generic<'a>(tokens: &'a [String], name: &str) -> Option<Vec<&'a [String]>
     Some(parts)
 }
 
-fn idl_union_without_undefined(tokens: &[String]) -> Option<&[String]> {
+/// The alternatives of a parenthesised WebIDL union, `undefined` and `null`
+/// left out; `None` for a type that is not a union.
+fn union_alternatives(tokens: &[String]) -> Option<Vec<&[String]>> {
     if tokens.first()? != "(" || tokens.last()? != ")" {
         return None;
     }
     let inner = &tokens[1..tokens.len() - 1];
     let mut angle = 0usize;
+    let mut paren = 0usize;
     let mut parts = Vec::new();
     let mut start = 0;
     for (i, token) in inner.iter().enumerate() {
         match token.as_str() {
             "<" => angle += 1,
             ">" => angle = angle.saturating_sub(1),
-            "or" if angle == 0 => {
+            "(" => paren += 1,
+            ")" => paren = paren.saturating_sub(1),
+            "or" if angle == 0 && paren == 0 => {
                 parts.push(&inner[start..i]);
                 start = i + 1;
             }
@@ -264,11 +282,17 @@ fn idl_union_without_undefined(tokens: &[String]) -> Option<&[String]> {
         }
     }
     parts.push(&inner[start..]);
-    let mut concrete = parts
-        .into_iter()
-        .filter(|part| *part != ["undefined"] && *part != ["null"]);
-    let only = concrete.next()?;
-    concrete.next().is_none().then_some(only)
+    Some(
+        parts
+            .into_iter()
+            .filter(|part| *part != ["undefined"] && *part != ["null"])
+            .collect(),
+    )
+}
+
+fn idl_union_without_undefined(tokens: &[String]) -> Option<&[String]> {
+    let concrete = union_alternatives(tokens)?;
+    (concrete.len() == 1).then(|| concrete[0])
 }
 
 fn idl_type(
@@ -419,6 +443,23 @@ fn dictionary_fields(
     }
     Ok(fields)
 }
+/// An integer literal discriminant, possibly negative.
+fn discriminant(expr: &syn::Expr) -> Option<i32> {
+    match expr {
+        syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Int(value),
+            ..
+        }) => value.base10_parse().ok(),
+        syn::Expr::Unary(syn::ExprUnary {
+            op: syn::UnOp::Neg(_),
+            expr,
+            ..
+        }) => discriminant(expr)?.checked_neg(),
+        syn::Expr::Paren(inner) => discriminant(&inner.expr),
+        _ => None,
+    }
+}
+
 fn enum_values(tokens: &[String], name: &str) -> Result<Vec<String>, String> {
     let body = body(tokens, "enum", name)?;
     let mut values = Vec::new();
@@ -582,17 +623,53 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             _ => None,
         })
         .collect();
+    // An enum whose variants carry a value declares a union: a record field
+    // of that type takes one setter per alternative instead of a dynamic
+    // value. Each variant holds exactly one declared type.
+    let mut unions: HashMap<String, Vec<(syn::Ident, Type)>> = HashMap::new();
+    for item in &file.items {
+        let Item::Enum(e) = item else { continue };
+        if e.variants
+            .iter()
+            .all(|v| matches!(v.fields, syn::Fields::Unit))
+        {
+            continue;
+        }
+        let mut alternatives = Vec::new();
+        for v in &e.variants {
+            let syn::Fields::Unnamed(fields) = &v.fields else {
+                return Err(format!(
+                    "union {}::{} needs one unnamed type",
+                    e.ident, v.ident
+                ));
+            };
+            if fields.unnamed.len() != 1 || v.discriminant.is_some() {
+                return Err(format!(
+                    "union {}::{} needs one unnamed type",
+                    e.ident, v.ident
+                ));
+            }
+            alternatives.push((v.ident.clone(), fields.unnamed[0].ty.clone()));
+        }
+        unions.insert(e.ident.to_string(), alternatives);
+    }
     let enums: HashSet<_> = file
         .items
         .iter()
         .filter_map(|i| match i {
-            Item::Enum(e) => Some(e.ident.to_string()),
+            Item::Enum(e) if !unions.contains_key(&e.ident.to_string()) => {
+                Some(e.ident.to_string())
+            }
             _ => None,
         })
         .collect();
     let mut idl_types = HashMap::new();
     for item in &file.items {
         let (attrs, ty): (&[syn::Attribute], Type) = match item {
+            Item::Enum(item) if unions.contains_key(&item.ident.to_string()) => {
+                let local = &item.ident;
+                (item.attrs.as_slice(), syn::parse_quote!(#local))
+            }
             Item::Enum(item) => {
                 let local = &item.ident;
                 (item.attrs.as_slice(), syn::parse_quote!(Enum<#local>))
@@ -607,10 +684,10 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             }
             _ => continue,
         };
-        if let Some(source) = idl_name(attrs)? {
-            if idl_types.insert(source.clone(), ty).is_some() {
-                return Err(format!("WebIDL type {source} is imported more than once"));
-            }
+        if let Some(source) = idl_name(attrs)?
+            && idl_types.insert(source.clone(), ty).is_some()
+        {
+            return Err(format!("WebIDL type {source} is imported more than once"));
         }
     }
     let mut names = HashSet::new();
@@ -633,31 +710,80 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             return Err(format!("duplicate export {name}"));
         }
         match item {
+            Item::Enum(e) if unions.contains_key(&e.ident.to_string()) => {
+                let name = &e.ident;
+                let alternatives = &unions[&name.to_string()];
+                if let Some(source) = idl_name(&e.attrs)? {
+                    // A declared subset of the WebIDL union: each variant
+                    // must be one of its alternatives.
+                    let union = aliases
+                        .get(&source)
+                        .map(|alias| strip_attributes(alias))
+                        .and_then(union_alternatives)
+                        .ok_or_else(|| format!("{source} is not a WebIDL union typedef"))?;
+                    let mapped: Vec<String> = union
+                        .into_iter()
+                        .filter_map(|alternative| {
+                            idl_type(alternative, &aliases, &idl_types, &mut HashSet::new()).ok()
+                        })
+                        .map(|ty| quote!(#ty).to_string())
+                        .collect();
+                    for (variant, ty) in alternatives {
+                        if !mapped.contains(&quote!(#ty).to_string()) {
+                            return Err(format!(
+                                "{name}::{variant} is not an alternative of {source}"
+                            ));
+                        }
+                    }
+                }
+                let mut stored_variants = Vec::new();
+                for (variant, ty) in alternatives {
+                    if let Some(enumeration) = generic(ty, "Enum")
+                        && !enums.contains(&type_name(&enumeration).unwrap_or_default())
+                    {
+                        return Err(format!("unknown enum in {name}::{variant}"));
+                    }
+                    let (stored, _, _) = stored_value(ty, &resources, &records)?;
+                    stored_variants.push(quote!(#variant(#stored)));
+                }
+                output.extend(quote! {
+                    #[derive(Clone)]
+                    pub enum #name { #(#stored_variants),* }
+                });
+            }
             Item::Enum(e) => {
                 let name = &e.ident;
                 let schema = format!("{namespace}.{name}");
                 let source = idl_name(&e.attrs)?;
-                let variants: Vec<(syn::Ident, syn::Expr)> =
+                // Native codes are evaluated here, so the generated code
+                // matches on plain integer literals.
+                let variants: Vec<(syn::Ident, i32)> =
                     if let Some(source) = source.filter(|_| e.variants.is_empty()) {
                         enum_values(&idl, &source)
                             .or_else(|_| readonly_attribute_names(&idl, &source))?
                             .into_iter()
                             .enumerate()
-                            .map(|(i, v)| Ok((ident(&pascal(&v))?, syn::parse_quote!(#i))))
+                            .map(|(i, v)| {
+                                let code = i32::try_from(i).map_err(error)?;
+                                Ok((ident(&pascal(&v))?, code))
+                            })
                             .collect::<Result<_, String>>()?
                     } else {
-                        let mut next: syn::Expr = syn::parse_quote!(0);
+                        let mut next = 0i32;
                         let mut values = Vec::new();
                         for v in &e.variants {
                             if !matches!(v.fields, syn::Fields::Unit) {
                                 return Err("native enums must be fieldless".into());
                             }
-                            let value = v
-                                .discriminant
-                                .as_ref()
-                                .map(|(_, e)| e.clone())
-                                .unwrap_or(next);
-                            next = syn::parse_quote!((#value) + 1);
+                            let value = match &v.discriminant {
+                                Some((_, expr)) => discriminant(expr).ok_or_else(|| {
+                                    format!("{name}.{} needs an integer literal", v.ident)
+                                })?,
+                                None => next,
+                            };
+                            next = value
+                                .checked_add(1)
+                                .ok_or_else(|| format!("{name} overflows i32"))?;
                             values.push((v.ident.clone(), value));
                         }
                         values
@@ -672,19 +798,24 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     }
                 }
                 let ids: Vec<_> = variants.iter().map(|(v, _)| v).collect();
-                let values: Vec<_> = variants.iter().map(|(_, e)| e).collect();
-                let first = ids[0];
+                let values: Vec<_> = variants
+                    .iter()
+                    .map(|(_, value)| proc_macro2::Literal::i32_unsuffixed(*value))
+                    .collect();
+                let (first, rest) = ids.split_first().expect("a non-empty enum");
                 output.extend(quote! {
-                    #[derive(Debug, Clone, Copy, PartialEq, Eq, caribou_abi::PluginEnum)]
+                    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, caribou_abi::PluginEnum)]
                     #[caribou(name = #schema)]
-                    pub enum #name { #(#ids),* }
+                    pub enum #name { #[default] #first, #(#rest),* }
                     impl #name {
-                        pub fn native(self) -> i32 { match self { #(Self::#ids => #values as i32),* } }
+                        pub fn native(self) -> i32 { match self { #(Self::#ids => #values),* } }
                         pub fn from_native(value: i32) -> Option<Self> {
-                            #(if value == #values as i32 { return Some(Self::#ids); })* None
+                            match value {
+                                #(#values => Some(Self::#ids),)*
+                                _ => None,
+                            }
                         }
                     }
-                    impl Default for #name { fn default() -> Self { Self::#first } }
                 });
                 exports.extend(quote!(enum #name;));
             }
@@ -761,10 +892,13 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     }
                     if let Some((key_ty, value_ty)) = generic_pair(&field_ty, "Map") {
                         for ty in [&key_ty, &value_ty] {
-                            if let Some(enumeration) = generic(ty, "Enum") {
-                                if !enums.contains(&type_name(&enumeration).unwrap_or_default()) {
-                                    return Err(format!("unknown enum in {class}.{field_name}"));
-                                }
+                            if type_name(ty).is_some_and(|name| unions.contains_key(&name)) {
+                                return Err(format!("{class}.{field_name} maps a union"));
+                            }
+                            if let Some(enumeration) = generic(ty, "Enum")
+                                && !enums.contains(&type_name(&enumeration).unwrap_or_default())
+                            {
+                                return Err(format!("unknown enum in {class}.{field_name}"));
                             }
                         }
                         let (stored_key, parameter_key, convert_key) =
@@ -775,7 +909,8 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             quote!(pub(crate) #field_name: Vec<(#stored_key, #stored_value_ty)>,),
                         );
                         initial_values.push(quote!(#field_name: Vec::new()));
-                        let add = ident(&format!("add{}", pascal(&field_name.to_string())))?;
+                        let add =
+                            ident(&format!("add{}", pascal(&field_name.unraw().to_string())))?;
                         if !method_names.insert(add.to_string()) {
                             return Err(format!("generated method {class}.{add} is duplicated"));
                         }
@@ -807,10 +942,55 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     } else {
                         value_ty.clone()
                     };
-                    if let Some(enumeration) = generic(&lowered_ty, "Enum") {
-                        if !enums.contains(&type_name(&enumeration).unwrap_or_default()) {
-                            return Err(format!("unknown enum in {class}.{field_name}"));
+                    let member = field_name.unraw().to_string();
+                    if let Some(alternatives) =
+                        type_name(&lowered_ty).and_then(|name| unions.get(&name))
+                    {
+                        // One setter per alternative. A required union is
+                        // not a constructor argument; the backend checks it
+                        // was set.
+                        let union = &lowered_ty;
+                        let sequence = container == "sequence";
+                        if sequence && generic(&value_ty, "Option").is_some() {
+                            return Err(format!("{class}.{field_name} holds nullable unions"));
                         }
+                        if sequence {
+                            stored_fields.extend(quote!(pub(crate) #field_name: Vec<#union>,));
+                            initial_values.push(quote!(#field_name: Vec::new()));
+                        } else {
+                            stored_fields.extend(quote!(pub(crate) #field_name: Option<#union>,));
+                            initial_values.push(quote!(#field_name: None));
+                        }
+                        for (variant, ty) in alternatives {
+                            let (_, parameter, convert) = stored_value(ty, &resources, &records)?;
+                            let setter = if sequence {
+                                ident(&format!("add{}{variant}", pascal(&member)))?
+                            } else {
+                                ident(&format!("{member}{variant}"))?
+                            };
+                            if !method_names.insert(setter.to_string()) {
+                                return Err(format!(
+                                    "generated method {class}.{setter} is duplicated"
+                                ));
+                            }
+                            let store = if sequence {
+                                quote!(this.#field_name.push(#union::#variant(#convert)))
+                            } else {
+                                quote!(this.#field_name = Some(#union::#variant(#convert)))
+                            };
+                            methods.extend(quote! {
+                                pub extern "C" fn #setter(this: &mut #class, value: #parameter) {
+                                    #store;
+                                }
+                            });
+                            signatures.extend(quote!(fn #setter(&mut #class, #parameter);));
+                        }
+                        continue;
+                    }
+                    if let Some(enumeration) = generic(&lowered_ty, "Enum")
+                        && !enums.contains(&type_name(&enumeration).unwrap_or_default())
+                    {
+                        return Err(format!("unknown enum in {class}.{field_name}"));
                     }
                     let (stored, parameter, convert) =
                         stored_value(&lowered_ty, &resources, &records)?;
@@ -819,11 +999,16 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             stored_fields.extend(quote!(pub(crate) #field_name: #stored,));
                             required_params.push(quote!(#field_name: #parameter));
                             required_types.push(quote!(#parameter));
-                            required_values
-                                .push(quote!(#field_name: { let value = #field_name; #convert }));
+                            if convert.to_string() == "value" {
+                                required_values.push(quote!(#field_name));
+                            } else {
+                                required_values.push(
+                                    quote!(#field_name: { let value = #field_name; #convert }),
+                                );
+                            }
                         }
                         "option" => {
-                            if !method_names.insert(field_name.to_string()) {
+                            if !method_names.insert(member.clone()) {
                                 return Err(format!(
                                     "generated method {class}.{field_name} is duplicated"
                                 ));
@@ -846,7 +1031,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                                 stored_fields.extend(quote!(pub(crate) #field_name: Vec<#stored>,));
                             }
                             initial_values.push(quote!(#field_name: Vec::new()));
-                            let add = ident(&format!("add{}", pascal(&field_name.to_string())))?;
+                            let add = ident(&format!("add{}", pascal(&member)))?;
                             if !method_names.insert(add.to_string()) {
                                 return Err(format!(
                                     "generated method {class}.{add} is duplicated"
@@ -958,7 +1143,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             if !classes.contains(&target) {
                                 return Err(format!("unknown resource {target}"));
                             }
-                            if i == 0 && target != class.to_string() {
+                            if i == 0 && *class != target {
                                 return Err(format!(
                                     "first object parameter must be the {class} receiver"
                                 ));
@@ -1020,19 +1205,39 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             (quote!(-> #ty), convert, fallback)
                         }
                     };
-                    methods.extend(quote! {
-                        pub extern "C" fn #name(#(#params),*) #return_type {
-                            let value = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe { backend::#native(#(#args),*) })) {
+                    // A panic in the backend becomes a runtime error in the
+                    // caller's language, and the fallback is returned.
+                    let call = quote! {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                            backend::#native(#(#args),*)
+                        }))
+                    };
+                    let raise = quote! {
+                        let message = error.downcast_ref::<String>().map(String::as_str)
+                            .or_else(|| error.downcast_ref::<&str>().copied())
+                            .unwrap_or("native backend panicked");
+                        caribou_abi::host::raise(caribou_abi::ErrorKind::Runtime, message);
+                    };
+                    let body = if return_type.is_empty() {
+                        quote!(if let Err(error) = #call { #raise })
+                    } else if convert.to_string() == "value" {
+                        quote! {
+                            match #call {
                                 Ok(value) => value,
-                                Err(error) => {
-                                    let message = error.downcast_ref::<String>().map(String::as_str)
-                                        .or_else(|| error.downcast_ref::<&str>().copied()).unwrap_or("native backend panicked");
-                                    caribou_abi::host::raise(caribou_abi::ErrorKind::Runtime, message);
-                                    #fallback
-                                }
+                                Err(error) => { #raise #fallback }
+                            }
+                        }
+                    } else {
+                        quote! {
+                            let value = match #call {
+                                Ok(value) => value,
+                                Err(error) => { #raise #fallback }
                             };
                             #convert
                         }
+                    };
+                    methods.extend(quote! {
+                        pub extern "C" fn #name(#(#params),*) #return_type { #body }
                     });
                     signatures.extend(quote!(fn #name(#(#types),*) #return_type;));
                 }
@@ -1208,6 +1413,73 @@ mod tests {
         assert!(generated.contains("fn addLimits (& mut Descriptor , Text , i64)"));
         assert!(generated.contains("fn addLayouts (& mut Descriptor , & Extent)"));
         assert!(generated.contains("fn addLayoutsNull (& mut Descriptor)"));
+    }
+    #[test]
+    fn keyword_members_keep_their_webidl_names() {
+        let generated = generate(
+            "gpu",
+            r#"
+              #[idl("GPUBindingType")] enum BindingType {}
+              #[idl("GPULayout")] struct Layout {}
+            "#,
+            r#"
+              enum GPUBindingType { "uniform", "storage" };
+              dictionary GPULayout { GPUBindingType type = "uniform"; sequence<long> match = []; };
+            "#,
+        )
+        .unwrap();
+        syn::parse_file(&generated).unwrap();
+        assert!(generated.contains("pub (crate) r#type : Option < i32 >"));
+        assert!(generated.contains("fn r#type (& mut Layout , Enum < BindingType >)"));
+        assert!(generated.contains("fn addMatch (& mut Layout , i32)"));
+    }
+    #[test]
+    fn declared_unions_take_one_setter_per_alternative() {
+        let idl = r#"
+          typedef (GPUSampler or GPUBuffer or GPUBufferBinding or GPUExternalTexture) GPUResource;
+          dictionary GPUBufferBinding { required GPUBuffer buffer; unsigned long long size; };
+          dictionary GPUEntry { required unsigned long binding; required GPUResource resource; };
+          dictionary GPUGroup { sequence<GPUResource> extras = []; };
+        "#;
+        let generated = generate(
+            "gpu",
+            r#"
+              #[idl("GPUSampler")] trait Sampler {}
+              #[idl("GPUBuffer")] trait GpuBuffer {}
+              #[idl("GPUBufferBinding")] struct BufferBinding {}
+              #[idl("GPUResource")]
+              enum Resource { Sampler(Sampler), Buffer(GpuBuffer), Binding(BufferBinding) }
+              #[idl("GPUEntry")] struct Entry {}
+              #[idl("GPUGroup")] struct Group {}
+            "#,
+            idl,
+        )
+        .unwrap();
+        syn::parse_file(&generated).unwrap();
+        assert!(generated.contains(
+            "pub enum Resource { Sampler (i32) , Buffer (i32) , Binding (BufferBinding) }"
+        ));
+        assert!(generated.contains("pub (crate) resource : Option < Resource >"));
+        assert!(generated.contains("fn new (i32) -> Box < Entry >"));
+        assert!(generated.contains("fn resourceSampler (& mut Entry , & Sampler)"));
+        assert!(generated.contains("fn resourceBinding (& mut Entry , & BufferBinding)"));
+        assert!(generated.contains("this . resource = Some (Resource :: Buffer (value . handle))"));
+        assert!(generated.contains("fn addExtrasBuffer (& mut Group , & GpuBuffer)"));
+        assert!(
+            !generated.contains("class Resource"),
+            "a union is not a Caribou class"
+        );
+
+        let not_an_alternative = generate(
+            "gpu",
+            r#"
+              trait Queue {}
+              #[idl("GPUSampler")] trait Sampler {}
+              #[idl("GPUResource")] enum Resource { Sampler(Sampler), Queue(Queue) }
+            "#,
+            idl,
+        );
+        assert!(not_an_alternative.is_err());
     }
     #[test]
     fn ambiguous_and_unsupported_declarations_fail_generation() {

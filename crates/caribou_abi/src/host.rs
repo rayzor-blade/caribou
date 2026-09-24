@@ -201,6 +201,8 @@ impl<T> Copy for Future<T> {}
 impl<T> Future<T> {
     pub const NULL: Future<T> = Future(core::ptr::null(), PhantomData);
 
+    // Not `Default`: a new future is a host allocation, not an empty value.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Future<T> {
         let future = unsafe { (host().future_new)() };
         Future(future.0, PhantomData)
