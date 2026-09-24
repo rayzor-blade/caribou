@@ -175,7 +175,13 @@ pub fn exists(name: &str) -> bool {
 /// The registry's loader for Wren: load and publish `namespace:module`
 /// from the project when it is there.
 pub fn load(namespace: &str, module: &str) -> Result<bool, String> {
-    let name = format!("{namespace}/{module}");
+    // Wren's own namespace names a root's module by itself: `wren:scale` is
+    // `scale.wren`, the module `import "scale"` names.
+    let name = if namespace == caribou::world::language_name(crate::lang()) {
+        module.to_owned()
+    } else {
+        format!("{namespace}/{module}")
+    };
     let Some(found) = locate(&name) else {
         return Ok(false);
     };
