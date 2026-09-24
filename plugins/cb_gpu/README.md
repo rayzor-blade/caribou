@@ -380,10 +380,10 @@ is available. The Rust generator/catalog/handle tests require no GPU.
 Both fixtures have been run on Apple M1 Pro/Metal, the GPU fixture also with
 `ASH_GC_STRESS=1 WLIFT_GC_STRESS=1`. Other platforms have not been run.
 
-Frontend limitations remain tracked in git-bug: Wren's general enum
-constructors and lossless 64-bit integers (`80d0ccf`), and Zyntax's shared
-object/buffer/enum transfer (`c575125`). The generated signatures keep the
-Caribou types rather than changing the public API around those gaps.
+Wren builds the generated enums through their classes, such as
+`TextureFormat.Rgba8unorm`. Zyntax's shared object, buffer and enum transfer
+is tracked in git-bug `c575125`. The generated signatures keep the Caribou
+types rather than changing the public API around that gap.
 
 The backend is adapted from the sibling hlwgpu repository at
 `3c30f886b809b7823382e343abaa92ede3ef6af4`; its MIT notice is in

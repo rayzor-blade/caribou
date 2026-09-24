@@ -320,6 +320,124 @@ static ENUM_PROTO: Protocol = Protocol {
     ..Protocol::NONE
 };
 
+// ---------------------------------------------------------------------------
+// An enum as a class: its variants as values a language can name
+// ---------------------------------------------------------------------------
+
+/// A declared enum as a class object: each fieldless variant is a member
+/// (`Format.Rgba8unorm`). A variant with fields is made by its
+/// [`enum_constructor`] (`ScaleSize.Physical(w, h)`).
+#[repr(C)]
+struct EnumClass {
+    desc: *const TypeDesc,
+    target: *const TypeDesc,
+}
+
+/// One variant's constructor, called with the variant's fields.
+#[repr(C)]
+struct EnumCtor {
+    desc: *const TypeDesc,
+    target: *const TypeDesc,
+    index: u32,
+}
+
+unsafe extern "C" fn trace_nothing(_: *mut u8, _: *mut Tracer) {}
+
+fn make(desc: &'static TypeDesc, index: u32, fields: &[Value], out: *mut Value) -> u8 {
+    match enum_new(desc, index, fields) {
+        Ok(p) => {
+            unsafe { *out = Value::object(p.cast()) };
+            REPLY_OK
+        }
+        Err(message) => crate::bridge::raise(crate::error::Error::new(
+            caribou_abi::ErrorKind::Type,
+            &message,
+            crate::world::LANG_CORE,
+        )),
+    }
+}
+
+unsafe extern "C-unwind" fn class_member(
+    p: *mut u8,
+    name: crate::symbol::Symbol,
+    out: *mut Value,
+) -> u8 {
+    let target = unsafe { &*(*p.cast::<EnumClass>()).target };
+    let variants = &enum_schema(target).variants;
+    match variants
+        .iter()
+        .position(|v| v.name == name.name() && v.fields.is_empty())
+    {
+        Some(i) => make(target, i as u32, &[], out),
+        None => REPLY_MISSING,
+    }
+}
+
+unsafe extern "C-unwind" fn ctor_call(
+    p: *mut u8,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let ctor = unsafe { &*p.cast::<EnumCtor>() };
+    let fields = if n == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, n) }
+    };
+    make(unsafe { &*ctor.target }, ctor.index, fields, out)
+}
+
+unsafe extern "C-unwind" fn ctor_arity(p: *mut u8, out: *mut usize) -> u8 {
+    let ctor = unsafe { &*p.cast::<EnumCtor>() };
+    let schema = enum_schema(unsafe { &*ctor.target });
+    unsafe { *out = schema.variants[ctor.index as usize].fields.len() };
+    REPLY_OK
+}
+
+static ENUM_CLASS_PROTO: Protocol = Protocol {
+    get_member: Some(class_member),
+    ..Protocol::NONE
+};
+static ENUM_CLASS_DESC: TypeDesc =
+    descriptor("caribou.EnumClass", trace_nothing, &ENUM_CLASS_PROTO);
+static ENUM_CTOR_PROTO: Protocol = Protocol {
+    call: Some(ctor_call),
+    arity: Some(ctor_arity),
+    ..Protocol::NONE
+};
+static ENUM_CTOR_DESC: TypeDesc =
+    descriptor("caribou.EnumConstructor", trace_nothing, &ENUM_CTOR_PROTO);
+
+/// `desc` as a class object, kept for the process as the interface that
+/// publishes it is.
+pub fn enum_class(desc: &'static TypeDesc) -> Value {
+    let root = Rooted::alloc(&ENUM_CLASS_DESC, size_of::<EnumClass>());
+    let p = root.ptr().cast::<EnumClass>();
+    unsafe {
+        (*p).desc = &ENUM_CLASS_DESC;
+        (*p).target = desc;
+    }
+    let value = root.value();
+    std::mem::forget(root);
+    value
+}
+
+/// Variant `index` of `desc` as a function of its fields, kept for the
+/// process as [`enum_class`] is.
+pub fn enum_constructor(desc: &'static TypeDesc, index: u32) -> Value {
+    let root = Rooted::alloc(&ENUM_CTOR_DESC, size_of::<EnumCtor>());
+    let p = root.ptr().cast::<EnumCtor>();
+    unsafe {
+        (*p).desc = &ENUM_CTOR_DESC;
+        (*p).target = desc;
+        (*p).index = index;
+    }
+    let value = root.value();
+    std::mem::forget(root);
+    value
+}
+
 /// Translate ABI declaration data once, while loading the plugin.
 ///
 /// # Safety

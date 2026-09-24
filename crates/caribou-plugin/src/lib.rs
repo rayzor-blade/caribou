@@ -15,6 +15,11 @@
 //! `ash_native_call`: scalars by kind, a `DYN` as the `Value` it is, a
 //! string as the core string's address, and nothing boxed.
 //!
+//! Each declared enum is a module and class too, named after the enum.
+//! Its instances answer `tag`, `constructor` and their fields; its class
+//! object answers each fieldless variant by name, and each variant with
+//! fields is a static function of them, so every language can make one.
+//!
 //! An instance of a plugin class is a core object of the class's
 //! descriptor holding the plugin's payload: what a constructor's `Box<T>`
 //! returned, owned by the core from then on and released through the
@@ -416,6 +421,28 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 });
             }
         }
+        // The variants, for a language to name: a fieldless one is a static
+        // field of the class object, one with fields a static function.
+        let desc = data::enum_type(&schema.name).expect("registered before publishing");
+        let own = TypeRef::Enum(schema.name.clone());
+        let mut statics = Vec::new();
+        let mut methods = Vec::new();
+        for (i, variant) in schema.variants.iter().enumerate() {
+            if variant.fields.is_empty() {
+                statics.push(registry::FieldIface {
+                    name: variant.name.clone(),
+                    ty: own.clone(),
+                });
+            } else {
+                methods.push(registry::MethodIface {
+                    name: variant.name.clone(),
+                    is_static: true,
+                    params: variant.fields.iter().map(|f| f.ty.clone()).collect(),
+                    ret: own.clone(),
+                    target: Callable::Dynamic(data::enum_constructor(desc, i as u32)),
+                });
+            }
+        }
         interfaces.push(Interface {
             lang,
             module: name.clone(),
@@ -425,10 +452,10 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 type_name: schema.name.clone(),
                 superclass: None,
                 fields,
-                statics: Vec::new(),
-                methods: Vec::new(),
+                statics,
+                methods,
                 ctor: None,
-                class_object: Value::null(),
+                class_object: data::enum_class(desc),
             }],
         });
     }
