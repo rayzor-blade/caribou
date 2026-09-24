@@ -221,6 +221,63 @@ the render pass equivalent. `compute()` remains the one-dispatch shorthand.
 The fixture's `explicitLayouts` binds a dynamic storage window and a uniform
 range, overrides a constant, and dispatches one bind group at two offsets.
 
+## Shaders in HXSL
+
+A Haxe program can write its shaders in HXSL, the shader language of Heaps.
+A class that implements `caribou.hxsl.Shader` declares its source in
+`static var SRC`, and the build macro checks it when the program compiles:
+a type error is a compile error at its line in the shader. The macro then
+replaces `SRC` with `static inline var WGSL`, the shader as WGSL.
+
+```haxe
+class TintedQuad implements caribou.hxsl.Shader {
+	static var SRC = {
+		@input var input : { position : Vec2, uv : Vec2 };
+		var output : { position : Vec4, color : Vec4 };
+		@param var tint : Vec4;
+		@param var picture : Sampler2D;
+		var uv : Vec2;
+		function vertex() {
+			output.position = vec4(input.position, 0, 1);
+			uv = input.uv;
+		}
+		function fragment() {
+			output.color = picture.get(uv) * tint;
+		}
+	};
+}
+
+var shader = device.createShader(TintedQuad.WGSL);
+```
+
+The WGSL has a `vertex` and a `fragment` entry point, or `main` for a
+compute shader. `output.position` is the vertex position, and each other
+field of `output` is a color target, in declaration order. The macro also
+adds constants for everything the program binds, so a misspelled name is a
+compile error too:
+
+- `PARAMS_SIZE` and `PARAM_tint`: params and globals share one uniform
+  buffer at group 0, binding 0, laid out by WGSL's uniform rules; each
+  constant is a byte offset. A `Bool` param is a 32-bit integer there.
+- `TEXTURE_picture`: a texture's binding; its sampler is the next one.
+- `BUFFER_values`: the binding of a buffer or storage texture.
+- `INPUT_position`: a vertex attribute's location, in declaration order.
+- `TARGET_color`: a color target.
+- `CONST_steps`: the pipeline-constant key of a `@const`, which is a WGSL
+  override.
+
+`@:import Other;` brings another shader's variables and helper functions
+into this one, and a class with only helpers is a module other shaders
+import; it prints no WGSL. `@:extends Base;` takes another shader's stages
+too, and a function declared again replaces the inherited one.
+
+Arrays of textures and atomics are not printed yet. Heaps' channels, bindless
+resources and barycentrics have no WGSL here.
+
+The checker, evaluator, linker, stage splitter and dead-code pass under
+`haxe/caribou/hxsl` are Heaps' own, from `9c51d45f`, under its MIT notice
+in `LICENSE.heaps`; `WgslOut` and the build macro are Caribou's.
+
 ## Pipelines and passes
 
 `createRenderPipeline` takes WebGPU's render pipeline descriptor: vertex
@@ -379,7 +436,7 @@ Compiling on a platform does not mean the platform has been run.
 `plugins/fixtures/gpu/src/Main.hx` creates a device, uploads four integers,
 runs a compute shader, reads the results into `haxe.io.Bytes`, and checks
 bounds errors and resource destruction. Further parts run explicit layouts,
-rendering with queries and bundles, error scopes and device loss, then binding
+HXSL render and compute shaders, rendering with queries and bundles, error scopes and device loss, then binding
 arrays, an external texture, a ray query and a mesh shader where the adapter
 has them, and the introspection calls. `plugins/fixtures/window_gpu` checks
 surface capabilities and configuration and presents frames. Returned object

@@ -1,4 +1,7 @@
 import gpu.GpuInstance;
+import gpu.GpuSamplerDescriptor;
+import gpu.GpuVertexAttribute;
+import gpu.GpuVertexBufferLayout;
 import gpu.GpuPipelineCacheDescriptor;
 import gpu.GpuPassthroughEntryPoint;
 import gpu.GpuPassthroughShaderDescriptor;
@@ -73,6 +76,48 @@ import gpu.BufferUsage;
 import gpu.Feature;
 import gpu.Limit;
 import gpu.Power;
+
+/** A textured, tinted quad in HXSL, checked and turned into WGSL when this compiles. **/
+class TintedQuad implements caribou.hxsl.Shader {
+	static var SRC = {
+		@input var input : { position : Vec2, uv : Vec2 };
+		var output : { position : Vec4, color : Vec4 };
+		@param var tint : Vec4;
+		@param var scale : Float;
+		@param var picture : Sampler2D;
+		var uv : Vec2;
+		function vertex() {
+			output.position = vec4(input.position * scale, 0, 1);
+			uv = input.uv;
+		}
+		function fragment() {
+			output.color = picture.get(uv) * tint;
+		}
+	};
+}
+
+/** Helpers another HXSL shader imports. **/
+class Scaling implements caribou.hxsl.Shader {
+	static var SRC = {
+		function scaled( v : Float, gain : Float ) : Float {
+			return v * gain + 1.;
+		}
+	};
+}
+
+/** A compute shader in HXSL over a storage buffer, with an imported helper. **/
+class ScaleValues implements caribou.hxsl.Shader {
+	static var SRC = {
+		@:import Scaling;
+		@param var values : RWBuffer<Float, 4>;
+		@param var gain : Float;
+		function main() {
+			setLayout(4);
+			var i = computeVar.globalInvocation.x;
+			values[i] = scaled(values[i], gain);
+		}
+	};
+}
 
 class Main {
     static function check(ok:Bool, message:String) {
@@ -1014,6 +1059,113 @@ class Main {
         Sys.println('gpu pipeline caches ok: ${data.length} bytes under $key');
     }
 
+    /**
+        HXSL shaders through the plugin: WGSL and layout constants generated
+        at compile time bind a textured quad and a compute pass.
+    **/
+    static function hxslShaders(device:GpuDevice, queue:GpuQueue) {
+        var shader = device.createShader(TintedQuad.WGSL);
+        var vertex = new GpuVertexState(shader);
+        vertex.entryPoint("vertex");
+        var layout = new GpuVertexBufferLayout(16);
+        layout.addAttributes(new GpuVertexAttribute(Float32x2, 0, TintedQuad.INPUT_position));
+        layout.addAttributes(new GpuVertexAttribute(Float32x2, 8, TintedQuad.INPUT_uv));
+        vertex.addBuffers(layout);
+        var fragment = new GpuFragmentState(shader);
+        fragment.entryPoint("fragment");
+        fragment.addTargets(new GpuColorTargetState(Rgba8unorm));
+        var descriptor = new GpuRenderPipelineDescriptor(vertex);
+        descriptor.fragment(fragment);
+        var pipeline = device.createRenderPipeline(descriptor);
+
+        // One triangle covering the target once scaled by 2.
+        var corners = [-0.5, -0.5, 0.0, 0.0, 1.5, -0.5, 0.0, 0.0, -0.5, 1.5, 0.0, 0.0];
+        var vertices = device.createBuffer(new GpuBufferDescriptor(corners.length * 4,
+            BufferUsage.VERTEX() | BufferUsage.COPY_DST()));
+        var bytes = haxe.io.Bytes.alloc(corners.length * 4);
+        for (i in 0...corners.length) bytes.setFloat(i * 4, corners[i]);
+        queue.writeBuffer(vertices, 0, bytes, bytes.length);
+
+        var params = haxe.io.Bytes.alloc(TintedQuad.PARAMS_SIZE);
+        for (i => v in [1.0, 0.5, 0.25, 1.0]) params.setFloat(TintedQuad.PARAM_tint + i * 4, v);
+        params.setFloat(TintedQuad.PARAM_scale, 2);
+        var uniforms = device.createBuffer(new GpuBufferDescriptor(TintedQuad.PARAMS_SIZE,
+            BufferUsage.UNIFORM() | BufferUsage.COPY_DST()));
+        queue.writeBuffer(uniforms, 0, params, params.length);
+        var picture = texel(device, queue, 200, 200, 200, 255);
+
+        var paramsEntry = new GpuBindGroupEntry(0);
+        paramsEntry.resourceBuffer(uniforms);
+        var pictureEntry = new GpuBindGroupEntry(TintedQuad.TEXTURE_picture);
+        pictureEntry.resourceTexture(picture);
+        var samplerEntry = new GpuBindGroupEntry(TintedQuad.TEXTURE_picture + 1);
+        samplerEntry.resourceSampler(device.sampler(new GpuSamplerDescriptor()));
+        var groupDescriptor = new GpuBindGroupDescriptor(pipeline.getBindGroupLayout(0));
+        groupDescriptor.addEntries(paramsEntry);
+        groupDescriptor.addEntries(pictureEntry);
+        groupDescriptor.addEntries(samplerEntry);
+        var group = device.createBindGroup(groupDescriptor);
+
+        var size = new GpuExtent3D(4);
+        size.height(4);
+        var target = device.texture(new GpuTextureDescriptor(size, Rgba8unorm,
+            TextureUsage.RENDER_ATTACHMENT() | TextureUsage.COPY_SRC()));
+        var pixels = device.createBuffer(new GpuBufferDescriptor(256 * 4,
+            BufferUsage.MAP_READ() | BufferUsage.COPY_DST()));
+        var colour = new GpuRenderPassColorAttachment(Clear, Store);
+        colour.viewTexture(target);
+        var pass = new GpuRenderPassDescriptor();
+        pass.addColorAttachments(colour);
+        var encoder = device.encoder();
+        encoder.beginRenderPass(pass);
+        encoder.renderSetPipeline(pipeline);
+        encoder.renderSetBindGroup(0, group);
+        encoder.renderSetVertexBuffer(0, vertices);
+        encoder.renderDraw(3, 1);
+        encoder.renderEnd();
+        var into = new GpuTexelCopyBufferInfo(pixels);
+        into.bytesPerRow(256);
+        encoder.copyTextureToBufferWith(new GpuTexelCopyTextureInfo(target), into, size);
+        encoder.submit(queue);
+        device.queueWorkDone(queue).await();
+        device.mapBuffer(pixels, 0, 256 * 4).await();
+        var image = haxe.io.Bytes.alloc(256 * 4);
+        check(pixels.copyOut(0, image, image.length), "HXSL readback failed");
+        // 200 tinted by (1, 0.5, 0.25) is (200, 100, 50).
+        for (y in 0...4) for (x in 0...4) {
+            var at = y * 256 + x * 4;
+            var rgb = [image.get(at), image.get(at + 1), image.get(at + 2)];
+            check(Math.abs(rgb[0] - 200) <= 1 && Math.abs(rgb[1] - 100) <= 1 && Math.abs(rgb[2] - 50) <= 1,
+                'HXSL pixel ($x, $y) is ${rgb.join(",")}');
+        }
+        pixels.unmap();
+
+        var compute = device.createComputePipeline(new GpuComputePipelineDescriptor(
+            new GpuProgrammableStage(device.createShader(ScaleValues.WGSL))));
+        var values = device.createBuffer(new GpuBufferDescriptor(16,
+            BufferUsage.STORAGE() | BufferUsage.COPY_DST() | BufferUsage.COPY_SRC()));
+        var numbers = haxe.io.Bytes.alloc(16);
+        for (i in 0...4) numbers.setFloat(i * 4, i + 1);
+        queue.writeBuffer(values, 0, numbers, 16);
+        var gain = haxe.io.Bytes.alloc(ScaleValues.PARAMS_SIZE);
+        gain.setFloat(ScaleValues.PARAM_gain, 3);
+        var gainBuffer = device.createBuffer(new GpuBufferDescriptor(ScaleValues.PARAMS_SIZE,
+            BufferUsage.UNIFORM() | BufferUsage.COPY_DST()));
+        queue.writeBuffer(gainBuffer, 0, gain, gain.length);
+        var gainEntry = new GpuBindGroupEntry(0);
+        gainEntry.resourceBuffer(gainBuffer);
+        var valuesEntry = new GpuBindGroupEntry(ScaleValues.BUFFER_values);
+        valuesEntry.resourceBuffer(values);
+        var computeGroup = new GpuBindGroupDescriptor(compute.getBindGroupLayout(0));
+        computeGroup.addEntries(gainEntry);
+        computeGroup.addEntries(valuesEntry);
+        var result = dispatchOnce(device, queue, compute, device.createBindGroup(computeGroup), values, 16);
+        for (i in 0...4)
+            check(result.getFloat(i * 4) == (i + 1) * 3 + 1, 'HXSL compute value $i is ${result.getFloat(i * 4)}');
+        check(device.takeError() == null, "GPU validation error with HXSL shaders");
+        Sys.println("gpu hxsl ok");
+    }
+
     static function main() {
         // Caribou generates every gpu.* type from the plugin's own schema.
         var instance = new GpuInstance();
@@ -1086,6 +1238,7 @@ class Main {
         explicitLayouts(device, queue);
         trustedShaders(adapter, device);
         pipelineCaches(adapter, device);
+        hxslShaders(device, queue);
         renderingQueriesAndDiagnostics(adapter, device, queue, timestamps);
         deviceLoss(adapter);
         wgpuExtensions(adapter);
