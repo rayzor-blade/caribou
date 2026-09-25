@@ -30,6 +30,7 @@ zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e558
 zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
 zynml = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987", default-features = false }
 zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
+zyntax_lua = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,
@@ -54,6 +55,7 @@ zyntax_compiler = { path = "../zyntax/crates/compiler" }
 zyntax_typed_ast = { path = "../zyntax/crates/typed_ast" }
 zynml = { path = "../zyntax/crates/zynml" }
 zyntax_python = { path = "../zyntax/crates/zyntax_python" }
+zyntax_lua = { path = "../zyntax/crates/zyntax_lua" }
 
 [profile.dev]
 opt-level = 1

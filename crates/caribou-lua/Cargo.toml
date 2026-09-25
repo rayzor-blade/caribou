@@ -1,0 +1,10 @@
+[package]
+name = "caribou-lua"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "The Lua frontend of Zyntax as a language of the world"
+
+[dependencies]
+caribou-zyntax = { path = "../caribou-zyntax" }
+zyntax_lua = { workspace = true }

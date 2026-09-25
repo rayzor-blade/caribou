@@ -66,7 +66,7 @@ pub fn build(program: &Path, roots: &[PathBuf]) -> Result<Bundle> {
         };
         frontends.push((frontend, section));
     }
-    for frontend in project::python(roots) {
+    for frontend in project::builtins(roots) {
         let section = Section {
             kind: SectionKind::Language,
             lang: frontend.name().to_owned(),

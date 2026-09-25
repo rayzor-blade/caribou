@@ -134,7 +134,7 @@ fn describe_root(root: &std::path::Path) -> Result<Vec<caribou::describe::Module
     }
     modules.extend(caribou_zyntax::describe(
         root,
-        caribou_driver::project::python(&[root]),
+        caribou_driver::project::builtins(&[root]),
     )?);
     Ok(modules)
 }

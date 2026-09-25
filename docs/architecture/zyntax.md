@@ -86,6 +86,7 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Dynamic frontend discovery for `.zyn` grammars and precompiled snapshot bundles.
 * Typed AST and HIR publication pipeline for structs, classes, and module-level functions, filtered by the frontend's export rules.
 * The Python frontend as a language: layout, exports, classes, and module functions.
+* The Lua frontend as a language: `?.lua` and `?/init.lua` modules, each chunk run as its module loads, reaching other languages' modules with `require`.
 * Native C ABI call dispatch for scalar types and managed strings.
 * Wren and Haxe cross-language module resolution and metadata generation.
 * Other languages' modules, classes, objects and plugins in Python programs, as foreign objects; dynamic parameters and results across calls into Zyntax.
@@ -96,7 +97,8 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 
 * Host-heap memory integration and unified garbage collection.
 * Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
-* Lua as a language of the world, with Lua values crossing out as core objects so other languages can call a Lua module.
+* A Lua module's value crossing out: the table its chunk returns, as core objects other languages call.
+* A Lua chunk's uncaught error handed back to the loader. The chunk runs through the program's entry, which ends the process on such an error and closes the Lua state after every chunk; the Lua C API (`zyntax_lua_capi`) is the form for loading and calling chunks from a host.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
 * Awaiting a core future from Python.
 * Effect system and fiber synchronization across the native runtime bridge.

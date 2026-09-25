@@ -27,7 +27,7 @@ impl Python {
 
     /// Whether `roots` hold a Python module anywhere below them.
     pub fn present_in(roots: &[impl AsRef<Path>]) -> bool {
-        roots.iter().any(|root| has_py(root.as_ref()))
+        caribou_zyntax::present_in(roots, "py")
     }
 }
 
@@ -35,29 +35,6 @@ impl Default for Python {
     fn default() -> Python {
         Python::new()
     }
-}
-
-fn has_py(dir: &Path) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        let path = entry.path();
-        if path
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().starts_with('.'))
-        {
-            continue;
-        }
-        if path.is_dir() {
-            if has_py(&path) {
-                return true;
-            }
-        } else if path.extension().is_some_and(|e| e == "py") {
-            return true;
-        }
-    }
-    false
 }
 
 impl Language for Python {

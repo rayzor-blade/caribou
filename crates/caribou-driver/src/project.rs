@@ -70,14 +70,18 @@ pub fn roots(program: &Path) -> Vec<PathBuf> {
     roots
 }
 
-/// The Python frontend, when a root holds a `.py` file: Python parses on
-/// its own, so no file under a root names it.
-pub fn python(roots: &[impl AsRef<Path>]) -> Vec<caribou_zyntax::Frontend> {
+/// The frontends built into caribou whose files a root holds: Python for
+/// a `.py` file, Lua for a `.lua` file. Each parses on its own, so no
+/// file under a root names it.
+pub fn builtins(roots: &[impl AsRef<Path>]) -> Vec<caribou_zyntax::Frontend> {
+    let mut out = Vec::new();
     if caribou_python::Python::present_in(roots) {
-        builtin("python").into_iter().collect()
-    } else {
-        Vec::new()
+        out.extend(builtin("python"));
     }
+    if caribou_lua::Lua::present_in(roots) {
+        out.extend(builtin("lua"));
+    }
+    out
 }
 
 /// The frontend this build of caribou has in it under `lang`, the one a
@@ -86,6 +90,9 @@ pub fn builtin(lang: &str) -> Option<caribou_zyntax::Frontend> {
     match lang {
         "python" => Some(caribou_zyntax::Frontend::new(Box::new(
             caribou_python::Python::new(),
+        ))),
+        "lua" => Some(caribou_zyntax::Frontend::new(Box::new(
+            caribou_lua::Lua::new(),
         ))),
         _ => None,
     }
@@ -106,7 +113,7 @@ pub fn frontends(
                 .map_err(|e| anyhow::anyhow!(e))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
-    frontends.extend(python(roots));
+    frontends.extend(builtins(roots));
     Ok(frontends)
 }
 

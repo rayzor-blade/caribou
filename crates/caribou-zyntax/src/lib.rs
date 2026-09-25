@@ -87,6 +87,8 @@ pub trait Language {
 
     /// Give `runtime` what the language's programs link against: a
     /// snapshot, plugins, entry points. Once, before any module loads.
+    /// The runtime stays at this address for as long as the language is
+    /// registered.
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String>;
 
     /// The typed AST of a module's `source`, `file` naming it, for
@@ -161,6 +163,17 @@ fn import_resolver(
         Ok(candidates
             .iter()
             .find_map(|segments| source_of(segments, &architectures, &staged)))
+    })
+}
+
+/// Whether `roots` hold a file with `extension` anywhere below them,
+/// hidden entries aside: how a language that parses on its own, with no
+/// grammar file under a root, is found.
+pub fn present_in(roots: &[impl AsRef<std::path::Path>], extension: &str) -> bool {
+    roots.iter().any(|root| {
+        walk(root.as_ref())
+            .iter()
+            .any(|file| file.extension().is_some_and(|e| e == extension))
     })
 }
 
@@ -389,7 +402,8 @@ impl Frontend {
     /// The runtime for this language, its plugins opened, the language
     /// prepared on it and its imports resolved from the world's sources.
     fn bring_up(&mut self) -> Result<State, String> {
-        let mut runtime = TieredRuntime::new(TieredConfig::default()).map_err(|e| e.to_string())?;
+        let mut runtime =
+            Box::new(TieredRuntime::new(TieredConfig::default()).map_err(|e| e.to_string())?);
         if let Some(dir) = &self.plugin_dir
             && dir.is_dir()
         {
@@ -443,7 +457,8 @@ impl Language for Unprepared {
 /// and the module sources a bundle staged for it, by path under a root.
 struct State {
     language: Box<dyn Language>,
-    runtime: TieredRuntime,
+    /// Boxed, so it keeps one address as the state moves.
+    runtime: Box<TieredRuntime>,
     staged: Arc<Staged>,
     /// The namespace of the module being parsed and lowered, for the
     /// import resolver's bare names.
