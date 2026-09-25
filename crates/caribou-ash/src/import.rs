@@ -121,10 +121,10 @@ struct Slot {
     /// setter: what the bridge is asked for.
     member: Symbol,
     kind: Kind,
-    /// What a static or a constructor resolved to, under the registry
-    /// generation it was resolved in: good until something publishes.
-    /// Null until first resolved; replaced whole, and the replaced one
-    /// left for a reader that still holds it.
+    /// What the member resolved to, under the registry generation it was
+    /// resolved in: good until something publishes. Null until first
+    /// resolved; replaced whole, and the replaced one left for a reader
+    /// that still holds it.
     resolved: AtomicPtr<Resolved>,
     /// What the callee's protocol derived for this slot last time.
     site: CallSite,
@@ -141,7 +141,12 @@ struct Slot {
 #[derive(Debug)]
 struct Resolved {
     generation: u64,
-    target: Callable,
+    /// For a constructor, the type of its own class's Haxe objects: the
+    /// construction of any other type is a subclass's.
+    face: usize,
+    /// A static's or a constructor's target; for a method, its typed
+    /// target when it has one.
+    target: Option<Callable>,
 }
 
 /// A native's declared argument and result kinds, and once the program
@@ -162,23 +167,36 @@ unsafe impl Send for Slot {}
 unsafe impl Sync for Slot {}
 
 impl Slot {
-    /// The callable a static or constructor slot reaches, resolved once
-    /// per registry generation.
-    fn target(
+    /// What the slot's member resolves to, as `(face, target)`: resolved
+    /// once per registry generation.
+    fn resolve(
         &self,
-        resolve: impl FnOnce() -> Result<Callable, String>,
-    ) -> Result<Callable, String> {
+        resolve: impl FnOnce() -> Result<(usize, Option<Callable>), String>,
+    ) -> Result<(usize, Option<Callable>), String> {
         let generation = registry::generation();
         let cached = self.resolved.load(Ordering::Acquire);
         if let Some(r) = unsafe { cached.as_ref() }
             && r.generation == generation
         {
-            return Ok(r.target);
+            return Ok((r.face, r.target));
         }
-        let target = resolve()?;
-        let fresh = Box::into_raw(Box::new(Resolved { generation, target }));
+        let (face, target) = resolve()?;
+        let fresh = Box::into_raw(Box::new(Resolved {
+            generation,
+            face,
+            target,
+        }));
         self.resolved.store(fresh, Ordering::Release);
-        Ok(target)
+        Ok((face, target))
+    }
+
+    /// The callable a static slot reaches.
+    fn target(
+        &self,
+        resolve: impl FnOnce() -> Result<Callable, String>,
+    ) -> Result<Callable, String> {
+        self.resolve(|| resolve().map(|t| (0, Some(t))))
+            .map(|(_, t)| t.expect("a static resolves to its target"))
     }
 }
 
@@ -856,7 +874,8 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
             .and_then(|object| {
                 // A typed member takes the object as its first argument;
                 // any other is sent to the object.
-                match typed_instance_member(s).map_err(|m| proto::error_value(&s.name, &m))? {
+                let typed = s.resolve(|| typed_instance_member(s).map(|t| (0, t)));
+                match typed.map_err(|m| proto::error_value(&s.name, &m))?.1 {
                     Some(target) => {
                         let mut with_self = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
                         if args.len() + 1 > MAX_ARGS {
@@ -918,18 +937,33 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
 /// # Safety
 /// `face` is a live Haxe object.
 unsafe fn constructs(s: &Slot, face: *mut vdynamic) -> Result<Option<Callable>, String> {
-    let (iface, index) = published(s)?;
-    let own = iface.classes[index]
-        .ctor
-        .as_ref()
-        .map(|c| c.target)
-        .ok_or_else(|| {
-            format!(
-                "{}:{}.{} has no constructor",
-                s.namespace, s.module, s.class
-            )
-        })?;
     let t = unsafe { (*face).t } as usize;
+    // The class's own constructor, and the type of its own objects.
+    let (own_face, own) = s.resolve(|| {
+        let (iface, index) = published(s)?;
+        let own = iface.classes[index]
+            .ctor
+            .as_ref()
+            .map(|c| c.target)
+            .ok_or_else(|| {
+                format!(
+                    "{}:{}.{} has no constructor",
+                    s.namespace, s.module, s.class
+                )
+            })?;
+        let key = (s.namespace.clone(), s.module.clone(), s.class.clone());
+        let face = FACES
+            .read()
+            .unwrap()
+            .as_ref()
+            .and_then(|f| f.by_class.get(&key).copied())
+            .unwrap_or(0);
+        Ok((face, Some(own)))
+    })?;
+    let own = own.expect("a constructor resolves to its target");
+    if t == own_face {
+        return Ok(Some(own));
+    }
     let faces = FACES.read().unwrap();
     let declared = faces
         .as_ref()
