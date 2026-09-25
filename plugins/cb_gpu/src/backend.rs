@@ -696,6 +696,16 @@ pub unsafe fn buffer_copy_out(buffer: i32, offset: i64, out: Buffer, len: i32) -
     true
 }
 
+pub unsafe fn buffer_mapped_range(buffer: i32, offset: i64, size: i64) -> Buffer {
+    let empty = || Buffer::new(&[]);
+    let buffer = find!(BUFFERS, buffer, empty());
+    let start = offset.max(0) as u64;
+    match buffer.get_mapped_range(start..start + size.max(0) as u64) {
+        Ok(view) => Buffer::new(&view),
+        Err(_) => empty(),
+    }
+}
+
 pub unsafe fn buffer_unmap(buffer: i32) {
     let buffer = find!(BUFFERS, buffer);
     buffer.unmap();

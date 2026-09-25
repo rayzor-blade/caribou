@@ -639,6 +639,27 @@ fn raise(lang: LangId, message: &str) -> u8 {
     bridge::raise(CoreError::new(ErrorKind::Type, message, lang))
 }
 
+/// Buffers a call made of strings, rooted until it returns.
+struct Made(Vec<heap::Handle>);
+
+impl Made {
+    /// A string where a buffer is taken is its bytes: a buffer of them.
+    fn bytes_of(&mut self, v: Value) -> Option<*mut c_void> {
+        let text = unsafe { caribou::error::Str::text(v) }?;
+        let b = data::buffer_new(text.as_bytes());
+        self.0.push(heap::handle_new(b.cast()));
+        Some(b as *mut c_void)
+    }
+}
+
+impl Drop for Made {
+    fn drop(&mut self) {
+        for &h in &self.0 {
+            heap::handle_release(h);
+        }
+    }
+}
+
 unsafe extern "C-unwind" fn dispatch(
     func: *const c_void,
     sig: *const hl_type,
@@ -665,6 +686,7 @@ unsafe extern "C-unwind" fn dispatch(
     };
     let mut words = Vec::with_capacity(nargs);
     let mut word_kinds = Vec::with_capacity(nargs);
+    let mut made = Made(Vec::new());
     for (i, (&v, &t)) in args.iter().zip(&types).enumerate() {
         // An object's type is its class's descriptor; the payload crosses.
         if unsafe { heap::is_descriptor(t) } {
@@ -676,7 +698,9 @@ unsafe extern "C-unwind" fn dispatch(
                 let value = cell::unwrap(v);
                 // A buffer is either kind: its own bytes, or another runtime's.
                 let p = if std::ptr::eq(desc, &data::BUFFER_DESC) {
-                    data::buffer_of(value).map(|b| b as *mut c_void)
+                    data::buffer_of(value)
+                        .map(|b| b as *mut c_void)
+                        .or_else(|| made.bytes_of(value))
                 } else {
                     value.as_object().filter(|p| !p.is_null()).filter(|p| {
                         std::ptr::eq(unsafe { caribou::protocol::desc_of(p.cast()) }, desc)

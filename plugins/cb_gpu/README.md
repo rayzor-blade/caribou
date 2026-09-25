@@ -446,7 +446,9 @@ encoder, a TLAS binds like any other resource, and `prepareCompaction` with
 Shader sources and immediate labels borrow `Text.as_str()`. Pipeline builder
 entry names are copied because they survive the call. Uploads borrow
 `Buffer` storage without an intermediate byte allocation; readback copies
-GPU mapped bytes directly into the caller's shared buffer. Supplied lengths
+GPU mapped bytes directly into the caller's shared buffer. A language whose
+bytes are immutable, such as Lua's strings, reads a mapped range with
+`getMappedRange(offset, size)`, which returns a copy of it. Supplied lengths
 are checked before access. GPU transfers still perform the copies required
 by wgpu. `GpuBindings` takes typed buffers, texture views and samplers, so
 callers do not pack native handles into byte arrays.

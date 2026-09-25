@@ -105,7 +105,8 @@ System.print(e.constructor)
 System.print(e.width)
 System.print(Data.area(e))
 System.print(Data.echo_event(e) == e)
-System.print(Fiber.new { Data.sum("text") }.try())
+// A string where a buffer is taken is its bytes.
+System.print(Data.sum("text"))
 System.print(Fiber.new { Data.area(b) }.try())
 var pair = Data.pair()
 var rebuilt = Data.rebuild_nested(pair)
@@ -252,7 +253,7 @@ fn a_plugin_is_a_language_wren_imports() {
     );
     assert_eq!(
         output,
-        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\nargument 1 of the plugin function must be a caribou.Buffer, not a caribou.Str\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\n10\ntrue\nfalse\n91\ntrue\nfuture failed\n"
+        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\n453\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\n10\ntrue\nfalse\n91\ntrue\nfuture failed\n"
     );
 
     // The temporaries die with Wren's cycle and the core's collection
