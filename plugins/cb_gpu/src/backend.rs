@@ -17,7 +17,7 @@ use crate::{
     GpuBufferDescriptor, GpuDeviceDescriptor, GpuPipelineLayoutDescriptor, GpuSamplerDescriptor,
     GpuTextureDescriptor, GpuTextureViewDescriptor,
 };
-use caribou_abi::{Buffer, ErrorKind, Future, Rooted, Text, Value, host};
+use caribou_abi::{Buffer, BufferMut, ErrorKind, Future, Rooted, Text, Value, host};
 
 /// A device and the queue that came back with it.
 struct DeviceEntry {
@@ -681,8 +681,8 @@ pub unsafe fn buffer_map_with(
     future
 }
 
-pub unsafe fn buffer_copy_out(buffer: i32, offset: i64, out: Buffer, len: i32) -> bool {
-    if bytes(&out, len).is_none() || len <= 0 {
+pub unsafe fn buffer_copy_out(buffer: i32, offset: i64, out: BufferMut, len: i32) -> bool {
+    if bytes(&out.buffer(), len).is_none() || len <= 0 {
         return false;
     }
     let buffer = find!(BUFFERS, buffer, false);
@@ -691,19 +691,9 @@ pub unsafe fn buffer_copy_out(buffer: i32, offset: i64, out: Buffer, len: i32) -
         return false;
     };
     unsafe {
-        std::ptr::copy_nonoverlapping(view.as_ptr(), out.as_ptr() as *mut u8, len as usize);
+        std::ptr::copy_nonoverlapping(view.as_ptr(), out.as_mut_ptr(), len as usize);
     }
     true
-}
-
-pub unsafe fn buffer_mapped_range(buffer: i32, offset: i64, size: i64) -> Buffer {
-    let empty = || Buffer::new(&[]);
-    let buffer = find!(BUFFERS, buffer, empty());
-    let start = offset.max(0) as u64;
-    match buffer.get_mapped_range(start..start + size.max(0) as u64) {
-        Ok(view) => Buffer::new(&view),
-        Err(_) => empty(),
-    }
 }
 
 pub unsafe fn buffer_unmap(buffer: i32) {

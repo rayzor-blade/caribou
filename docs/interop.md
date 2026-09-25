@@ -88,10 +88,18 @@ passed where a buffer is taken crosses as a buffer over the array's storage,
 without a copy. What the callee writes is in the array, and the buffer comes
 back to Wren as the same array.
 
-A string passed where a buffer is taken is its bytes: a buffer of them made
-for the call. Lua's bytes are its strings: a Lua string crosses as a string
-when it is UTF-8 text, else as a buffer of its bytes, and a buffer comes into
-Lua as a string of its bytes, which `string.unpack` reads.
+A string passed where a buffer is taken is its bytes: a read-only buffer over
+the string's own bytes, without a copy. A function that writes a buffer
+refuses a read-only one.
+
+Lua's bytes are its strings, which Lua never changes. A Lua string that is
+not UTF-8 text crosses as a read-only buffer over the string itself; one
+that is text crosses as a string. A buffer comes into Lua as itself, and
+Lua's string library reads it where it lies: `#b`, `string.len`,
+`string.byte`, `string.sub` and `string.unpack` take a buffer as they take
+a string. Lua has no byte storage it can write, so it makes a buffer from
+the core, `require("core.Buffer").Buffer(16)`, for a function to write
+into, as Haxe allocates `Bytes` and Wren a typed array.
 
 ## Haxe Using Wren
 

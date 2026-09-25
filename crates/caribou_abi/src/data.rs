@@ -8,7 +8,13 @@ pub struct BufferData {
     pub core: *const c_void,
     pub len: usize,
     pub bytes: *mut u8,
+    /// [`READ_ONLY`] for a buffer over bytes nothing may write: a Lua
+    /// string's, a core string's.
+    pub flags: u32,
 }
+
+/// The flag of a buffer no one may write.
+pub const READ_ONLY: u32 = 1;
 
 /// A shared binary buffer. Construction copies into the host heap once;
 /// language crossings share the backing storage.
@@ -64,11 +70,19 @@ impl Buffer {
             unsafe { (*self.0).bytes }
         }
     }
+    /// Whether no one may write the buffer: see [`BufferMut`].
+    pub fn is_read_only(&self) -> bool {
+        !self.0.is_null() && unsafe { (*self.0).flags } & READ_ONLY != 0
+    }
+    /// The bytes to write, or `None` for a read-only buffer.
+    pub fn as_mut_ptr(&self) -> Option<*mut u8> {
+        (!self.0.is_null() && !self.is_read_only()).then(|| unsafe { (*self.0).bytes })
+    }
     pub fn get(&self, index: usize) -> Option<u8> {
         (index < self.len()).then(|| unsafe { *self.as_ptr().add(index) })
     }
     pub fn set(&self, index: usize, value: u8) -> bool {
-        if index >= self.len() {
+        if index >= self.len() || self.is_read_only() {
             return false;
         }
         unsafe {
@@ -78,6 +92,30 @@ impl Buffer {
     }
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+}
+
+/// A buffer a plugin writes: a parameter of this type takes only a
+/// buffer that may be written, so a read-only one (a Lua string's) is
+/// refused where the plugin is called, before the plugin runs.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug)]
+pub struct BufferMut(Buffer);
+
+impl BufferMut {
+    /// The bytes to write; the call's buffer is never read-only.
+    pub fn as_mut_ptr(&self) -> *mut u8 {
+        self.0.as_mut_ptr().unwrap_or(core::ptr::null_mut())
+    }
+    /// The buffer, to read.
+    pub fn buffer(&self) -> Buffer {
+        self.0
+    }
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

@@ -1,6 +1,8 @@
 -- Lua driving the gpu plugin with an HXSL shader the Haxe program compiled:
 -- the shader class, its WGSL and its layout constants cross like any Haxe
--- class, and Lua's strings are the bytes it uploads and reads back.
+-- class; Lua's strings are the bytes it uploads, each a read-only buffer
+-- over the string itself, and a core Buffer is what it reads back into,
+-- which string.unpack reads in place.
 local Scale = {}
 
 -- Scales 1, 2, 3 and 4 by 3 through the imported helper, which adds 1.
@@ -8,6 +10,7 @@ function Scale.run(device, queue)
   -- Required when it runs: the module is read for its interface before
   -- the Haxe program is there.
   local ScaleValues = require("haxe.ScaleValues").ScaleValues
+  local Buffer = require("core.Buffer").Buffer
   local BufferUsage = require("gpu.BufferUsage").BufferUsage
   local GpuBufferDescriptor = require("gpu.GpuBufferDescriptor").GpuBufferDescriptor
   local GpuComputePipelineDescriptor =
@@ -54,8 +57,10 @@ function Scale.run(device, queue)
   encoder:submit(queue)
   device:queueWorkDone(queue):await()
   device:mapBuffer(readback, 0, 16):await()
-  local a, b, c, d = string.unpack("<ffff", readback:getMappedRange(0, 16))
+  local out = Buffer(16)
+  readback:copyOut(0, out, 16)
   readback:unmap()
+  local a, b, c, d = string.unpack("<ffff", out)
   return string.format("%d,%d,%d,%d", a, b, c, d)
 end
 

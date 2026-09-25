@@ -6,7 +6,7 @@
 
 use std::sync::atomic::{AtomicI32, Ordering};
 
-use caribou_abi::{Buffer, Enum, ErrorKind, Future, Kept, Rooted, Text, Value, host};
+use caribou_abi::{Buffer, BufferMut, Enum, ErrorKind, Future, Kept, Rooted, Text, Value, host};
 
 pub extern "C" fn hypot(a: f64, b: f64) -> f64 {
     a.hypot(b)
@@ -163,6 +163,10 @@ impl Data {
     pub extern "C" fn sum(bytes: Buffer) -> i32 {
         unsafe { bytes.as_slice() }.iter().map(|b| *b as i32).sum()
     }
+    /// Every byte of `out` set to `value`: a buffer the function writes.
+    pub extern "C" fn fill(out: BufferMut, value: i32) {
+        unsafe { std::ptr::write_bytes(out.as_mut_ptr(), value as u8, out.len()) };
+    }
     pub extern "C" fn save(bytes: Buffer) {
         SAVED.with(|v| *v.borrow_mut() = Some(Kept::new(bytes.value())));
     }
@@ -267,6 +271,7 @@ caribou_abi::plugin! {
         fn empty() -> Buffer;
         fn echo(Buffer) -> Buffer;
         fn sum(Buffer) -> i32;
+        fn fill(BufferMut, i32);
         fn save(Buffer);
         fn saved() -> Buffer;
         fn event(i32) -> Enum<Event>;

@@ -105,8 +105,13 @@ System.print(e.constructor)
 System.print(e.width)
 System.print(Data.area(e))
 System.print(Data.echo_event(e) == e)
-// A string where a buffer is taken is its bytes.
+// A string where a buffer is taken is its bytes, read in place.
 System.print(Data.sum("text"))
+// A buffer the function writes: a typed array is, a string is not.
+var filled = ByteArray.new(3)
+Data.fill(filled, 7)
+System.print(filled[2])
+System.print(Fiber.new { Data.fill("text", 7) }.try())
 System.print(Fiber.new { Data.area(b) }.try())
 var pair = Data.pair()
 var rebuilt = Data.rebuild_nested(pair)
@@ -135,7 +140,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 36);
+    assert_eq!(math.symbols().len(), 37);
     let hypot = math
         .symbols()
         .iter()
@@ -253,7 +258,7 @@ fn a_plugin_is_a_language_wren_imports() {
     );
     assert_eq!(
         output,
-        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\n453\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\n10\ntrue\nfalse\n91\ntrue\nfuture failed\n"
+        "4\n0\n255\ntrue\n471\n471\n23\ntrue\n1\nResized\n800\n480000\ntrue\n453\n7\nargument 1 of the plugin function is written to, and a caribou.Str cannot be\nargument 1 of the plugin function must be a math.Event, not a caribou.Buffer\nfirst\n42\ntrue\ntrue\n73\n10\ntrue\nfalse\n91\ntrue\nfuture failed\n"
     );
 
     // The temporaries die with Wren's cycle and the core's collection

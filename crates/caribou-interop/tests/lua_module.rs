@@ -26,6 +26,11 @@ function M.adder(n) return function(m) return n + m end end
 function M.fail() error("no luck") end
 function M.packed() return string.pack("<f", 1.5) end
 function M.unpacked(bytes) return string.unpack("<f", bytes) end
+function M.same(x) return x end
+function M.fill_string()
+  local Data = require("math.Data").Data
+  return pcall(Data.fill, string.pack("<f", 1.5), 7)
+end
 -- A table of functions is a class: `new` constructs, the rest are statics.
 M.Counter = {
   LIMIT = 10,
@@ -82,7 +87,16 @@ fn another_language_calls_a_lua_module() {
     assert_eq!(
         names,
         [
-            "add", "adder", "fail", "length", "make", "packed", "point", "unpacked"
+            "add",
+            "adder",
+            "fail",
+            "fill_string",
+            "length",
+            "make",
+            "packed",
+            "point",
+            "same",
+            "unpacked"
         ]
     );
     let function = |name: &str| calc.functions.iter().find(|f| f.name == name).unwrap();
@@ -143,11 +157,23 @@ fn another_language_calls_a_lua_module() {
     .unwrap_or_else(|| bridge::describe(error));
     assert!(message.contains("no luck"), "{message}");
 
-    // Lua's bytes are strings: one that is not UTF-8 text crosses as a
-    // buffer, and a buffer comes back in as a string of its bytes.
+    // A Lua string that is not text leaves as a read-only buffer over its
+    // own bytes; a buffer enters Lua as itself, read there in place, and
+    // comes back as the same object.
     let packed = call("packed", &[]).unwrap();
-    assert!(caribou::data::buffer_of(packed).is_some());
+    assert!(caribou::data::is_read_only(packed));
     assert_eq!(call("unpacked", &[packed]).unwrap().as_number(), Some(1.5));
+    let buffer = Value::object(caribou::data::buffer_new(&1.5f32.to_le_bytes()).cast());
+    assert_eq!(call("unpacked", &[buffer]).unwrap().as_number(), Some(1.5));
+    assert_eq!(call("same", &[buffer]).unwrap(), buffer);
+    // A plugin that writes its buffer refuses a Lua string's.
+    let refused = call("fill_string", &[]).unwrap();
+    assert_eq!(
+        refused.as_bool(),
+        Some(false),
+        "{}",
+        bridge::describe(refused)
+    );
 
     // A table of functions is a class.
     let counter = &calc.classes[0];

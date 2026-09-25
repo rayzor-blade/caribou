@@ -10,7 +10,7 @@ compile_error!(
 mod backend;
 mod handles;
 mod types;
-use caribou_abi::{Buffer, Enum, Future, Text};
+use caribou_abi::{Buffer, BufferMut, Enum, Future, Text};
 include!(concat!(env!("OUT_DIR"), "/gpu.rs"));
 
 #[cfg(test)]

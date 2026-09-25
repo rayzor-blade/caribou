@@ -6,12 +6,17 @@
 //! through protected calls of the helpers in [`HELPERS`].
 //!
 //! Every value that crosses, and each helper, is kept in the registry
-//! under its own address, so nothing the program releases is still held
-//! outside it.
+//! under its own address while anything outside holds it: a proxy's
+//! death releases its value, counted, at the next crossing into Lua.
+//!
+//! A Buffer enters Lua as itself, which Lua's string library reads in
+//! place; a Lua string that is not text leaves as a read-only Buffer over
+//! its own bytes.
 
+use std::collections::HashMap;
 use std::ffi::{CStr, c_int, c_void};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use caribou::bridge;
 use caribou::data;
@@ -27,7 +32,7 @@ use caribou_zyntax::zyntax_embed::TieredRuntime;
 use caribou_zyntax::zyntax_embed::foreign::{self as zforeign, Any};
 use caribou_zyntax::{RunClass, RunFunction, RunModule};
 use zyntax_lua_capi::api::{
-    zlc_getglobal, zlc_gettop, zlc_pushlstring, zlc_rawgeti, zlc_rawsetp, zlc_settop,
+    zlc_getglobal, zlc_gettop, zlc_pushlstring, zlc_pushnil, zlc_rawgeti, zlc_rawsetp, zlc_settop,
     zlc_tolstring, zlc_type,
 };
 use zyntax_lua_capi::calls::{OK, zlc_pcall};
@@ -135,11 +140,49 @@ unsafe fn text_at(l: L, idx: c_int) -> String {
     unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
 }
 
-/// Keep `v` in the registry under its own address.
+/// How many holders outside Lua each kept value has, by address.
+static KEPT: Mutex<Option<HashMap<usize, usize>>> = Mutex::new(None);
+/// Values whose proxies died, released at the next crossing into Lua:
+/// a proxy dies inside a collection, which cannot call into Lua.
+static DEAD: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Keep `v` in the registry under its own address, one holder more.
 unsafe fn keep(l: L, v: Any) {
-    unsafe {
-        push(l, v);
-        zlc_rawsetp(l, REGISTRYINDEX, v as *const c_void);
+    let mut kept = KEPT.lock().unwrap();
+    let count = kept
+        .get_or_insert_with(HashMap::new)
+        .entry(v as usize)
+        .or_insert(0);
+    *count += 1;
+    if *count == 1 {
+        unsafe {
+            push(l, v);
+            zlc_rawsetp(l, REGISTRYINDEX, v as *const c_void);
+        }
+    }
+}
+
+/// Release what dead proxies held: a value with no holder left leaves
+/// the registry.
+unsafe fn release_dead(l: L) {
+    let dead = std::mem::take(&mut *DEAD.lock().unwrap());
+    if dead.is_empty() {
+        return;
+    }
+    let mut kept = KEPT.lock().unwrap();
+    let kept = kept.get_or_insert_with(HashMap::new);
+    for v in dead {
+        let Some(count) = kept.get_mut(&v) else {
+            continue;
+        };
+        *count -= 1;
+        if *count == 0 {
+            kept.remove(&v);
+            unsafe {
+                zlc_pushnil(l);
+                zlc_rawsetp(l, REGISTRYINDEX, v as *const c_void);
+            }
+        }
     }
 }
 
@@ -147,6 +190,7 @@ unsafe fn keep(l: L, v: Any) {
 /// `n` results, or the error's text.
 unsafe fn run_chunk_n(l: L, source: &str, name: &str, n: usize) -> Result<Vec<Any>, String> {
     unsafe {
+        release_dead(l);
         let top = zlc_gettop(l);
         let restore = |r| {
             zlc_settop(l, top);
@@ -177,6 +221,7 @@ unsafe fn run_chunk_n(l: L, source: &str, name: &str, n: usize) -> Result<Vec<An
 fn pcall(f: Any, args: &[Any]) -> Result<Any, String> {
     let l = host().l;
     unsafe {
+        release_dead(l);
         let top = zlc_gettop(l);
         push(l, f);
         for &a in args {
@@ -320,6 +365,7 @@ fn descriptor() -> &'static TypeDesc {
         });
         // What the proxy holds is the program's, not the core heap's.
         d.trace = Some(trace_nothing);
+        d.drop = Some(drop_proxy);
         d.protocol = &PROXY_PROTO;
         d.name = name.as_ptr();
         d.name_len = name.len();
@@ -329,6 +375,14 @@ fn descriptor() -> &'static TypeDesc {
 }
 
 unsafe extern "C" fn trace_nothing(_obj: *mut u8, _tracer: *mut heap::Tracer) {}
+
+/// A proxy died: its value is released at the next crossing into Lua.
+unsafe extern "C" fn drop_proxy(obj: *mut u8) {
+    let v = unsafe { value_of_proxy(obj) } as usize;
+    if let Ok(mut dead) = DEAD.lock() {
+        dead.push(v);
+    }
+}
 
 /// `v` as a core object other languages hold: unrooted, for the caller
 /// to hand on.
@@ -466,24 +520,23 @@ impl Crossing for LuaCrossing {
         }
         match type_of(any) {
             LUA_TTABLE | LUA_TFUNCTION => Some(proxy(any)),
+            // Bytes that are not text: a read-only buffer over the string
+            // itself, which its proxy keeps alive.
             LUA_TSTRING => {
                 let bytes = unsafe { lua::bytes_of(lua::string_of(any as lua::Any)) };
-                Some(Value::object(data::buffer_new(bytes) as *const c_void))
+                let owner = proxy(any);
+                let _held = heap::handle_new(owner.as_object()? as *mut u8);
+                let view = unsafe {
+                    data::buffer_view(owner.as_object()? as *mut u8, bytes.as_ptr(), bytes.len())
+                };
+                heap::handle_release(_held);
+                Some(Value::object(view as *const c_void))
             }
             _ => None,
         }
     }
 
     fn own(&self, v: Value) -> Option<Any> {
-        if foreign::caller() == lang()
-            && let Some(buffer) = data::buffer_of(v)
-        {
-            let bytes = unsafe {
-                let b = &*buffer;
-                std::slice::from_raw_parts(b.bytes, b.len)
-            };
-            return Some(lua::box_bytes(bytes) as Any);
-        }
         let p = v.as_object()?;
         if p.is_null() || !std::ptr::eq(unsafe { protocol::desc_of(p as *const u8) }, descriptor())
         {

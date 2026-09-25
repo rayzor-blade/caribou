@@ -80,6 +80,8 @@ A string crosses as a `Text`, which is one word: the address of the core string 
 
 `caribou_abi::Buffer` is a one-word carrier for a GC-owned buffer. `Buffer::new(&bytes)` copies into the core heap once. A parameter borrows that buffer; returning the parameter passes the same storage back. `get`, `set`, and `len` do not allocate. `to_vec()` explicitly copies into plugin-owned Rust memory. `unsafe as_slice()` borrows without copying: no language may mutate the bytes while that borrow lives, including through a callback.
 
+A buffer may be read-only: one over bytes a language holds immutable, such as a Lua string's, or a string passed where a buffer is taken, which is a view of the string's own bytes. `is_read_only()` says so, `set` refuses it, and `as_mut_ptr()` gives no pointer to write through. A function that writes a buffer takes `BufferMut` for it, not `Buffer`: the call refuses a read-only buffer, or a string, for that parameter before the function runs, and `BufferMut::as_mut_ptr()` is then always writable. `copyOut` in the gpu plugin is one.
+
 Haxe sees `haxe.io.Bytes`. Its wrapper and the core buffer retain the same GC-managed backing allocation, in both directions, so mutations are visible through every view. A crossing allocates a small header, not a copy of the byte contents. Empty buffers work; `Buffer::NULL` represents null rather than an empty allocation. The core traces the backing pointer, and never scans the binary contents as pointers. Store `buffer.value()` in a `Kept` to retain it across plugin calls, and recover it with `Buffer::of`.
 
 The core buffer implements `len`, indexing, indexed writes and iteration. Wren uses its existing foreign sequence view (`count`, `[]`, `[]=` and `for`), keeping the same object and bytes.

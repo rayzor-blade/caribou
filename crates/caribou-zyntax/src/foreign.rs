@@ -478,4 +478,12 @@ impl Foreign for World {
             heap::handle_release(h);
         }
     }
+
+    /// A core buffer is read in place: the program holds it rooted, and
+    /// the heap does not move it.
+    fn bytes(&self, word: usize) -> Option<(*const u8, usize)> {
+        let buffer = caribou::data::buffer_of(unsafe { held(word) }.value()?)?;
+        let b = unsafe { &*buffer };
+        Some((b.bytes, b.len))
+    }
 }

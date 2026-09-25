@@ -565,7 +565,16 @@ fn scalar(ty: &Type) -> bool {
     type_name(ty).is_some_and(|s| {
         matches!(
             s.as_str(),
-            "i32" | "u32" | "i64" | "f32" | "f64" | "bool" | "Text" | "Buffer" | "Future"
+            "i32"
+                | "u32"
+                | "i64"
+                | "f32"
+                | "f64"
+                | "bool"
+                | "Text"
+                | "Buffer"
+                | "BufferMut"
+                | "Future"
         )
     })
 }

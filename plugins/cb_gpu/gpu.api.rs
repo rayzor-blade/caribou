@@ -923,11 +923,7 @@ trait GpuBuffer {
     #[native(is_valid)]
     fn valid(this: &GpuBuffer) -> bool;
     #[native(buffer_copy_out)]
-    fn copyOut(this: &GpuBuffer, offset: i64, out: Buffer, len: i32) -> bool;
-    // A copy of `size` bytes of a mapped range, for a language whose bytes
-    // are immutable; empty when the range is not mapped.
-    #[native(buffer_mapped_range)]
-    fn getMappedRange(this: &GpuBuffer, offset: i64, size: i64) -> Buffer;
+    fn copyOut(this: &GpuBuffer, offset: i64, out: BufferMut, len: i32) -> bool;
     // Into a range mapped for writing, or mapped at creation.
     #[native(buffer_copy_in)]
     fn copyIn(this: &GpuBuffer, offset: i64, data: Buffer, len: i32) -> bool;

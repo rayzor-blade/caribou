@@ -31,7 +31,7 @@ pub mod host;
 pub use host::{Future, Kept, Rootable, Rooted, Text};
 pub mod data;
 pub use caribou_abi_derive::PluginEnum;
-pub use data::{Buffer, Enum, EnumDesc, EnumField, PluginEnum};
+pub use data::{Buffer, BufferMut, Enum, EnumDesc, EnumField, PluginEnum};
 
 /// Which runtime defines a type's semantics. A registry, not an enum: the
 /// core assigns ids at world start, one per adapter and one per Zyntax
@@ -686,6 +686,8 @@ impl TypeTag {
     pub const BUFFER: TypeTag = TypeTag(24);
     pub const ENUM: TypeTag = TypeTag(25);
     pub const FUTURE: TypeTag = TypeTag(26);
+    /// A buffer the function writes: [`data::BufferMut`].
+    pub const BUFFER_MUT: TypeTag = TypeTag(27);
     pub const ABSTRACT: TypeTag = TypeTag(hl::HABSTRACT as u8);
 
     pub const fn kind(self) -> hl::hl_type_kind {
@@ -839,6 +841,10 @@ tagged! {
     Value => TypeTag::DYN,
     Text => TypeTag::BYTES,
     Buffer => TypeTag::BUFFER,
+}
+
+impl Param for BufferMut {
+    const TAG: TypeTag = TypeTag::BUFFER_MUT;
 }
 
 macro_rules! future_results {

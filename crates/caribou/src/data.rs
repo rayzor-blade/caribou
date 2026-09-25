@@ -31,23 +31,35 @@ const fn descriptor(
 
 pub static BUFFER_DESC: TypeDesc = descriptor("caribou.Buffer", trace_buffer, &BUFFER_PROTO);
 
+/// The type of a buffer parameter a function writes, in its signature:
+/// no object has it; it marks where a read-only buffer is refused.
+pub static BUFFER_MUT_TYPE: TypeDesc = descriptor("caribou.Buffer", trace_buffer, &BUFFER_PROTO);
+
 pub fn buffer_new(bytes: &[u8]) -> *mut BufferData {
+    let p = buffer_alloc(bytes.len());
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), (*p).bytes, bytes.len()) };
+    p
+}
+
+/// A buffer of `len` zero bytes.
+pub fn buffer_zeroed(len: usize) -> *mut BufferData {
+    let p = buffer_alloc(len);
+    unsafe { ptr::write_bytes((*p).bytes, 0, len) };
+    p
+}
+
+/// A buffer of `len` bytes, unwritten and unrooted.
+fn buffer_alloc(len: usize) -> *mut BufferData {
     let root = Rooted::alloc(&BUFFER_DESC, size_of::<BufferData>());
     let p = root.ptr().cast::<BufferData>();
-    let data = unsafe {
-        heap::alloc_gen(
-            ptr::null_mut(),
-            bytes.len().max(1),
-            caribou_abi::mem::KIND_NOPTR,
-        )
-    }
-    .cast::<u8>();
+    let data =
+        unsafe { heap::alloc_gen(ptr::null_mut(), len.max(1), caribou_abi::mem::KIND_NOPTR) }
+            .cast::<u8>();
     if data.is_null() {
         heap::out_of_memory("buffer bytes");
     }
     unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), data, bytes.len());
-        (*p).len = bytes.len();
+        (*p).len = len;
         (*p).bytes = data;
     }
     p
@@ -94,6 +106,23 @@ pub unsafe fn buffer_over(owner: *mut u8, bytes: *mut u8, len: usize) -> *mut Bu
         (*p).owner = owner;
     }
     p.cast()
+}
+
+/// A read-only buffer over `len` bytes at `bytes`, which live as long as
+/// `owner`: bytes a language holds immutable, a Lua string's or a core
+/// string's. Nothing may write through it (see `caribou_abi::BufferMut`).
+///
+/// # Safety
+/// As for [`buffer_over`].
+pub unsafe fn buffer_view(owner: *mut u8, bytes: *const u8, len: usize) -> *mut BufferData {
+    let p = unsafe { buffer_over(owner, bytes as *mut u8, len) };
+    unsafe { (*p).flags = caribou_abi::data::READ_ONLY };
+    p
+}
+
+/// Whether nothing may write the buffer `v`.
+pub fn is_read_only(v: Value) -> bool {
+    buffer_of(v).is_some_and(|b| unsafe { (*b).flags } & caribou_abi::data::READ_ONLY != 0)
 }
 
 /// The object whose bytes the buffer `v` is over, for one made by [`buffer_over`].
@@ -150,6 +179,13 @@ unsafe extern "C-unwind" fn buffer_index(p: *mut u8, key: Value, out: *mut Value
 }
 unsafe extern "C-unwind" fn buffer_set(p: *mut u8, key: Value, v: Value) -> u8 {
     let b = unsafe { &*p.cast::<BufferData>() };
+    if b.flags & caribou_abi::data::READ_ONLY != 0 {
+        return crate::bridge::raise(crate::error::Error::new(
+            caribou_abi::ErrorKind::Type,
+            "the buffer is read-only",
+            crate::world::LANG_CORE,
+        ));
+    }
     let Some(i) = index(key).filter(|i| *i < b.len) else {
         return REPLY_MISSING;
     };
@@ -525,6 +561,47 @@ pub unsafe fn describe_enum(d: &caribou_abi::EnumDesc) -> describe::EnumDesc {
             })
             .collect(),
     }
+}
+
+/// Publish the core's `Buffer` class, `core:Buffer`, for a language with
+/// no mutable byte storage of its own to make one (Lua): constructed by
+/// its size, zeroed, read and written as a sequence of bytes.
+pub(crate) fn publish() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        fn construct(args: &[Value]) -> Result<Value, Value> {
+            let size = args.first().and_then(|&v| index(v)).ok_or_else(|| {
+                crate::error::Error::value(crate::error::Error::new(
+                    caribou_abi::ErrorKind::Type,
+                    "a Buffer is made by its size, a count of bytes",
+                    crate::world::LANG_CORE,
+                ))
+            })?;
+            Ok(Value::object(buffer_zeroed(size).cast()))
+        }
+        crate::registry::publish(crate::registry::Interface {
+            lang: crate::world::LANG_CORE,
+            module: "Buffer".to_owned(),
+            classes: vec![crate::registry::ClassIface {
+                name: "Buffer".to_owned(),
+                type_name: "caribou.Buffer".to_owned(),
+                superclass: None,
+                fields: Vec::new(),
+                statics: Vec::new(),
+                methods: Vec::new(),
+                ctor: Some(crate::registry::MethodIface {
+                    name: "new".to_owned(),
+                    is_static: true,
+                    params: vec![crate::registry::TypeRef::Int],
+                    ret: crate::registry::TypeRef::Buffer,
+                    target: crate::protocol::Callable::Core(construct),
+                }),
+                class_object: Value::null(),
+            }],
+            functions: Vec::new(),
+        })
+        .expect("the core Buffer interface is unique");
+    });
 }
 
 #[cfg(test)]

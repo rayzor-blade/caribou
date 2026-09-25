@@ -295,7 +295,7 @@ impl Adapter for Runtime {
 /// own class is the class's constructor.
 fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec<Interface> {
     let value_type = |tag: TypeTag, class: u8, enumeration: *const caribou_abi::EnumDesc| {
-        if tag == TypeTag::BUFFER {
+        if tag == TypeTag::BUFFER || tag == TypeTag::BUFFER_MUT {
             return TypeRef::Buffer;
         }
         if tag == TypeTag::ENUM {
@@ -619,6 +619,9 @@ fn arg_type(
     if tag == TypeTag::BUFFER {
         return &data::BUFFER_DESC as *const TypeDesc as *const hl_type;
     }
+    if tag == TypeTag::BUFFER_MUT {
+        return &data::BUFFER_MUT_TYPE as *const TypeDesc as *const hl_type;
+    }
     if tag == TypeTag::ENUM {
         return data::enum_type(unsafe { (*enumeration).name.as_str() }).expect("registered enum")
             as *const TypeDesc as *const hl_type;
@@ -643,10 +646,12 @@ fn raise(lang: LangId, message: &str) -> u8 {
 struct Made(Vec<heap::Handle>);
 
 impl Made {
-    /// A string where a buffer is taken is its bytes: a buffer of them.
-    fn bytes_of(&mut self, v: Value) -> Option<*mut c_void> {
+    /// A string where a buffer is taken is its bytes: a read-only buffer
+    /// over them, the string its owner.
+    fn view_of(&mut self, v: Value) -> Option<*mut c_void> {
         let text = unsafe { caribou::error::Str::text(v) }?;
-        let b = data::buffer_new(text.as_bytes());
+        let owner = v.as_object()? as *mut u8;
+        let b = unsafe { data::buffer_view(owner, text.as_ptr(), text.len()) };
         self.0.push(heap::handle_new(b.cast()));
         Some(b as *mut c_void)
     }
@@ -691,16 +696,34 @@ unsafe extern "C-unwind" fn dispatch(
         // An object's type is its class's descriptor; the payload crosses.
         if unsafe { heap::is_descriptor(t) } {
             let desc = t as *const TypeDesc;
+            let written = std::ptr::eq(desc, &data::BUFFER_MUT_TYPE);
+            if written && (data::is_read_only(v) || data::buffer_of(v).is_none()) {
+                return raise(
+                    lang,
+                    &format!(
+                        "argument {} of the plugin function is written to, and {} cannot be{}",
+                        i + 1,
+                        bridge::describe(v),
+                        if data::is_read_only(v) {
+                            " (it is read-only)"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+            }
             if std::ptr::eq(desc, &data::BUFFER_DESC)
+                || written
                 || std::ptr::eq(desc, &caribou::future::FUTURE_DESC)
                 || data::is_enum(unsafe { &*desc })
             {
                 let value = cell::unwrap(v);
-                // A buffer is either kind: its own bytes, or another runtime's.
-                let p = if std::ptr::eq(desc, &data::BUFFER_DESC) {
+                // A buffer is either kind: its own bytes, or another
+                // runtime's; a string, a view of its own bytes.
+                let p = if std::ptr::eq(desc, &data::BUFFER_DESC) || written {
                     data::buffer_of(value)
                         .map(|b| b as *mut c_void)
-                        .or_else(|| made.bytes_of(value))
+                        .or_else(|| made.view_of(value))
                 } else {
                     value.as_object().filter(|p| !p.is_null()).filter(|p| {
                         std::ptr::eq(unsafe { caribou::protocol::desc_of(p.cast()) }, desc)

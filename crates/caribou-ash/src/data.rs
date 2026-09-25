@@ -164,10 +164,20 @@ pub(crate) unsafe fn buffer_to_haxe(p: *mut BufferData) -> Result<*mut vdynamic,
         .ok_or("the program has no haxe.io.Bytes type")?;
     let _root = Root::pointer(p.cast());
     let len = i32::try_from(unsafe { (*p).len }).map_err(|_| "buffer exceeds Haxe Bytes length")?;
+    // Haxe writes its Bytes: a read-only buffer's bytes are copied into
+    // Haxe's own, once, and any other buffer's are shared.
+    let bytes = if unsafe { (*p).flags } & caribou_abi::data::READ_ONLY != 0 {
+        let copy = unsafe { ash_std::bytes::hlp_alloc_bytes(len.max(1)) }.cast::<u8>();
+        unsafe { std::ptr::copy_nonoverlapping((*p).bytes, copy, len as usize) };
+        copy
+    } else {
+        unsafe { (*p).bytes }
+    };
+    let _bytes_root = Root::pointer(bytes);
     let obj = unsafe { ash_std::obj::hlp_alloc_obj((shape.t as *mut hl_type).cast()) }.cast::<u8>();
     unsafe {
         *obj.add(shape.length).cast::<i32>() = len;
-        *obj.add(shape.bytes).cast::<*mut u8>() = (*p).bytes;
+        *obj.add(shape.bytes).cast::<*mut u8>() = bytes;
     }
     Ok(obj.cast())
 }
