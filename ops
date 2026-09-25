@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":5,"timestamp":1790369348,"nonce":"avsqCljpaQkKqvOmmsHiuFmn8RQ=","added":["debt","area:zyntax"],"removed":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1790375842,"nonce":"5ZFkjuyUV0W2UWQ7COVUo1aV4Dw=","message":"Caribou side in fa1f3d6; zyntax side is e3a0d897 (zyntax git-bug ae5f662), queued with zyntax-2a. Close once caribou pins the landed commit.","files":null}]}
