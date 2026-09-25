@@ -86,7 +86,7 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Dynamic frontend discovery for `.zyn` grammars and precompiled snapshot bundles.
 * Typed AST and HIR publication pipeline for structs, classes, and module-level functions, filtered by the frontend's export rules.
 * The Python frontend as a language: layout, exports, classes, and module functions.
-* The Lua frontend as a language, embedded as a C host embeds Lua: the state opened once (`zyntax_lua::open_host`), and each `?.lua` or `?/init.lua` module loaded with Lua's own `load` and run with a protected call through the C API's cores, so an error in the chunk is the load's. The table the chunk returns publishes its functions as the module's, each with the parameters its record names. A Lua table or function that crosses to another language is a core object (`lua.table`, `lua.function`) answering reads, writes, method calls (the receiver first) and calls through protected calls, and comes back to Lua as itself.
+* The Lua frontend as a language, embedded as a C host embeds Lua: the state opened once (`zyntax_lua::open_host`), and each `?.lua` or `?/init.lua` module loaded with Lua's own `load` and run with a protected call through the C API's cores, so an error in the chunk is the load's. A file directly under a root is a module of Lua's own namespace, `lua:scale` for `scale.lua`, as Wren's are. The table the chunk returns publishes its functions as the module's, each with the parameters its record names, and each of its tables that holds functions as a class: its functions are statics, its other fields static fields, and a `new` function its constructor, so Haxe calls `lua.scale.Scale.run(device, queue)`. A Lua table or function that crosses to another language is a core object (`lua.table`, `lua.function`) answering reads, writes, method calls (the receiver first) and calls through protected calls, and comes back to Lua as itself. Lua's strings are its bytes (see [interop.md](../interop.md#buffers)).
 * Native C ABI call dispatch for scalar types and managed strings.
 * Wren and Haxe cross-language module resolution and metadata generation.
 * Other languages' modules, classes, objects and plugins in Python programs, as foreign objects; dynamic parameters and results across calls into Zyntax.
@@ -98,7 +98,7 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Host-heap memory integration and unified garbage collection.
 * Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
 * A Lua module another Lua module requires from the world arrives as the world's module, whose functions call back into Lua, rather than as the table its chunk returned.
-* Haxe's view of a Lua module: Haxe imports classes, and a Lua module publishes functions.
+* A Lua module's interface is read by running its chunk, also when a Haxe build describes it, where no Haxe program is loaded: a chunk that requires another language's module at its top level cannot be described, so such a require goes inside the function that uses it.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
 * Awaiting a core future from Python.
 * Effect system and fiber synchronization across the native runtime bridge.

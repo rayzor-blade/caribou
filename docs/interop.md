@@ -88,6 +88,11 @@ passed where a buffer is taken crosses as a buffer over the array's storage,
 without a copy. What the callee writes is in the array, and the buffer comes
 back to Wren as the same array.
 
+A string passed where a buffer is taken is its bytes: a buffer of them made
+for the call. Lua's bytes are its strings: a Lua string crosses as a string
+when it is UTF-8 text, else as a buffer of its bytes, and a buffer comes into
+Lua as a string of its bytes, which `string.unpack` reads.
+
 ## Haxe Using Wren
 
 A program adds `-lib caribou` and puts its Wren modules on the classpath. Nothing else needs to be declared.

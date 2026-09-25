@@ -418,22 +418,41 @@ pub fn interface(
 }
 
 /// The interface of a module a language ran: the functions its value
-/// holds, each the module's own, called with whatever it is given.
+/// holds, each the module's own, and its classes, each called with
+/// whatever it is given.
 pub fn run_interface(lang: LangId, module: &str, run: crate::RunModule) -> Interface {
+    let function = |f: crate::RunFunction| MethodIface {
+        name: f.name,
+        is_static: true,
+        params: vec![TypeRef::Dyn; f.params],
+        ret: TypeRef::Dyn,
+        target: Callable::Dynamic(f.value),
+    };
+    let language = caribou::world::language_name(lang);
     Interface {
         lang,
         module: module.to_owned(),
-        classes: Vec::new(),
-        functions: run
-            .functions
+        classes: run
+            .classes
             .into_iter()
-            .map(|f| MethodIface {
-                name: f.name,
-                is_static: true,
-                params: vec![TypeRef::Dyn; f.params],
-                ret: TypeRef::Dyn,
-                target: Callable::Dynamic(f.value),
+            .map(|c| ClassIface {
+                type_name: format!("{language}.{module}.{}", c.name),
+                name: c.name,
+                superclass: None,
+                fields: Vec::new(),
+                statics: c
+                    .statics
+                    .into_iter()
+                    .map(|name| FieldIface {
+                        name,
+                        ty: TypeRef::Dyn,
+                    })
+                    .collect(),
+                methods: c.methods.into_iter().map(function).collect(),
+                ctor: c.ctor.map(function),
+                class_object: c.object,
             })
             .collect(),
+        functions: run.functions.into_iter().map(function).collect(),
     }
 }

@@ -14,6 +14,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use caribou::bridge;
+use caribou::data;
 use caribou::error::Error;
 use caribou::heap::{self, TypeDesc};
 use caribou::protocol::{self, Protocol, REPLY_OK, REPLY_UNSUPPORTED};
@@ -24,26 +25,38 @@ use caribou_abi::{ErrorKind, LangId, Value};
 use caribou_zyntax::foreign::{self, Crossing};
 use caribou_zyntax::zyntax_embed::TieredRuntime;
 use caribou_zyntax::zyntax_embed::foreign::{self as zforeign, Any};
-use caribou_zyntax::{RunFunction, RunModule};
+use caribou_zyntax::{RunClass, RunFunction, RunModule};
 use zyntax_lua_capi::api::{
     zlc_getglobal, zlc_gettop, zlc_pushlstring, zlc_rawgeti, zlc_rawsetp, zlc_settop,
     zlc_tolstring, zlc_type,
 };
 use zyntax_lua_capi::calls::{OK, zlc_pcall};
 use zyntax_lua_capi::state::{self, L, REGISTRYINDEX};
-use zyntax_lua_capi::values::{self as lua, LUA_TFUNCTION, LUA_TNIL, LUA_TTABLE};
+use zyntax_lua_capi::values::{self as lua, LUA_TFUNCTION, LUA_TNIL, LUA_TSTRING, LUA_TTABLE};
 
 /// The helpers every crossing calls, protected: index, assign, a method
-/// call with the receiver first, and a module table's function names.
+/// call with the receiver first, and the names of a table's functions,
+/// of its tables that hold functions (its classes), and of its other
+/// fields.
 const HELPERS: &str = r#"
 return
   function(t, k) return t[k] end,
   function(t, k, v) t[k] = v end,
   function(t, k, ...) return t[k](t, ...) end,
-  function(m)
+  function(t, kind)
+    local function holds_functions(v)
+      for _, f in pairs(v) do if type(f) == "function" then return true end end
+      return false
+    end
     local names = {}
-    for k, v in pairs(m) do
-      if type(k) == "string" and type(v) == "function" then names[#names + 1] = k end
+    for k, v in pairs(t) do
+      if type(k) == "string" then
+        local is
+        if type(v) == "function" then is = "function"
+        elseif type(v) == "table" and holds_functions(v) then is = "class"
+        else is = "value" end
+        if is == kind then names[#names + 1] = k end
+      end
     end
     table.sort(names)
     return names
@@ -55,7 +68,7 @@ struct Host {
     index: Any,
     set: Any,
     send: Any,
-    functions: Any,
+    names: Any,
 }
 
 // The state is the runtime's, which runs on the world's thread; the
@@ -90,7 +103,7 @@ pub(crate) fn open(runtime: &mut TieredRuntime) -> Result<(), String> {
         index: helpers[0],
         set: helpers[1],
         send: helpers[2],
-        functions: helpers[3],
+        names: helpers[3],
     });
     foreign::add_crossing(&LuaCrossing);
     Ok(())
@@ -207,32 +220,63 @@ fn type_of(v: Any) -> c_int {
     unsafe { lua::type_of(v as lua::Any) }
 }
 
-/// Run a module's chunk: the functions of the table it returns, each a
-/// [`Proxy`] of the function.
+/// Run a module's chunk: the functions of the table it returns, and the
+/// tables of functions it holds as classes, each class's `new` its
+/// constructor.
 pub(crate) fn run_module(source: &str, file: &str) -> Result<RunModule, String> {
     let h = host();
     let module = unsafe { run_chunk_n(h.l, source, &format!("@{file}"), 1)? }[0];
     if type_of(module) != LUA_TTABLE {
         return Ok(RunModule {
             functions: Vec::new(),
+            classes: Vec::new(),
         });
     }
     unsafe { keep(h.l, module) };
-    let names = pcall(h.functions, &[module])?;
-    let mut functions = Vec::new();
-    for name in unsafe { strings(h.l, names) } {
-        let f = pcall(h.index, &[module, zforeign::string(&name)])?;
-        let params = params(f).unwrap_or(0);
-        let value = proxy(f);
-        // Rooted for as long as the module is published.
-        let _ = heap::handle_new(value.as_object().expect("a proxy") as *mut u8);
-        functions.push(RunFunction {
+    let functions = functions_of(module)?;
+    let mut classes = Vec::new();
+    for name in names_of(module, "class")? {
+        let class = pcall(h.index, &[module, zforeign::string(&name)])?;
+        let mut methods = functions_of(class)?;
+        let ctor = methods
+            .iter()
+            .position(|m| m.name == "new")
+            .map(|i| methods.remove(i));
+        classes.push(RunClass {
             name,
-            params,
-            value,
+            object: rooted(proxy(class)),
+            statics: names_of(class, "value")?,
+            methods,
+            ctor,
         });
     }
-    Ok(RunModule { functions })
+    Ok(RunModule { functions, classes })
+}
+
+/// The names of `t`'s fields of `kind`: `function`, `class` or `value`.
+fn names_of(t: Any, kind: &str) -> Result<Vec<String>, String> {
+    let names = pcall(host().names, &[t, zforeign::string(kind)])?;
+    Ok(unsafe { strings(host().l, names) })
+}
+
+/// The functions of the table `t`, each a [`Proxy`] of the function.
+fn functions_of(t: Any) -> Result<Vec<RunFunction>, String> {
+    let mut functions = Vec::new();
+    for name in names_of(t, "function")? {
+        let f = pcall(host().index, &[t, zforeign::string(&name)])?;
+        functions.push(RunFunction {
+            name,
+            params: params(f).unwrap_or(0),
+            value: rooted(proxy(f)),
+        });
+    }
+    Ok(functions)
+}
+
+/// `v`, rooted for as long as the module is published.
+fn rooted(v: Value) -> Value {
+    let _ = heap::handle_new(v.as_object().expect("a proxy") as *mut u8);
+    v
 }
 
 /// The strings of the sequence `t`.
@@ -409,7 +453,8 @@ static PROXY_PROTO: Protocol = Protocol {
 };
 
 /// Lua's tables and functions cross as proxies, and come back as
-/// themselves.
+/// themselves. A string that is not text is Lua's bytes, which cross as
+/// a buffer of them; a buffer comes into Lua as a string of its bytes.
 struct LuaCrossing;
 
 impl Crossing for LuaCrossing {
@@ -419,10 +464,26 @@ impl Crossing for LuaCrossing {
         if foreign::caller() != lang() {
             return None;
         }
-        matches!(type_of(any), LUA_TTABLE | LUA_TFUNCTION).then(|| proxy(any))
+        match type_of(any) {
+            LUA_TTABLE | LUA_TFUNCTION => Some(proxy(any)),
+            LUA_TSTRING => {
+                let bytes = unsafe { lua::bytes_of(lua::string_of(any as lua::Any)) };
+                Some(Value::object(data::buffer_new(bytes) as *const c_void))
+            }
+            _ => None,
+        }
     }
 
     fn own(&self, v: Value) -> Option<Any> {
+        if foreign::caller() == lang()
+            && let Some(buffer) = data::buffer_of(v)
+        {
+            let bytes = unsafe {
+                let b = &*buffer;
+                std::slice::from_raw_parts(b.bytes, b.len)
+            };
+            return Some(lua::box_bytes(bytes) as Any);
+        }
         let p = v.as_object()?;
         if p.is_null() || !std::ptr::eq(unsafe { protocol::desc_of(p as *const u8) }, descriptor())
         {

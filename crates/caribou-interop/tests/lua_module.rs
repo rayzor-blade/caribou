@@ -24,6 +24,14 @@ function M.point(x, y)
 end
 function M.adder(n) return function(m) return n + m end end
 function M.fail() error("no luck") end
+function M.packed() return string.pack("<f", 1.5) end
+function M.unpacked(bytes) return string.unpack("<f", bytes) end
+-- A table of functions is a class: `new` constructs, the rest are statics.
+M.Counter = {
+  LIMIT = 10,
+  new = function(start) return { n = start } end,
+  bump = function(c) c.n = c.n + 1 return c.n end,
+}
 return M
 "#;
 
@@ -71,7 +79,12 @@ fn another_language_calls_a_lua_module() {
         .unwrap_or_else(|e| panic!("calc: {e}"))
         .expect("calc loads");
     let names: Vec<&str> = calc.functions.iter().map(|f| f.name.as_str()).collect();
-    assert_eq!(names, ["add", "adder", "fail", "length", "make", "point"]);
+    assert_eq!(
+        names,
+        [
+            "add", "adder", "fail", "length", "make", "packed", "point", "unpacked"
+        ]
+    );
     let function = |name: &str| calc.functions.iter().find(|f| f.name == name).unwrap();
     assert_eq!(function("add").params, [TypeRef::Dyn, TypeRef::Dyn]);
     let call = |name: &str, args: &[Value]| bridge::call(function(name).target, args, LANG_CORE);
@@ -129,6 +142,37 @@ fn another_language_calls_a_lua_module() {
     }
     .unwrap_or_else(|| bridge::describe(error));
     assert!(message.contains("no luck"), "{message}");
+
+    // Lua's bytes are strings: one that is not UTF-8 text crosses as a
+    // buffer, and a buffer comes back in as a string of its bytes.
+    let packed = call("packed", &[]).unwrap();
+    assert!(caribou::data::buffer_of(packed).is_some());
+    assert_eq!(call("unpacked", &[packed]).unwrap().as_number(), Some(1.5));
+
+    // A table of functions is a class.
+    let counter = &calc.classes[0];
+    assert_eq!(counter.name, "Counter");
+    assert_eq!(counter.statics[0].name, "LIMIT");
+    let bump = &counter.methods[0];
+    assert_eq!((bump.name.as_str(), bump.is_static), ("bump", true));
+    let made = bridge::call(
+        counter.ctor.as_ref().unwrap().target,
+        &[Value::int(4)],
+        LANG_CORE,
+    )
+    .unwrap();
+    assert_eq!(
+        bridge::call(bump.target, &[made], LANG_CORE)
+            .unwrap()
+            .as_int(),
+        Some(5)
+    );
+    assert_eq!(
+        bridge::get(counter.class_object, intern("LIMIT"), LANG_CORE)
+            .unwrap()
+            .as_int(),
+        Some(10)
+    );
 
     // An error in a module's chunk is the load's.
     let error = registry::lookup_or_load("game", "broken").unwrap_err();

@@ -1234,9 +1234,12 @@ class Main {
         // The same shader from Wren, which imports it from this program.
         var fromWren = wren.scale.Scale.run(device, queue);
         check(fromWren == "4,7,10,13", 'Wren ran the HXSL shader to $fromWren');
+        // And from Lua, whose bytes are strings.
+        var fromLua = lua.scale.Scale.run(device, queue);
+        check(fromLua == "4,7,10,13", 'Lua ran the HXSL shader to $fromLua');
 
         check(device.takeError() == null, "GPU validation error with HXSL shaders");
-        Sys.println("gpu hxsl ok, from Haxe and Wren");
+        Sys.println("gpu hxsl ok, from Haxe, Wren and Lua");
     }
 
     static function main() {

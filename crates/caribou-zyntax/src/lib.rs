@@ -120,6 +120,17 @@ pub trait Language {
 /// What a language ran as a module (see [`Language::run_module`]).
 pub struct RunModule {
     pub functions: Vec<RunFunction>,
+    pub classes: Vec<RunClass>,
+}
+
+/// A class a run module's value holds: a table of functions, its statics
+/// read and written through `object`, rooted as a function is.
+pub struct RunClass {
+    pub name: String,
+    pub object: caribou_abi::Value,
+    pub statics: Vec<String>,
+    pub methods: Vec<RunFunction>,
+    pub ctor: Option<RunFunction>,
 }
 
 /// A function a run module's value holds: a value of the core that
@@ -775,7 +786,13 @@ impl State {
 /// from the HIR. No borrow of the states is held while a module's code
 /// runs, since that code may load another module.
 fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
-    let name = format!("{namespace}/{module}");
+    // The language's own namespace names a root's module by itself:
+    // `lua:scale` is the root's `scale.lua`.
+    let name = if namespace == world::language_name(lang) {
+        module.to_owned()
+    } else {
+        format!("{namespace}/{module}")
+    };
     let found = STATES.with(|states| {
         let states = states.borrow();
         let state = states.get(&lang).ok_or_else(|| {
@@ -913,25 +930,32 @@ pub fn describe(
         return Ok(Vec::new());
     }
     let names: Vec<String> = frontends.iter().map(|f| f.name().to_owned()).collect();
-    let architectures: Vec<ModuleArchitecture> = frontends
+    let architectures: Vec<(String, ModuleArchitecture)> = frontends
         .iter()
-        .flat_map(|f| f.language.architectures())
+        .flat_map(|f| {
+            let name = f.name().to_owned();
+            f.language
+                .architectures()
+                .into_iter()
+                .map(move |arch| (name.clone(), arch))
+        })
         .collect();
     // Every module by namespace and name, from the files each layout
-    // reads.
+    // reads. A file directly under the root is a module of its language's
+    // own namespace, as the loader finds it.
     let mut modules: Vec<(String, String, PathBuf)> = Vec::new();
     let mut namespaces: Vec<String> = Vec::new();
     for entry in walk(root) {
-        let Some(segments) = architectures
-            .iter()
-            .find_map(|arch| module_of(arch, root, &entry))
-        else {
+        let Some((language, segments)) = architectures.iter().find_map(|(language, arch)| {
+            module_of(arch, root, &entry).map(|segments| (language, segments))
+        }) else {
             continue;
         };
         let [namespace, rest @ ..] = segments.as_slice() else {
             continue;
         };
         if rest.is_empty() {
+            modules.push((language.clone(), namespace.clone(), entry.clone()));
             continue;
         }
         if !namespaces.contains(namespace) {
