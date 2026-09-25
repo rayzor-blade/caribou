@@ -69,6 +69,11 @@ A language whose modules run, as Python's do, names the function that runs a mod
 
 Build macros inspect the host environment via `caribou describe <root>`. This tool outputs the structure of both native Wren source files and published Zyntax modules with their associated namespace paths. The compiler emits declarations such as `game.scorer.Scorer` directly against these structures, ensuring compile-time Haxe definitions mirror the symbols bound dynamically at runtime.
 
+Describing a module runs none of its code. `caribou_zyntax::describe` loads each module into a world whose loader reads interfaces from source alone:
+
+* A module that declares its exports is parsed and lowered, and published from its declarations with no code behind them. Nothing is compiled, and a Python module's body does not run.
+* A Lua module is described from the types its chunk gets when `load` compiles it (`zyntax_lua::exports`). Its top level may require modules of other languages that are not there yet, since nothing runs it.
+
 ## Memory Architecture & Runtime Constraints
 
 Zyntax manages dynamic memory using size-class allocation pools. Automatic memory management relies on compile-time drop analysis for deterministic cleanup, backed by a conservative mark-sweep garbage collector for remaining allocations.
@@ -86,7 +91,17 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Dynamic frontend discovery for `.zyn` grammars and precompiled snapshot bundles.
 * Typed AST and HIR publication pipeline for structs, classes, and module-level functions, filtered by the frontend's export rules.
 * The Python frontend as a language: layout, exports, classes, and module functions.
-* The Lua frontend as a language, embedded as a C host embeds Lua: the state opened once (`zyntax_lua::open_host`), and each `?.lua` or `?/init.lua` module loaded with Lua's own `load` and run with a protected call through the C API's cores, so an error in the chunk is the load's. A file directly under a root is a module of Lua's own namespace, `lua:scale` for `scale.lua`, as Wren's are. The table the chunk returns publishes its functions as the module's, each with the parameters its record names, and each of its tables that holds functions as a class: its functions are statics, its other fields static fields, and a `new` function its constructor, so Haxe calls `lua.scale.Scale.run(device, queue)`. A Lua table or function that crosses to another language is a core object (`lua.table`, `lua.function`) answering reads, writes, method calls (the receiver first) and calls through protected calls, and comes back to Lua as itself. Lua's strings are its bytes, and a buffer is read in place (see [interop.md](../interop.md#buffers)). A proxy keeps its Lua value in the registry, counted, until the last proxy of it dies.
+* The Lua frontend as a language, embedded as a C host embeds Lua: the state opened once (`zyntax_lua::open_host`), and each `?.lua` or `?/init.lua` module loaded with Lua's own `load` and run with a protected call through the C API's cores, so an error in the chunk is the load's. A file directly under a root is a module of Lua's own namespace, `lua:scale` for `scale.lua`, as Wren's are. The module's interface is the table its chunk returns, as the Lua compiler's types know it (`zyntax_lua::exports`). Its functions are the module's, each with its parameters, and each of its tables that holds functions is a class, read the way Lua writes one:
+
+* `new` is the constructor. When it is declared with `:`, as in `Account:new(o)`, it is called with the class as its receiver.
+* A function declared with `:` (one taking `self` first) is a method, called with an instance as its receiver.
+* Any other function is a static method, and any other field a static field.
+* The fields of the tables whose metatable the class is (`setmetatable(t, Counter)`) are its instances' fields.
+* Keys that begin with `__` are the metatable's own and are not members.
+* The types are the LuaLS annotations the frontend registers with what each annotates (`zyntax_lua::LuaType`), mapped to the core's types; a member without them is `Dyn`.
+* A table whose metatable is a published class reports that class's type name, so an instance another member returns crosses as the class's instance.
+
+Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls `lua.scale.Scale.run(device, queue)`; Wren writes the same with its own syntax. Running the chunk gives the same names the same kinds, reads their values from the table, and adds the fields only the running table shows, such as those stored under keys the compiler cannot see. A Lua table or function that crosses to another language is a core object (`lua.table`, `lua.function`) answering reads, writes, method calls (the receiver first) and calls through protected calls, and comes back to Lua as itself. Lua's strings are its bytes, and a buffer is read in place (see [interop.md](../interop.md#buffers)). A proxy keeps its Lua value in the registry, counted, until the last proxy of it dies.
 * Native C ABI call dispatch for scalar types and managed strings.
 * Wren and Haxe cross-language module resolution and metadata generation.
 * Other languages' modules, classes, objects and plugins in Python programs, as foreign objects; dynamic parameters and results across calls into Zyntax.
@@ -98,7 +113,6 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * Host-heap memory integration and unified garbage collection.
 * Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
 * A Lua module another Lua module requires from the world arrives as the world's module, whose functions call back into Lua, rather than as the table its chunk returned.
-* A Lua module's interface is read by running its chunk, also when a Haxe build describes it, where no Haxe program is loaded: a chunk that requires another language's module at its top level cannot be described, so such a require goes inside the function that uses it.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
 * Awaiting a core future from Python.
 * Effect system and fiber synchronization across the native runtime bridge.

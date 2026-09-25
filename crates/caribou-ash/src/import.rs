@@ -73,6 +73,12 @@ enum Kind {
     Set,
     /// `static:make()`: the parameters.
     Static,
+    /// `static:count`: a static getter, or else the class's static field
+    /// of that name, read on its class object.
+    StaticGet,
+    /// `static:count=(_)`: a static setter and the value, or else the
+    /// class's static field, written on its class object.
+    StaticSet,
     /// `construct:new(_)`: the fresh Haxe object, then the parameters; the
     /// call makes the foreign object and binds it to the face.
     Init,
@@ -91,7 +97,7 @@ enum Kind {
 
 impl Kind {
     fn takes_receiver(self) -> bool {
-        !matches!(self, Kind::Static)
+        !matches!(self, Kind::Static | Kind::StaticGet | Kind::StaticSet)
     }
 
     /// The bridge's own operations: natives named for what they do, not
@@ -145,7 +151,8 @@ struct Resolved {
     /// construction of any other type is a subclass's.
     face: usize,
     /// A static's or a constructor's target; for a method, its typed
-    /// target when it has one.
+    /// target when it has one; for a static field, the class object that
+    /// holds it, as a `Dynamic` (see [`static_accessor`]).
     target: Option<Callable>,
 }
 
@@ -261,6 +268,19 @@ fn links(s: &Slot) -> bool {
             | Kind::FutureResolve
             | Kind::FutureReject => None,
             Kind::Static => static_in_chain(&iface, index, s.member).map(|(_, m)| m),
+            Kind::StaticGet | Kind::StaticSet => {
+                match static_in_chain(&iface, index, accessor_signature(s)) {
+                    Some((_, m)) => Some(m),
+                    None => {
+                        let name = s.member.name();
+                        return class
+                            .statics
+                            .iter()
+                            .find(|f| f.name == name)
+                            .is_some_and(|f| caribou::link::CType::of(&f.ty).is_some());
+                    }
+                }
+            }
             Kind::Method => class.methods.iter().find(|m| {
                 !m.is_static
                     && matches!(m.target, Callable::WrenMethod { signature, .. } if signature == s.member)
@@ -371,7 +391,13 @@ fn slot_for(name: &str) -> Result<Slot, String> {
     let (namespace, module, class, member) = parse(name)
         .ok_or_else(|| format!("`{name}` does not name a member of a published class"))?;
     let (kind, member) = if let Some(sig) = member.strip_prefix("static:") {
-        (Kind::Static, sig.to_owned())
+        if let Some(field) = sig.strip_suffix("=(_)") {
+            (Kind::StaticSet, field.to_owned())
+        } else if sig.contains('(') {
+            (Kind::Static, sig.to_owned())
+        } else {
+            (Kind::StaticGet, sig.to_owned())
+        }
     } else if let Some(sig) = member.strip_prefix("construct:") {
         (Kind::Init, sig.to_owned())
     } else if let Some(field) = member.strip_suffix("=(_)") {
@@ -732,6 +758,38 @@ fn answers(m: &registry::MethodIface, symbol: Symbol) -> bool {
     }
 }
 
+/// What a static getter or setter slot reaches: the Wren static of its
+/// signature, or else the class's static field, whose class object is
+/// given as a `Dynamic` to read or write it on. Only a Wren member is
+/// spelled as a getter or setter, so a `Dynamic` here is always a field's
+/// holder.
+fn static_accessor(s: &Slot) -> Result<Callable, String> {
+    let (iface, index) = published(s)?;
+    if let Some(target) = inherited_static(&iface, index, accessor_signature(s))
+        .filter(|t| matches!(t, Callable::WrenMethod { .. }))
+    {
+        return Ok(target);
+    }
+    let class = &iface.classes[index];
+    let name = s.member.name();
+    if class.statics.iter().any(|f| f.name == name) {
+        return Ok(Callable::Dynamic(class.class_object));
+    }
+    Err(format!(
+        "{}:{}.{} has no static {name}",
+        s.namespace, s.module, s.class
+    ))
+}
+
+/// The Wren signature of a static getter or setter slot, whose member is
+/// the bare field name: `count`, or `count=(_)`.
+fn accessor_signature(s: &Slot) -> Symbol {
+    match s.kind {
+        Kind::StaticSet => intern(&format!("{}=(_)", s.member.name())),
+        _ => s.member,
+    }
+}
+
 fn static_member(class: &ClassIface, member: Symbol) -> Option<&registry::MethodIface> {
     class
         .methods
@@ -914,6 +972,18 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
             })
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|target| bridge::call_at(target, &s.site, args, haxe, &s.name)),
+        Kind::StaticGet | Kind::StaticSet => s
+            .target(|| static_accessor(s))
+            .map_err(|m| proto::error_value(&s.name, &m))
+            .and_then(|target| match target {
+                Callable::Dynamic(holder) if s.kind == Kind::StaticGet => {
+                    bridge::get_at(holder, s.member, &s.site, haxe)
+                }
+                Callable::Dynamic(holder) => {
+                    bridge::set_at(holder, s.member, &s.site, args[0], haxe).map(|()| Value::null())
+                }
+                target => bridge::call_at(target, &s.site, args, haxe, &s.name),
+            }),
         Kind::Init => match unsafe { constructs(s, receiver) } {
             Err(m) => Err(proto::error_value(&s.name, &m)),
             // A subclass's own constructor binds the face; this one, its
@@ -1044,6 +1114,10 @@ mod tests {
         assert_eq!((s.kind, s.member.name()), (Kind::Set, "score"));
         let s = slot_for("game:hud.Hud.static:make(_,_)").unwrap();
         assert_eq!((s.kind, s.member.name()), (Kind::Static, "make(_,_)"));
+        let s = slot_for("game:hud.Hud.static:count").unwrap();
+        assert_eq!((s.kind, s.member.name()), (Kind::StaticGet, "count"));
+        let s = slot_for("game:hud.Hud.static:count=(_)").unwrap();
+        assert_eq!((s.kind, s.member.name()), (Kind::StaticSet, "count"));
         let s = slot_for("game:hud.Hud.construct:new()").unwrap();
         assert_eq!((s.kind, s.member.name()), (Kind::Init, "new()"));
         for bad in ["draw(_)", "game:Hud.draw(_)", "game:hud.Hud.", ":hud.Hud.x"] {

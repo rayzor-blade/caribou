@@ -54,13 +54,13 @@ wren_lift = { path = "../wren_lift" }
 # a commit of main rather than the checkout as it stands. A later zyntax
 # change takes a new rev here; the path is this machine's.
 [patch."https://github.com/darmie/zyntax.git"]
-zyntax_embed = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
-zyntax_compiler = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
-zyntax_typed_ast = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
-zynml = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
-zyntax_python = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
-zyntax_lua = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
-zyntax_lua_capi = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "8671e0bbda95a2c92fb7af85244dff898d5bbda2" }
+zyntax_embed = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
+zyntax_compiler = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
+zyntax_typed_ast = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
+zynml = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
+zyntax_python = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
+zyntax_lua = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
+zyntax_lua_capi = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "e3a0d897cbbc86435f06526c1c90b2547f06f58d" }
 
 [profile.dev]
 opt-level = 1

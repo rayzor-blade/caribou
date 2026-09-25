@@ -417,18 +417,26 @@ pub fn interface(
     }
 }
 
+/// The type name a class of a module a language ran is published under:
+/// `lua.game/counter.Counter`.
+pub fn run_type_name(lang: LangId, module: &str, class: &str) -> String {
+    format!("{}.{module}.{class}", caribou::world::language_name(lang))
+}
+
 /// The interface of a module a language ran: the functions its value
-/// holds, each the module's own, and its classes, each called with
-/// whatever it is given.
+/// holds, each the module's own, and its classes, whose methods take the
+/// instance first; each member with the types the language declares.
 pub fn run_interface(lang: LangId, module: &str, run: crate::RunModule) -> Interface {
-    let function = |f: crate::RunFunction| MethodIface {
-        name: f.name,
-        is_static: true,
-        params: vec![TypeRef::Dyn; f.params],
-        ret: TypeRef::Dyn,
-        target: Callable::Dynamic(f.value),
+    let member = |is_static: bool| {
+        move |f: crate::RunFunction| MethodIface {
+            name: f.name,
+            is_static,
+            params: f.params,
+            ret: f.ret,
+            target: Callable::Dynamic(f.value),
+        }
     };
-    let language = caribou::world::language_name(lang);
+    let field = |(name, ty): (String, TypeRef)| FieldIface { name, ty };
     Interface {
         lang,
         module: module.to_owned(),
@@ -436,23 +444,21 @@ pub fn run_interface(lang: LangId, module: &str, run: crate::RunModule) -> Inter
             .classes
             .into_iter()
             .map(|c| ClassIface {
-                type_name: format!("{language}.{module}.{}", c.name),
+                type_name: run_type_name(lang, module, &c.name),
                 name: c.name,
                 superclass: None,
-                fields: Vec::new(),
-                statics: c
-                    .statics
+                fields: c.fields.into_iter().map(field).collect(),
+                statics: c.statics.into_iter().map(field).collect(),
+                methods: c
+                    .functions
                     .into_iter()
-                    .map(|name| FieldIface {
-                        name,
-                        ty: TypeRef::Dyn,
-                    })
+                    .map(member(true))
+                    .chain(c.methods.into_iter().map(member(false)))
                     .collect(),
-                methods: c.methods.into_iter().map(function).collect(),
-                ctor: c.ctor.map(function),
+                ctor: c.ctor.map(member(true)),
                 class_object: c.object,
             })
             .collect(),
-        functions: run.functions.into_iter().map(function).collect(),
+        functions: run.functions.into_iter().map(member(true)).collect(),
     }
 }

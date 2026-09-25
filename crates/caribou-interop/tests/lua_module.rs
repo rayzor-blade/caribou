@@ -83,20 +83,21 @@ fn another_language_calls_a_lua_module() {
     let calc = registry::lookup_or_load("game", "calc")
         .unwrap_or_else(|e| panic!("calc: {e}"))
         .expect("calc loads");
+    // In the order the chunk declares them.
     let names: Vec<&str> = calc.functions.iter().map(|f| f.name.as_str()).collect();
     assert_eq!(
         names,
         [
             "add",
-            "adder",
-            "fail",
-            "fill_string",
             "length",
             "make",
-            "packed",
             "point",
+            "adder",
+            "fail",
+            "packed",
+            "unpacked",
             "same",
-            "unpacked"
+            "fill_string"
         ]
     );
     let function = |name: &str| calc.functions.iter().find(|f| f.name == name).unwrap();

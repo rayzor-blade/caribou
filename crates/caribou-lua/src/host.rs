@@ -13,7 +13,7 @@
 //! place; a Lua string that is not text leaves as a read-only Buffer over
 //! its own bytes.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, c_int, c_void};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -23,14 +23,17 @@ use caribou::data;
 use caribou::error::Error;
 use caribou::heap::{self, TypeDesc};
 use caribou::protocol::{self, Protocol, REPLY_OK, REPLY_UNSUPPORTED};
+use caribou::registry::TypeRef;
 use caribou::symbol::{self, Symbol};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
 use caribou_zyntax::foreign::{self, Crossing};
+use caribou_zyntax::publish::run_type_name;
 use caribou_zyntax::zyntax_embed::TieredRuntime;
 use caribou_zyntax::zyntax_embed::foreign::{self as zforeign, Any};
 use caribou_zyntax::{RunClass, RunFunction, RunModule};
+use zyntax_lua::{Exported, ExportedFunction, ExportedTable, Exports, LuaType, is_metafield};
 use zyntax_lua_capi::api::{
     zlc_getglobal, zlc_gettop, zlc_pushlstring, zlc_pushnil, zlc_rawgeti, zlc_rawsetp, zlc_settop,
     zlc_tolstring, zlc_type,
@@ -40,10 +43,13 @@ use zyntax_lua_capi::state::{self, L, REGISTRYINDEX};
 use zyntax_lua_capi::values::{self as lua, LUA_TFUNCTION, LUA_TNIL, LUA_TSTRING, LUA_TTABLE};
 
 /// The helpers every crossing calls, protected: index, assign, a method
-/// call with the receiver first, and the names of a table's functions,
-/// of its tables that hold functions (its classes), and of its other
-/// fields.
+/// call with the receiver first, the names of a table's functions, of
+/// its tables that hold functions (its classes), and of its other
+/// fields, a table's function bound to the table as its receiver, and
+/// the type names of published classes: one recorded for a class table,
+/// and the one a table's metatable has.
 const HELPERS: &str = r#"
+local classes = setmetatable({}, { __mode = "k" })
 return
   function(t, k) return t[k] end,
   function(t, k, v) t[k] = v end,
@@ -65,6 +71,13 @@ return
     end
     table.sort(names)
     return names
+  end,
+  function(t, k) return function(...) return t[k](t, ...) end end,
+  function(t, name) classes[t] = name end,
+  function(t)
+    local mt = getmetatable(t)
+    if mt == nil then return nil end
+    return classes[mt]
   end
 "#;
 
@@ -74,6 +87,9 @@ struct Host {
     set: Any,
     send: Any,
     names: Any,
+    bind: Any,
+    name_class: Any,
+    class_name: Any,
 }
 
 // The state is the runtime's, which runs on the world's thread; the
@@ -99,7 +115,7 @@ pub(crate) fn open(runtime: &mut TieredRuntime) -> Result<(), String> {
         return Err("Lua's state is open already: one Lua runtime per process".to_owned());
     }
     let l = zyntax_lua::open_host(runtime)?;
-    let helpers = unsafe { run_chunk_n(l, HELPERS, "=caribou", 4)? };
+    let helpers = unsafe { run_chunk_n(l, HELPERS, "=caribou", 7)? };
     for &h in &helpers {
         unsafe { keep(l, h) };
     }
@@ -109,6 +125,9 @@ pub(crate) fn open(runtime: &mut TieredRuntime) -> Result<(), String> {
         set: helpers[1],
         send: helpers[2],
         names: helpers[3],
+        bind: helpers[4],
+        name_class: helpers[5],
+        class_name: helpers[6],
     });
     foreign::add_crossing(&LuaCrossing);
     Ok(())
@@ -265,10 +284,10 @@ fn type_of(v: Any) -> c_int {
     unsafe { lua::type_of(v as lua::Any) }
 }
 
-/// Run a module's chunk: the functions of the table it returns, and the
-/// tables of functions it holds as classes, each class's `new` its
-/// constructor.
-pub(crate) fn run_module(source: &str, file: &str) -> Result<RunModule, String> {
+/// Run module `name`'s chunk and publish the table it returns, as
+/// [`module_of`] reads it.
+pub(crate) fn run_module(name: &str, source: &str, file: &str) -> Result<RunModule, String> {
+    let exports = exports_of(source, file)?;
     let h = host();
     let module = unsafe { run_chunk_n(h.l, source, &format!("@{file}"), 1)? }[0];
     if type_of(module) != LUA_TTABLE {
@@ -278,44 +297,307 @@ pub(crate) fn run_module(source: &str, file: &str) -> Result<RunModule, String> 
         });
     }
     unsafe { keep(h.l, module) };
-    let functions = functions_of(module)?;
+    module_of(name, &exports, Some(module))
+}
+
+/// What running module `name`'s chunk publishes, read from its source
+/// alone, each value null.
+pub(crate) fn describe_module(name: &str, source: &str, file: &str) -> Result<RunModule, String> {
+    module_of(name, &exports_of(source, file)?, None)
+}
+
+fn exports_of(source: &str, file: &str) -> Result<Exports, String> {
+    zyntax_lua::exports(source).map_err(|e| e.render(file, source, false))
+}
+
+/// The functions and classes of module `name`, whose chunk exports
+/// `exports`: those its types know, as they know them, then, when `live`
+/// is the table running the chunk returned, those only running shows. A
+/// class is a table holding functions (see [`class_of`]). A value is
+/// read from `live`, and is null without it; a name the types know that
+/// `live` holds nil under is left out. Metafields are no member.
+fn module_of(name: &str, exports: &Exports, live: Option<Any>) -> Result<RunModule, String> {
+    let root = exports.table(&exports.value);
+    let classes_of = || {
+        root.iter()
+            .flat_map(|t| &t.fields)
+            .filter_map(|(key, value)| {
+                Some((key, exports.table(value).filter(|t| holds_functions(t))?))
+            })
+    };
+    // A class goes by its `@class` name in annotations, else by its own.
+    let mut types = Types(HashMap::new());
+    for (key, class) in classes_of() {
+        if let Some(declared) = &class.class {
+            types
+                .0
+                .insert(declared.name.clone(), run_type_name(lang(), name, key));
+        }
+    }
+    for (key, _) in classes_of() {
+        types
+            .0
+            .entry(key.clone())
+            .or_insert_with(|| run_type_name(lang(), name, key));
+    }
+    let mut functions = Vec::new();
     let mut classes = Vec::new();
-    for name in names_of(module, "class")? {
-        let class = pcall(h.index, &[module, zforeign::string(&name)])?;
-        let mut methods = functions_of(class)?;
-        let ctor = methods
-            .iter()
-            .position(|m| m.name == "new")
-            .map(|i| methods.remove(i));
-        classes.push(RunClass {
-            name,
-            object: rooted(proxy(class)),
-            statics: names_of(class, "value")?,
-            methods,
-            ctor,
-        });
+    let mut known = HashSet::new();
+    for (key, value) in root.iter().flat_map(|t| &t.fields) {
+        if let Exported::Function(f) = value {
+            known.insert(key.as_str());
+            functions.extend(function_in(live, key, Some(types.signature(f, false)))?);
+        } else if let Some(class) = exports.table(value).filter(|t| holds_functions(t)) {
+            known.insert(key.as_str());
+            let object = match live {
+                Some(t) => match field(t, key)? {
+                    Some(object) => Some(object),
+                    None => continue,
+                },
+                None => None,
+            };
+            classes.push(class_of(key, Some(class), exports, &types, object)?);
+        }
+    }
+    let Some(live) = live else {
+        return Ok(RunModule { functions, classes });
+    };
+    for key in names_of(live, "function")? {
+        if !known.contains(key.as_str()) {
+            functions.extend(function_in(Some(live), &key, None)?);
+        }
+    }
+    for key in names_of(live, "class")? {
+        if !known.contains(key.as_str())
+            && let Some(object) = field(live, &key)?
+        {
+            classes.push(class_of(&key, None, exports, &types, Some(object))?);
+        }
     }
     Ok(RunModule { functions, classes })
 }
 
-/// The names of `t`'s fields of `kind`: `function`, `class` or `value`.
-fn names_of(t: Any, kind: &str) -> Result<Vec<String>, String> {
-    let names = pcall(host().names, &[t, zforeign::string(kind)])?;
-    Ok(unsafe { strings(host().l, names) })
+/// The module's classes by the names an annotation may give them, with
+/// the type each is published under.
+struct Types(HashMap<String, String>);
+
+impl Types {
+    /// The type of the core a declared type is. A class of the module is
+    /// its published type; a type the core has no counterpart for, or
+    /// that may be nil, is `Dyn`.
+    fn of(&self, ty: &LuaType) -> TypeRef {
+        match ty {
+            LuaType::Integer => TypeRef::Int,
+            LuaType::Number => TypeRef::Float,
+            LuaType::String => TypeRef::Str,
+            LuaType::Boolean => TypeRef::Bool,
+            LuaType::Nil => TypeRef::Void,
+            LuaType::Function => TypeRef::Fun,
+            LuaType::Fun { params, returns } => TypeRef::Function {
+                params: params.iter().map(|t| self.of(t)).collect(),
+                ret: Box::new(returns.first().map_or(TypeRef::Void, |t| self.of(t))),
+            },
+            LuaType::Named(name) => self
+                .0
+                .get(name)
+                .map_or(TypeRef::Dyn, |t| TypeRef::Object(t.clone())),
+            _ => TypeRef::Dyn,
+        }
+    }
+
+    /// The parameter and result types of `f`, its receiver left out
+    /// when `receiver`: as its annotations declare them, `Dyn` where
+    /// they do not. A variadic function takes no fixed parameters, as
+    /// its arity word says.
+    fn signature(&self, f: &ExportedFunction, receiver: bool) -> (Vec<TypeRef>, TypeRef) {
+        let skip = usize::from(receiver);
+        let count = if f.variadic {
+            0
+        } else {
+            f.params.len().saturating_sub(skip)
+        };
+        match &f.signature {
+            Some(sig) => (
+                sig.params
+                    .iter()
+                    .skip(skip)
+                    .take(count)
+                    .map(|t| self.of(t))
+                    .collect(),
+                sig.returns.first().map_or(TypeRef::Dyn, |t| self.of(t)),
+            ),
+            None => (vec![TypeRef::Dyn; count], TypeRef::Dyn),
+        }
+    }
 }
 
-/// The functions of the table `t`, each a [`Proxy`] of the function.
-fn functions_of(t: Any) -> Result<Vec<RunFunction>, String> {
+/// Class `name`: the fields its types know, `known`, then those only
+/// its running table `live` shows. `new` is its constructor, bound to
+/// the class when declared with `:`; any other method (a function taking
+/// `self` first) is called on an instance, any other function on the
+/// class, and any other field is a static. Its instances' fields are
+/// the `@field`s its `@class` declares, then the fields of the tables it
+/// is the metatable of.
+fn class_of(
+    name: &str,
+    known: Option<&ExportedTable>,
+    exports: &Exports,
+    types: &Types,
+    live: Option<Any>,
+) -> Result<RunClass, String> {
     let mut functions = Vec::new();
-    for name in names_of(t, "function")? {
-        let f = pcall(host().index, &[t, zforeign::string(&name)])?;
-        functions.push(RunFunction {
-            name,
-            params: params(f).unwrap_or(0),
-            value: rooted(proxy(f)),
-        });
+    let mut methods = Vec::new();
+    let mut statics = Vec::new();
+    let mut ctor = None;
+    let mut seen = HashSet::new();
+    for (key, value) in known.iter().flat_map(|t| &t.fields) {
+        seen.insert(key.as_str());
+        let f = match value {
+            Exported::Function(f) => f,
+            Exported::Value(Some(ty)) => {
+                statics.push((key.clone(), types.of(ty)));
+                continue;
+            }
+            _ => {
+                statics.push((key.clone(), TypeRef::Dyn));
+                continue;
+            }
+        };
+        let signature = types.signature(f, f.method);
+        if key == "new" {
+            ctor = if f.method {
+                bound_in(live, key, signature)?
+            } else {
+                function_in(live, key, Some(signature))?
+            };
+        } else if f.method {
+            methods.extend(function_in(live, key, Some(signature))?);
+        } else {
+            functions.extend(function_in(live, key, Some(signature))?);
+        }
     }
-    Ok(functions)
+    if let Some(t) = live {
+        for key in names_of(t, "function")? {
+            if seen.contains(key.as_str()) {
+                continue;
+            }
+            let f = function_in(live, &key, None)?;
+            if key == "new" {
+                ctor = f;
+            } else {
+                functions.extend(f);
+            }
+        }
+        statics.extend(
+            names_of(t, "value")?
+                .into_iter()
+                .filter(|key| !seen.contains(key.as_str()))
+                .map(|key| (key, TypeRef::Dyn)),
+        );
+    }
+    let is_method = |key: &str| methods.iter().any(|m: &RunFunction| m.name == key);
+    let mut fields: Vec<(String, TypeRef)> = Vec::new();
+    for (key, ty) in known
+        .iter()
+        .flat_map(|t| t.class.iter())
+        .flat_map(|c| &c.fields)
+    {
+        if !is_method(key) {
+            fields.push((key.clone(), types.of(ty)));
+        }
+    }
+    for &i in known.iter().flat_map(|t| &t.instances) {
+        for (key, _) in &exports.tables[i].fields {
+            if !fields.iter().any(|(f, _)| f == key) && !is_method(key) {
+                fields.push((key.clone(), TypeRef::Dyn));
+            }
+        }
+    }
+    Ok(RunClass {
+        name: name.to_owned(),
+        object: live.map_or(Value::null(), |t| rooted(proxy(t))),
+        statics,
+        fields,
+        functions,
+        methods,
+        ctor,
+    })
+}
+
+/// Function `name` of the table `live`, or of a module described when
+/// there is none, with the types its annotations declare, `declared`;
+/// without them, as many `Dyn` parameters as its arity word counts.
+/// `None` when `live` holds nil under the name.
+fn function_in(
+    live: Option<Any>,
+    name: &str,
+    declared: Option<(Vec<TypeRef>, TypeRef)>,
+) -> Result<Option<RunFunction>, String> {
+    let (value, (params, ret)) = match live {
+        Some(t) => {
+            let Some(f) = field(t, name)? else {
+                return Ok(None);
+            };
+            let signature = declared
+                .unwrap_or_else(|| (vec![TypeRef::Dyn; params(f).unwrap_or(0)], TypeRef::Dyn));
+            (rooted(proxy(f)), signature)
+        }
+        None => (
+            Value::null(),
+            declared.unwrap_or((Vec::new(), TypeRef::Dyn)),
+        ),
+    };
+    Ok(Some(RunFunction {
+        name: name.to_owned(),
+        params,
+        ret,
+        value,
+    }))
+}
+
+/// Method `name` of the table `live` bound to the table as its receiver,
+/// with the types `(params, ret)`; as [`function_in`] otherwise.
+fn bound_in(
+    live: Option<Any>,
+    name: &str,
+    (params, ret): (Vec<TypeRef>, TypeRef),
+) -> Result<Option<RunFunction>, String> {
+    let value = match live {
+        Some(t) => {
+            if field(t, name)?.is_none() {
+                return Ok(None);
+            }
+            rooted(proxy(pcall(host().bind, &[t, zforeign::string(name)])?))
+        }
+        None => Value::null(),
+    };
+    Ok(Some(RunFunction {
+        name: name.to_owned(),
+        params,
+        ret,
+        value,
+    }))
+}
+
+fn holds_functions(t: &ExportedTable) -> bool {
+    t.fields
+        .iter()
+        .any(|(_, v)| matches!(v, Exported::Function(_)))
+}
+
+/// Field `name` of the table `t`, or `None` when it holds nil.
+fn field(t: Any, name: &str) -> Result<Option<Any>, String> {
+    let v = pcall(host().index, &[t, zforeign::string(name)])?;
+    Ok((type_of(v) != LUA_TNIL).then_some(v))
+}
+
+/// The names of `t`'s fields of `kind`: `function`, `class` or `value`,
+/// metafields left out.
+fn names_of(t: Any, kind: &str) -> Result<Vec<String>, String> {
+    let names = pcall(host().names, &[t, zforeign::string(kind)])?;
+    let mut names = unsafe { strings(host().l, names) };
+    names.retain(|name| !is_metafield(name));
+    Ok(names)
 }
 
 /// `v`, rooted for as long as the module is published.
@@ -349,6 +631,8 @@ unsafe fn strings(l: L, t: Any) -> Vec<String> {
 struct Proxy {
     desc: *const TypeDesc,
     value: Any,
+    /// The type name it reports, once asked.
+    type_name: Option<Symbol>,
 }
 
 fn descriptor() -> &'static TypeDesc {
@@ -398,7 +682,10 @@ fn proxy(v: Any) -> Value {
     if p.is_null() {
         heap::out_of_memory("a Lua value");
     }
-    unsafe { (*p).value = v };
+    unsafe {
+        (*p).value = v;
+        (*p).type_name = None;
+    }
     Value::object(p as *const c_void)
 }
 
@@ -487,13 +774,49 @@ unsafe extern "C-unwind" fn proxy_arity(obj: *mut u8, out: *mut usize) -> u8 {
 }
 
 unsafe extern "C-unwind" fn proxy_type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
-    let name = match type_of(unsafe { value_of_proxy(obj) }) {
-        LUA_TTABLE => "lua.table",
-        LUA_TFUNCTION => "lua.function",
-        _ => "lua.userdata",
+    let proxy = obj as *mut Proxy;
+    if let Some(name) = unsafe { (*proxy).type_name } {
+        unsafe { *out = name };
+        return REPLY_OK;
+    }
+    let v = unsafe { (*proxy).value };
+    let name = match type_of(v) {
+        LUA_TTABLE => class_name(v).unwrap_or_else(|| symbol::intern("lua.table")),
+        LUA_TFUNCTION => symbol::intern("lua.function"),
+        _ => symbol::intern("lua.userdata"),
     };
-    unsafe { *out = symbol::intern(name) };
+    unsafe {
+        (*proxy).type_name = Some(name);
+        *out = name;
+    }
     REPLY_OK
+}
+
+/// The type name of the published class whose instance `t` is: the class
+/// its metatable is.
+fn class_name(t: Any) -> Option<Symbol> {
+    let name = pcall(host().class_name, &[t]).ok()?;
+    if type_of(name) != LUA_TSTRING {
+        return None;
+    }
+    let bytes = unsafe { lua::bytes_of(lua::string_of(name as lua::Any)) };
+    Some(symbol::intern(std::str::from_utf8(bytes).ok()?))
+}
+
+/// Record the type names the classes of `iface` were published under,
+/// for their instances to report.
+pub(crate) fn published(iface: &caribou::registry::Interface) -> Result<(), String> {
+    for class in &iface.classes {
+        let Some(object) = class.class_object.as_object() else {
+            continue;
+        };
+        if object.is_null() {
+            continue;
+        }
+        let t = unsafe { value_of_proxy(object as *mut u8) };
+        pcall(host().name_class, &[t, zforeign::string(&class.type_name)])?;
+    }
+    Ok(())
 }
 
 static PROXY_PROTO: Protocol = Protocol {

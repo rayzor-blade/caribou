@@ -34,7 +34,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use caribou::registry;
+use caribou::registry::{self, TypeRef};
 use caribou::world::{self, Adapter};
 use caribou_abi::LangId;
 use zyntax_embed::{
@@ -78,13 +78,37 @@ pub trait Language {
         None
     }
 
-    /// Load a module whose value is what running it gives, as a Lua
-    /// chunk's is, from its `source` (`file` names it): the functions of
-    /// that value, which the adapter publishes as the module's own. `None`
-    /// for a language whose modules declare what they export, which the
-    /// adapter parses, lowers and compiles.
-    fn run_module(&self, _source: &str, _file: &str) -> Option<Result<RunModule, String>> {
+    /// Load module `name` (`game/counter`), whose value is what running
+    /// it gives, as a Lua chunk's is, from its `source` (`file` names
+    /// it): the functions and classes of that value, which the adapter
+    /// publishes. `None` for a language whose modules declare what they
+    /// export, which the adapter parses, lowers and compiles.
+    fn run_module(
+        &self,
+        _name: &str,
+        _source: &str,
+        _file: &str,
+    ) -> Option<Result<RunModule, String>> {
         None
+    }
+
+    /// What [`Language::run_module`] publishes for a module, read from
+    /// its `source` without running it, each value null: a module
+    /// described for a build step. Every function and class it gives,
+    /// running the module gives the same.
+    fn describe_module(
+        &self,
+        _name: &str,
+        _source: &str,
+        _file: &str,
+    ) -> Option<Result<RunModule, String>> {
+        None
+    }
+
+    /// The interface the adapter publishes for a module the language ran,
+    /// before it is published: the names its classes go by.
+    fn published(&self, _iface: &registry::Interface) -> Result<(), String> {
+        Ok(())
     }
 
     /// The world gave the language `lang`, once it was prepared.
@@ -123,22 +147,31 @@ pub struct RunModule {
     pub classes: Vec<RunClass>,
 }
 
-/// A class a run module's value holds: a table of functions, its statics
-/// read and written through `object`, rooted as a function is.
+/// A class a run module's value holds: a table of functions, rooted as
+/// a function is (null when the module is described).
 pub struct RunClass {
     pub name: String,
     pub object: caribou_abi::Value,
-    pub statics: Vec<String>,
+    /// Its other fields, read and written through `object`.
+    pub statics: Vec<(String, TypeRef)>,
+    /// The fields of its instances, read and written through each.
+    pub fields: Vec<(String, TypeRef)>,
+    /// Its functions, called as the class's own.
+    pub functions: Vec<RunFunction>,
+    /// Its methods, each called with an instance first, which `params`
+    /// does not count.
     pub methods: Vec<RunFunction>,
     pub ctor: Option<RunFunction>,
 }
 
 /// A function a run module's value holds: a value of the core that
 /// answers `call`, rooted by the language for as long as the module is
-/// published, and how many parameters it names.
+/// published (null when the module is described), and the types of its
+/// parameters and its result, `Dyn` where the language declares none.
 pub struct RunFunction {
     pub name: String,
-    pub params: usize,
+    pub params: Vec<TypeRef>,
+    pub ret: TypeRef,
     pub value: caribou_abi::Value,
 }
 
@@ -527,6 +560,9 @@ pub struct Runtime {
     frontends: Vec<Frontend>,
     /// The languages brought up, whose states go with the adapter.
     langs: Vec<LangId>,
+    /// Modules are described for a build step: nothing is compiled or
+    /// run (see [`describe`]).
+    describing: bool,
 }
 
 impl Runtime {
@@ -537,6 +573,7 @@ impl Runtime {
         Runtime {
             frontends,
             langs: Vec::new(),
+            describing: false,
         }
     }
 }
@@ -574,7 +611,8 @@ impl Adapter for Runtime {
             STATES.with(|s| s.borrow_mut().insert(lang, state));
             self.langs.push(lang);
             caribou::bridge::set_typed_dispatch(lang, dispatch::for_lang(lang));
-            registry::set_loader(lang, Arc::new(move |ns, module| load(lang, ns, module)));
+            let loader = if self.describing { describe_load } else { load };
+            registry::set_loader(lang, Arc::new(move |ns, module| loader(lang, ns, module)));
         }
     }
 
@@ -713,7 +751,7 @@ impl State {
 
     /// Module `name`'s source, the name its file goes by, and its file
     /// when it has one; `None` when no layout of the language has it.
-    fn source(&self, name: &str) -> Result<Option<(String, String, Option<PathBuf>)>, String> {
+    fn source(&self, name: &str) -> Result<Option<Source>, String> {
         let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
         let staged = self.staged.lock().unwrap();
         let Some(found) = find(&segments, &self.language.architectures(), &staged) else {
@@ -731,11 +769,7 @@ impl State {
     }
 
     /// Parse and lower module `name` from what [`Self::source`] found.
-    fn parse_source(
-        &self,
-        name: &str,
-        (source, file, path): (String, String, Option<PathBuf>),
-    ) -> Result<Parsed, String> {
+    fn parse_source(&self, name: &str, (source, file, path): Source) -> Result<Parsed, String> {
         let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
         let sources = Sources {
             staged: &self.staged,
@@ -780,12 +814,17 @@ impl State {
     }
 }
 
-/// The registry's loader: a module a language runs is run and its
-/// value's functions published; any other is parsed, lowered, compiled,
-/// its body run when the language's modules have one, and published
-/// from the HIR. No borrow of the states is held while a module's code
-/// runs, since that code may load another module.
-fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
+/// A module's source, as [`State::source`] finds it.
+type Source = (String, String, Option<PathBuf>);
+
+/// A module found to load: its name in its language's state, the
+/// language, and its source.
+type Located = (String, Rc<dyn Language>, Source);
+
+/// Module `module` of `namespace` in language `lang`: its name in the
+/// language's state, the language, and its source; `None` when no
+/// layout of the language has it.
+fn find_module(lang: LangId, namespace: &str, module: &str) -> Result<Option<Located>, String> {
     // The language's own namespace names a root's module by itself:
     // `lua:scale` is the root's `scale.lua`.
     let name = if namespace == world::language_name(lang) {
@@ -793,24 +832,62 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
     } else {
         format!("{namespace}/{module}")
     };
-    let found = STATES.with(|states| {
+    STATES.with(|states| {
         let states = states.borrow();
         let state = states.get(&lang).ok_or_else(|| {
             format!("`{name}` cannot load: its Zyntax runtime is not on this thread")
         })?;
-        Ok::<_, String>(
-            state
-                .source(&name)?
-                .map(|found| (Rc::clone(&state.language), found)),
-        )
-    })?;
-    let Some((language, found)) = found else {
+        Ok(state
+            .source(&name)?
+            .map(|found| (name, Rc::clone(&state.language), found)))
+    })
+}
+
+/// The registry's loader while describing: each module's interface from
+/// its source alone, with nothing compiled or run. A module a language
+/// runs is read as [`Language::describe_module`] reads it; any other is
+/// parsed and lowered, and published from its declarations with no code
+/// behind them.
+fn describe_load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
+    let Some((name, language, found)) = find_module(lang, namespace, module)? else {
         return Ok(false);
     };
-    if let Some(run) = foreign::as_caller(lang, || language.run_module(&found.0, &found.1)) {
+    let iface = match language.describe_module(&name, &found.0, &found.1) {
+        Some(run) => {
+            let run = run.map_err(|e| format!("`{name}`: {e}"))?;
+            publish::run_interface(lang, &name, run)
+        }
+        None => {
+            let declared = STATES.with(|states| {
+                let states = states.borrow();
+                let state = states.get(&lang).expect("found above");
+                state.parse_source(&name, found).map(|p| p.declared)
+            })?;
+            publish::interface(lang, language.name(), &name, declared, &|_| {
+                Some(std::ptr::null())
+            })
+        }
+    };
+    registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))?;
+    Ok(true)
+}
+
+/// The registry's loader: a module a language runs is run and its
+/// value's functions published; any other is parsed, lowered, compiled,
+/// its body run when the language's modules have one, and published
+/// from the HIR. No borrow of the states is held while a module's code
+/// runs, since that code may load another module.
+fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
+    let Some((name, language, found)) = find_module(lang, namespace, module)? else {
+        return Ok(false);
+    };
+    if let Some(run) = foreign::as_caller(lang, || language.run_module(&name, &found.0, &found.1)) {
         let run = run.map_err(|e| format!("`{name}`: {e}"))?;
-        registry::publish(publish::run_interface(lang, &name, run))
+        let iface = publish::run_interface(lang, &name, run);
+        language
+            .published(&iface)
             .map_err(|e| format!("`{name}`: {e}"))?;
+        registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))?;
         if let Some(path) = found.2 {
             registry::set_source(lang, &name, path);
         }
@@ -874,11 +951,15 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
     })?;
     // A module a language runs is run again, and published over itself.
     if let Some((language, found)) = &found
-        && let Some(run) = foreign::as_caller(lang, || language.run_module(&found.0, &found.1))
+        && let Some(run) =
+            foreign::as_caller(lang, || language.run_module(name, &found.0, &found.1))
     {
         let run = run.map_err(|e| format!("`{name}`: {e}"))?;
-        return registry::publish(publish::run_interface(lang, name, run))
-            .map_err(|e| format!("`{name}`: {e}"));
+        let iface = publish::run_interface(lang, name, run);
+        language
+            .published(&iface)
+            .map_err(|e| format!("`{name}`: {e}"))?;
+        return registry::publish(iface).map_err(|e| format!("`{name}`: {e}"));
     }
     STATES.with(|states| {
         let mut states = states.borrow_mut();
@@ -913,10 +994,10 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
 /// The modules of the frontends under `root` as data, for a build step:
 /// the frontend files under the root plus `others` (languages that parse
 /// on their own, which the caller knows to add), every file under `root`
-/// with one of their extensions, each loaded into a world of this
-/// thread's as running it would and described from what it published,
-/// with its path. A module directly under the root has no namespace and
-/// is not a module of the world.
+/// with one of their extensions, each described into a world of this
+/// thread's from its source, with nothing compiled or run, and given its
+/// path. A module directly under the root has no namespace and is not a
+/// module of the world.
 pub fn describe(
     root: &std::path::Path,
     others: Vec<Frontend>,
@@ -975,8 +1056,10 @@ pub fn describe(
         roots: vec![root.to_owned()],
         ..world::Config::default()
     });
+    let mut runtime = Runtime::new(frontends);
+    runtime.describing = true;
     let ids = world
-        .register(Box::new(Runtime::new(frontends)))
+        .register(Box::new(runtime))
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for (namespace, module, path) in modules {

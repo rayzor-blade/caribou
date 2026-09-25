@@ -1,0 +1,7 @@
+# The Haxe program of the Lua test: it uses the class the Lua module
+# under `src/game` returns. Rebuild with `haxe lua.hxml` (Haxe 4.3.6)
+# from this directory; lua.hl is checked in.
+-cp src
+-lib caribou
+-main UseLua
+-hl lua.hl

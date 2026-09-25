@@ -23,7 +23,14 @@ private typedef ClassDesc = {
 	name:String,
 	type_name:String,
 	?superclass:String,
+	?fields:Array<FieldDesc>,
+	?statics:Array<FieldDesc>,
 	members:Array<MemberDesc>
+}
+
+private typedef FieldDesc = {
+	name:String,
+	ty:Dynamic
 }
 
 private typedef MemberDesc = {
@@ -612,6 +619,63 @@ class Bridge {
 					});
 				default:
 			}
+		}
+		// A field the class publishes is a property read and written on
+		// the object; a static field, on the class. A member of the same
+		// name is what Haxe sees.
+		function boxed(t:ComplexType):ComplexType {
+			return switch (haxe.macro.ComplexTypeTools.toString(t)) {
+				case "Int", "haxe.Int64", "Float", "Bool": t;
+				default: macro :Dynamic;
+			}
+		}
+		for (f in (c.fields == null ? [] : c.fields)) {
+			if (properties.exists(f.name) || taken.exists(f.name)) {
+				continue;
+			}
+			var type = haxeType(f.ty, pack, classes);
+			var get = native(prefix + f.name, [{name: "self", type: self}], boxed(type), "__field_" + f.name);
+			var set = native(prefix + f.name + "=(_)", [{name: "self", type: self}, {name: "value", type: type}], macro :Void, "__field_" + f.name + "_set");
+			properties.set(f.name, {get: true, set: true, type: type});
+			fields.push({
+				name: "get_" + f.name,
+				pos: pos,
+				access: [AInline],
+				kind: FFun({args: [], ret: type, expr: macro return $i{get}(this)})
+			});
+			fields.push({
+				name: "set_" + f.name,
+				pos: pos,
+				access: [AInline],
+				kind: FFun({args: [{name: "value", type: type}], ret: type, expr: macro {
+					$i{set}(this, value);
+					return value;
+				}})
+			});
+		}
+		for (f in (c.statics == null ? [] : c.statics)) {
+			if (staticProperties.exists(f.name) || taken.exists(f.name)) {
+				continue;
+			}
+			var type = haxeType(f.ty, pack, classes);
+			var get = native(prefix + "static:" + f.name, [], boxed(type), "__static_field_" + f.name);
+			var set = native(prefix + "static:" + f.name + "=(_)", [{name: "value", type: type}], macro :Void, "__static_field_" + f.name + "_set");
+			staticProperties.set(f.name, {get: true, set: true, type: type});
+			fields.push({
+				name: "get_" + f.name,
+				pos: pos,
+				access: [AStatic, AInline],
+				kind: FFun({args: [], ret: type, expr: macro return $i{get}()})
+			});
+			fields.push({
+				name: "set_" + f.name,
+				pos: pos,
+				access: [AStatic, AInline],
+				kind: FFun({args: [{name: "value", type: type}], ret: type, expr: macro {
+					$i{set}(value);
+					return value;
+				}})
+			});
 		}
 		for (name => p in properties) {
 			taken.set(name, true);

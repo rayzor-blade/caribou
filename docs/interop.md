@@ -258,6 +258,65 @@ import game.tally.Tally;         // the class, under the module as its package
 
 Types come from the module's declarations: Python annotations and ZynML signatures. Numbers, booleans, and strings cross; an instance of a Python or ZynML class does not cross yet, so a call that takes or returns one fails with an error that says so.
 
+## Lua Modules
+
+The Lua frontend registers when a root holds a `.lua` file. A Lua module is the table its chunk returns, and `game.counter` is `game/counter.lua` or `game/counter/init.lua`. A file directly under a root is a module of Lua's own namespace: `scale.lua` is `lua:scale`.
+
+* **Functions** of the table belong to the module, as in Python.
+* **Classes:** A table of functions the module holds is a class, read the way Lua writes one:
+  * `new` constructs an instance;
+  * a function declared with `:` is a method of an instance;
+  * the fields of the tables the class is the metatable of are the instances' fields;
+  * the class's other functions and fields are statics.
+* **Metafields:** Keys that begin with `__` belong to the metatable and are not members.
+
+* **Types:** LuaLS annotations, the `---@` comments the Lua language server reads, are the types the other languages see. Without them a member takes and returns dynamic values.
+  * `---@param` and `---@return` type a function's parameters and result.
+  * `---@class` names a class, and its `---@field`s type its instances' fields.
+  * `---@type` types a static field.
+  * `integer` is an `Int`, `number` a `Float`, `string`, `boolean`, a `fun(...)` type, and a class of the module by its name. Any other type, or one that may be nil, is dynamic.
+  * An annotation that names a parameter the function does not have is an error when the module is described or loaded.
+
+```lua
+-- src/game/counter.lua
+---@class Counter
+---@field n integer
+local Counter = {}
+Counter.__index = Counter
+
+---@type integer
+Counter.LIMIT = 10
+
+---@param start integer
+---@return Counter
+function Counter.new(start) return setmetatable({ n = start }, Counter) end
+
+---@param by integer
+---@return integer
+function Counter:bump(by)
+  self.n = math.min(self.n + by, Counter.LIMIT)
+  return self.n
+end
+
+return { Counter = Counter }
+```
+
+```haxe
+import game.counter.Counter;
+var c = new Counter(3);
+c.bump(4);                       // 7: bump(by:Int):Int
+trace(c.n, Counter.LIMIT);       // 7, 10, both Int
+```
+
+```wren
+import "game:counter" for Counter
+var c = Counter.new(3)
+System.print(c.bump(4))          // 7
+System.print(Counter.LIMIT)      // 10
+```
+
+A function from Haxe or Wren can be passed to Lua and called there. A Lua function that comes back is called with `call` in Wren, and as a function in Haxe when its type is declared. An instance of the class that another member returns is an instance of it in Haxe and Wren. For how bytes cross, see [Buffers](#buffers).
+
 ## Functions & Callbacks
 
 A function crosses by reference, keeps its captured environment, and comes back as itself.
@@ -310,3 +369,5 @@ The name is the entire binding. Nothing needs to be published before the program
 ## Describing a Module
 
 `caribou describe src/game/hud.wren` prints the module's interface as JSON: the classes, their members with kind, Wren signature, parameter names and types, and result type. `caribou describe src` prints the same for every module of every language under the root, each with its file path. This is what the Haxe library reads. It has the same shape the runtime publishes to the registry when the module loads, so the two cannot disagree.
+
+Describing runs none of a module's code. A Lua module is described from the types the Lua compiler gives its chunk, so its top level can require a Haxe class or a plugin that only exists once the program runs. When the module runs, every function and class of the description is there with the same kind, and the running table may add fields the compiler could not see, such as those stored under computed keys.

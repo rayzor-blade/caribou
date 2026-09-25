@@ -3,22 +3,20 @@
 -- class; Lua's strings are the bytes it uploads, each a read-only buffer
 -- over the string itself, and a core Buffer is what it reads back into,
 -- which string.unpack reads in place.
+local ScaleValues = require("haxe.ScaleValues").ScaleValues
+local Buffer = require("core.Buffer").Buffer
+local BufferUsage = require("gpu.BufferUsage").BufferUsage
+local GpuBufferDescriptor = require("gpu.GpuBufferDescriptor").GpuBufferDescriptor
+local GpuComputePipelineDescriptor =
+  require("gpu.GpuComputePipelineDescriptor").GpuComputePipelineDescriptor
+local GpuProgrammableStage = require("gpu.GpuProgrammableStage").GpuProgrammableStage
+local GpuBindGroupEntry = require("gpu.GpuBindGroupEntry").GpuBindGroupEntry
+local GpuBindGroupDescriptor = require("gpu.GpuBindGroupDescriptor").GpuBindGroupDescriptor
+
 local Scale = {}
 
 -- Scales 1, 2, 3 and 4 by 3 through the imported helper, which adds 1.
 function Scale.run(device, queue)
-  -- Required when it runs: the module is read for its interface before
-  -- the Haxe program is there.
-  local ScaleValues = require("haxe.ScaleValues").ScaleValues
-  local Buffer = require("core.Buffer").Buffer
-  local BufferUsage = require("gpu.BufferUsage").BufferUsage
-  local GpuBufferDescriptor = require("gpu.GpuBufferDescriptor").GpuBufferDescriptor
-  local GpuComputePipelineDescriptor =
-    require("gpu.GpuComputePipelineDescriptor").GpuComputePipelineDescriptor
-  local GpuProgrammableStage = require("gpu.GpuProgrammableStage").GpuProgrammableStage
-  local GpuBindGroupEntry = require("gpu.GpuBindGroupEntry").GpuBindGroupEntry
-  local GpuBindGroupDescriptor = require("gpu.GpuBindGroupDescriptor").GpuBindGroupDescriptor
-
   local shader = device:createShader(ScaleValues.WGSL)
   local pipeline = device:createComputePipeline(
     GpuComputePipelineDescriptor(GpuProgrammableStage(shader)))

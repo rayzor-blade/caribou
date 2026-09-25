@@ -66,8 +66,28 @@ impl Language for Lua {
     }
 
     /// The chunk, run with Lua's own `load` and a protected call.
-    fn run_module(&self, source: &str, file: &str) -> Option<Result<RunModule, String>> {
-        Some(host::run_module(source, file))
+    fn run_module(
+        &self,
+        name: &str,
+        source: &str,
+        file: &str,
+    ) -> Option<Result<RunModule, String>> {
+        Some(host::run_module(name, source, file))
+    }
+
+    /// The chunk's exports, as its types know them.
+    fn describe_module(
+        &self,
+        name: &str,
+        source: &str,
+        file: &str,
+    ) -> Option<Result<RunModule, String>> {
+        Some(host::describe_module(name, source, file))
+    }
+
+    /// Its classes' instances report the names the classes go by.
+    fn published(&self, iface: &caribou::registry::Interface) -> Result<(), String> {
+        host::published(iface)
     }
 
     fn assigned(&self, lang: LangId) {
