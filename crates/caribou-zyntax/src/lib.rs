@@ -31,6 +31,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use caribou::registry;
@@ -42,7 +43,7 @@ use zyntax_embed::{
 };
 
 mod dispatch;
-mod foreign;
+pub mod foreign;
 pub mod publish;
 
 pub use zyntax_embed;
@@ -77,6 +78,18 @@ pub trait Language {
         None
     }
 
+    /// Load a module whose value is what running it gives, as a Lua
+    /// chunk's is, from its `source` (`file` names it): the functions of
+    /// that value, which the adapter publishes as the module's own. `None`
+    /// for a language whose modules declare what they export, which the
+    /// adapter parses, lowers and compiles.
+    fn run_module(&self, _source: &str, _file: &str) -> Option<Result<RunModule, String>> {
+        None
+    }
+
+    /// The world gave the language `lang`, once it was prepared.
+    fn assigned(&self, _lang: LangId) {}
+
     /// The function that runs a module's body, which loading the module
     /// runs once, as an import does in a language whose modules run
     /// (Python's module statements). `None` for a language whose modules
@@ -102,6 +115,20 @@ pub trait Language {
         file: &str,
         sources: &Sources,
     ) -> Result<TypedProgram, String>;
+}
+
+/// What a language ran as a module (see [`Language::run_module`]).
+pub struct RunModule {
+    pub functions: Vec<RunFunction>,
+}
+
+/// A function a run module's value holds: a value of the core that
+/// answers `call`, rooted by the language for as long as the module is
+/// published, and how many parameters it names.
+pub struct RunFunction {
+    pub name: String,
+    pub params: usize,
+    pub value: caribou_abi::Value,
 }
 
 /// Where a language's modules are read from: a bundle's staged sources
@@ -420,7 +447,7 @@ impl Frontend {
             Arc::clone(&importing),
         ));
         Ok(State {
-            language: std::mem::replace(&mut self.language, Box::new(Unprepared)),
+            language: Rc::from(std::mem::replace(&mut self.language, Box::new(Unprepared))),
             runtime,
             staged,
             importing,
@@ -456,7 +483,8 @@ impl Language for Unprepared {
 /// A language's runtime and frontend, on the thread that registered it,
 /// and the module sources a bundle staged for it, by path under a root.
 struct State {
-    language: Box<dyn Language>,
+    /// Shared, so a module's code runs with no borrow of the states held.
+    language: Rc<dyn Language>,
     /// Boxed, so it keeps one address as the state moves.
     runtime: Box<TieredRuntime>,
     staged: Arc<Staged>,
@@ -531,6 +559,7 @@ impl Adapter for Runtime {
                     continue;
                 }
             };
+            state.language.assigned(lang);
             STATES.with(|s| s.borrow_mut().insert(lang, state));
             self.langs.push(lang);
             caribou::bridge::set_typed_dispatch(lang, dispatch::for_lang(lang));
@@ -665,12 +694,21 @@ impl State {
     /// program: the declarations type the interface, the HIR is what
     /// runs.
     fn parse(&self, name: &str) -> Result<Option<Parsed>, String> {
+        let Some(found) = self.source(name)? else {
+            return Ok(None);
+        };
+        self.parse_source(name, found).map(Some)
+    }
+
+    /// Module `name`'s source, the name its file goes by, and its file
+    /// when it has one; `None` when no layout of the language has it.
+    fn source(&self, name: &str) -> Result<Option<(String, String, Option<PathBuf>)>, String> {
         let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
         let staged = self.staged.lock().unwrap();
         let Some(found) = find(&segments, &self.language.architectures(), &staged) else {
             return Ok(None);
         };
-        let (source, file, path) = match found {
+        Ok(Some(match found {
             Found::Staged(key) => (staged[&key].clone(), key, None),
             Found::File(path) => (
                 std::fs::read_to_string(&path)
@@ -678,8 +716,16 @@ impl State {
                 path.to_string_lossy().into_owned(),
                 Some(path),
             ),
-        };
-        drop(staged);
+        }))
+    }
+
+    /// Parse and lower module `name` from what [`Self::source`] found.
+    fn parse_source(
+        &self,
+        name: &str,
+        (source, file, path): (String, String, Option<PathBuf>),
+    ) -> Result<Parsed, String> {
+        let segments: Vec<String> = name.split('/').map(str::to_owned).collect();
         let sources = Sources {
             staged: &self.staged,
         };
@@ -705,12 +751,12 @@ impl State {
                 class.methods.retain(|m| members.contains(&m.name));
             }
         }
-        Ok(Some(Parsed {
+        Ok(Parsed {
             program,
             hir,
             declared,
             file: path,
-        }))
+        })
     }
 
     /// Publish module `name`'s interface from `declared`, with the
@@ -723,37 +769,71 @@ impl State {
     }
 }
 
-/// The registry's loader for a grammar language: parse, lower, compile,
-/// publish from the HIR.
+/// The registry's loader: a module a language runs is run and its
+/// value's functions published; any other is parsed, lowered, compiled,
+/// its body run when the language's modules have one, and published
+/// from the HIR. No borrow of the states is held while a module's code
+/// runs, since that code may load another module.
 fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
     let name = format!("{namespace}/{module}");
-    STATES.with(|states| {
+    let found = STATES.with(|states| {
+        let states = states.borrow();
+        let state = states.get(&lang).ok_or_else(|| {
+            format!("`{name}` cannot load: its Zyntax runtime is not on this thread")
+        })?;
+        Ok::<_, String>(
+            state
+                .source(&name)?
+                .map(|found| (Rc::clone(&state.language), found)),
+        )
+    })?;
+    let Some((language, found)) = found else {
+        return Ok(false);
+    };
+    if let Some(run) = foreign::as_caller(lang, || language.run_module(&found.0, &found.1)) {
+        let run = run.map_err(|e| format!("`{name}`: {e}"))?;
+        registry::publish(publish::run_interface(lang, &name, run))
+            .map_err(|e| format!("`{name}`: {e}"))?;
+        if let Some(path) = found.2 {
+            registry::set_source(lang, &name, path);
+        }
+        return Ok(true);
+    }
+    let (declared, file, runtime) = STATES.with(|states| {
         let mut states = states.borrow_mut();
-        let Some(state) = states.get_mut(&lang) else {
-            return Err(format!(
-                "`{name}` cannot load: its Zyntax runtime is not on this thread"
-            ));
-        };
-        let Some(parsed) = state.parse(&name)? else {
-            return Ok(false);
-        };
+        let state = states.get_mut(&lang).expect("found above");
+        let parsed = state.parse_source(&name, found)?;
         state
             .runtime
             .compile_module(parsed.hir)
             .map_err(|e| format!("`{name}`: {e}"))?;
-        // The module's body, which binds what its functions read.
-        if let Some(entry) = state.language.entry() {
-            foreign::as_caller(lang, || state.runtime.call_raw(entry, &[]))
-                .map_err(|e| format!("`{name}`: {e}"))?;
-        }
         state.current = Some(name.clone());
-        state.publish(lang, &name, parsed.declared)?;
-        // A file the world watches: an edit reloads the module.
-        if let Some(path) = parsed.file {
-            registry::set_source(lang, &name, path);
-        }
-        Ok(true)
-    })
+        Ok::<_, String>((
+            parsed.declared,
+            parsed.file,
+            &*state.runtime as *const TieredRuntime,
+        ))
+    })?;
+    // The module's body, which binds what its functions read.
+    if let Some(entry) = language.entry() {
+        // SAFETY: the runtime is boxed in its state, which stays
+        // registered for the world's life.
+        let runtime = unsafe { &*runtime };
+        foreign::as_caller(lang, || runtime.call_raw(entry, &[]))
+            .map_err(|e| format!("`{name}`: {e}"))?;
+    }
+    STATES.with(|states| {
+        let states = states.borrow();
+        states
+            .get(&lang)
+            .expect("found above")
+            .publish(lang, &name, declared)
+    })?;
+    // A file the world watches: an edit reloads the module.
+    if let Some(path) = file {
+        registry::set_source(lang, &name, path);
+    }
+    Ok(true)
 }
 
 /// Load module `name` again from its source, over the running one: the
@@ -764,6 +844,25 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
 /// compiled last, so only that module reloads; see git-bug
 /// 5bcf0d678e3b10197a5554df0fea80caaac84522e7921e6aabca4449011fdc98.
 fn reload(lang: LangId, name: &str) -> Result<(), String> {
+    let found = STATES.with(|states| {
+        let states = states.borrow();
+        let state = states.get(&lang).ok_or_else(|| {
+            format!("`{name}` cannot reload: its Zyntax runtime is not on this thread")
+        })?;
+        Ok::<_, String>(
+            state
+                .source(name)?
+                .map(|found| (Rc::clone(&state.language), found)),
+        )
+    })?;
+    // A module a language runs is run again, and published over itself.
+    if let Some((language, found)) = &found
+        && let Some(run) = foreign::as_caller(lang, || language.run_module(&found.0, &found.1))
+    {
+        let run = run.map_err(|e| format!("`{name}`: {e}"))?;
+        return registry::publish(publish::run_interface(lang, name, run))
+            .map_err(|e| format!("`{name}`: {e}"));
+    }
     STATES.with(|states| {
         let mut states = states.borrow_mut();
         let Some(state) = states.get_mut(&lang) else {

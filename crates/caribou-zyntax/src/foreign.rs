@@ -13,7 +13,7 @@
 
 use std::cell::Cell;
 use std::ffi::c_void;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use caribou::bridge;
 use caribou::error::{Error, Int64, Str};
@@ -71,7 +71,7 @@ thread_local! {
 
 /// Run `f` as code of `lang`: what calls out of it name as their caller.
 /// The caller before is back once `f` returns or a throw leaves it.
-pub(crate) fn as_caller<T>(lang: LangId, f: impl FnOnce() -> T) -> T {
+pub fn as_caller<T>(lang: LangId, f: impl FnOnce() -> T) -> T {
     struct Restore(LangId);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -82,7 +82,8 @@ pub(crate) fn as_caller<T>(lang: LangId, f: impl FnOnce() -> T) -> T {
     f()
 }
 
-fn caller() -> LangId {
+/// The Zyntax language whose code is running now.
+pub fn caller() -> LangId {
     CALLER.with(Cell::get)
 }
 
@@ -96,8 +97,27 @@ unsafe fn held<'a>(word: usize) -> &'a Held {
     unsafe { &*(word as *const Held) }
 }
 
+/// How a language's own values cross, for a language whose values other
+/// languages hold as objects of the core (a Lua table or function).
+pub trait Crossing: Send + Sync {
+    /// A value of the program's own that this layer has no reading for,
+    /// as a value of the core; `None` for one that is not the language's.
+    fn value_of(&self, any: Any) -> Option<Value>;
+
+    /// The program's own value that `v` stands for, when it stands for
+    /// one: what crossed out comes back as itself.
+    fn own(&self, v: Value) -> Option<Any>;
+}
+
+static CROSSINGS: RwLock<Vec<&'static dyn Crossing>> = RwLock::new(Vec::new());
+
+/// Cross a language's own values with `crossing`, for the process.
+pub fn add_crossing(crossing: &'static dyn Crossing) {
+    CROSSINGS.write().unwrap().push(crossing);
+}
+
 /// A value of the core as the program's.
-pub(crate) fn any_of(v: Value) -> Any {
+pub fn any_of(v: Value) -> Any {
     if v.is_null() || v.is_undefined() {
         return foreign::none();
     }
@@ -116,6 +136,9 @@ pub(crate) fn any_of(v: Value) -> Any {
     if let Some(n) = Int64::of(v) {
         return foreign::int(n);
     }
+    if let Some(own) = CROSSINGS.read().unwrap().iter().find_map(|c| c.own(v)) {
+        return own;
+    }
     match v.as_object() {
         Some(p) => hold(Held::Object(heap::handle_new(p as *mut u8))),
         None => foreign::none(),
@@ -127,7 +150,7 @@ pub(crate) fn any_of(v: Value) -> Any {
 ///
 /// # Safety
 /// `any` is null or a live box.
-pub(crate) unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
+pub unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
     use zyntax_embed::foreign::Value as V;
     let made = |v: Value| {
         (
@@ -154,10 +177,20 @@ pub(crate) unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError
             }
         }
         V::Other(_) => {
-            return Err(ForeignError::new(
-                "TypeError",
-                "a value of the program's own cannot be passed yet",
-            ));
+            let crossed = CROSSINGS
+                .read()
+                .unwrap()
+                .iter()
+                .find_map(|c| c.value_of(any));
+            match crossed {
+                Some(v) => made(v),
+                None => {
+                    return Err(ForeignError::new(
+                        "TypeError",
+                        "a value of the program's own cannot be passed yet",
+                    ));
+                }
+            }
         }
     })
 }

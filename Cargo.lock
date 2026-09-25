@@ -808,8 +808,11 @@ dependencies = [
 name = "caribou-lua"
 version = "0.1.0"
 dependencies = [
+ "caribou",
  "caribou-zyntax",
+ "caribou_abi",
  "zyntax_lua",
+ "zyntax_lua_capi",
 ]
 
 [[package]]
@@ -5951,6 +5954,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "zrtl_native"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libc",
+]
+
+[[package]]
 name = "zrtl_string"
 version = "0.1.0"
 dependencies = [
@@ -6104,11 +6115,22 @@ dependencies = [
  "zrtl",
  "zrtl_io",
  "zrtl_math",
+ "zrtl_native",
  "zrtl_string",
  "zyntax_builtins",
  "zyntax_compiler",
  "zyntax_embed",
+ "zyntax_lua_capi",
  "zyntax_typed_ast",
+]
+
+[[package]]
+name = "zyntax_lua_capi"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "zrtl",
+ "zrtl_native",
 ]
 
 [[package]]

@@ -416,3 +416,24 @@ pub fn interface(
         functions: declared.functions.iter().filter_map(method).collect(),
     }
 }
+
+/// The interface of a module a language ran: the functions its value
+/// holds, each the module's own, called with whatever it is given.
+pub fn run_interface(lang: LangId, module: &str, run: crate::RunModule) -> Interface {
+    Interface {
+        lang,
+        module: module.to_owned(),
+        classes: Vec::new(),
+        functions: run
+            .functions
+            .into_iter()
+            .map(|f| MethodIface {
+                name: f.name,
+                is_static: true,
+                params: vec![TypeRef::Dyn; f.params],
+                ret: TypeRef::Dyn,
+                target: Callable::Dynamic(f.value),
+            })
+            .collect(),
+    }
+}

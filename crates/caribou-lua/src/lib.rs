@@ -4,19 +4,25 @@
 //! contains a `.lua` file.
 //!
 //! A Lua module is a chunk, and loading it runs the chunk once, as
-//! `require` does. The chunk reaches other languages' modules with
-//! `require`: `require("haxe.ScaleValues")` is the world's
-//! `haxe:ScaleValues`, and what it gives is used as Lua uses userdata (see
-//! `caribou_zyntax`'s foreign objects). What a module gives other
-//! languages is the table its chunk returns, which nothing publishes yet
-//! (git-bug 64448a6c563dea6d3c1e3539e791176879fc0587f56919cff7c9fe627f7cfda4).
+//! `require` does: with Lua embedded as a C host embeds it (see
+//! [`host`]), the chunk loaded with Lua's own `load` and run with a
+//! protected call, so an error in it is the load's. The chunk reaches
+//! other languages' modules with `require`: `require("haxe.ScaleValues")`
+//! is the world's `haxe:ScaleValues`, used as Lua uses userdata (see
+//! `caribou_zyntax`'s foreign objects). What the module gives other
+//! languages is the table its chunk returns: its functions are the
+//! module's, and a Lua table or function that crosses is a core object
+//! that answers as Lua would.
+
+mod host;
 
 use std::path::Path;
 
+use caribou_abi::LangId;
 use caribou_zyntax::zyntax_embed::{
     Collector, ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
 };
-use caribou_zyntax::{Language, Sources};
+use caribou_zyntax::{Language, RunModule, Sources};
 
 /// The frontend: name `lua`, modules laid out as Lua's `package.path`
 /// lays them out.
@@ -53,26 +59,29 @@ impl Language for Lua {
         }]
     }
 
-    /// None of the functions a chunk compiles to: a module's value is
-    /// what the chunk returns.
+    /// None of the functions a chunk compiles to: what a module exports
+    /// is its value's (see [`Language::run_module`]).
     fn exports(&self, _program: &TypedProgram) -> Vec<ExportedSymbol> {
         Vec::new()
     }
 
-    /// The chunk, which loading the module runs.
-    fn entry(&self) -> Option<&str> {
-        Some(zyntax_lua::ENTRY)
+    /// The chunk, run with Lua's own `load` and a protected call.
+    fn run_module(&self, source: &str, file: &str) -> Option<Result<RunModule, String>> {
+        Some(host::run_module(source, file))
     }
 
-    /// What `zylua` gives its runtime: the library snapshot, the plugins
-    /// the library calls, the entry point. Zyntax's own collector stays
-    /// off under the core (see `caribou_zyntax`). `load` and a `require`
-    /// of a file compile into this runtime, which keeps its address.
+    fn assigned(&self, lang: LangId) {
+        host::assign(lang);
+    }
+
+    /// What `zylua` gives its runtime: the library snapshot and the
+    /// plugins the library calls. Zyntax's own collector stays off under
+    /// the core (see `caribou_zyntax`). Then the state opens for the
+    /// host: chunks compile into this runtime, which keeps its address.
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String> {
         zyntax_lua::register_runtime(runtime).map_err(|e| e.to_string())?;
         runtime.set_collector(Collector::None);
-        zyntax_lua::set_runtime(runtime);
-        Ok(())
+        host::open(runtime)
     }
 
     fn parse(
