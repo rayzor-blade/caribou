@@ -1231,8 +1231,12 @@ class Main {
         check(Math.abs(dotImage.get(0) - 128) <= 1, 'the framework shader drew ${dotImage.get(0)}');
         dotPixels.unmap();
 
+        // The same shader from Wren, which imports it from this program.
+        var fromWren = wren.scale.Scale.run(device, queue);
+        check(fromWren == "4,7,10,13", 'Wren ran the HXSL shader to $fromWren');
+
         check(device.takeError() == null, "GPU validation error with HXSL shaders");
-        Sys.println("gpu hxsl ok");
+        Sys.println("gpu hxsl ok, from Haxe and Wren");
     }
 
     static function main() {

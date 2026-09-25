@@ -44,7 +44,8 @@ class Build {
 				fields.push({
 					name: name,
 					doc: doc,
-					access: [APublic, AStatic, AInline],
+					// Final rather than inline: other languages read the field at run time.
+					access: [APublic, AStatic, AFinal],
 					kind: FVar(null, value),
 					pos: pos
 				});

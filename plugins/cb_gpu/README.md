@@ -227,7 +227,7 @@ A Haxe program can write its shaders in HXSL, the shader language of Heaps.
 A class that implements `caribou.hxsl.Shader` declares its source in
 `static var SRC`, and the build macro checks it when the program compiles:
 a type error is a compile error at its line in the shader. The macro then
-replaces `SRC` with `static inline var WGSL`, the shader as WGSL.
+replaces `SRC` with `static final WGSL`, the shader as WGSL.
 
 ```haxe
 class TintedQuad implements caribou.hxsl.Shader {
@@ -271,6 +271,14 @@ compile error too:
 
 In each bind group, uniform blocks take the first bindings, then textures
 and their samplers, then buffers, in declaration order.
+
+The WGSL and the constants are static fields of an ordinary Haxe class, so
+another language uses a shader the way it uses any Haxe class. Wren imports
+it, `import "haxe:TintedQuad" for TintedQuad`, and passes
+`TintedQuad.WGSL` to the plugin; its typed arrays are the buffers, filled
+at the offsets the constants give. The gpu fixture's `scale.wren` runs an HXSL
+compute shader this way. The Zyntax languages (Lua, the Python dialect,
+ZynML) cannot import another language's classes yet.
 
 `@:import Other;` brings another shader's variables and helper functions
 into this one, and a class with only helpers is a module other shaders
