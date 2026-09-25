@@ -31,6 +31,7 @@ use wren_lift::intern::SymbolId;
 
 use caribou::bridge;
 use caribou::cell;
+use caribou::data;
 use caribou::error::{Error, Int64, Str};
 use caribou::heap;
 use caribou::protocol::{
@@ -41,7 +42,7 @@ use wren_lift::runtime::core::as_string;
 use wren_lift::runtime::engine::FuncId;
 use wren_lift::runtime::object::{
     Method, NativeContext, ObjClass, ObjClosure, ObjForeign, ObjHeader, ObjInstance, ObjString,
-    ObjType,
+    ObjType, ObjTypedArray,
 };
 use wren_lift::runtime::value::Value as WValue;
 use wren_lift::runtime::vm::{self, VM};
@@ -115,14 +116,20 @@ pub fn current_vm() -> *mut VM {
 // Values
 // ---------------------------------------------------------------------------
 
-/// A wren_lift value as a core value: a string as a fresh core `Str`, which
-/// the caller roots before allocating again; an instance of a class
-/// installed for another language's as the object it stands for; any
-/// other object by its core address; every other value bit for bit (the
-/// layouts agree on null, the booleans, numbers and the object tag).
+/// A wren_lift value as a core value: a string as a fresh core `Str`, and a
+/// typed array as a fresh core buffer over its storage, which the caller
+/// roots before allocating again; an instance of a class installed for
+/// another language's as the object it stands for; any other object by its
+/// core address; every other value bit for bit (the layouts agree on null,
+/// the booleans, numbers and the object tag).
 pub fn from_wren(v: WValue) -> Value {
     match v.as_object() {
         Some(_) if v.is_string_object() => Str::value(Str::new(as_string(v))),
+        Some(p) if unsafe { (*(p as *const ObjHeader)).obj_type } == ObjType::TypedArray => {
+            let array = unsafe { &mut *(p as *mut ObjTypedArray) };
+            let (bytes, len) = (array.as_bytes_mut().as_mut_ptr(), array.byte_len());
+            Value::object(unsafe { data::buffer_over(p.wrapping_sub(PREFIX), bytes, len) }.cast())
+        }
         Some(p) => match crate::import::foreign_of(v) {
             Some(obj) => obj,
             None => Value::object(p.wrapping_sub(PREFIX) as *const c_void),
@@ -156,6 +163,12 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     if let Some(text) = unsafe { Str::text(v) } {
         let s = vm.alloc_string(text.to_owned());
         return Some(made(vm, s));
+    }
+    // A buffer over a typed array's storage is the array.
+    if let Some(owner) = data::buffer_owner(v)
+        && is_wren(owner)
+    {
+        return Some(WValue::object(owner.wrapping_add(PREFIX)));
     }
     // Wren has the one number. 2^63 is a double but not an i64, so the
     // round trip alone would take i64::MAX's nearest double for exact.

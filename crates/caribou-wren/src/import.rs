@@ -988,8 +988,12 @@ fn cross_in(v: WValue) -> (Value, *mut u8) {
         return (obj, ptr::null_mut());
     }
     let crossed = from_wren(v);
+    // What from_wren made for the call: a string's copy, a typed array's buffer.
+    let made = v.is_string_object()
+        || v.as_object()
+            .is_some_and(|w| unsafe { (*(w as *const ObjHeader)).obj_type } == ObjType::TypedArray);
     let keep = match crossed.as_object() {
-        Some(p) if v.is_string_object() => p as *mut u8,
+        Some(p) if made => p as *mut u8,
         _ => ptr::null_mut(),
     };
     (crossed, keep)

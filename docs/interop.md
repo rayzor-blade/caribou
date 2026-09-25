@@ -78,6 +78,16 @@ class Hero is Player {
 * A Haxe object appears as an instance of the imported class. It is the same instance every time it crosses while Wren holds it, so Wren's `==` works on it. An instance that goes back to Haxe is the original object.
 * A Haxe array appears as a Wren `Sequence`. `xs.count`, `xs[i]`, `xs[i] = v`, `for (x in xs)`, `xs.toList`, and the rest of `Sequence` work on it and operate on the array where Haxe stores it. Going back to Haxe, it is the same array.
 
+### Buffers
+
+A `caribou.Buffer` shares its bytes across languages: Haxe's is
+`haxe.io.Bytes`, and in Wren a buffer from Haxe or a plugin is a `Sequence`
+of its bytes, `b[i]`, `b[i] = v`, `b.count`. Wren makes one from its own
+typed arrays: a `ByteArray`, `Int32Array`, `Float32Array` or `Float64Array`
+passed where a buffer is taken crosses as a buffer over the array's storage,
+without a copy. What the callee writes is in the array, and the buffer comes
+back to Wren as the same array.
+
 ## Haxe Using Wren
 
 A program adds `-lib caribou` and puts its Wren modules on the classpath. Nothing else needs to be declared.

@@ -674,9 +674,14 @@ unsafe extern "C-unwind" fn dispatch(
                 || data::is_enum(unsafe { &*desc })
             {
                 let value = cell::unwrap(v);
-                let p = value.as_object().filter(|p| !p.is_null()).filter(|p| {
-                    std::ptr::eq(unsafe { caribou::protocol::desc_of(p.cast()) }, desc)
-                });
+                // A buffer is either kind: its own bytes, or another runtime's.
+                let p = if std::ptr::eq(desc, &data::BUFFER_DESC) {
+                    data::buffer_of(value).map(|b| b as *mut c_void)
+                } else {
+                    value.as_object().filter(|p| !p.is_null()).filter(|p| {
+                        std::ptr::eq(unsafe { caribou::protocol::desc_of(p.cast()) }, desc)
+                    })
+                };
                 let Some(p) = p else {
                     return raise(
                         lang,

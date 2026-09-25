@@ -68,9 +68,54 @@ pub unsafe fn buffer_share(bytes: *mut u8, len: usize) -> *mut BufferData {
     p
 }
 
+/// A buffer over bytes another runtime owns: a Wren typed array's. The
+/// owning object, not the bytes, is what the trace keeps alive, and it is
+/// what the buffer is when it crosses back.
+#[repr(C)]
+struct ForeignBuffer {
+    data: BufferData,
+    owner: *mut u8,
+}
+
+pub static FOREIGN_BUFFER_DESC: TypeDesc =
+    descriptor("caribou.Buffer", trace_foreign_buffer, &BUFFER_PROTO);
+
+/// A buffer over `len` bytes at `bytes`, which live as long as `owner`.
+///
+/// # Safety
+/// `owner` is a live heap object that owns `bytes` and keeps them in place
+/// while it lives.
+pub unsafe fn buffer_over(owner: *mut u8, bytes: *mut u8, len: usize) -> *mut BufferData {
+    let root = Rooted::alloc(&FOREIGN_BUFFER_DESC, size_of::<ForeignBuffer>());
+    let p = root.ptr().cast::<ForeignBuffer>();
+    unsafe {
+        (*p).data.len = len;
+        (*p).data.bytes = bytes;
+        (*p).owner = owner;
+    }
+    p.cast()
+}
+
+/// The object whose bytes the buffer `v` is over, for one made by [`buffer_over`].
+pub fn buffer_owner(v: Value) -> Option<*mut u8> {
+    let p = crate::cell::unwrap(v).as_object()?.cast::<u8>();
+    (!p.is_null() && ptr::eq(unsafe { protocol::desc_of(p) }, &FOREIGN_BUFFER_DESC))
+        .then(|| unsafe { (*p.cast::<ForeignBuffer>()).owner })
+}
+
 pub fn buffer_of(v: Value) -> Option<*mut BufferData> {
     let p = crate::cell::unwrap(v).as_object()?.cast::<u8>();
-    (!p.is_null() && ptr::eq(unsafe { protocol::desc_of(p) }, &BUFFER_DESC)).then_some(p.cast())
+    if p.is_null() {
+        return None;
+    }
+    let desc = unsafe { protocol::desc_of(p) };
+    (ptr::eq(desc, &BUFFER_DESC) || ptr::eq(desc, &FOREIGN_BUFFER_DESC)).then_some(p.cast())
+}
+
+unsafe extern "C" fn trace_foreign_buffer(p: *mut u8, tracer: *mut Tracer) {
+    unsafe {
+        (*tracer).mark((*p.cast::<ForeignBuffer>()).owner);
+    }
 }
 
 unsafe extern "C" fn trace_buffer(p: *mut u8, tracer: *mut Tracer) {
