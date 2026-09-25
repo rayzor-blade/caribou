@@ -50,7 +50,20 @@ Executable targets are wrapped as `Callable::Typed` instances containing the com
 
 * **Scalars:** Passed directly by machine kind.
 * **Strings:** Converted to Zyntax's own string (the ZRTL string, a 16-byte header then the bytes) through `zyntax_embed::ZyntaxString`, allocated as Zyntax allocates its strings. Return values are read in place and copied into standard host-managed strings.
-* **Complex Types:** Objects, arrays, and function references are currently restricted at the call boundary. While their type signatures publish correctly, invocation attempts fail at dispatch time with an explicit parameter rejection error.
+* **Dynamic values:** A parameter or result of Zyntax's `Any` type (an unannotated Python parameter) is the program's dynamic value. None, booleans, numbers and strings cross as the program's own; any other value of the core crosses as a foreign object (see below).
+* **Complex Types:** Zyntax's own objects, arrays and function references are restricted at the call boundary. Their type signatures publish, but a call fails at dispatch with an error naming the parameter.
+
+## Other Languages from Zyntax Programs
+
+A Lua or Python program reaches the rest of the world through Zyntax's foreign objects (`zyntax_embed::foreign`). The adapter installs itself as the embedder once per process.
+
+* **Imports:** Lua's `require("haxe.ScaleValues")` and Python's `from haxe.ScaleValues import ScaleValues` import the world's module `haxe:ScaleValues`. The first dotted segment is the namespace; the rest is the module, with its dots kept, as Haxe names modules. Each frontend asks the embedder only for a module it does not have itself: Lua after `package.path`, Python for a module that is neither the program's own nor a standard one.
+* **Members:** A module's members are its classes and functions. A class's are its statics and static methods, and calling the class constructs one. An object's are the fields and getters its language answers, and the methods its published class declares.
+* **Methods:** A method of an object is called through its class's target, which takes the receiver first, and through the object's protocol when the class does not publish it. Read as a value, a method takes its receiver first, so Lua's `o:m()` is the read and the call.
+* **Lifetime:** A foreign object roots its core object with a handle, which the program's release of the box drops.
+* **Errors:** An error the bridge returns is raised in the program as a library error: `TypeError`, `IndexError`, `AttributeError` or `RuntimeError` by the error's kind, with its message.
+
+A language whose modules run, as Python's do, names the function that runs a module's body (`Language::entry`). Loading the module runs it once, after compiling, so the names its imports bind are set before any of its functions is called.
 
 ## Haxe Integration
 
@@ -75,6 +88,7 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 * The Python frontend as a language: layout, exports, classes, and module functions.
 * Native C ABI call dispatch for scalar types and managed strings.
 * Wren and Haxe cross-language module resolution and metadata generation.
+* Other languages' modules, classes, objects and plugins in Python programs, as foreign objects; dynamic parameters and results across calls into Zyntax.
 * Distribution within a Caribou bundle: each frontend as a language section (its snapshot, or a name for one built into Caribou), its modules as source (see [bundle.md](bundle.md)).
 * Reload of an edited module through the runtime's own hot reload, with the interface published again (see [world.md](world.md#reload)).
 
@@ -82,6 +96,8 @@ Under Caribou, the conservative mark-sweep collector is intentionally disabled:
 
 * Host-heap memory integration and unified garbage collection.
 * Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
-* Bi-directional import resolution allowing Zyntax modules to import external host languages.
+* Lua as a language of the world, with Lua values crossing out as core objects so other languages can call a Lua module.
+* Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
+* Awaiting a core future from Python.
 * Effect system and fiber synchronization across the native runtime bridge.
 * Bundled modules in Zyntax's compiled form: the snapshot's lowered HIR with declarations beside it, in place of source.

@@ -1,11 +1,14 @@
 //! The Zyntax languages' typed dispatch: scalars by kind as the core
 //! passes them, a string as Zyntax's own string, allocated as Zyntax
 //! allocates its strings for the call, and a result string copied into a
-//! core string. A value of a kind the core does not pass yet, an
-//! object, an array or a function of a Zyntax type, is a `Type` error
-//! naming the argument.
+//! core string. A dynamic value crosses as the program's `Any`: a
+//! scalar or string as its own, anything else as a foreign object
+//! (`foreign`). A value of a kind the core does not pass yet, an object,
+//! an array or a function of a Zyntax type, is a `Type` error naming the
+//! argument.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use caribou::bridge;
 use caribou::error::{Error, Str};
@@ -33,7 +36,50 @@ fn raise(message: String) -> u8 {
 }
 
 fn crosses(kind: hl::hl_type_kind) -> bool {
-    !matches!(kind, hl::HOBJ | hl::HARRAY | hl::HFUN | hl::HDYN)
+    !matches!(kind, hl::HOBJ | hl::HARRAY | hl::HFUN)
+}
+
+/// The languages the slots below dispatch for; a free slot holds
+/// `LANG_CORE`.
+static LANGS: [AtomicU32; 8] = [const { AtomicU32::new(LANG_CORE) }; 8];
+
+/// [`dispatch`] as the code of the language in slot `N`, so the program's
+/// calls out name it as their caller.
+unsafe extern "C-unwind" fn dispatch_as<const N: usize>(
+    func: *const c_void,
+    sig: *const hl_type,
+    site: *mut CallSite,
+    args: *const Value,
+    nargs: usize,
+    out: *mut Value,
+) -> u8 {
+    let lang = LANGS[N].load(Ordering::Relaxed);
+    crate::foreign::as_caller(lang, || unsafe {
+        dispatch(func, sig, site, args, nargs, out)
+    })
+}
+
+const SLOTS: [bridge::TypedDispatch; 8] = [
+    dispatch_as::<0>,
+    dispatch_as::<1>,
+    dispatch_as::<2>,
+    dispatch_as::<3>,
+    dispatch_as::<4>,
+    dispatch_as::<5>,
+    dispatch_as::<6>,
+    dispatch_as::<7>,
+];
+
+/// The dispatch for `lang`: its slot's, or the plain one when every
+/// slot is another language's.
+pub fn for_lang(lang: caribou_abi::LangId) -> bridge::TypedDispatch {
+    for (slot, held) in LANGS.iter().enumerate() {
+        let taken = held.compare_exchange(LANG_CORE, lang, Ordering::Relaxed, Ordering::Relaxed);
+        if taken.is_ok() || taken == Err(lang) {
+            return SLOTS[slot];
+        }
+    }
+    dispatch
 }
 
 pub unsafe extern "C-unwind" fn dispatch(
@@ -66,7 +112,9 @@ pub unsafe extern "C-unwind" fn dispatch(
                 i + 1
             ));
         }
-        let word = if kind == hl::HBYTES {
+        let word = if kind == hl::HDYN {
+            crate::foreign::any_of(v) as u64
+        } else if kind == hl::HBYTES {
             match unsafe { Str::text(v) } {
                 Some(text) => zyntax_string(text) as u64,
                 None => {
@@ -102,7 +150,12 @@ pub unsafe extern "C-unwind" fn dispatch(
     if bridge::has_pending() {
         return REPLY_RAISED;
     }
-    let result = if ret_kind == hl::HBYTES {
+    let result = if ret_kind == hl::HDYN {
+        match unsafe { crate::foreign::value_of(word as zyntax_embed::foreign::Any) } {
+            Ok((v, _)) => v,
+            Err(e) => return raise(e.message),
+        }
+    } else if ret_kind == hl::HBYTES {
         match unsafe { text_of(word as *const c_void) } {
             Some(text) => Str::value(Str::new(&text)),
             None => Value::null(),

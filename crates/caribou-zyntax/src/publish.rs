@@ -102,6 +102,7 @@ fn kind_of(ty: &Type, hir: &HirType) -> hl::hl_type_kind {
         _ => match ty {
             Type::Array { .. } => hl::HARRAY,
             Type::Function { .. } => hl::HFUN,
+            Type::Any => hl::HDYN,
             _ => hl::HOBJ,
         },
     }

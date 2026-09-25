@@ -20,10 +20,13 @@
 //! A frontend's plugins are Zyntax's own, `zrtl`, opened from a
 //! directory.
 //!
+//! A program of these languages reaches other languages' modules and
+//! objects as foreign objects (`foreign`); a Zyntax object, buffer or
+//! enum does not yet cross out, which needs shared ownership and tracing.
+//!
 //! One embed runtime per language, on the thread that registered it.
 //! Memory belongs to Zyntax's pool and its collector, separate from the
-//! core heap. The adapter does not yet supply the shared ownership and
-//! tracing needed for object, buffer, or enum values to cross.
+//! core heap.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -39,6 +42,7 @@ use zyntax_embed::{
 };
 
 mod dispatch;
+mod foreign;
 pub mod publish;
 
 pub use zyntax_embed;
@@ -70,6 +74,14 @@ pub trait Language {
     /// convention, or `None` for every method the frontend declared. A
     /// constructor is published either way.
     fn exported_members(&self, _program: &TypedProgram, _class: &str) -> Option<Vec<String>> {
+        None
+    }
+
+    /// The function that runs a module's body, which loading the module
+    /// runs once, as an import does in a language whose modules run
+    /// (Python's module statements). `None` for a language whose modules
+    /// only declare.
+    fn entry(&self) -> Option<&str> {
         None
     }
 
@@ -465,6 +477,9 @@ pub struct Runtime {
 
 impl Runtime {
     pub fn new(frontends: Vec<Frontend>) -> Runtime {
+        // The world is what every Zyntax program's foreign objects are,
+        // installed once for the process.
+        zyntax_embed::foreign::install(Box::new(foreign::World));
         Runtime {
             frontends,
             langs: Vec::new(),
@@ -503,7 +518,7 @@ impl Adapter for Runtime {
             };
             STATES.with(|s| s.borrow_mut().insert(lang, state));
             self.langs.push(lang);
-            caribou::bridge::set_typed_dispatch(lang, dispatch::dispatch);
+            caribou::bridge::set_typed_dispatch(lang, dispatch::for_lang(lang));
             registry::set_loader(lang, Arc::new(move |ns, module| load(lang, ns, module)));
         }
     }
@@ -711,6 +726,11 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
             .runtime
             .compile_module(parsed.hir)
             .map_err(|e| format!("`{name}`: {e}"))?;
+        // The module's body, which binds what its functions read.
+        if let Some(entry) = state.language.entry() {
+            foreign::as_caller(lang, || state.runtime.call_raw(entry, &[]))
+                .map_err(|e| format!("`{name}`: {e}"))?;
+        }
         state.current = Some(name.clone());
         state.publish(lang, &name, parsed.declared)?;
         // A file the world watches: an edit reloads the module.

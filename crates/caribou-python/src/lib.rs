@@ -96,6 +96,11 @@ impl Language for Python {
             .flatten()
     }
 
+    /// A module's statements, which importing it runs.
+    fn entry(&self) -> Option<&str> {
+        Some(zyntax_python::ENTRY)
+    }
+
     /// What `zypy` gives its runtime: the library snapshot, the plugins
     /// the library calls, the entry point. Zyntax's own collector stays
     /// off under the core (see `caribou_zyntax`).
