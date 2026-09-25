@@ -14,12 +14,13 @@ use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const USE: &str = r#"
-import "game:tally" for score, weight, perfect, echo
+import "game:tally" for score, weight, perfect, echo, greet
 System.print(score.call(7, 2))
 System.print(weight.call(3, 1.5))
 System.print(perfect.call(5, 5))
 System.print(perfect.call(4, 5))
 System.print(echo.call("goal"))
+System.print(greet.call("ada"))
 System.print(score.arity)
 System.print(Fiber.new { score.call("seven", 2) }.try())
 "#;
@@ -72,7 +73,7 @@ fn a_python_module_is_imported_from_wren() {
     );
     assert_eq!(
         output,
-        "64\n5\ntrue\nfalse\ngoal\n2\nargument 1 of the function cannot be a caribou.Str\n"
+        "64\n5\ntrue\nfalse\ngoal\nhi ada\n2\nargument 1 of the function cannot be a caribou.Str\n"
     );
 
     // Published as the module's own functions, typed from the
@@ -80,7 +81,7 @@ fn a_python_module_is_imported_from_wren() {
     // the frontend's prelude declares nothing of the module's.
     let iface = registry::lookup("game", "tally").expect("published");
     let names: Vec<&str> = iface.functions.iter().map(|f| f.name.as_str()).collect();
-    assert_eq!(names, ["score", "weight", "perfect", "echo"]);
+    assert_eq!(names, ["score", "weight", "perfect", "echo", "greet"]);
     let echo = iface
         .functions
         .iter()

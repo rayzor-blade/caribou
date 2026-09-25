@@ -49,7 +49,7 @@ The HIR provides symbol metadata and machine-level representations for Foreign F
 Executable targets are wrapped as `Callable::Typed` instances containing the compiled machine code address and an `hl_type` signature derived from the ABI boundary types. Foreign function calls are dispatched through Caribou's native invocation bridge (`caribou::native`):
 
 * **Scalars:** Passed directly by machine kind.
-* **Strings:** Converted to Zyntax's native length-prefixed string representation, backed by memory allocated from Zyntax's size-class pool. Return values are copied into standard host-managed strings.
+* **Strings:** Converted to Zyntax's own string (the ZRTL string, a 16-byte header then the bytes) through `zyntax_embed::ZyntaxString`, allocated as Zyntax allocates its strings. Return values are read in place and copied into standard host-managed strings.
 * **Complex Types:** Objects, arrays, and function references are currently restricted at the call boundary. While their type signatures publish correctly, invocation attempts fail at dispatch time with an explicit parameter rejection error.
 
 ## Haxe Integration

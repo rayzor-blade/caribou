@@ -16,6 +16,9 @@ def perfect(hits: int, total: int) -> bool:
 def echo(name: str) -> str:
     return name
 
+def greet(name: str) -> str:
+    return "hi " + name
+
 class Tally:
     def __init__(self, hits: int):
         self.hits = hits
