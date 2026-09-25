@@ -5821,6 +5821,7 @@ name = "zrtl"
 version = "0.1.0"
 dependencies = [
  "inventory",
+ "web-time",
 ]
 
 [[package]]
@@ -5951,6 +5952,7 @@ dependencies = [
  "uuid",
  "web-time",
  "zip",
+ "zrtl",
  "zyntax_typed_ast",
 ]
 

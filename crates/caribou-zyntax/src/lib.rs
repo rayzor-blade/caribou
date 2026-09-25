@@ -218,7 +218,8 @@ pub struct SnapshotLanguage {
 
 impl SnapshotLanguage {
     pub fn new(bytes: &[u8]) -> Result<SnapshotLanguage, String> {
-        let snapshot = Snapshot::load(bytes).map_err(|e| e.to_string())?;
+        // A snapshot from a file or a bundle, which Zyntax checks as it reads.
+        let snapshot = Snapshot::load_owned(bytes.to_vec()).map_err(|e| e.to_string())?;
         let grammar = snapshot
             .grammar_bytes()
             .ok_or("the snapshot carries no grammar; the language parses on its own")?;

@@ -14,6 +14,9 @@ const OUTPUT: &str = "7\n10\nhp: 10\n1 true true true\ntrue\ntrue\n10\ncaught bo
 #[test]
 fn a_bundle_runs_as_the_project_did() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
+    // The bundle carries every frontend under the root: this build's ZynML,
+    // not whatever snapshot an earlier run left there.
+    std::fs::write(fixtures.join("src/zynml.zsnap"), zynml::snapshot_bytes()).unwrap();
     let bundle = caribou_driver::bundle::build(&fixtures.join("hud.hl"), &[fixtures.join("src")])
         .expect("the project bundles");
     assert_eq!(bundle.manifest.name, "hud");
