@@ -91,6 +91,7 @@ dependencies = [
 [[package]]
 name = "algebraic_effects_pass"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "log",
  "normalization_pass",
@@ -432,7 +433,7 @@ checksum = "2af50177e190e07a26ab74f8b1efbfe2ef87da2116221318cb1c2e82baf7de06"
 [[package]]
 name = "beadie"
 version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
+source = "git+https://github.com/darmie/beadie?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
  "beadie-backend",
  "beadie-core",
@@ -442,7 +443,7 @@ dependencies = [
 [[package]]
 name = "beadie-backend"
 version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
+source = "git+https://github.com/darmie/beadie?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
  "beadie-core",
  "crossbeam-channel",
@@ -452,7 +453,7 @@ dependencies = [
 [[package]]
 name = "beadie-core"
 version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
+source = "git+https://github.com/darmie/beadie?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
  "crossbeam-channel",
  "crossbeam-epoch",
@@ -462,7 +463,7 @@ dependencies = [
 [[package]]
 name = "beadie-cranelift"
 version = "0.3.0"
-source = "git+https://github.com/darmie/beadie.git?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
+source = "git+https://github.com/darmie/beadie?rev=c403f29c8dd66635b545debcd2406847f613470e#c403f29c8dd66635b545debcd2406847f613470e"
 dependencies = [
  "anyhow",
  "beadie-backend",
@@ -1183,7 +1184,7 @@ dependencies = [
 [[package]]
 name = "cranelift"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-codegen",
  "cranelift-frontend",
@@ -1193,7 +1194,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-assembler-x64-meta",
 ]
@@ -1201,7 +1202,7 @@ dependencies = [
 [[package]]
 name = "cranelift-assembler-x64-meta"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-srcgen",
 ]
@@ -1209,7 +1210,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bforest"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-entity",
  "wasmtime-internal-core",
@@ -1218,7 +1219,7 @@ dependencies = [
 [[package]]
 name = "cranelift-bitset"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "wasmtime-internal-core",
 ]
@@ -1226,7 +1227,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",
@@ -1252,7 +1253,7 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-meta"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-assembler-x64-meta",
  "cranelift-codegen-shared",
@@ -1263,12 +1264,12 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen-shared"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 
 [[package]]
 name = "cranelift-control"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "arbitrary",
 ]
@@ -1276,7 +1277,7 @@ dependencies = [
 [[package]]
 name = "cranelift-entity"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-bitset",
  "wasmtime-internal-core",
@@ -1285,7 +1286,7 @@ dependencies = [
 [[package]]
 name = "cranelift-frontend"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-codegen",
  "hashbrown 0.17.1",
@@ -1297,12 +1298,12 @@ dependencies = [
 [[package]]
 name = "cranelift-isle"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 
 [[package]]
 name = "cranelift-jit"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -1322,7 +1323,7 @@ dependencies = [
 [[package]]
 name = "cranelift-module"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "anyhow",
  "cranelift-codegen",
@@ -1332,7 +1333,7 @@ dependencies = [
 [[package]]
 name = "cranelift-native"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "cranelift-codegen",
  "libc",
@@ -1342,7 +1343,7 @@ dependencies = [
 [[package]]
 name = "cranelift-srcgen"
 version = "0.136.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 
 [[package]]
 name = "crc32fast"
@@ -2598,6 +2599,7 @@ dependencies = [
 [[package]]
 name = "krio_adapter"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "indexmap 2.14.2",
  "krio-async",
@@ -2955,6 +2957,7 @@ dependencies = [
 [[package]]
 name = "normalization_pass"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "log",
  "pattern_engine",
@@ -3383,6 +3386,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "pattern_engine"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "indexmap 2.14.2",
  "log",
@@ -5007,7 +5011,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-core"
 version = "49.0.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "hashbrown 0.17.1",
  "libm",
@@ -5016,7 +5020,7 @@ dependencies = [
 [[package]]
 name = "wasmtime-internal-jit-icache-coherence"
 version = "49.0.0-dev"
-source = "git+https://github.com/bytecodealliance/wasmtime.git?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
 dependencies = [
  "libc",
  "wasmtime-internal-core",
@@ -5933,6 +5937,7 @@ dependencies = [
 [[package]]
 name = "zrtl"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "inventory",
  "web-time",
@@ -5941,6 +5946,7 @@ dependencies = [
 [[package]]
 name = "zrtl_io"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "zrtl",
 ]
@@ -5948,6 +5954,7 @@ dependencies = [
 [[package]]
 name = "zrtl_math"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "getrandom 0.2.17",
  "zrtl",
@@ -5956,6 +5963,7 @@ dependencies = [
 [[package]]
 name = "zrtl_native"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "cc",
  "libc",
@@ -5964,6 +5972,7 @@ dependencies = [
 [[package]]
 name = "zrtl_string"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "zrtl",
 ]
@@ -5999,6 +6008,7 @@ dependencies = [
 [[package]]
 name = "zyn_peg"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "internment",
  "log",
@@ -6017,6 +6027,7 @@ dependencies = [
 [[package]]
 name = "zynml"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "anyhow",
  "clap",
@@ -6032,6 +6043,7 @@ dependencies = [
 [[package]]
 name = "zyntax_builtins"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "zyntax_typed_ast",
 ]
@@ -6039,6 +6051,7 @@ dependencies = [
 [[package]]
 name = "zyntax_compiler"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "algebraic_effects_pass",
  "beadie",
@@ -6081,6 +6094,7 @@ dependencies = [
 [[package]]
 name = "zyntax_embed"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "algebraic_effects_pass",
  "beadie",
@@ -6107,6 +6121,7 @@ dependencies = [
 [[package]]
 name = "zyntax_lua"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "full_moon",
  "indexmap 2.14.2",
@@ -6127,6 +6142,7 @@ dependencies = [
 [[package]]
 name = "zyntax_lua_capi"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "cc",
  "zrtl",
@@ -6136,6 +6152,7 @@ dependencies = [
 [[package]]
 name = "zyntax_python"
 version = "0.1.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "indexmap 2.14.2",
  "libc",
@@ -6157,6 +6174,7 @@ dependencies = [
 [[package]]
 name = "zyntax_typed_ast"
 version = "0.3.0"
+source = "git+file:///Users/amaterasu/Vibranium/zyntax?rev=0bd089e400f75a822989019bfbae67790037014b#0bd089e400f75a822989019bfbae67790037014b"
 dependencies = [
  "ariadne",
  "bincode 1.3.3",

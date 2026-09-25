@@ -49,15 +49,18 @@ ash_interp = { path = "../ash/crates/ash_interp" }
 [patch."https://github.com/wrenlift/WrenLift.git"]
 wren_lift = { path = "../wren_lift" }
 
-# zyntax's checkout is ahead of the rev above while its owner works there.
+# zyntax's main is ahead of the rev above, and its checkout is where its
+# landing agent applies packages, so the source is the local repository at
+# a commit of main rather than the checkout as it stands. A later zyntax
+# change takes a new rev here; the path is this machine's.
 [patch."https://github.com/darmie/zyntax.git"]
-zyntax_embed = { path = "../zyntax/crates/zyntax_embed" }
-zyntax_compiler = { path = "../zyntax/crates/compiler" }
-zyntax_typed_ast = { path = "../zyntax/crates/typed_ast" }
-zynml = { path = "../zyntax/crates/zynml" }
-zyntax_python = { path = "../zyntax/crates/zyntax_python" }
-zyntax_lua = { path = "../zyntax/crates/zyntax_lua" }
-zyntax_lua_capi = { path = "../zyntax/crates/zyntax_lua/capi" }
+zyntax_embed = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
+zyntax_compiler = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
+zyntax_typed_ast = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
+zynml = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
+zyntax_python = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
+zyntax_lua = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
+zyntax_lua_capi = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "0bd089e400f75a822989019bfbae67790037014b" }
 
 [profile.dev]
 opt-level = 1
