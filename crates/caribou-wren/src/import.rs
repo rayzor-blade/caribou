@@ -876,7 +876,7 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValu
     // Installing and allocating the cell both allocate; `obj` is kept
     // past them. An object typed by a bare `hl_type` crosses as its type
     // did before.
-    let _kept = caribou::heap::keep(obj);
+    let kept = caribou::heap::keep(obj);
     let word = unsafe { *(obj as *const usize) };
     let hl_typed = unsafe { caribou::protocol::desc_of(obj) } as usize != word;
     let cached = if hl_typed {
@@ -911,6 +911,7 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValu
         });
     }
     crate::heap::hold_view(rec, start);
+    drop(kept);
     // A view handed out is a safepoint, as an allocation is.
     Some(crate::proto::made(vm, WValue::object(view as *mut u8)))
 }

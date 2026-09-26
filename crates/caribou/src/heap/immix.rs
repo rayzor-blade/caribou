@@ -10,7 +10,9 @@
 )]
 use super::desc::TypeDesc;
 use caribou_abi::hl::{self, HL_WSIZE, hl_type, hl_type_obj};
-use std::cell::{Cell, RefCell, UnsafeCell};
+#[cfg(target_family = "wasm")]
+use std::cell::UnsafeCell;
+use std::cell::{Cell, RefCell};
 use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
@@ -342,7 +344,8 @@ thread_local! {
             deferred: Cell::new(false),
             polls: AtomicU64::new(0),
             site: AtomicU64::new(0),
-            kept: UnsafeCell::new(Vec::new()),
+            #[cfg(target_family = "wasm")]
+            kept: UnsafeCell::new(mem::ManuallyDrop::new(Vec::new())),
         }
     };
 }
@@ -389,10 +392,13 @@ struct Tlab {
     /// trigger that fires inside its allocation is recorded, never run
     /// there. See `set_deferred_collection`.
     deferred: Cell<bool>,
-    /// What this thread keeps alive past its frames ([`keep`]): pushed on
-    /// wasm only, where no scan reaches a local. Read by address, like
-    /// `polls`, by a collection while the thread is stopped.
-    kept: UnsafeCell<Vec<usize>>,
+    /// What this thread keeps alive past its frames ([`keep`]), on wasm,
+    /// where no scan reaches a local. Read by address, like `polls`, by a
+    /// collection while the thread is stopped. Never dropped: a field with
+    /// a destructor would put a registration check on every access to this
+    /// thread-local, the allocation fast path's.
+    #[cfg(target_family = "wasm")]
+    kept: UnsafeCell<mem::ManuallyDrop<Vec<usize>>>,
 }
 
 /// Largest object the bump region serves. At one line, nothing in the
@@ -511,6 +517,7 @@ struct MutatorRecord {
     /// Where this thread last entered a place it could wait. See `mark_site`.
     site: usize,
     /// Address of this thread's kept stack, in its `Tlab`.
+    #[cfg(target_family = "wasm")]
     kept: usize,
 }
 
@@ -568,6 +575,7 @@ fn register_current_mutator(stack_top: usize, role: &'static str) {
             polls: TLAB.with(|t| &t.polls as *const AtomicU64 as usize),
             polls_at_stop: 0,
             site: TLAB.with(|t| &t.site as *const AtomicU64 as usize),
+            #[cfg(target_family = "wasm")]
             kept: TLAB.with(|t| t.kept.get() as usize),
         });
     }
@@ -1031,6 +1039,22 @@ fn with_extra(extra: (usize, usize), mut ranges: Vec<(usize, usize)>) -> Vec<(us
     ranges
 }
 
+/// `ranges` and the used part of the stopped mutator's kept stack, which
+/// lives in its `Tlab`.
+#[cfg(target_family = "wasm")]
+fn with_kept(m: &MutatorRecord, mut ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    let kept = unsafe { &*(m.kept as *const mem::ManuallyDrop<Vec<usize>>) };
+    if !kept.is_empty() {
+        ranges.push((kept.as_ptr() as usize, kept.len() * size_of::<usize>()));
+    }
+    ranges
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn with_kept(_: &MutatorRecord, ranges: Vec<(usize, usize)>) -> Vec<(usize, usize)> {
+    ranges
+}
+
 fn stop_mutator_world() -> StoppedWorld {
     let collector = thread_self_fast();
     let mut world = MUTATOR_WORLD.state.lock().unwrap();
@@ -1173,18 +1197,12 @@ fn stop_mutator_world() -> StoppedWorld {
                 },
                 _ => m.scan_ranges.clone(),
             };
-            let mut scan_ranges = with_extra(m.extra, ranges);
-            // SAFETY: as above; the stack lives in the thread's `Tlab`.
-            let kept = unsafe { &*(m.kept as *const Vec<usize>) };
-            if !kept.is_empty() {
-                scan_ranges.push((kept.as_ptr() as usize, kept.len() * size_of::<usize>()));
-            }
             MutatorSnapshot {
                 thread: m.thread,
                 stack_top: m.stack_top,
                 stack_sp: m.stopped_sp,
                 saved_regs: m.saved_regs,
-                scan_ranges,
+                scan_ranges: with_kept(m, with_extra(m.extra, ranges)),
             }
         })
         .collect();
@@ -5089,7 +5107,7 @@ pub fn scans_current_stack() -> bool {
 /// there the guard only has to stay on it. A wasm local lives in the
 /// engine's own frame, which no scan reaches, so there the guard puts the
 /// address on this thread's kept stack, which a collection scans. The
-/// thread must be a registered mutator ([`scans_current_stack`]).
+/// kept stack is scanned only on a registered mutator ([`scans_current_stack`]).
 #[must_use]
 pub struct Kept {
     ptr: usize,

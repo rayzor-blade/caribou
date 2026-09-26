@@ -203,14 +203,16 @@ pub fn make(v: Value, desc: &'static TypeDesc) -> Value {
 /// [`make`]'s cell for `obj`, whose language keeps a shadow on it when
 /// `kept`.
 fn made(v: Value, obj: usize, desc: &'static TypeDesc, kept: bool) -> Value {
-    // Kept through the allocation where the collector scans this thread;
-    // elsewhere a handle keeps it.
-    let (_kept, root) = if heap::scans_current_stack() {
-        (Some(heap::keep(obj as *const u8)), Handle::NULL)
+    // Kept through the allocation; a thread whose stack the collector does
+    // not scan roots it by handle as well.
+    let held = heap::keep(obj as *const u8);
+    let root = if heap::scans_current_stack() {
+        Handle::NULL
     } else {
-        (None, heap::handle_new(obj as *mut u8))
+        heap::handle_new(obj as *mut u8)
     };
     let p = alloc(desc, v, if kept { 0 } else { MAPPED });
+    core::mem::drop(held);
     heap::handle_release(root);
     // Another thread may have made one meanwhile. Ours is then garbage,
     // and its drop forgets nothing, not being the one kept.
