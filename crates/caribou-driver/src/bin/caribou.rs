@@ -1,7 +1,7 @@
 //! The caribou command.
 //!
 //!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]
-//!     caribou build <program.hl> [-o <out.cb>]
+//!     caribou build [--target <triple>] <program.hl> [-o <out>]
 //!     caribou describe <module.wren | plugin library | root directory>...
 //!
 //! `run` runs a program with every resident language, from the project
@@ -10,17 +10,19 @@
 //! `build` wrote from one: the program and every module under the class
 //! paths in one file, run the same way anywhere. `--report` prints, when
 //! the program ends, what the run did: the tier each function reached
-//! and how each send across the bridge went. `describe` prints the
+//! and how each send across the bridge went. `build --target
+//! wasm32-wasip1` builds the program ahead of time instead: a wasm module
+//! on caribou's runtime, with nothing interpreted. `describe` prints the
 //! modules' interfaces as JSON, for a build step; a plugin library's
 //! classes come one module each.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 
 use caribou_ash::Mode;
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build <program.hl> [-o <out.cb>]\n       caribou describe <module.wren | plugin library | root directory>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build [--target <triple>] <program.hl> [-o <out>]\n       caribou describe <module.wren | plugin library | root directory>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -61,19 +63,37 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
 fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut program = None;
     let mut out = None;
+    let mut target = None;
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "-o" => out = Some(PathBuf::from(argv.next().ok_or("-o takes a path")?)),
+            "--target" => target = Some(argv.next().ok_or("--target takes a triple")?),
             _ if arg.starts_with('-') => return Err(format!("unknown flag {arg}")),
             _ if program.is_some() => return Err(USAGE.to_owned()),
             _ => program = Some(PathBuf::from(arg)),
         }
     }
     let program = program.ok_or_else(|| USAGE.to_owned())?;
-    let written =
-        caribou_driver::bundle::write(&program, out.as_deref()).map_err(|e| format!("{e:#}"))?;
+    let written = match target {
+        Some(triple) => aot(&program, &triple, out.as_deref())?,
+        None => caribou_driver::bundle::write(&program, out.as_deref())
+            .map_err(|e| format!("{e:#}"))?,
+    };
     println!("{}", written.display());
     Ok(())
+}
+
+#[cfg(feature = "llvm")]
+fn aot(program: &Path, triple: &str, out: Option<&Path>) -> Result<PathBuf, String> {
+    caribou_driver::aot::build(program, triple, out).map_err(|e| format!("{e:#}"))
+}
+
+#[cfg(not(feature = "llvm"))]
+fn aot(_: &Path, triple: &str, _: Option<&Path>) -> Result<PathBuf, String> {
+    Err(format!(
+        "`--target {triple}` builds ahead of time, which this caribou was built without: \
+         its `llvm` feature"
+    ))
 }
 
 fn describe(files: &[String]) -> Result<(), String> {

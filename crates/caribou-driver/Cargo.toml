@@ -10,10 +10,12 @@ description = "Runs a Caribou program: one world with every resident language, f
 [features]
 # Both runtimes' LLVM tiers, as their own releases ship them: the nightly
 # archives are built with it. Needs LLVM 21 on the build machine.
-llvm = ["caribou-wren/llvm", "caribou-ash/llvm"]
+llvm = ["caribou-wren/llvm", "caribou-ash/llvm", "dep:ash_core"]
 
 [dependencies]
 anyhow = "1"
+# Ash's ahead-of-time build, which `caribou build --target` runs.
+ash_core = { workspace = true, optional = true }
 caribou = { path = "../caribou", features = ["serde"] }
 caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash", features = ["runner"] }

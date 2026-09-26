@@ -9,8 +9,12 @@
 //! on first use, when the program that uses it is running. Nothing is
 //! configured: the project's layout is the configuration. [`run`] is the
 //! whole thing in one call. A bundle ([`bundle`]) is the program and its
-//! modules in one file, opened the same way.
+//! modules in one file, opened the same way. With the `llvm` feature,
+//! [`aot`] builds the program ahead of time instead, for a target with no
+//! interpreter.
 
+#[cfg(feature = "llvm")]
+pub mod aot;
 pub mod bundle;
 pub mod project;
 pub mod session;

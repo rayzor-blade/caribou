@@ -109,6 +109,13 @@ caribou run bin/game.cb      # Executes self-contained bundle
 
 ```
 
+Build ahead of time for WebAssembly with a `caribou` built with its `llvm` feature. The result is a module compiled against Caribou's runtime, with nothing interpreted. So far this works for a Haxe program that imports no other language's modules:
+
+```sh
+caribou build --target wasm32-wasip1 bin/game.hl    # Emits bin/game.wasm
+
+```
+
 Append `--report` to inspect execution diagnostics upon exit:
 
 ```sh

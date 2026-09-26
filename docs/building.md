@@ -53,6 +53,14 @@ ash-wasm-run target/wasm32-wasip1/debug/build/caribou/*/out/caribou-*.wasm --tes
 
 Tests that need a second thread or unwinding are marked ignored on wasm; a wasm module has one thread and aborts on panic. The scheduler's integration tests stay off wasm until fibers there are host-driven.
 
+## The wasm Runtime Object
+
+A program built ahead of time for wasm links against one prelinked runtime object, as Ash's own wasm builds do. Caribou's is the `caribou-runtime` crate, and `caribou build --target wasm32-wasip1 game.hl` builds the program and links it in one command.
+
+The driver makes the object when it is built with its `llvm` feature. Its build script builds `caribou-runtime` for `wasm32-wasip1` in a target directory of its own, then joins it with WASI's libc and `libsetjmp`. It finds a WASI sysroot (`WASI_SYSROOT`, wasi-libc, or the WASI SDK) and an LLVM clang where Ash's own runtime build looks for them. A machine without a sysroot builds a driver that cannot target wasm, and says so. A release places the object beside the binary, at `wasm32-wasip1/caribou_runtime.o`, as Ash places its own.
+
+The workspace's `.cargo/config.toml` builds wasm targets with the flags Ash's config uses. Ash's exceptions are `setjmp`, and the backend rewrites them into the exceptions proposal. caribou-wren is built without its `host` feature there: no JIT tiers and no threads, only compiled Wren on one thread.
+
 ## Continuous Integration
 
 `.github/workflows` holds three workflows. `ci.yml` runs the tests on every push: the stable crates, the whole workspace on nightly, rustfmt and clippy with warnings denied, and the core on wasm32. `nightly.yml` publishes a release build of the `caribou` command for macOS, Linux and Windows as the rolling `nightly` pre-release (one `caribou-nightly-<target>` archive per platform, which `install.sh` and `install.ps1` at the repository root fetch and verify), built with `--features llvm` (see below), LLVM installed as the runtimes' own releases install it. `pages.yml` publishes `site/` with the installers beside the page. `bench.yml` runs the benchmarks nightly on macOS and Linux into the run's summary. Each job checks out `ash` and `zyntax` beside the repository at the revs `Cargo.toml` pins.

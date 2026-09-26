@@ -760,6 +760,7 @@ name = "caribou-driver"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ash_core",
  "caribou",
  "caribou-ash",
  "caribou-lua",
