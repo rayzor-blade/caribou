@@ -82,7 +82,7 @@ A collection stops the world. A mutator enters the rendezvous at a safepoint: ev
 * When the collector needs the world stopped, it calls the function installed with `set_poll_request_hook`. The scheduler responds by bumping its poll epoch.
 * The collector then calls the function installed with `set_stop_hook`. A guest runtime uses this hook to drive its own threads to a safepoint. The collector calls the hook again with `false` once the world is released.
 
-**Marking:** Marking is conservative from the roots. The collector follows every word that resolves to an allocation, except where the allocation's kind says otherwise: it skips a `NoPtr` block, and it walks a traced object through its hook. A small root set marks on one thread; a larger root set marks on a thread pool sized by `ASH_GC_MARK_THREADS`.
+**Marking:** Marking is conservative from the roots. The collector follows every word that resolves to an allocation, except where the allocation's kind says otherwise: it skips a `NoPtr` block, and it walks a traced object through its hook. Marking starts on the collecting thread. When work remains after a budget of objects, the rest goes to a thread pool sized by `ASH_GC_MARK_THREADS`, so a small heap is marked without waking the pool.
 
 **Sweeping:** The sweep drops dead traced objects, frees unmarked lines, and returns wholly free blocks. Finalizers of unreachable blocks are queued and run the next time the lock is released, never inside the collector.
 
