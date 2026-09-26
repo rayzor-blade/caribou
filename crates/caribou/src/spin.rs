@@ -76,6 +76,10 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(
+        all(target_family = "wasm", not(target_feature = "atomics")),
+        ignore = "needs threads"
+    )]
     fn one_holder_at_a_time() {
         static COUNT: SpinLock<u64> = SpinLock::new(0);
         let threads: Vec<_> = (0..4)
