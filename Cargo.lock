@@ -724,6 +724,7 @@ dependencies = [
  "ariadne",
  "ash_native_call",
  "caribou_abi",
+ "caribou_mangle",
  "krio-core",
  "krio-fiber",
  "libc",
@@ -804,6 +805,7 @@ dependencies = [
  "caribou-zyntax",
  "caribou_abi",
  "libc",
+ "libloading",
  "wren_lift",
  "zynml",
 ]
@@ -916,10 +918,15 @@ dependencies = [
 name = "caribou_abi_derive"
 version = "0.1.0"
 dependencies = [
+ "caribou_mangle",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
 ]
+
+[[package]]
+name = "caribou_mangle"
+version = "0.1.0"
 
 [[package]]
 name = "castaway"

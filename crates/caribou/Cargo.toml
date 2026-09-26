@@ -13,6 +13,7 @@ ariadne = "0.5.1"
 # no dependencies of its own.
 ash_native_call = { workspace = true }
 caribou_abi = { workspace = true }
+caribou_mangle = { path = "../caribou_mangle" }
 krio-core = { workspace = true }
 krio-fiber = { workspace = true }
 serde = { version = "1", features = ["derive"], optional = true }

@@ -299,3 +299,143 @@ mod tests {
         }
     }
 }
+
+/// One `plugin!` member, exported under its link symbol
+/// (`caribou_mangle::symbol`): the name an AOT call reaches it by. The
+/// input is what `plugin!` gathered for the member: the plugin's name, the
+/// class (`""` for a free function), the path to the item, its name, its
+/// parameter types and its result type. The kind and arity are read from
+/// the signature as the plugin loader reads them: `new` returning the
+/// class is its constructor, a first parameter `&Class` or `&mut Class`
+/// its receiver, anything else a static; a free function is a static of
+/// the class named after the plugin.
+#[proc_macro]
+pub fn plugin_link_export(input: TokenStream) -> TokenStream {
+    link_export(input.into())
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+struct LinkMember {
+    plugin: LitStr,
+    class: Option<syn::Ident>,
+    path: Path,
+    method: syn::Ident,
+    params: Vec<syn::Type>,
+    ret: Option<syn::Type>,
+}
+
+impl syn::parse::Parse for LinkMember {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        let plugin: LitStr = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        let class = if input.peek(LitStr) {
+            input.parse::<LitStr>()?;
+            None
+        } else {
+            Some(input.parse()?)
+        };
+        input.parse::<syn::Token![,]>()?;
+        let path: Path = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        let method: syn::Ident = input.parse()?;
+        input.parse::<syn::Token![,]>()?;
+        let params;
+        syn::parenthesized!(params in input);
+        let params = params
+            .parse_terminated(syn::Type::parse, syn::Token![,])?
+            .into_iter()
+            .collect();
+        input.parse::<syn::Token![,]>()?;
+        let ret;
+        syn::bracketed!(ret in input);
+        let ret = if ret.is_empty() {
+            None
+        } else {
+            Some(ret.parse()?)
+        };
+        Ok(LinkMember {
+            plugin,
+            class,
+            path,
+            method,
+            params,
+            ret,
+        })
+    }
+}
+
+/// `ty` without the invisible group a `macro_rules` `$ty:ty` fragment
+/// arrives wrapped in, or parentheses.
+fn bare(mut ty: &syn::Type) -> &syn::Type {
+    loop {
+        match ty {
+            syn::Type::Group(g) => ty = &g.elem,
+            syn::Type::Paren(p) => ty = &p.elem,
+            _ => return ty,
+        }
+    }
+}
+
+/// Whether `ty` is `&class` or `&mut class`.
+fn is_receiver(ty: &syn::Type, class: &syn::Ident) -> bool {
+    match bare(ty) {
+        syn::Type::Reference(r) => matches!(bare(&r.elem), syn::Type::Path(p) if p.path.is_ident(class)),
+        _ => false,
+    }
+}
+
+/// Whether `ty` is `Box<class>`.
+fn boxes(ty: &syn::Type, class: &syn::Ident) -> bool {
+    let syn::Type::Path(p) = bare(ty) else { return false };
+    let Some(last) = p.path.segments.last() else { return false };
+    if last.ident != "Box" {
+        return false;
+    }
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else { return false };
+    matches!(args.args.first(), Some(syn::GenericArgument::Type(inner)) if matches!(bare(inner), syn::Type::Path(inner) if inner.path.is_ident(class)))
+}
+
+fn link_export(input: proc_macro2::TokenStream) -> syn::Result<proc_macro2::TokenStream> {
+    let m: LinkMember = syn::parse2(input)?;
+    let plugin = m.plugin.value();
+    let method = m.method.to_string();
+    let method = method.strip_prefix("r#").unwrap_or(&method);
+    let (class, kind, arity) = match &m.class {
+        None => (capitalised(&plugin), 't', m.params.len()),
+        Some(class) => {
+            let constructs = method == "new" && m.ret.as_ref().is_some_and(|r| boxes(r, class));
+            let receives = m.params.first().is_some_and(|t| is_receiver(t, class));
+            let (kind, arity) = if constructs {
+                ('c', m.params.len())
+            } else if receives {
+                ('m', m.params.len() - 1)
+            } else {
+                ('t', m.params.len())
+            };
+            (class.to_string(), kind, arity)
+        }
+    };
+    let symbol = caribou_mangle::symbol(&plugin, &class, &class, kind, method, arity);
+    let path = &m.path;
+    let args: Vec<proc_macro2::Ident> = (0..m.params.len()).map(|i| format_ident!("a{i}")).collect();
+    let params = &m.params;
+    let ret = m.ret.as_ref().map(|r| quote!(-> #r));
+    Ok(quote! {
+        const _: () = {
+            #[unsafe(export_name = #symbol)]
+            pub extern "C" fn __caribou_linked(#(#args: #params),*) #ret {
+                #path(#(#args),*)
+            }
+        };
+    })
+}
+
+/// A plugin's name as the class its free functions hang in.
+fn capitalised(name: &str) -> String {
+    let mut chars = name.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}

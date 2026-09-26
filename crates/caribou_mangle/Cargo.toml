@@ -1,0 +1,8 @@
+[package]
+name = "caribou_mangle"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "The symbol a published member links under: one rule for the core, the plugin macro and every AOT"
+
+[dependencies]

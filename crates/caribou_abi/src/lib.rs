@@ -30,7 +30,7 @@ pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
 pub mod host;
 pub use host::{Future, Kept, Rootable, Rooted, Text};
 pub mod data;
-pub use caribou_abi_derive::PluginEnum;
+pub use caribou_abi_derive::{PluginEnum, plugin_link_export};
 pub use data::{Buffer, BufferMut, Enum, EnumDesc, EnumField, PluginEnum};
 
 /// Which runtime defines a type's semantics. A registry, not an enum: the
@@ -1053,6 +1053,8 @@ macro_rules! plugin {
         $(
             // The item is what the declaration says, or this does not compile.
             const _: extern "C" fn($($ty),*) $(-> $ret)? = $($path)*;
+            // And it is exported under the symbol an AOT call reaches it by.
+            $crate::plugin_link_export!($name, $class, $($path)*, $method, ($($ty),*), [$($ret)?]);
         )*
 
         static __CARIBOU_CLASSES: [$crate::ClassDesc; $crate::plugin!(@count $($declared)*)] = [

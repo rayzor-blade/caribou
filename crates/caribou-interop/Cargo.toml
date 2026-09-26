@@ -15,6 +15,7 @@ llvm = ["caribou-wren/llvm"]
 libc = { workspace = true }
 
 [dev-dependencies]
+libloading = "0.8"
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash", features = ["runner"] }

@@ -88,6 +88,21 @@ impl Kind {
     }
 }
 
+impl From<crate::describe::MemberKind> for Kind {
+    /// A described member's kind; a factory, a constructor under another
+    /// name, links as the static it is.
+    fn from(kind: crate::describe::MemberKind) -> Kind {
+        use crate::describe::MemberKind as M;
+        match kind {
+            M::Method => Kind::Method,
+            M::Getter => Kind::Getter,
+            M::Setter => Kind::Setter,
+            M::Static | M::Factory => Kind::Static,
+            M::Constructor => Kind::Constructor,
+        }
+    }
+}
+
 /// A member at link time.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Link {
@@ -137,35 +152,7 @@ pub fn symbol(
     name: &str,
     arity: usize,
 ) -> String {
-    let mut out = String::from("caribou");
-    for part in [lang, module, class] {
-        out.push('_');
-        segment(&mut out, part);
-    }
-    out.push('_');
-    out.push(kind.letter());
-    segment(&mut out, name);
-    out.push('_');
-    out.push_str(&arity.to_string());
-    out
-}
-
-fn segment(out: &mut String, text: &str) {
-    let escaped = escape(text);
-    out.push_str(&escaped.len().to_string());
-    out.push_str(&escaped);
-}
-
-fn escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for b in text.bytes() {
-        if b.is_ascii_alphanumeric() {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("_{b:02x}"));
-        }
-    }
-    out
+    caribou_mangle::symbol(lang, module, class, kind.letter(), name, arity)
 }
 
 /// The link for `member` of `class` in `iface`.
