@@ -345,7 +345,9 @@ pub(crate) fn reply(code: u8, out: Value) -> Reply {
 
 /// The descriptor of objects whose word zero is a bare `hl_type`: the
 /// one language whose object layout the core cannot prefix registers
-/// it. Until then such an object has no protocol and no language.
+/// it. Until then such an object has no protocol and no language. Such
+/// an object's type is that `hl_type`: what it answers for `type_name`
+/// and `arity` depends on the type alone.
 static FOREIGN: AtomicPtr<TypeDesc> = AtomicPtr::new(ptr::null_mut());
 
 /// Register the descriptor every object with a bare `hl_type` at word

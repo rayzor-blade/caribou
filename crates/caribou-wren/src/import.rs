@@ -161,6 +161,43 @@ pub(crate) struct Imports {
     /// The class a core `Int64` beyond a double's exact range is an
     /// instance of, once installed.
     int64: Option<*mut ObjClass>,
+    by_hl_type: ByHlType,
+}
+
+/// The class an object typed by a bare `hl_type` crosses as, by that
+/// type, which decides it (`protocol::set_foreign_descriptor`):
+/// direct-mapped, and good for the epoch it was filled in, since a
+/// reload may free a type and its address come back as another's.
+#[derive(Default)]
+struct ByHlType {
+    epoch: usize,
+    ways: [(usize, usize); 16],
+}
+
+impl ByHlType {
+    /// Types lie in arrays of `hl_type`s, so the bits past one's size
+    /// tell neighbours apart.
+    #[inline]
+    fn way(t: usize) -> usize {
+        (t / size_of::<hl_type>()) % 16
+    }
+
+    #[inline]
+    fn get(&self, t: usize) -> Option<*mut ObjClass> {
+        let (key, class) = self.ways[Self::way(t)];
+        (key == t && self.epoch == caribou::protocol::epoch()).then_some(class as *mut ObjClass)
+    }
+
+    fn put(&mut self, t: usize, class: *mut ObjClass) {
+        let epoch = caribou::protocol::epoch();
+        if self.epoch != epoch {
+            *self = ByHlType {
+                epoch,
+                ..ByHlType::default()
+            };
+        }
+        self.ways[Self::way(t)] = (t, class as usize);
+    }
 }
 
 impl Imports {
@@ -188,6 +225,7 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
     let mut imports = rec.imports().borrow_mut();
     imports.classes.clear();
     imports.by_type.clear();
+    imports.by_hl_type = ByHlType::default();
 }
 
 /// The adopted instance at `instance` is dying: the cell it stood in
@@ -838,39 +876,27 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: Option<Value>) -> Option<WVa
     if obj.is_null() || !crate::installed() {
         return None;
     }
-    let lang = bridge::language_of(v)?;
     let rec = record_for(vm.object_class as *mut u8);
     // Installing and allocating the instance both allocate; `obj` stays
     // live on this frame past them, where the conservative scan sees it.
-    let class = if bridge::arity(v).is_some() {
-        function_class(vm).ok()
+    // An object typed by a bare `hl_type` crosses as its type did before.
+    let word = unsafe { *(obj as *const usize) };
+    let hl_typed = unsafe { caribou::protocol::desc_of(obj) } as usize != word;
+    let cached = if hl_typed {
+        rec.imports().borrow().by_hl_type.get(word)
     } else {
-        let published = bridge::type_symbol(v).and_then(|type_name| {
-            let known = rec
-                .imports()
-                .borrow()
-                .by_type
-                .get(&(lang, type_name))
-                .copied();
-            known.or_else(|| {
-                let (iface, _) = registry::class_for_type(lang, type_name.name())?;
-                install(vm, lang, &iface.module).ok()?;
-                rec.imports()
-                    .borrow()
-                    .by_type
-                    .get(&(lang, type_name))
-                    .copied()
-            })
-        });
-        published
-            .or_else(|| {
-                bridge::is_sequence(v)
-                    .then(|| sequence_class(vm).ok())
-                    .flatten()
-            })
-            .or_else(|| Int64::is(v).then(|| int64_class(vm).ok()).flatten())
+        None
     };
-    let class = class?;
+    let class = match cached {
+        Some(class) => class,
+        None => {
+            let (class, lasting) = class_for(vm, rec, v)?;
+            if hl_typed && lasting {
+                rec.imports().borrow_mut().by_hl_type.put(word, class);
+            }
+            class
+        }
+    };
     // The object's cell, made here when it has none yet: a cell holds a
     // view for Wren whichever language made it.
     let c = cell.unwrap_or_else(|| cell::make(v, view_desc()));
@@ -891,6 +917,42 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: Option<Value>) -> Option<WVa
     std::hint::black_box(obj);
     // A view handed out is a safepoint, as an allocation is.
     Some(crate::proto::made(vm, WValue::object(view as *mut u8)))
+}
+
+/// The class `v` crosses as: `Function` for a function, the class
+/// installed for its type, else `Sequence`, else `Int64`; and whether
+/// the answer lasts while the type does, which a class published for
+/// the type later would not let the last two do.
+fn class_for(vm: &mut VM, rec: &WrenHeap, v: Value) -> Option<(*mut ObjClass, bool)> {
+    let lang = bridge::language_of(v)?;
+    if bridge::arity(v).is_some() {
+        return Some((function_class(vm).ok()?, true));
+    }
+    let published = bridge::type_symbol(v).and_then(|type_name| {
+        let known = rec
+            .imports()
+            .borrow()
+            .by_type
+            .get(&(lang, type_name))
+            .copied();
+        known.or_else(|| {
+            let (iface, _) = registry::class_for_type(lang, type_name.name())?;
+            install(vm, lang, &iface.module).ok()?;
+            rec.imports()
+                .borrow()
+                .by_type
+                .get(&(lang, type_name))
+                .copied()
+        })
+    });
+    if let Some(class) = published {
+        return Some((class, true));
+    }
+    bridge::is_sequence(v)
+        .then(|| sequence_class(vm).ok())
+        .flatten()
+        .or_else(|| Int64::is(v).then(|| int64_class(vm).ok()).flatten())
+        .map(|class| (class, false))
 }
 
 // ---------------------------------------------------------------------------
