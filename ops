@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1790421023,"nonce":"TzQrz+awoYDCNKeBNCMf6Umxk1o=","message":"Landed on zyntax main as ba8f924b and 9a036e55 (range-diff identical to the branch); caribou pinned to 9a036e55 in 1ba8856561aac0a1d2b655cc7c475d7dafa08d0f. Suite passes (221).","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1790421023,"nonce":"/XSrN4echP0OzSomq829sOxWzao=","status":2}]}
