@@ -24,43 +24,27 @@ ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "bc3cb91f57c5
 ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "bc3cb91f57c527b32ecf3f0c6660adaf197d65c6" }
 ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "bc3cb91f57c527b32ecf3f0c6660adaf197d65c6", default-features = false }
 ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "bc3cb91f57c527b32ecf3f0c6660adaf197d65c6", default-features = false }
-wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "ae078997ab78badab51b823be4faddcd26b2f236", default-features = false }
-zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
-zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987", default-features = false }
-zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
-zynml = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987", default-features = false }
-zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
-zyntax_lua = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
-zyntax_lua_capi = { git = "https://github.com/darmie/zyntax.git", rev = "0f0e55859daecf0c6fa18ef2023e119505924987" }
+wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "953e45b236722014a31d3c83a3a60a4ac40d2b4d", default-features = false }
+zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
+zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
+zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
+zynml = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
+zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
+zyntax_lua = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
+zyntax_lua_capi = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,
 # which a cargo git checkout never has (`cargo build -p ash_std` there
 # first; ash issue a1355d46ae62456f956985d148a68c99c9aa5394ecf50c3f699da13d692024b5).
 # Until ash's build makes that cdylib itself, the git source is patched
-# here; a wren_lift change not yet pushed is patched the same way.
+# here. A runtime change not yet pushed is patched the same way while it
+# waits, and the patch goes once it is pushed.
 [patch."https://github.com/rayzor-blade/ash.git"]
 ash_std = { path = "../ash/std" }
 ash_native_call = { path = "../ash/crates/ash_native_call" }
 ash_core = { path = "../ash/crates/ash" }
 ash_interp = { path = "../ash/crates/ash_interp" }
-
-# Reentrant lazy enum imports need the interpreter's stable module cells.
-[patch."https://github.com/wrenlift/WrenLift.git"]
-wren_lift = { path = "../wren_lift" }
-
-# zyntax's main is ahead of the rev above, and its checkout is where its
-# landing agent applies packages, so the source is the local repository at
-# a commit of main rather than the checkout as it stands. A later zyntax
-# change takes a new rev here; the path is this machine's.
-[patch."https://github.com/darmie/zyntax.git"]
-zyntax_embed = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
-zyntax_compiler = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
-zyntax_typed_ast = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
-zynml = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
-zyntax_python = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
-zyntax_lua = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
-zyntax_lua_capi = { git = "file:///Users/amaterasu/Vibranium/zyntax", rev = "9a036e557bca33a2af02f61fecfc8b2b153629ba" }
 
 [profile.dev]
 opt-level = 1
