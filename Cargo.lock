@@ -769,7 +769,9 @@ dependencies = [
  "caribou-wren",
  "caribou-zyntax",
  "caribou_abi",
+ "serde",
  "serde_json",
+ "toml",
  "wren_lift",
 ]
 

@@ -306,9 +306,15 @@ fn fnv(hash: u64, bytes: &[u8]) -> u64 {
 /// `out`, or beside the program as `<name>.cb`. Returns where it
 /// was written.
 pub fn write(program: &Path, out: Option<&Path>) -> Result<PathBuf> {
-    let roots = project::roots(program);
-    let bundle = build(program, &roots)?;
     let out = out.map_or_else(|| program.with_extension(EXTENSION), Path::to_owned);
+    write_from(program, &project::roots(program), &out)
+}
+
+/// [`write`] with the roots given, as a project file declares them, to
+/// `out`.
+pub fn write_from(program: &Path, roots: &[PathBuf], out: &Path) -> Result<PathBuf> {
+    let bundle = build(program, roots)?;
+    let out = out.to_owned();
     std::fs::write(&out, caribou::bundle::emit(&bundle))
         .with_context(|| format!("writing {}", out.display()))?;
     Ok(out)

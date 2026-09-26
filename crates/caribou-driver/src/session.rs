@@ -14,6 +14,7 @@ use caribou_ash::{Mode, Options as AshOptions, Program};
 use wren_lift::runtime::engine::ExecutionMode;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
+use crate::cbproj::Project;
 use crate::project;
 
 /// What a session is opened with.
@@ -118,35 +119,79 @@ impl Session {
         drop(bytes);
         // The plugins beside the program, in `plugins/`: what the world
         // grants every language.
-        let plugins = caribou_plugin::load_dir(
-            &path
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join("plugins"),
-        )
-        .map_err(|e| anyhow!("{e}"))?;
+        let plugin_dir = path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("plugins");
+        let plugins = caribou_plugin::load_dir(&plugin_dir).map_err(|e| anyhow!("{e}"))?;
         let program = caribou_ash::load(path, ash_options)?;
         let roots = if options.roots.is_empty() {
             project::roots(path)
         } else {
             options.roots
         };
-        let imported: Vec<String> = program
-            .imports()?
-            .into_iter()
-            .map(|(namespace, _)| namespace)
-            .collect();
         // The hatch packages the roots' hatchfiles depend on, for Wren.
         for package in caribou_wren::hatch::dependencies(&roots).map_err(|e| anyhow!(e))? {
             caribou_wren::hatch::hold(package);
         }
         // The Zyntax frontends under the roots, each a language; their
         // `.zrtl` plugins sit in `plugins/` beside the program too.
-        let plugin_dir = path
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("plugins");
         let frontends = project::frontends(&roots, &plugin_dir)?;
+        Self::open_with(
+            program,
+            roots,
+            plugins,
+            frontends,
+            options.wren_mode,
+            options.report,
+        )
+    }
+
+    /// Open the project a project file declares: its Haxe entry compiled,
+    /// and its roots, languages, plugins and packages as declared rather
+    /// than found.
+    pub fn open_project(project: &Project, options: Options) -> Result<Session> {
+        let hl = project.compile_haxe()?;
+        caribou_ash::install().map_err(|e| anyhow!("ash: {e}"))?;
+        caribou_wren::install().map_err(|e| anyhow!("wren_lift: {e}"))?;
+        let ash_options = AshOptions {
+            mode: options.mode,
+            args: options.args,
+            reload: options.reload,
+            ..AshOptions::default()
+        };
+        let plugins = project.load_plugins()?;
+        let program = caribou_ash::load(&hl, ash_options)?;
+        for package in project.packages()? {
+            caribou_wren::hatch::hold(package);
+        }
+        let frontends = project.frontends()?;
+        Self::open_with(
+            program,
+            project.roots(),
+            plugins,
+            frontends,
+            options.wren_mode,
+            options.report,
+        )
+    }
+
+    /// The world around a loaded `.hl` program, from where its modules,
+    /// languages and plugins are: the namespaces it imports and its roots
+    /// hold, over every language.
+    fn open_with(
+        program: Program,
+        roots: Vec<PathBuf>,
+        plugins: Vec<caribou_plugin::Plugin>,
+        frontends: Vec<caribou_zyntax::Frontend>,
+        wren_mode: ExecutionMode,
+        report: bool,
+    ) -> Result<Session> {
+        let imported: Vec<String> = program
+            .imports()?
+            .into_iter()
+            .map(|(namespace, _)| namespace)
+            .collect();
         let others: Vec<String> = plugins
             .iter()
             .map(|p| p.name().to_owned())
@@ -157,15 +202,7 @@ impl Session {
             roots,
             ..Config::default()
         };
-        Self::finish(
-            program,
-            config,
-            plugins,
-            frontends,
-            None,
-            options.wren_mode,
-            options.report,
-        )
+        Self::finish(program, config, plugins, frontends, None, wren_mode, report)
     }
 
     /// The world around a loaded program: the adapters, the plugins as
@@ -333,4 +370,9 @@ impl Session {
 /// Open and run the program at `path`.
 pub fn run(path: &Path, options: Options) -> Result<()> {
     Session::open(path, options)?.run()
+}
+
+/// Open and run the project `project` declares, in one call.
+pub fn run_project(project: &Project, options: Options) -> Result<()> {
+    Session::open_project(project, options)?.run()
 }

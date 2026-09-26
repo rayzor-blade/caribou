@@ -6,17 +6,20 @@ This document describes how the languages in a Caribou program see each other. I
 
 ## Running a Program
 
-Run a program from the project directory:
+Run a project from its directory:
 
 ```sh
-caribou run bin/game.hl
+caribou run
 ```
 
-The project's layout is the configuration:
+The project file, `<name>.cbproj`, declares the project (see the [README](../README.md#running-programs)):
 
-* The source roots are the class paths of the `.hxml` files in the current directory and next to the program. If there is no `.hxml`, the root is `src`.
-* Every directory under a root is a namespace, and so is every namespace the program imports.
+* The entry is a module of one of the languages. Caribou compiles a Haxe entry itself, with `-lib caribou`, and every Haxe module under the roots with it.
+* Each language lists its source roots. Every directory under a root is a namespace, and so is every namespace the program imports.
+* Wren's hatch packages and the native plugins are declared there too.
 * A module from another language loads the first time the program uses it.
+
+A `.hl` named directly (`caribou run bin/game.hl`) runs with its layout found instead: the roots are the class paths of the `.hxml` files in the current directory and next to the program, or `src`.
 
 An embedder gets the same behavior through `caribou_driver::Session`.
 

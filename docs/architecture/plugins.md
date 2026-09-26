@@ -51,7 +51,7 @@ caribou_abi::plugin! {
 
 ## Loading
 
-`caribou_plugin::load` opens a library, rejects it if it was built against a different ABI version, and reads its table. `load_dir` opens every library in a directory that exports the entry point and skips the ones that do not. The driver loads the plugins in `plugins/` next to a program before the program starts. The project's layout is the configuration. A bundle carries plugins as native library sections (see [bundle.md](bundle.md)), and a session started from a bundle loads those.
+`caribou_plugin::load` opens a library, rejects it if it was built against a different ABI version, and reads its table. `load_dir` opens every library in a directory that exports the entry point and skips the ones that do not. The driver loads the plugins a project file declares (`[plugins]`) before the program starts; for a `.hl` opened directly, the ones in `plugins/` next to it. A bundle carries plugins as native library sections (see [bundle.md](bundle.md)), and a session started from a bundle loads those.
 
 ## Plugins as Languages
 
@@ -160,7 +160,7 @@ Every entry in the table is called on the caller's thread, inside the plugin fun
 
 ## Hatch Packages
 
-A project's Wren modules depend on hatch packages the same way a hatch workspace does: with a `hatchfile` at a root that has a `[dependencies]` section.
+A project's Wren modules depend on hatch packages in the project file's `[dependencies]`, written as a hatchfile writes them. For a `.hl` opened directly, the dependencies are those of a `hatchfile` at a root.
 
 * **Resolution:** The driver resolves each dependency the way `hatch` does (`wren_lift::hatch::resolve_dependency_bytes`): a path dependency is built from its workspace, and a version dependency comes from the cache that `hatch install` fills. Transitive dependencies are resolved as well, each once.
 * **Staging:** Each package is staged in the VM the way WrenLift stages it (`stage_hatch_modules`). Its modules wait for their first `import "@hatch:noise"`, its native libraries are registered, and WrenLift opens them itself.

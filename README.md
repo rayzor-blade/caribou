@@ -94,27 +94,44 @@ cargo +nightly build -p caribou-driver
 
 ### Running Programs
 
-Execute a HashLink binary directly from a project root:
+A project is declared in one file, `<name>.cbproj`, beside its sources:
+
+```toml
+[project]
+name = "game"
+entry = "haxe:game.Main"
+
+[languages.haxe]
+roots = ["src"]
+[languages.wren]
+roots = ["src"]
+[languages.python]
+roots = ["src"]
+
+[dependencies]                  # Wren hatch packages
+"@hatch:greet" = { path = "../greet" }
+
+[plugins]
+gpu = { path = "plugins/libcaribou_gpu.dylib" }
+```
+
+From the project's directory, Caribou compiles the Haxe entry itself, with `-lib caribou`, and runs it with every declared language:
 
 ```sh
-caribou run bin/game.hl
+caribou run
 
 ```
 
-Package the primary executable, related classpath modules, and native plugins into a unified archive:
+`caribou build` packages the program, its modules and its plugins into one archive in `target/`. `caribou build --target wasm32-wasip1` builds it ahead of time instead: a WebAssembly module compiled against Caribou's runtime, with nothing interpreted. That needs a `caribou` built with its `llvm` feature, and for now a Haxe program that imports no other language's modules:
 
 ```sh
-caribou build bin/game.hl    # Emits bin/game.cb
-caribou run bin/game.cb      # Executes self-contained bundle
+caribou build                           # Emits target/game.cb
+caribou run target/game.cb              # Executes the self-contained bundle
+caribou build --target wasm32-wasip1    # Emits target/game.wasm
 
 ```
 
-Build ahead of time for WebAssembly with a `caribou` built with its `llvm` feature. The result is a module compiled against Caribou's runtime, with nothing interpreted. So far this works for a Haxe program that imports no other language's modules:
-
-```sh
-caribou build --target wasm32-wasip1 bin/game.hl    # Emits bin/game.wasm
-
-```
+A `.hl` named directly still runs, with its layout found from the `.hxml` files beside it.
 
 Append `--report` to inspect execution diagnostics upon exit:
 

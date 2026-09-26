@@ -11,8 +11,10 @@
 //! once the VM exists, as it does a project's.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 
+pub use wren_lift::hatch::Dependency;
 use wren_lift::hatch as wh;
 use wren_lift::runtime::engine::InterpretResult;
 use wren_lift::runtime::vm::VM;
@@ -50,8 +52,19 @@ pub fn dependencies(roots: &[impl AsRef<Path>]) -> Result<Vec<Package>, String> 
         };
         let manifest: wh::Manifest = toml::from_str(&text)
             .map_err(|e| format!("{}: {e}", root.join(wh::HATCHFILE).display()))?;
-        resolve_into(root, &manifest, &mut out)?;
+        resolve_into(root, &manifest.dependencies, &mut out)?;
     }
+    Ok(out)
+}
+
+/// The packages a project declares, relative to its directory `root`, and
+/// what those depend on, each once, as [`dependencies`] resolves them.
+pub fn declared(
+    root: &Path,
+    dependencies: &BTreeMap<String, wh::Dependency>,
+) -> Result<Vec<Package>, String> {
+    let mut out = Vec::new();
+    resolve_into(root, dependencies, &mut out)?;
     Ok(out)
 }
 
@@ -70,10 +83,10 @@ fn resolve(_: &Path, name: &str, _: &wh::Dependency) -> Result<Vec<u8>, String> 
 
 fn resolve_into(
     root: &Path,
-    manifest: &wh::Manifest,
+    dependencies: &BTreeMap<String, wh::Dependency>,
     out: &mut Vec<Package>,
 ) -> Result<(), String> {
-    for (name, dep) in &manifest.dependencies {
+    for (name, dep) in dependencies {
         if out.iter().any(|p| &p.name == name) {
             continue;
         }
@@ -83,7 +96,7 @@ fn resolve_into(
             name: name.clone(),
             bytes,
         });
-        resolve_into(root, &inner.manifest, out)?;
+        resolve_into(root, &inner.manifest.dependencies, out)?;
     }
     Ok(())
 }

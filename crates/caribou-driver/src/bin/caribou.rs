@@ -1,8 +1,12 @@
 //! The caribou command.
 //!
-//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]
-//!     caribou build [--target <triple>] <program.hl> [-o <out>]
+//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program>] [args...]
+//!     caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]
 //!     caribou describe <module.wren | plugin library | root directory>...
+//!
+//! With no program named, both act on the project file in the current
+//! directory (`cbproj`): its Haxe entry compiled, its declared languages,
+//! plugins and packages; what they build goes to its `target/`.
 //!
 //! `run` runs a program with every resident language, from the project
 //! directory: the other languages' modules are found under the project's
@@ -20,9 +24,10 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use caribou_ash::Mode;
+use caribou_driver::cbproj::{self, Project};
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] <program> [args...]\n       caribou build [--target <triple>] <program.hl> [-o <out>]\n       caribou describe <module.wren | plugin library | root directory>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou describe <module.wren | plugin library | root directory>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -55,9 +60,12 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
             _ => program = Some(PathBuf::from(arg)),
         }
     }
-    let program = program.ok_or_else(|| USAGE.to_owned())?;
     options.args = args;
-    caribou_driver::run(&program, options).map_err(|e| format!("{e:#}"))
+    match project(program.as_deref())? {
+        Some(project) => caribou_driver::run_project(&project, options),
+        None => caribou_driver::run(&program.expect("named"), options),
+    }
+    .map_err(|e| format!("{e:#}"))
 }
 
 fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
@@ -73,14 +81,49 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
             _ => program = Some(PathBuf::from(arg)),
         }
     }
-    let program = program.ok_or_else(|| USAGE.to_owned())?;
-    let written = match target {
-        Some(triple) => aot(&program, &triple, out.as_deref())?,
-        None => caribou_driver::bundle::write(&program, out.as_deref())
-            .map_err(|e| format!("{e:#}"))?,
+    let written = match project(program.as_deref())? {
+        Some(project) => {
+            let hl = project.compile_haxe().map_err(|e| format!("{e:#}"))?;
+            let target_dir = project.target_dir();
+            match target {
+                Some(triple) => {
+                    let out = out.unwrap_or_else(|| target_dir.join(format!("{}.wasm", project.name)));
+                    aot(&hl, &triple, Some(&out))?
+                }
+                None => {
+                    let out = out.unwrap_or_else(|| target_dir.join(format!("{}.cb", project.name)));
+                    caribou_driver::bundle::write_from(&hl, &project.roots(), &out)
+                        .map_err(|e| format!("{e:#}"))?
+                }
+            }
+        }
+        None => {
+            let program = program.expect("named");
+            match target {
+                Some(triple) => aot(&program, &triple, out.as_deref())?,
+                None => caribou_driver::bundle::write(&program, out.as_deref())
+                    .map_err(|e| format!("{e:#}"))?,
+            }
+        }
     };
     println!("{}", written.display());
     Ok(())
+}
+
+/// The project a command acts on: the project file it names, else, when
+/// it names no program, the one in the current directory. `None` for a
+/// program named directly.
+fn project(program: Option<&Path>) -> Result<Option<Project>, String> {
+    match program {
+        Some(p) if p.extension().is_some_and(|e| e == cbproj::EXTENSION) => {
+            Project::load(p).map(Some).map_err(|e| format!("{e:#}"))
+        }
+        Some(_) => Ok(None),
+        None => match Project::find(Path::new(".")).map_err(|e| format!("{e:#}"))? {
+            Some(project) => Ok(Some(project)),
+            None => Err(format!("no program named and no .cbproj here\n{USAGE}")),
+        },
+    }
 }
 
 #[cfg(feature = "llvm")]
