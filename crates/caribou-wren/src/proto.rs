@@ -37,7 +37,7 @@ use caribou::heap;
 use caribou::protocol::{
     CallSite, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
 };
-use caribou_abi::{ErrorKind, LangId, Value};
+use caribou_abi::{ErrorKind, LangId, Value, hl};
 use wren_lift::runtime::core::as_string;
 use wren_lift::runtime::engine::FuncId;
 use wren_lift::runtime::object::{
@@ -160,46 +160,50 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     if is_wren(p) {
         return Some(WValue::object(p.wrapping_add(PREFIX)));
     }
-    if let Some(text) = unsafe { Str::text(v) } {
-        let s = vm.alloc_string(text.to_owned());
-        return Some(made(vm, s));
-    }
-    // A buffer over a typed array's storage is the array.
-    if let Some(owner) = data::buffer_owner(v)
-        && is_wren(owner)
-    {
-        return Some(WValue::object(owner.wrapping_add(PREFIX)));
-    }
-    // Several results at once are a list of them, in order.
-    if let Some(t) = data::tuple_of(v) {
-        return tuple_list(vm, t);
-    }
-    // Wren has the one number. 2^63 is a double but not an i64, so the
-    // round trip alone would take i64::MAX's nearest double for exact.
-    if Int64::is(v) {
-        let n = Int64::of(v)?;
-        let near = n as f64;
-        if near != 9_223_372_036_854_775_808.0 && near as i64 == n {
-            return Some(WValue::num(near));
+    // An object whose word zero is a bare `hl_type` is none of the
+    // core's own below, nor a cell.
+    if unsafe { heap::is_descriptor(*(p as *const *const hl::hl_type)) } {
+        if let Some(text) = unsafe { Str::text(v) } {
+            let s = vm.alloc_string(text.to_owned());
+            return Some(made(vm, s));
         }
-        return crate::import::proxy(vm, v);
-    }
-    // A cell holding one of this VM's own objects, whose start has the
-    // record at word zero where any other object has its type: the
-    // object comes home.
-    if unsafe { cell::is_cell(p) }
-        && let Some(native) = unsafe { cell::object_at(p) }.as_object()
-        && !native.is_null()
-        && unsafe { *(native as *const usize) }
-            == record_for(vm.object_class as *mut u8) as *const WrenHeap as usize
-    {
-        return Some(WValue::object((native as *mut u8).wrapping_add(PREFIX)));
+        // A buffer over a typed array's storage is the array.
+        if let Some(owner) = data::buffer_owner(v)
+            && is_wren(owner)
+        {
+            return Some(WValue::object(owner.wrapping_add(PREFIX)));
+        }
+        // Several results at once are a list of them, in order.
+        if let Some(t) = data::tuple_of(v) {
+            return tuple_list(vm, t);
+        }
+        // Wren has the one number. 2^63 is a double but not an i64, so the
+        // round trip alone would take i64::MAX's nearest double for exact.
+        if Int64::is(v) {
+            let n = Int64::of(v)?;
+            let near = n as f64;
+            if near != 9_223_372_036_854_775_808.0 && near as i64 == n {
+                return Some(WValue::num(near));
+            }
+            return crate::import::proxy(vm, v);
+        }
+        // A cell holding one of this VM's own objects, whose start has the
+        // record at word zero where any other object has its type: the
+        // object comes home.
+        if unsafe { cell::is_cell(p) }
+            && let Some(native) = unsafe { cell::object_at(p) }.as_object()
+            && !native.is_null()
+            && unsafe { *(native as *const usize) }
+                == record_for(vm.object_class as *mut u8) as *const WrenHeap as usize
+        {
+            return Some(WValue::object((native as *mut u8).wrapping_add(PREFIX)));
+        }
     }
     // Any other object is held through the instance a subclass
     // constructed in front of its cell, else the view the cell keeps for
     // Wren, filled on first need.
     let cell = crate::import::cell_of(v);
-    if let Some(c) = cell {
+    if let cell::Found::Cell(c) = cell {
         if let Some(front) = cell::front(c) {
             return Some(WValue::object(front as *mut u8));
         }

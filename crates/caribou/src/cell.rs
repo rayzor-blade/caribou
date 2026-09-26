@@ -231,15 +231,43 @@ fn made(v: Value, obj: usize, desc: &'static TypeDesc, kept: bool) -> Value {
     Value::object(c as *const c_void)
 }
 
+/// What a look for an object's cell found: the live cell, or none and
+/// whether the object would keep one made for it as its shadow.
+#[derive(Clone, Copy)]
+pub enum Found {
+    Cell(Value),
+    Absent { kept: bool },
+}
+
 /// The live cell for `v`'s object under holder `lang`, if there is one.
 pub fn of(v: Value, lang: LangId) -> Option<Value> {
-    let obj = address_of(v)?;
+    match find(v, lang) {
+        Found::Cell(c) => Some(c),
+        Found::Absent { .. } => None,
+    }
+}
+
+/// [`of`], saying for an object with no cell where one would be kept.
+pub fn find(v: Value, lang: LangId) -> Found {
+    let Some(obj) = address_of(v) else {
+        return Found::Absent { kept: false };
+    };
     match unsafe { Send::shadow(obj as *mut u8, lang) } {
-        Ok(c) => Some(Value::object(c as *const c_void)),
-        Err(Fault::Unsupported) => cells()
-            .get(&obj)
-            .map(|&c| Value::object(c as *const c_void)),
-        Err(_) => None,
+        Ok(c) => Found::Cell(Value::object(c as *const c_void)),
+        Err(Fault::Unsupported) => match cells().get(&obj).copied() {
+            Some(c) => Found::Cell(Value::object(c as *const c_void)),
+            None => Found::Absent { kept: false },
+        },
+        Err(_) => Found::Absent { kept: true },
+    }
+}
+
+/// The cell [`find`] found for `v`, else a new one as [`make`] makes it.
+pub fn found_or_make(v: Value, desc: &'static TypeDesc, found: Found) -> Value {
+    match (found, address_of(v)) {
+        (Found::Cell(c), _) => c,
+        (Found::Absent { kept }, Some(obj)) => made(v, obj, desc, kept),
+        (Found::Absent { .. }, None) => v,
     }
 }
 

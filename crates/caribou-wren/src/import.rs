@@ -263,15 +263,11 @@ fn view_desc() -> &'static TypeDesc {
 }
 
 /// The cell Wren holds `v` through, if `v` is one or has one.
-pub(crate) fn cell_of(v: Value) -> Option<Value> {
-    let p = v.as_object()? as *mut u8;
-    if p.is_null() {
-        return None;
+pub(crate) fn cell_of(v: Value) -> cell::Found {
+    match v.as_object() {
+        Some(p) if !p.is_null() && unsafe { cell::is_cell(p as *mut u8) } => cell::Found::Cell(v),
+        _ => cell::find(v, wren_lang()),
     }
-    if unsafe { cell::is_cell(p) } {
-        return Some(v);
-    }
-    cell::of(v, wren_lang())
 }
 
 /// Whether the cell at `p` has its Wren view: the instance header the
@@ -648,7 +644,7 @@ pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
 /// instance in front, so the object comes back as it.
 fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
     let v = Value::object(obj as *const c_void);
-    let c = cell_of(v).unwrap_or_else(|| cell::make(v, view_desc()));
+    let c = cell::found_or_make(v, view_desc(), cell_of(v));
     let cell_ptr = c.as_object().unwrap_or(ptr::null_mut()) as usize;
     unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(cell_ptr as f64)) };
     crate::heap::set_adopted(instance as *mut u8);
@@ -870,8 +866,8 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     proxy_in(vm, v, cell_of(v))
 }
 
-/// [`proxy`] of `v`, whose cell the caller found: `cell`, or none.
-pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: Option<Value>) -> Option<WValue> {
+/// [`proxy`] of `v`, for which the caller found `cell`.
+pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
         return None;
@@ -899,7 +895,7 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: Option<Value>) -> Option<WVa
     };
     // The object's cell, made here when it has none yet: a cell holds a
     // view for Wren whichever language made it.
-    let c = cell.unwrap_or_else(|| cell::make(v, view_desc()));
+    let c = cell::found_or_make(v, view_desc(), cell);
     let start = c.as_object()? as *mut u8;
     let view = unsafe { cell::view_at(start) } as *mut ObjInstance;
     unsafe {
