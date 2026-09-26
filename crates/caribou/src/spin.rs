@@ -1,14 +1,27 @@
 //! A lock for data held for a handful of instructions: taken with one
 //! atomic exchange when free; when not, it spins briefly and then yields.
-//! No poisoning, and not reentrant.
+//! No poisoning, and not reentrant: in a debug build, a thread that asks
+//! for a lock it already holds panics rather than spinning forever.
 
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
+#[cfg(debug_assertions)]
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub struct SpinLock<T> {
     held: AtomicBool,
+    /// The holding thread, by [`this_thread`]; zero when free.
+    #[cfg(debug_assertions)]
+    owner: AtomicUsize,
     value: UnsafeCell<T>,
+}
+
+/// This thread, as an address no other live thread shares.
+#[cfg(debug_assertions)]
+fn this_thread() -> usize {
+    std::thread_local!(static ME: u8 = const { 0 });
+    ME.with(|me| me as *const u8 as usize)
 }
 
 // SAFETY: the value is reached only through a guard, one at a time.
@@ -19,6 +32,8 @@ impl<T> SpinLock<T> {
     pub const fn new(value: T) -> SpinLock<T> {
         SpinLock {
             held: AtomicBool::new(false),
+            #[cfg(debug_assertions)]
+            owner: AtomicUsize::new(0),
             value: UnsafeCell::new(value),
         }
     }
@@ -33,6 +48,12 @@ impl<T> SpinLock<T> {
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
+            #[cfg(debug_assertions)]
+            assert_ne!(
+                self.owner.load(Ordering::Relaxed),
+                this_thread(),
+                "a SpinLock is not reentrant: this thread holds it already"
+            );
             while self.held.load(Ordering::Relaxed) {
                 if spins < SPINS {
                     spins += 1;
@@ -42,6 +63,8 @@ impl<T> SpinLock<T> {
                 }
             }
         }
+        #[cfg(debug_assertions)]
+        self.owner.store(this_thread(), Ordering::Relaxed);
         SpinGuard { lock: self }
     }
 }
@@ -67,6 +90,8 @@ impl<T> DerefMut for SpinGuard<'_, T> {
 
 impl<T> Drop for SpinGuard<'_, T> {
     fn drop(&mut self) {
+        #[cfg(debug_assertions)]
+        self.lock.owner.store(0, Ordering::Relaxed);
         self.lock.held.store(false, Ordering::Release);
     }
 }
@@ -74,6 +99,16 @@ impl<T> Drop for SpinGuard<'_, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[cfg_attr(target_family = "wasm", ignore = "a panic aborts on wasm")]
+    #[should_panic(expected = "not reentrant")]
+    fn a_thread_that_asks_again_panics() {
+        let lock = SpinLock::new(0);
+        let _held = lock.lock();
+        let _again = lock.lock();
+    }
 
     #[test]
     #[cfg_attr(
