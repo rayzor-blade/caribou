@@ -155,6 +155,10 @@ static INSTALLED: AtomicBool = AtomicBool::new(false);
 /// Install the core's heap into the linked wren_lift. Must run before its
 /// first Immix VM is created. A second call after a successful one is `Ok`.
 pub fn install() -> Result<(), InstallError> {
+    // One install at a time: a second caller waits for the first and
+    // finds it done, rather than finding wren_lift's seam taken.
+    static INSTALLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = INSTALLING.lock().unwrap_or_else(|e| e.into_inner());
     if INSTALLED.load(Ordering::Acquire) {
         return Ok(());
     }
