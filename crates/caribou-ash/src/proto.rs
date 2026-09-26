@@ -54,6 +54,7 @@ use caribou_abi::hl::{
     self, aptr, hl_field_lookup, hl_module_context, hl_runtime_obj, hl_type, hl_type_detail,
     hl_type_fun, hl_type_kind, uchar, varray, vclosure, vdynamic,
 };
+#[cfg(feature = "runner")]
 use caribou_abi::mem::KIND_NOPTR;
 use caribou_abi::{ErrorKind, LangId, Value};
 
@@ -360,6 +361,7 @@ pub(crate) fn throwable(e: Value) -> *mut vdynamic {
 /// program publishes.
 static STRING_TYPE: AtomicPtr<hl_type> = AtomicPtr::new(ptr::null_mut());
 
+#[cfg(feature = "runner")]
 pub(crate) fn set_string_type(t: *mut hl_type) {
     STRING_TYPE.store(t, Ordering::Release);
 }
@@ -661,6 +663,7 @@ const STUB_SENTINEL_LIMIT: usize = 0x100000;
 /// sentinel names. One program per process.
 static MODULE_CONTEXT: AtomicPtr<hl_module_context> = AtomicPtr::new(ptr::null_mut());
 
+#[cfg(feature = "runner")]
 pub(crate) fn set_module_context(m: *mut hl_module_context) {
     MODULE_CONTEXT.store(m, Ordering::Release);
 }
@@ -1026,6 +1029,7 @@ static mut CTOR_DESC: TypeDesc = {
 /// The constructor of the class whose instance type is `t`, as a value
 /// the registry can hold: `cell` and `sig` are `__constructor__`'s cell in
 /// the module context and its full type, `this` first.
+#[cfg(feature = "runner")]
 pub(crate) fn constructor(
     t: *mut hl_type,
     cell: *const *const c_void,
@@ -1140,12 +1144,14 @@ static CTOR_PROTO: Protocol = Protocol {
 /// the `hl.Class` instance the program's entry function stores in the
 /// type's global, at each use, since it is made after the program
 /// publishes and replaced by a reload.
+#[cfg(feature = "runner")]
 #[repr(C)]
 struct HaxeClass {
     desc: *const TypeDesc,
     t: *mut hl_type,
 }
 
+#[cfg(feature = "runner")]
 static mut CLASS_DESC: TypeDesc = {
     let mut d = TypeDesc::new(haxe_type());
     d.protocol = &CLASS_PROTO;
@@ -1155,6 +1161,7 @@ static mut CLASS_DESC: TypeDesc = {
 };
 
 /// The class whose instance type is `t`, as a value.
+#[cfg(feature = "runner")]
 pub(crate) fn class_object(t: *mut hl_type) -> Value {
     unsafe { CLASS_DESC.lang = lang() };
     let _lock = heap::gc_guard();
@@ -1178,6 +1185,7 @@ pub(crate) fn class_object(t: *mut hl_type) -> Value {
 }
 
 /// The `hl.Class` instance of the class, once the program has made it.
+#[cfg(feature = "runner")]
 unsafe fn class_instance(obj: *mut u8) -> Option<*mut vdynamic> {
     let t = unsafe { (*(obj as *const HaxeClass)).t };
     let global = unsafe { (*(*t).detail.obj).global_value };
@@ -1190,6 +1198,7 @@ unsafe fn class_instance(obj: *mut u8) -> Option<*mut vdynamic> {
 
 /// Run `f` on the class instance wrapped as a Haxe object, so the Haxe
 /// protocol answers for it.
+#[cfg(feature = "runner")]
 unsafe fn on_class_instance(obj: *mut u8, f: impl FnOnce(*mut u8) -> u8) -> u8 {
     let Some(instance) = (unsafe { class_instance(obj) }) else {
         return raise_core(
@@ -1203,14 +1212,17 @@ unsafe fn on_class_instance(obj: *mut u8, f: impl FnOnce(*mut u8) -> u8) -> u8 {
     code
 }
 
+#[cfg(feature = "runner")]
 unsafe extern "C-unwind" fn class_get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
     unsafe { on_class_instance(obj, |w| get_member(w, name, out)) }
 }
 
+#[cfg(feature = "runner")]
 unsafe extern "C-unwind" fn class_set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
     unsafe { on_class_instance(obj, |w| set_member(w, name, value)) }
 }
 
+#[cfg(feature = "runner")]
 unsafe extern "C-unwind" fn class_invoke(
     obj: *mut u8,
     name: Symbol,
@@ -1221,6 +1233,7 @@ unsafe extern "C-unwind" fn class_invoke(
     unsafe { on_class_instance(obj, |w| invoke(w, name, args, n, out)) }
 }
 
+#[cfg(feature = "runner")]
 unsafe extern "C-unwind" fn class_type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
     let t = unsafe { (*(obj as *const HaxeClass)).t };
     let name = unsafe { obj_name(t) }.unwrap_or_default();
@@ -1228,6 +1241,7 @@ unsafe extern "C-unwind" fn class_type_name(obj: *mut u8, out: *mut Symbol) -> u
     REPLY_OK
 }
 
+#[cfg(feature = "runner")]
 static CLASS_PROTO: Protocol = Protocol {
     get_member: Some(class_get_member),
     set_member: Some(class_set_member),
