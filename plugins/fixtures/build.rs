@@ -97,7 +97,10 @@ fn main() {
             // Under `cargo clippy` the outer build's lints would otherwise
             // run on this nested build too, with the outer `-D warnings`.
             .env_remove("RUSTC_WORKSPACE_WRAPPER")
-            .env_remove("CLIPPY_ARGS"),
+            .env_remove("CLIPPY_ARGS")
+            // Builds from differing environments (an editor's check, a test
+            // run) share this target: whole crates, never incremental state.
+            .env("CARGO_INCREMENTAL", "0"),
         "building the fixture plugins and descriptor command",
     );
 
