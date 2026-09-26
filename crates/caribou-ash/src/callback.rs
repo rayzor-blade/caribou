@@ -291,9 +291,10 @@ pub(crate) fn function_for_typed(v: Value, t: *const hl_type) -> *mut vdynamic {
         ptr::addr_of_mut!((*cb).shape).write(shape);
     }
     heap::handle_release(root);
-    // The callback is unrooted until the closure holds it: it is on this
-    // frame, which the conservative scan sees. The closure is of the
-    // program's own type `t`, so a call site declaring it calls directly.
+    // The callback is unrooted until the closure holds it, so it is kept
+    // through the closure's allocation. The closure is of the program's own
+    // type `t`, so a call site declaring it calls directly.
+    let _kept = heap::keep(cb as *const u8);
     let closure = unsafe {
         hlp_alloc_record_closure(t as *mut hl_type as *mut _, ptr::addr_of_mut!((*cb).rc))
     };

@@ -203,15 +203,14 @@ pub fn make(v: Value, desc: &'static TypeDesc) -> Value {
 /// [`make`]'s cell for `obj`, whose language keeps a shadow on it when
 /// `kept`.
 fn made(v: Value, obj: usize, desc: &'static TypeDesc, kept: bool) -> Value {
-    // `v` on this frame keeps the object through the allocation where the
-    // collector scans the stack; elsewhere a handle does.
-    let root = if heap::scans_current_stack() {
-        Handle::NULL
+    // Kept through the allocation where the collector scans this thread;
+    // elsewhere a handle keeps it.
+    let (_kept, root) = if heap::scans_current_stack() {
+        (Some(heap::keep(obj as *const u8)), Handle::NULL)
     } else {
-        heap::handle_new(obj as *mut u8)
+        (None, heap::handle_new(obj as *mut u8))
     };
     let p = alloc(desc, v, if kept { 0 } else { MAPPED });
-    core::hint::black_box(v);
     heap::handle_release(root);
     // Another thread may have made one meanwhile. Ours is then garbage,
     // and its drop forgets nothing, not being the one kept.
@@ -819,7 +818,8 @@ mod tests {
 
     impl Mutator {
         fn register() -> Mutator {
-            // A wasm module's one thread is registered by `init`.
+            // A wasm module's one thread is registered by its entry point,
+            // which these tests do not run: they root by handle there.
             #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
             heap::gc_register_current_os_thread();
             Mutator
@@ -850,6 +850,42 @@ mod tests {
         heap::scrub_stack_and_registers();
         heap::major();
         assert!(!has_cell(obj), "dropped, the cell left the map");
+    }
+
+    /// On wasm a local is out of every scan's reach, so a cell whose only
+    /// holder is a guard is alive through the kept stack alone; let go, it
+    /// dies and leaves the map. The guard is boxed, off the shadow stack,
+    /// and both addresses are kept inverted everywhere else.
+    #[test]
+    #[cfg(target_family = "wasm")]
+    fn a_kept_cell_outlives_a_collection_on_wasm() {
+        heap::init();
+        // Registered as Ash's AOT entry point registers the module's thread.
+        let top = 0u8;
+        unsafe { heap::set_stack_top(&top as *const u8 as usize) };
+        let (kept, cell_hidden, obj_hidden) = kept_cell();
+        let obj = Value::object(!obj_hidden as *const c_void);
+
+        heap::scrub_stack_and_registers();
+        heap::major();
+        assert!(cell_of_is(obj, cell_hidden), "kept, the cell lives");
+
+        std::mem::drop(kept);
+        heap::scrub_stack_and_registers();
+        heap::major();
+        assert!(!has_cell(obj), "let go, the cell left the map");
+        heap::unregister_thread();
+    }
+
+    /// A cell for a fresh string, kept: the guard, and the cell's and the
+    /// string's addresses inverted.
+    #[cfg(target_family = "wasm")]
+    #[inline(never)]
+    fn kept_cell() -> (Box<heap::Kept>, usize, usize) {
+        let s = Str::new("kept");
+        let c = wrap(Str::value(s), plain());
+        let cp = c.as_object().unwrap() as *const u8;
+        (Box::new(heap::keep(cp)), !(cp as usize), !(s as usize))
     }
 
     /// Whether `obj`'s cell is the one at `cell_hidden` inverted. The

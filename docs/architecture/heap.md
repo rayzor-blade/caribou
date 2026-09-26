@@ -62,12 +62,14 @@ A collection marks from the following roots, in this order:
 4. Root slots: the addresses of pointer slots, re-read on every cycle, which implements HashLink's `hl_add_root` contract
 5. The globals array
 6. Registered root ranges
-7. Each mutator's interpreter scan-root table. The interpreter publishes and maintains this table, and the collector reads its address once
+7. Each mutator's interpreter scan-root table. The interpreter publishes and maintains this table, and the collector reads its address once. Beside it, the mutator's kept stack (see below)
 8. Each registered mutator's machine stack, from its saved stack pointer to its stack top, after the callee-saved registers have been spilled
 9. Every registered fiber stack, from its saved stack pointer to its top
 10. The saved registers of parked mutators
 
 **Handles:** A handle is a reference-counted slot in a table that the GC lock protects (`handle_new`, `handle_get`, `handle_retain`, `handle_release`). Plugins and adapters hold handles across calls instead of raw pointers, because the scanner cannot see a raw pointer stored outside the heap or the registered stacks. `handle_release_deferred` is the release variant for drop hooks, which run inside the collector and cannot take the lock: the release happens the next time the outermost hold of the lock is released, when the queued finalizers run. A null handle is a no-op in every operation.
+
+**Kept Objects:** Rust code in the runtime often holds an object only in a local variable across an allocation, and relies on the stack scan to keep it alive. On a native target that holds: a local lives in a register or on the machine stack, and both are scanned. On wasm it does not, because a local lives in the engine's own frame storage, which is outside linear memory and out of every scan's reach. `heap::keep(ptr)` returns a guard for such a site. On a native target the guard only stays on the frame and costs nothing. On wasm it pushes the address onto the thread's kept stack, which the collector scans with the mutator, and pops it when dropped. A buffer whose address is taken, such as an argument array passed as a slice, lives in the shadow stack in linear memory, which is scanned, and needs no guard.
 
 **Root Ranges:** A root range (`register_root_range`, `unregister_root_range`) is an address range that the collector scans conservatively on every collection. A linked spoke's data section is one example; a module's variable array is another.
 

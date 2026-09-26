@@ -10,7 +10,7 @@
 )]
 use super::desc::TypeDesc;
 use caribou_abi::hl::{self, HL_WSIZE, hl_type, hl_type_obj};
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::os::raw::c_void;
 use std::ptr::{self, NonNull};
 use std::rc::Rc;
@@ -342,6 +342,7 @@ thread_local! {
             deferred: Cell::new(false),
             polls: AtomicU64::new(0),
             site: AtomicU64::new(0),
+            kept: UnsafeCell::new(Vec::new()),
         }
     };
 }
@@ -388,6 +389,10 @@ struct Tlab {
     /// trigger that fires inside its allocation is recorded, never run
     /// there. See `set_deferred_collection`.
     deferred: Cell<bool>,
+    /// What this thread keeps alive past its frames ([`keep`]): pushed on
+    /// wasm only, where no scan reaches a local. Read by address, like
+    /// `polls`, by a collection while the thread is stopped.
+    kept: UnsafeCell<Vec<usize>>,
 }
 
 /// Largest object the bump region serves. At one line, nothing in the
@@ -505,6 +510,8 @@ struct MutatorRecord {
     polls_at_stop: u64,
     /// Where this thread last entered a place it could wait. See `mark_site`.
     site: usize,
+    /// Address of this thread's kept stack, in its `Tlab`.
+    kept: usize,
 }
 
 #[derive(Default)]
@@ -561,6 +568,7 @@ fn register_current_mutator(stack_top: usize, role: &'static str) {
             polls: TLAB.with(|t| &t.polls as *const AtomicU64 as usize),
             polls_at_stop: 0,
             site: TLAB.with(|t| &t.site as *const AtomicU64 as usize),
+            kept: TLAB.with(|t| t.kept.get() as usize),
         });
     }
     TLAB.with(|t| t.registered.set(true));
@@ -1165,12 +1173,18 @@ fn stop_mutator_world() -> StoppedWorld {
                 },
                 _ => m.scan_ranges.clone(),
             };
+            let mut scan_ranges = with_extra(m.extra, ranges);
+            // SAFETY: as above; the stack lives in the thread's `Tlab`.
+            let kept = unsafe { &*(m.kept as *const Vec<usize>) };
+            if !kept.is_empty() {
+                scan_ranges.push((kept.as_ptr() as usize, kept.len() * size_of::<usize>()));
+            }
             MutatorSnapshot {
                 thread: m.thread,
                 stack_top: m.stack_top,
                 stack_sp: m.stopped_sp,
                 saved_regs: m.saved_regs,
-                scan_ranges: with_extra(m.extra, ranges),
+                scan_ranges,
             }
         })
         .collect();
@@ -5068,6 +5082,40 @@ pub fn init() {
 /// mutator, so what its frames hold stays alive across a collection.
 pub fn scans_current_stack() -> bool {
     TLAB.with(|t| t.registered.get())
+}
+
+/// Keeps the allocation at `ptr` alive until dropped, for code whose frame
+/// is all that holds it. A native frame is scanned, registers and all, so
+/// there the guard only has to stay on it. A wasm local lives in the
+/// engine's own frame, which no scan reaches, so there the guard puts the
+/// address on this thread's kept stack, which a collection scans. The
+/// thread must be a registered mutator ([`scans_current_stack`]).
+#[must_use]
+pub struct Kept {
+    ptr: usize,
+}
+
+#[inline(always)]
+pub fn keep(ptr: *const u8) -> Kept {
+    #[cfg(target_family = "wasm")]
+    TLAB.with(|t| unsafe { (*t.kept.get()).push(ptr as usize) });
+    Kept { ptr: ptr as usize }
+}
+
+impl Drop for Kept {
+    #[inline(always)]
+    fn drop(&mut self) {
+        // Guards drop innermost first, so the address is nearly always last.
+        #[cfg(target_family = "wasm")]
+        TLAB.with(|t| {
+            let kept = unsafe { &mut *t.kept.get() };
+            if let Some(i) = kept.iter().rposition(|&p| p == self.ptr) {
+                kept.remove(i);
+            }
+        });
+        #[cfg(not(target_family = "wasm"))]
+        std::hint::black_box(self.ptr);
+    }
 }
 
 /// Record the stack top for conservative scanning.

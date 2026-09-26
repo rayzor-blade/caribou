@@ -873,9 +873,10 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValu
         return None;
     }
     let rec = record_for(vm.object_class as *mut u8);
-    // Installing and allocating the instance both allocate; `obj` stays
-    // live on this frame past them, where the conservative scan sees it.
-    // An object typed by a bare `hl_type` crosses as its type did before.
+    // Installing and allocating the cell both allocate; `obj` is kept
+    // past them. An object typed by a bare `hl_type` crosses as its type
+    // did before.
+    let _kept = caribou::heap::keep(obj);
     let word = unsafe { *(obj as *const usize) };
     let hl_typed = unsafe { caribou::protocol::desc_of(obj) } as usize != word;
     let cached = if hl_typed {
@@ -910,7 +911,6 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValu
         });
     }
     crate::heap::hold_view(rec, start);
-    std::hint::black_box(obj);
     // A view handed out is a safepoint, as an allocation is.
     Some(crate::proto::made(vm, WValue::object(view as *mut u8)))
 }
@@ -1249,11 +1249,12 @@ fn finish(
         // The assigned value, as Wren's own setters evaluate to.
         return Ok(args[1]);
     }
-    // The result is not rooted; it stays live on this frame across the
-    // crossing, which may allocate, where the conservative scan sees it.
-    let out = cross_out(vm, value);
-    std::hint::black_box(value);
-    out
+    // The result is not rooted; it is kept across the crossing, which may
+    // allocate.
+    let _kept = value
+        .as_object()
+        .map(|p| caribou::heap::keep(p as *const u8));
+    cross_out(vm, value)
 }
 
 #[cfg(test)]
