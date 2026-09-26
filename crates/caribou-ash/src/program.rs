@@ -209,6 +209,19 @@ pub fn imports_in(path: &Path) -> Result<Vec<(String, String)>> {
     imports_of(&bytecode)
 }
 
+/// The natives the program at `path` declares, as `(lib, name)`, read
+/// without loading it: what a build links the program's calls from.
+pub fn natives_in(path: &Path) -> Result<Vec<(String, String)>> {
+    bring_up(path, true)?;
+    let bytecode =
+        BytecodeDecoder::decode(path).with_context(|| format!("decoding {}", path.display()))?;
+    Ok(bytecode
+        .natives
+        .iter()
+        .map(|n| (n.lib.clone(), n.name.clone()))
+        .collect())
+}
+
 /// Print Ash's profile, when `ASH_PROFILE` asked for one: what `finish`
 /// does, for a host that keeps its program and ends some other way.
 pub fn profile_report() {

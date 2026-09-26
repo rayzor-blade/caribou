@@ -8,13 +8,23 @@
 
 use std::path::{Path, PathBuf};
 
+use std::collections::HashMap;
+
 use anyhow::{Result, anyhow, bail};
 use ash_core::llvm::aot_build::{AotRequest, emit_aot};
 use ash_core::llvm::aot_link::is_wasm_triple;
+use ash_core::native_lib::{HostLink, Word};
+use caribou_abi::TypeTag;
 
 /// Build `program` for `triple` into `out`, by default the program's name
-/// with the target's extension beside it. Returns what was written.
-pub fn build(program: &Path, triple: &str, out: Option<&Path>) -> Result<PathBuf> {
+/// with the target's extension beside it, its calls into the plugins at
+/// `plugins` linked directly. Returns what was written.
+pub fn build(
+    program: &Path,
+    triple: &str,
+    out: Option<&Path>,
+    plugins: &[PathBuf],
+) -> Result<PathBuf> {
     if !is_wasm_triple(triple) {
         bail!("`{triple}`: caribou builds wasm programs ahead of time so far");
     }
@@ -34,6 +44,7 @@ pub fn build(program: &Path, triple: &str, out: Option<&Path>) -> Result<PathBuf
         allow_refused: false,
         abi_version: 1,
         quiet: false,
+        links: links(program, plugins)?,
     })?;
     Ok(exe)
 }
@@ -57,3 +68,80 @@ fn wasm_runtime(triple: &str) -> Result<PathBuf> {
             )
         })
 }
+
+/// The program's `caribou` natives that a plugin defines, each linked to
+/// the plugin's member by its symbol: the plugin's own machine types, and
+/// the casts between them and Haxe's. A member whose types have no cast
+/// yet is left to the program's run-time path.
+fn links(program: &Path, plugins: &[PathBuf]) -> Result<HashMap<(String, String), HostLink>> {
+    let mut members = Vec::new();
+    for plugin in plugins {
+        members.extend(caribou_plugin::links(plugin).map_err(|e| anyhow!("{e}"))?);
+    }
+    let mut out = HashMap::new();
+    for (lib, name) in caribou_ash::program::natives_in(program)? {
+        if lib != "caribou" {
+            continue;
+        }
+        let Some(m) = caribou_ash::link::member_of(&name) else {
+            continue;
+        };
+        let found = members.iter().find(|l| {
+            l.lang == m.namespace
+                && l.module == m.module
+                && l.class == m.class
+                && l.kind == m.kind
+                && l.name == m.name
+                && l.arity == m.arity
+        });
+        if let Some(link) = found.and_then(host_link) {
+            out.insert((lib, name), link);
+        }
+    }
+    Ok(out)
+}
+
+/// A plugin member as Ash links it, or `None` while one of its types has
+/// no cast: a number or a bool passes as it is, a string through the
+/// core's string, and whatever the plugin raises is thrown after.
+fn host_link(link: &caribou_plugin::Link) -> Option<HostLink> {
+    let mut params = Vec::with_capacity(link.params.len());
+    let mut arg_casts = Vec::with_capacity(link.params.len());
+    for &tag in &link.params {
+        let (word, cast) = word_of(tag)?;
+        params.push(word);
+        arg_casts.push(cast.map(|(to_plugin, _)| to_plugin.to_owned()));
+    }
+    let (ret, ret_cast) = if link.ret == TypeTag::VOID {
+        (None, None)
+    } else {
+        let (word, cast) = word_of(link.ret)?;
+        (Some(word), cast.map(|(_, to_haxe)| to_haxe.to_owned()))
+    };
+    Some(HostLink {
+        symbol: link.symbol.clone(),
+        params,
+        ret,
+        arg_casts,
+        ret_cast,
+        after: Some("caribou_haxe_raise_pending".to_owned()),
+    })
+}
+
+/// The machine word a plugin tag is, with the casts into and out of it
+/// from Haxe's side when the two differ.
+fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)> {
+    Some(match tag {
+        TypeTag::UI8 | TypeTag::UI16 | TypeTag::I32 => (Word::I32, None),
+        TypeTag::I64 => (Word::I64, None),
+        TypeTag::F32 => (Word::F32, None),
+        TypeTag::F64 => (Word::F64, None),
+        TypeTag::BOOL => (Word::Bool, None),
+        TypeTag::BYTES => (
+            Word::Ptr,
+            Some(("caribou_haxe_string_to_str", "caribou_haxe_str_to_string")),
+        ),
+        _ => return None,
+    })
+}
+

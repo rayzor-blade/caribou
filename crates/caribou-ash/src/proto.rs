@@ -425,7 +425,7 @@ unsafe fn string_units<'a>(d: *mut vdynamic) -> &'a [uchar] {
 }
 
 /// The text of a `String` object.
-unsafe fn string_text(d: *mut vdynamic) -> String {
+pub(crate) unsafe fn string_text(d: *mut vdynamic) -> String {
     String::from_utf16_lossy(unsafe { string_units(d) })
 }
 
@@ -437,6 +437,12 @@ unsafe fn alloc_string(text: &str) -> Option<*mut vdynamic> {
     if t.is_null() {
         return None;
     }
+    Some(unsafe { alloc_string_typed(t, text) })
+}
+
+/// A `String` object of the type `t` holding `text`: [`alloc_string`] for
+/// a caller that has the program's `String` type in hand.
+pub(crate) unsafe fn alloc_string_typed(t: *mut hl_type, text: &str) -> *mut vdynamic {
     let n = text.encode_utf16().count();
     let bytes = unsafe { hlp_alloc_bytes(((n + 1) * 2) as i32) } as *mut uchar;
     let mut at = bytes;
@@ -453,7 +459,7 @@ unsafe fn alloc_string(text: &str) -> Option<*mut vdynamic> {
         *(base.add(STRING_BYTES) as *mut *const uchar) = bytes;
         *(base.add(STRING_LENGTH) as *mut i32) = n as i32;
     }
-    Some(s)
+    s
 }
 
 // ---------------------------------------------------------------------------

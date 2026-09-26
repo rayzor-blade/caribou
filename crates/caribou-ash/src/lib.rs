@@ -19,6 +19,7 @@
 mod callback;
 mod heap;
 mod import;
+pub mod link;
 #[cfg(feature = "runner")]
 pub mod program;
 mod proto;

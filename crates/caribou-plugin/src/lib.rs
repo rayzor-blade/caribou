@@ -206,6 +206,70 @@ pub fn load_dir(dir: &Path) -> Result<Vec<Plugin>, Error> {
     Ok(out)
 }
 
+/// A plugin member as an AOT call reaches it (`docs/architecture/
+/// linking.md`): its link symbol, and the tag of each parameter and of the
+/// result exactly as the plugin's function takes them, the receiver first
+/// for a method.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Link {
+    /// The plugin's language, the class's module, and the class.
+    pub lang: String,
+    pub module: String,
+    pub class: String,
+    pub name: String,
+    pub kind: caribou::link::Kind,
+    pub arity: usize,
+    pub symbol: String,
+    pub params: Vec<TypeTag>,
+    pub ret: TypeTag,
+}
+
+/// Every member of the plugin at `path` as a link, classed as the
+/// plugin's published interface classes it: a free function a static of
+/// the class named after the plugin, `new` returning its own class that
+/// class's constructor, a member with a receiver a method.
+pub fn links(path: &Path) -> Result<Vec<Link>, Error> {
+    let plugin = load(path)?;
+    let mut constructed: Vec<String> = Vec::new();
+    let mut out = Vec::with_capacity(plugin.symbols.len());
+    for desc in &plugin.symbols {
+        let class = unsafe { desc.class.as_str() };
+        let class = if class.is_empty() {
+            capitalised(&plugin.name)
+        } else {
+            class.to_owned()
+        };
+        let name = unsafe { desc.method.as_str() }.to_owned();
+        let n = desc.param_count as usize;
+        let is_static = desc.flags & sym::STATIC != 0;
+        let constructs_own = name == "new"
+            && is_static
+            && desc.ret_class != NO_CLASS
+            && unsafe { plugin.classes[desc.ret_class as usize].name.as_str() } == class
+            && !constructed.contains(&class);
+        let (kind, arity) = if constructs_own {
+            constructed.push(class.clone());
+            (caribou::link::Kind::Constructor, n)
+        } else if is_static {
+            (caribou::link::Kind::Static, n)
+        } else {
+            (caribou::link::Kind::Method, n - 1)
+        };
+        out.push(Link {
+            symbol: caribou::link::symbol(&plugin.name, &class, &class, kind, &name, arity),
+            lang: plugin.name.clone(),
+            module: class.clone(),
+            class,
+            name,
+            kind,
+            arity,
+            params: desc.params[..n].to_vec(),
+            ret: desc.ret,
+        });
+    }
+    Ok(out)
+}
+
 /// The plugin at `path` as data, for a build step: one module per class,
 /// under the plugin's name as the language. Loads the plugin into a world
 /// of this thread's, as running it would.
