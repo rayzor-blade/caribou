@@ -14,9 +14,9 @@ caribou run
 
 The project file, `<name>.cbproj`, declares the project (see the [README](../README.md#running-programs)):
 
-* The entry is a module of one of the languages. Caribou compiles a Haxe entry itself, with `-lib caribou`, and every Haxe module under the roots with it.
-* Each language lists its source roots. Every directory under a root is a namespace, and so is every namespace the program imports.
-* Wren's hatch packages and the native plugins are declared there too.
+* The entry is a module of one of the languages. Caribou compiles a Haxe entry itself, with `-lib caribou`, and every Haxe module in the sources with it.
+* The file lists the languages; it names no modules. Every module is found under the sources, `src/` unless `sources` says otherwise, and its path is its name: the first directory is its namespace, the rest its module (`src/game/ui/hud.wren` is `game:ui/hud`). Every namespace the program imports is a namespace too.
+* Each language's dependencies are declared in its own form (`[dependencies.haxe]` haxelibs, `[dependencies.wren]` hatch packages), and so are the native plugins.
 * A module from another language loads the first time the program uses it.
 
 A `.hl` named directly (`caribou run bin/game.hl`) runs with its layout found instead: the roots are the class paths of the `.hxml` files in the current directory and next to the program, or `src`.

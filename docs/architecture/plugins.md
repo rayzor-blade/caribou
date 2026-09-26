@@ -160,7 +160,7 @@ Every entry in the table is called on the caller's thread, inside the plugin fun
 
 ## Hatch Packages
 
-A project's Wren modules depend on hatch packages in the project file's `[dependencies]`, written as a hatchfile writes them. For a `.hl` opened directly, the dependencies are those of a `hatchfile` at a root.
+A project's Wren modules depend on hatch packages in the project file's `[dependencies.wren]`, written as a hatchfile writes them. For a `.hl` opened directly, the dependencies are those of a `hatchfile` at a root.
 
 * **Resolution:** The driver resolves each dependency the way `hatch` does (`wren_lift::hatch::resolve_dependency_bytes`): a path dependency is built from its workspace, and a version dependency comes from the cache that `hatch install` fills. Transitive dependencies are resolved as well, each once.
 * **Staging:** Each package is staged in the VM the way WrenLift stages it (`stage_hatch_modules`). Its modules wait for their first `import "@hatch:noise"`, its native libraries are registered, and WrenLift opens them itself.

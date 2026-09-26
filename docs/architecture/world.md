@@ -31,7 +31,7 @@ Lookup and calls go through the registry and the bridge, not through the adapter
 **Opening a session:**
 
 1. The session installs both seams, loads the program, and reads the program's `caribou` natives to find the namespaces it imports (`Program::imports`). A bundle carries the namespaces and the modules instead (see [bundle.md](bundle.md)).
-2. A project file declares the source roots, languages, plugins, and hatch packages (`cbproj`, `Session::open_project`), and the session compiles its Haxe entry first. A `.hl` opened directly has them found instead: the source roots are the class paths of the `.hxml` files in the working directory and next to the program; otherwise `src` under those directories, if it exists; otherwise the directories themselves (`project::roots`).
+2. A project file declares the languages, plugins, and dependencies (`cbproj`, `Session::open_project`), and the session compiles its Haxe entry first. Its modules are found under its sources, `src/` by convention. A `.hl` opened directly has them found instead: the source roots are the class paths of the `.hxml` files in the working directory and next to the program; otherwise `src` under those directories, if it exists; otherwise the directories themselves (`project::roots`).
 3. Every directory under a root becomes a namespace, and so does every namespace the program imports. Each namespace covers every resident language, with Haxe first (`project::namespaces`). The world is created from these namespaces.
 4. The adapters register, the program's classes are published, and a Wren VM is created with the import callbacks installed.
 

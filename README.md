@@ -94,21 +94,17 @@ cargo +nightly build -p caribou-driver
 
 ### Running Programs
 
-A project is declared in one file, `<name>.cbproj`, beside its sources:
+A project is declared in one file, `<name>.cbproj`, beside its sources. It names the entry and the languages; the modules are found under `src/`, and a file's path is its name: `src/game/ui/hud.wren` is `game:ui/hud` to Wren and `game.ui.hud.Hud` to Haxe.
 
 ```toml
 [project]
 name = "game"
 entry = "haxe:game.Main"
+languages = ["haxe", "wren", "python"]
 
-[languages.haxe]
-roots = ["src"]
-[languages.wren]
-roots = ["src"]
-[languages.python]
-roots = ["src"]
-
-[dependencies]                  # Wren hatch packages
+[dependencies.haxe]
+heaps = "*"
+[dependencies.wren]
 "@hatch:greet" = { path = "../greet" }
 
 [plugins]

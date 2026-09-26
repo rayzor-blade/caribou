@@ -92,7 +92,7 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                 }
                 None => {
                     let out = out.unwrap_or_else(|| target_dir.join(format!("{}.cb", project.name)));
-                    caribou_driver::bundle::write_from(&hl, &project.roots(), &out)
+                    caribou_driver::bundle::write_from(&hl, &project.sources, &out)
                         .map_err(|e| format!("{e:#}"))?
                 }
             }

@@ -1,6 +1,7 @@
 //! A project declared by its `.cbproj`: `caribou run` in its directory
-//! compiles the Haxe entry and runs it with the Wren modules it declares,
-//! and `caribou build` writes the bundle to its `target/`.
+//! compiles the Haxe entry and runs it with the Wren modules found under
+//! `src/`, nested ones by their path, and `caribou build` writes the
+//! bundle to its `target/`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,21 +10,27 @@ const CBPROJ: &str = r#"
 [project]
 name = "hudgame"
 entry = "haxe:Main"
+languages = ["haxe", "wren"]
+"#;
 
-[languages.haxe]
-roots = ["src"]
-
-[languages.wren]
-roots = ["src"]
+/// A module one directory down: `game:ui/badge`, found by its path.
+const BADGE: &str = r#"
+class Badge {
+  construct new() {}
+  #export = "title -> String"
+  title { "ui badge" }
+}
 "#;
 
 const MAIN: &str = r#"
 import game.hud.Hud;
+import game.ui.badge.Badge;
 
 class Main {
   static function main() {
     var h = new Hud(3);
     Sys.println("haxe asks wren: " + h.add(4));
+    Sys.println("nested: " + new Badge().title);
   }
 }
 "#;
@@ -54,6 +61,8 @@ fn a_project_file_runs_and_builds_its_program() {
     for file in ["hud.wren", "format.wren", "Player.hx"] {
         std::fs::copy(fixtures.join(file), game.join(file)).unwrap();
     }
+    std::fs::create_dir_all(game.join("ui")).unwrap();
+    std::fs::write(game.join("ui/badge.wren"), BADGE).unwrap();
     std::fs::write(dir.join("src/Main.hx"), MAIN).unwrap();
     std::fs::write(dir.join("hudgame.cbproj"), CBPROJ).unwrap();
     // Caribou's haxelib from this checkout, in a repository of the test's own.
@@ -69,6 +78,7 @@ fn a_project_file_runs_and_builds_its_program() {
 
     let ran = caribou(&dir, &haxelib, &["run"]);
     assert!(ran.contains("haxe asks wren: 7"), "{ran}");
+    assert!(ran.contains("nested: ui badge"), "{ran}");
 
     caribou(&dir, &haxelib, &["build"]);
     assert!(dir.join("target/hudgame.cb").is_file());

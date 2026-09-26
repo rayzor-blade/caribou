@@ -1,23 +1,19 @@
 //! A project file: `<name>.cbproj`, TOML, one per project, declaring what
-//! the project is made of instead of the driver inferring it.
+//! the project is: its entry, the languages it is written in, and what
+//! each depends on. Its modules are not listed: they are found under the
+//! sources, `src/` by convention, as the runtime finds them, and a file's
+//! path is its name (`src/game/ui/hud.wren` is `game:ui/hud`, the first
+//! directory its namespace).
 //!
 //! ```toml
 //! [project]
 //! name = "game"
 //! entry = "haxe:game.Main"
+//! languages = ["haxe", "wren", "python", "zynml"]
 //!
-//! [languages.haxe]
-//! roots = ["src"]
-//! libs = ["heaps"]
-//! [languages.wren]
-//! roots = ["src"]
-//! [languages.python]
-//! roots = ["src"]
-//! [languages.zynml]
-//! grammar = "grammars/zynml.zyn"
-//! roots = ["src"]
-//!
-//! [dependencies]
+//! [dependencies.haxe]
+//! heaps = "*"
+//! [dependencies.wren]
 //! "@hatch:greet" = { path = "../greet" }
 //!
 //! [plugins]
@@ -27,10 +23,10 @@
 //! The entry is a module of one of the languages, `language:module`.
 //! Caribou compiles a Haxe entry itself, with `-lib caribou` and the
 //! declared haxelibs. A language is Haxe, Wren, a Zyntax language built
-//! into caribou (Python, Lua), or a Zyntax language given by its grammar.
-//! `[dependencies]` are Wren's hatch packages, in a hatchfile's form.
-//! Paths are relative to the file. What the project builds goes to
-//! `target/` beside it.
+//! into caribou (Python, Lua), or a Zyntax language whose grammar is a
+//! frontend file in the sources. Wren's dependencies are hatch packages,
+//! in a hatchfile's form. Paths are relative to the file. What the
+//! project builds goes to `target/` beside it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -42,14 +38,15 @@ use serde::Deserialize;
 /// The extension a project file has.
 pub const EXTENSION: &str = "cbproj";
 
+/// Where modules are found when the file names no sources.
+const SOURCES: &str = "src";
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
     project: Header,
     #[serde(default)]
-    languages: BTreeMap<String, Language>,
-    #[serde(default)]
-    dependencies: BTreeMap<String, caribou_wren::hatch::Dependency>,
+    dependencies: Dependencies,
     #[serde(default)]
     plugins: BTreeMap<String, PluginEntry>,
 }
@@ -59,20 +56,20 @@ struct File {
 struct Header {
     name: String,
     entry: String,
+    languages: Vec<String>,
+    #[serde(default)]
+    sources: Vec<PathBuf>,
 }
 
-/// One language of the project: where its modules are, and what it
-/// needs of its own.
-#[derive(Deserialize, Default, Clone)]
+/// Each language's dependencies, in that language's own form.
+#[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
-pub struct Language {
+struct Dependencies {
+    /// Haxelibs, by name, at a version or `*`.
     #[serde(default)]
-    pub roots: Vec<PathBuf>,
-    /// Haxe's haxelibs, beside caribou's own.
+    haxe: BTreeMap<String, String>,
     #[serde(default)]
-    pub libs: Vec<String>,
-    /// A Zyntax language's grammar, for one caribou does not build in.
-    pub grammar: Option<PathBuf>,
+    wren: BTreeMap<String, caribou_wren::hatch::Dependency>,
 }
 
 #[derive(Deserialize)]
@@ -95,8 +92,13 @@ pub struct Project {
     pub dir: PathBuf,
     pub name: String,
     pub entry: Entry,
-    pub languages: BTreeMap<String, Language>,
-    pub dependencies: BTreeMap<String, caribou_wren::hatch::Dependency>,
+    pub languages: Vec<String>,
+    /// Where the project's modules are.
+    pub sources: Vec<PathBuf>,
+    /// Haxelibs, by name, at a version or `*`.
+    pub haxelibs: BTreeMap<String, String>,
+    /// Wren's hatch packages.
+    pub packages: BTreeMap<String, caribou_wren::hatch::Dependency>,
     /// Each native plugin, by name, at its library's path.
     pub plugins: BTreeMap<String, PathBuf>,
 }
@@ -112,37 +114,36 @@ impl Project {
             .filter(|d| !d.as_os_str().is_empty())
             .unwrap_or(Path::new("."))
             .to_path_buf();
-        let (lang, module) = file.project.entry.split_once(':').ok_or_else(|| {
+        let header = file.project;
+        let (lang, module) = header.entry.split_once(':').ok_or_else(|| {
             anyhow!(
                 "{}: entry `{}` is not `language:module`",
                 path.display(),
-                file.project.entry
+                header.entry
             )
         })?;
-        if !file.languages.contains_key(lang) {
+        if !header.languages.iter().any(|l| l == lang) {
             bail!(
-                "{}: the entry is {lang}, which [languages] does not declare",
+                "{}: the entry is {lang}, which `languages` does not list",
                 path.display()
             );
         }
-        let languages = file
-            .languages
-            .into_iter()
-            .map(|(name, mut language)| {
-                language.roots = language.roots.iter().map(|r| dir.join(r)).collect();
-                language.grammar = language.grammar.map(|g| dir.join(g));
-                (name, language)
-            })
-            .collect();
+        let sources = if header.sources.is_empty() {
+            vec![PathBuf::from(SOURCES)]
+        } else {
+            header.sources
+        };
         Ok(Project {
             path: path.to_path_buf(),
-            name: file.project.name,
+            name: header.name,
             entry: Entry {
                 lang: lang.to_owned(),
                 module: module.to_owned(),
             },
-            languages,
-            dependencies: file.dependencies,
+            languages: header.languages,
+            sources: sources.iter().map(|s| dir.join(s)).collect(),
+            haxelibs: file.dependencies.haxe,
+            packages: file.dependencies.wren,
             plugins: file
                 .plugins
                 .into_iter()
@@ -179,22 +180,9 @@ impl Project {
         self.dir.join("target")
     }
 
-    /// Every language's roots, each once, in declaration order.
-    pub fn roots(&self) -> Vec<PathBuf> {
-        let mut roots: Vec<PathBuf> = Vec::new();
-        for language in self.languages.values() {
-            for root in &language.roots {
-                if !roots.contains(root) {
-                    roots.push(root.clone());
-                }
-            }
-        }
-        roots
-    }
-
     /// Compile the Haxe entry to HashLink bytecode in the target
     /// directory, with caribou's library and the declared haxelibs, and
-    /// every module under the Haxe roots with it.
+    /// every Haxe module in the sources with it.
     pub fn compile_haxe(&self) -> Result<PathBuf> {
         if self.entry.lang != "haxe" {
             bail!(
@@ -202,28 +190,29 @@ impl Project {
                 self.entry.lang
             );
         }
-        let haxe = self.languages.get("haxe").cloned().unwrap_or_default();
         let out = self.target_dir().join(format!("{}.hl", self.name));
         std::fs::create_dir_all(self.target_dir())?;
         let mut command = Command::new("haxe");
-        for root in &haxe.roots {
-            command.arg("-cp").arg(root);
+        for source in &self.sources {
+            command.arg("-cp").arg(source);
         }
         command.args(["-lib", "caribou"]);
-        for lib in &haxe.libs {
-            command.args(["-lib", lib]);
+        for (lib, version) in &self.haxelibs {
+            match version.as_str() {
+                "*" | "" => command.args(["-lib", lib]),
+                version => command.args(["-lib", &format!("{lib}:{version}")]),
+            };
         }
-        // Every module under the roots, not only what the entry reaches:
+        // Every module in the sources, not only what the entry reaches:
         // another language may import any of them.
-        let roots: Vec<String> = haxe
-            .roots
+        let sources: Vec<String> = self
+            .sources
             .iter()
-            .map(|r| format!("'{}'", r.display()))
+            .map(|s| format!("'{}'", s.display()))
             .collect();
         command
             .arg("--macro")
-            .arg(format!("include('', true, null, [{}])", roots.join(", ")));
-        command
+            .arg(format!("include('', true, null, [{}])", sources.join(", ")))
             .args(["-main", &self.entry.module, "-hl"])
             .arg(&out)
             .current_dir(&self.dir);
@@ -236,21 +225,24 @@ impl Project {
         Ok(out)
     }
 
-    /// The declared Zyntax languages, as frontends: one caribou builds
-    /// in by name, any other by its grammar.
+    /// The listed Zyntax languages, as frontends: one caribou builds in by
+    /// name, any other by its frontend file in the sources.
     pub fn frontends(&self) -> Result<Vec<caribou_zyntax::Frontend>> {
+        let mut found = Vec::new();
+        for file in caribou_zyntax::Frontend::files_in(&self.sources) {
+            found.push(caribou_zyntax::Frontend::file(&file).map_err(|e| anyhow!(e))?);
+        }
         let mut out = Vec::new();
-        for (name, language) in &self.languages {
-            if name == "haxe" || name == "wren" {
+        for lang in &self.languages {
+            if lang == "haxe" || lang == "wren" {
                 continue;
             }
-            let frontend = match &language.grammar {
-                Some(grammar) => {
-                    caribou_zyntax::Frontend::file(grammar).map_err(|e| anyhow!(e))?
-                }
-                None => crate::project::builtin(name).ok_or_else(|| {
+            let frontend = match found.iter().position(|f| f.name() == lang) {
+                Some(at) => found.remove(at),
+                None => crate::project::builtin(lang).ok_or_else(|| {
                     anyhow!(
-                        "{}: language `{name}` is not built into caribou; give its `grammar`",
+                        "{}: language `{lang}` is neither built into caribou nor a \
+                         frontend file in the sources",
                         self.path.display()
                     )
                 })?,
@@ -268,9 +260,9 @@ impl Project {
             .collect()
     }
 
-    /// The declared hatch packages, resolved, and what they depend on.
-    pub fn packages(&self) -> Result<Vec<caribou_wren::hatch::Package>> {
-        caribou_wren::hatch::declared(&self.dir, &self.dependencies).map_err(|e| anyhow!(e))
+    /// Wren's declared hatch packages, resolved, and what they depend on.
+    pub fn hatch_packages(&self) -> Result<Vec<caribou_wren::hatch::Package>> {
+        caribou_wren::hatch::declared(&self.dir, &self.packages).map_err(|e| anyhow!(e))
     }
 }
 
@@ -278,32 +270,33 @@ impl Project {
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_project_file_declares_its_languages_entry_and_dependencies() {
-        let dir = std::env::temp_dir().join(format!("caribou-cbproj-{}", std::process::id()));
+    fn written(name: &str, text: &str) -> (PathBuf, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("caribou-cbproj-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("game.cbproj");
-        std::fs::write(
-            &file,
+        let file = dir.join(format!("{name}.cbproj"));
+        std::fs::write(&file, text).unwrap();
+        (dir, file)
+    }
+
+    #[test]
+    fn a_project_file_declares_its_entry_languages_and_dependencies() {
+        let (dir, _) = written(
+            "game",
             r#"
 [project]
 name = "game"
 entry = "haxe:game.Main"
+languages = ["haxe", "wren"]
 
-[languages.haxe]
-roots = ["src"]
-libs = ["heaps"]
-[languages.wren]
-roots = ["src", "scripts"]
-
-[dependencies]
+[dependencies.haxe]
+heaps = "*"
+[dependencies.wren]
 "@hatch:greet" = { path = "../greet" }
 
 [plugins]
 gpu = { path = "plugins/libcaribou_gpu.dylib" }
 "#,
-        )
-        .unwrap();
+        );
         let project = Project::find(&dir).unwrap().expect("found");
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(project.name, "game");
@@ -314,9 +307,11 @@ gpu = { path = "plugins/libcaribou_gpu.dylib" }
                 module: "game.Main".into()
             }
         );
-        assert_eq!(project.roots(), [dir.join("src"), dir.join("scripts")]);
-        assert_eq!(project.languages["haxe"].libs, ["heaps"]);
-        assert!(project.dependencies.contains_key("@hatch:greet"));
+        assert_eq!(project.languages, ["haxe", "wren"]);
+        // Modules are found under `src` when the file names no sources.
+        assert_eq!(project.sources, [dir.join("src")]);
+        assert_eq!(project.haxelibs["heaps"], "*");
+        assert!(project.packages.contains_key("@hatch:greet"));
         assert_eq!(
             project.plugins["gpu"],
             dir.join("plugins/libcaribou_gpu.dylib")
@@ -324,13 +319,13 @@ gpu = { path = "plugins/libcaribou_gpu.dylib" }
     }
 
     #[test]
-    fn an_entry_must_name_a_declared_language() {
-        let dir = std::env::temp_dir().join(format!("caribou-cbproj-bad-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let file = dir.join("x.cbproj");
-        std::fs::write(&file, "[project]\nname = \"x\"\nentry = \"lua:main\"\n").unwrap();
+    fn an_entry_must_be_in_a_listed_language() {
+        let (dir, file) = written(
+            "x",
+            "[project]\nname = \"x\"\nentry = \"lua:main\"\nlanguages = [\"haxe\"]\n",
+        );
         let err = Project::load(&file).err().expect("refused").to_string();
         std::fs::remove_dir_all(&dir).ok();
-        assert!(err.contains("does not declare"), "{err}");
+        assert!(err.contains("does not list"), "{err}");
     }
 }

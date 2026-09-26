@@ -162,13 +162,13 @@ impl Session {
         };
         let plugins = project.load_plugins()?;
         let program = caribou_ash::load(&hl, ash_options)?;
-        for package in project.packages()? {
+        for package in project.hatch_packages()? {
             caribou_wren::hatch::hold(package);
         }
         let frontends = project.frontends()?;
         Self::open_with(
             program,
-            project.roots(),
+            project.sources.clone(),
             plugins,
             frontends,
             options.wren_mode,
