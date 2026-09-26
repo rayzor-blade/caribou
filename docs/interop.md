@@ -16,7 +16,7 @@ The project file, `<name>.cbproj`, declares the project (see the [README](../REA
 
 * The entry is a module of one of the languages. Caribou compiles a Haxe entry itself, with `-lib caribou`, and every Haxe module in the sources with it.
 * The file lists the languages; it names no modules. Every module is found under the sources, `src/` unless `sources` says otherwise, and its path is its name: the first directory is its namespace, the rest its module (`src/game/ui/hud.wren` is `game:ui/hud`). Every namespace the program imports is a namespace too.
-* Each language's dependencies are declared in its own form (`[dependencies.haxe]` haxelibs, `[dependencies.wren]` hatch packages), and so are the native plugins.
+* Each language's dependencies are declared in its own form (`[dependencies.haxe]` haxelibs, `[dependencies.wren]` hatch packages), and so are the native plugins. A language's own manifest counts without being declared: a `hatchfile` beside the project file or at a source root. A `requirements.txt` or `*.rockspec` is found and reported, not installed, until Zyntax can take its ecosystem's packages.
 * A module from another language loads the first time the program uses it.
 
 A `.hl` named directly (`caribou run bin/game.hl`) runs with its layout found instead: the roots are the class paths of the `.hxml` files in the current directory and next to the program, or `src`.

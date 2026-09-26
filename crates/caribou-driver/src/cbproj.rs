@@ -15,6 +15,10 @@
 //! heaps = "*"
 //! [dependencies.wren]
 //! "@hatch:greet" = { path = "../greet" }
+//! [dependencies.python]
+//! requests = ">=2.31"
+//! [dependencies.lua]
+//! penlight = "1.13.1"
 //!
 //! [plugins]
 //! gpu = { path = "plugins/libcaribou_gpu.dylib" }
@@ -25,8 +29,12 @@
 //! declared haxelibs. A language is Haxe, Wren, a Zyntax language built
 //! into caribou (Python, Lua), or a Zyntax language whose grammar is a
 //! frontend file in the sources. Wren's dependencies are hatch packages,
-//! in a hatchfile's form. Paths are relative to the file. What the
-//! project builds goes to `target/` beside it.
+//! in a hatchfile's form. Each language's own manifest counts as well,
+//! declared or not: a `hatchfile` beside the project file or at a source
+//! root, a `requirements.txt` and `*.rockspec` files beside the project
+//! file ([`crate::deps`]); Python's and Lua's are found but not yet
+//! installed. Paths are relative to the file. What the project builds
+//! goes to `target/` beside it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -70,6 +78,12 @@ struct Dependencies {
     haxe: BTreeMap<String, String>,
     #[serde(default)]
     wren: BTreeMap<String, caribou_wren::hatch::Dependency>,
+    /// Python packages, by name, at a version specifier or `*`.
+    #[serde(default)]
+    python: BTreeMap<String, String>,
+    /// Lua rocks, by name, at a version or `*`.
+    #[serde(default)]
+    lua: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -97,8 +111,12 @@ pub struct Project {
     pub sources: Vec<PathBuf>,
     /// Haxelibs, by name, at a version or `*`.
     pub haxelibs: BTreeMap<String, String>,
-    /// Wren's hatch packages.
+    /// Wren's hatch packages the file declares.
     pub packages: BTreeMap<String, caribou_wren::hatch::Dependency>,
+    /// Python packages the file declares, by name, at a specifier or `*`.
+    pub python: BTreeMap<String, String>,
+    /// Lua rocks the file declares, by name, at a version or `*`.
+    pub lua: BTreeMap<String, String>,
     /// Each native plugin, by name, at its library's path.
     pub plugins: BTreeMap<String, PathBuf>,
 }
@@ -144,6 +162,8 @@ impl Project {
             sources: sources.iter().map(|s| dir.join(s)).collect(),
             haxelibs: file.dependencies.haxe,
             packages: file.dependencies.wren,
+            python: file.dependencies.python,
+            lua: file.dependencies.lua,
             plugins: file
                 .plugins
                 .into_iter()
@@ -260,10 +280,6 @@ impl Project {
             .collect()
     }
 
-    /// Wren's declared hatch packages, resolved, and what they depend on.
-    pub fn hatch_packages(&self) -> Result<Vec<caribou_wren::hatch::Package>> {
-        caribou_wren::hatch::declared(&self.dir, &self.packages).map_err(|e| anyhow!(e))
-    }
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@
 pub mod aot;
 pub mod bundle;
 pub mod cbproj;
+pub mod deps;
 pub mod project;
 pub mod session;
 

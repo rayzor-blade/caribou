@@ -111,6 +111,8 @@ heaps = "*"
 gpu = { path = "plugins/libcaribou_gpu.dylib" }
 ```
 
+Each language's own manifest counts without being declared. A `hatchfile` beside the project file or in `src/` brings its Wren packages. A `requirements.txt` or `*.rockspec` is found as well, but not installed yet: Zyntax has no package support for Python's or Lua's ecosystems, and a run says what it left out.
+
 From the project's directory, Caribou compiles the Haxe entry itself, with `-lib caribou`, and runs it with every declared language:
 
 ```sh

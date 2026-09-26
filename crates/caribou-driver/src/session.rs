@@ -162,13 +162,19 @@ impl Session {
         };
         let plugins = project.load_plugins()?;
         let program = caribou_ash::load(&hl, ash_options)?;
-        for package in project.hatch_packages()? {
+        for package in crate::deps::hatch(project)? {
             caribou_wren::hatch::hold(package);
         }
         let frontends = project.frontends()?;
+        for dependency in crate::deps::unresolved(project)? {
+            eprintln!(
+                "[caribou] {dependency}: not installed; Zyntax has no package support for its language yet"
+            );
+        }
+        let roots = project.sources.clone();
         Self::open_with(
             program,
-            project.sources.clone(),
+            roots,
             plugins,
             frontends,
             options.wren_mode,
