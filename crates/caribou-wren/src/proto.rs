@@ -170,6 +170,10 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     {
         return Some(WValue::object(owner.wrapping_add(PREFIX)));
     }
+    // Several results at once are a list of them, in order.
+    if let Some(t) = data::tuple_of(v) {
+        return tuple_list(vm, t);
+    }
     // Wren has the one number. 2^63 is a double but not an i64, so the
     // round trip alone would take i64::MAX's nearest double for exact.
     if Int64::is(v) {
@@ -860,6 +864,35 @@ unsafe extern "C-unwind" fn direct_construct(
 /// wren_lift's own are: a cycle that is due runs here, the object pinned,
 /// so a program that makes Wren objects only through the bridge still
 /// collects them.
+/// The values of the tuple `t` as a Wren list. Each value made so far is
+/// rooted while the next is made, as `VM::new_list` roots its elements,
+/// and the tuple, which holds the values, is rooted throughout.
+fn tuple_list(vm: &mut VM, t: *mut data::TupleData) -> Option<WValue> {
+    use wren_lift::codegen::runtime_fns::{
+        jit_root_at, jit_roots_restore_len, jit_roots_snapshot_len, push_jit_root,
+    };
+    let held = heap::handle_new(t.cast());
+    let values = unsafe { data::tuple_values(t) }.to_vec();
+    let before = jit_roots_snapshot_len();
+    let mut made_all = true;
+    for &v in &values {
+        match to_wren(vm, v) {
+            Some(w) => push_jit_root(w),
+            None => {
+                made_all = false;
+                break;
+            }
+        }
+    }
+    let list = made_all.then(|| {
+        let elements = (0..values.len()).map(|i| jit_root_at(before + i)).collect();
+        vm.new_list(elements)
+    });
+    jit_roots_restore_len(before);
+    heap::handle_release(held);
+    list.map(|list| made(vm, list))
+}
+
 pub(crate) fn made(vm: &mut VM, v: WValue) -> WValue {
     WValue::from_bits(unsafe { wren_lift::codegen::runtime_fns::finish_alloc(vm, v) })
 }

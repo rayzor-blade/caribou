@@ -22,5 +22,10 @@ class UseLua {
 		Sys.println(add(2));
 		var d:Counter = c.next();
 		Sys.println(d.bump(1));
+		// Several results are an anonymous structure of them.
+		var s = c.state();
+		Sys.println(s.count + " " + s.label);
+		Sys.println(Counter.parse("12").count);
+		Sys.println(Counter.parse("x").error);
 	}
 }

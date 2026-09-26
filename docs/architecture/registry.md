@@ -17,7 +17,7 @@ A `ClassIface` contains:
 * Its static fields, plus a `class_object` that the static fields are read from and written to.
 * Its methods and its constructor.
 
-A `MethodIface` contains a name, a static flag, the parameter and return types, and the `Callable` the bridge invokes for it. An instance method's callable takes the receiver as its first argument. A static method's callable takes only its parameters. A constructor's callable takes the constructor's parameters and returns the new object. Types are `TypeRef` values: `Void`, `Bool`, `Int`, `Float`, `Str`, `Object(type name)`, `Array`, `Dyn`, and `Fun`. These are the types that every language can map to its own.
+A `MethodIface` contains a name, a static flag, the parameter and return types, and the `Callable` the bridge invokes for it. An instance method's callable takes the receiver as its first argument. A static method's callable takes only its parameters. A constructor's callable takes the constructor's parameters and returns the new object. Types are `TypeRef` values: `Void`, `Bool`, `Int`, `Float`, `Str`, `Object(type name)`, `Array`, `Dyn`, `Fun`, and `Tuple`, the several named results a function gives at once. These are the types that every language can map to its own.
 
 **Registry API:**
 

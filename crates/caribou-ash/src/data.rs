@@ -1,6 +1,8 @@
 //! Native Haxe views of the core's data values. Buffer bytes are shared;
-//! enum payload slots are translated using the loaded program's layout.
+//! enum payload slots are translated using the loaded program's layout; a
+//! tuple is an anonymous object.
 use crate::proto;
+use caribou::data::TupleData;
 #[cfg(feature = "runner")]
 use caribou::registry::TypeRef;
 use caribou::{
@@ -245,4 +247,36 @@ pub(crate) unsafe fn enum_to_haxe(p: *mut EnumData) -> Result<*mut vdynamic, Str
         .ok_or("invalid enum payload type")??;
     }
     Ok(obj.cast())
+}
+
+/// A tuple as a Haxe anonymous object, `{count: 3, label: "count"}`: each
+/// value a field under its name, a number or a boolean in a slot of its
+/// own kind. Haxe code reads it through the structure type the build
+/// macro declares for the member.
+pub(crate) unsafe fn tuple_to_haxe(p: *mut TupleData) -> Result<*mut vdynamic, String> {
+    use ash_std::obj::{hlp_alloc_dynobj, hlp_dyn_setd, hlp_dyn_seti, hlp_dyn_setp};
+    use ash_std::types::{hlt_bool, hlt_dyn, hlt_i32};
+    let _root = Root::pointer(p.cast());
+    let obj = unsafe { hlp_alloc_dynobj() }.cast::<vdynamic>();
+    if obj.is_null() {
+        return Err("could not allocate a Haxe object".into());
+    }
+    let _obj_root = Root::pointer(obj.cast());
+    let names = unsafe { data::tuple_field_names(p) };
+    for (&name, &value) in names.iter().zip(unsafe { data::tuple_values(p) }) {
+        let hash = proto::field_hash(name);
+        unsafe {
+            if let Some(n) = value.as_int() {
+                hlp_dyn_seti(obj.cast(), hash, hlt_i32(), n);
+            } else if let Some(b) = value.as_bool() {
+                hlp_dyn_seti(obj.cast(), hash, hlt_bool(), i32::from(b));
+            } else if let Some(n) = value.as_number() {
+                hlp_dyn_setd(obj.cast(), hash, n);
+            } else {
+                let d = proto::value_to_dyn(value, hl::HDYN)?;
+                hlp_dyn_setp(obj.cast(), hash, hlt_dyn(), d.cast());
+            }
+        }
+    }
+    Ok(obj)
 }

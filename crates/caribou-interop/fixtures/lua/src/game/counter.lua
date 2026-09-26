@@ -44,6 +44,23 @@ function Counter:next()
   return Counter.new(self.n + 1)
 end
 
+-- The count and the label at once.
+---@return integer count
+---@return string label
+function Counter:state()
+  return self.n, self.label
+end
+
+-- The count a text names, or nil and why not, as Lua reports a failure.
+---@param text string
+---@return integer? count
+---@return string? error
+function Counter.parse(text)
+  local n = tonumber(text)
+  if n == nil then return nil, "not a number: " .. text end
+  return n
+end
+
 -- The sum of the bytes of a buffer, read in place.
 ---@return integer
 function Counter.checksum(bytes)

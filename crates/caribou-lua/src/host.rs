@@ -23,7 +23,7 @@ use caribou::data;
 use caribou::error::Error;
 use caribou::heap::{self, TypeDesc};
 use caribou::protocol::{self, Protocol, REPLY_OK, REPLY_UNSUPPORTED};
-use caribou::registry::TypeRef;
+use caribou::registry::{TupleField, TypeRef};
 use caribou::symbol::{self, Symbol};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
@@ -33,7 +33,9 @@ use caribou_zyntax::publish::run_type_name;
 use caribou_zyntax::zyntax_embed::TieredRuntime;
 use caribou_zyntax::zyntax_embed::foreign::{self as zforeign, Any};
 use caribou_zyntax::{RunClass, RunFunction, RunModule};
-use zyntax_lua::{Exported, ExportedFunction, ExportedTable, Exports, LuaType, is_metafield};
+use zyntax_lua::{
+    Exported, ExportedFunction, ExportedTable, Exports, LuaType, Returned, is_metafield,
+};
 use zyntax_lua_capi::api::{
     zlc_getglobal, zlc_gettop, zlc_pushlstring, zlc_pushnil, zlc_rawgeti, zlc_rawsetp, zlc_settop,
     zlc_tolstring, zlc_type,
@@ -260,6 +262,31 @@ fn pcall(f: Any, args: &[Any]) -> Result<Any, String> {
     }
 }
 
+/// Call `f` protected, keeping `n` results, nil for any it does not
+/// give, as `local a, b = f()` keeps two.
+fn pcall_n(f: Any, args: &[Any], n: usize) -> Result<Vec<Any>, String> {
+    let l = host().l;
+    unsafe {
+        release_dead(l);
+        let top = zlc_gettop(l);
+        push(l, f);
+        for &a in args {
+            push(l, a);
+        }
+        let mut status = 0;
+        let r = zlc_pcall(l, args.len() as c_int, n as c_int, 0, &mut status);
+        let out = if r != OK {
+            Err("the call was abandoned".to_owned())
+        } else if status != 0 {
+            Err(text_at(l, -1))
+        } else {
+            Ok((0..n as c_int).map(|i| at(l, i - n as c_int)).collect())
+        };
+        zlc_settop(l, top);
+        out
+    }
+}
+
 /// How many parameters the function `f` names: the most its record's
 /// arity word takes, none for a variadic one.
 fn params(f: Any) -> Option<usize> {
@@ -424,9 +451,29 @@ impl Types {
                     .take(count)
                     .map(|t| self.of(t))
                     .collect(),
-                sig.returns.first().map_or(TypeRef::Dyn, |t| self.of(t)),
+                self.results(&sig.returns),
             ),
             None => (vec![TypeRef::Dyn; count], TypeRef::Dyn),
+        }
+    }
+
+    /// The type of what a call gives: its one result, or, for several,
+    /// a tuple of them, each under its `@return` name, else `_1`, `_2`,
+    /// by its place. `Dyn` when none is declared.
+    fn results(&self, returns: &[Returned]) -> TypeRef {
+        match returns {
+            [] => TypeRef::Dyn,
+            [one] => self.of(&one.ty),
+            several => TypeRef::Tuple(
+                several
+                    .iter()
+                    .enumerate()
+                    .map(|(i, r)| TupleField {
+                        name: r.name.clone().unwrap_or_else(|| format!("_{}", i + 1)),
+                        ty: self.of(&r.ty),
+                    })
+                    .collect(),
+            ),
         }
     }
 }
@@ -540,7 +587,14 @@ fn function_in(
             };
             let signature = declared
                 .unwrap_or_else(|| (vec![TypeRef::Dyn; params(f).unwrap_or(0)], TypeRef::Dyn));
-            (rooted(proxy(f)), signature)
+            let value = match &signature.1 {
+                TypeRef::Tuple(fields) => {
+                    let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
+                    results_proxy(f, data::tuple_names(&names))
+                }
+                _ => proxy(f),
+            };
+            (rooted(value), signature)
         }
         None => (
             Value::null(),
@@ -633,6 +687,9 @@ struct Proxy {
     value: Any,
     /// The type name it reports, once asked.
     type_name: Option<Symbol>,
+    /// For a function whose declared results are several, their names: a
+    /// call keeps that many and gives them as one tuple.
+    results: Option<&'static [Symbol]>,
 }
 
 fn descriptor() -> &'static TypeDesc {
@@ -685,8 +742,18 @@ fn proxy(v: Any) -> Value {
     unsafe {
         (*p).value = v;
         (*p).type_name = None;
+        (*p).results = None;
     }
     Value::object(p as *const c_void)
+}
+
+/// The function `f` as a core object whose call keeps the results
+/// `names` names and gives them as one tuple.
+fn results_proxy(f: Any, names: &'static [Symbol]) -> Value {
+    let v = proxy(f);
+    let p = v.as_object().expect("a proxy") as *mut Proxy;
+    unsafe { (*p).results = Some(names) };
+    v
 }
 
 unsafe fn value_of_proxy(obj: *mut u8) -> Any {
@@ -724,8 +791,58 @@ unsafe extern "C-unwind" fn proxy_call(
     n: usize,
     out: *mut Value,
 ) -> u8 {
-    let f = unsafe { value_of_proxy(obj) };
-    unsafe { reply(out, || pcall(f, &anys(args, n))) }
+    let proxy = obj as *const Proxy;
+    let f = unsafe { (*proxy).value };
+    match unsafe { (*proxy).results } {
+        Some(names) => unsafe {
+            reply_tuple(out, names, || pcall_n(f, &anys(args, n), names.len()))
+        },
+        None => unsafe { reply(out, || pcall(f, &anys(args, n))) },
+    }
+}
+
+/// The reply for a call that keeps several results: one tuple of them,
+/// each under its name.
+unsafe fn reply_tuple(
+    out: *mut Value,
+    names: &'static [Symbol],
+    f: impl FnOnce() -> Result<Vec<Any>, String>,
+) -> u8 {
+    foreign::as_caller(lang(), || match f() {
+        Ok(anys) => {
+            // Each value is rooted until the tuple holds it: making the
+            // next may collect.
+            let mut values = Vec::with_capacity(anys.len());
+            let mut handles = Vec::new();
+            let mut failed = None;
+            for any in anys {
+                match unsafe { foreign::value_of(any) } {
+                    Ok((v, _)) => {
+                        if let Some(p) = v.as_object().filter(|p| !p.is_null()) {
+                            handles.push(heap::handle_new(p as *mut u8));
+                        }
+                        values.push(v);
+                    }
+                    Err(e) => {
+                        failed = Some(e.message);
+                        break;
+                    }
+                }
+            }
+            let reply = match failed {
+                None => {
+                    unsafe { *out = Value::object(data::tuple_new(names, &values).cast()) };
+                    REPLY_OK
+                }
+                Some(m) => bridge::raise(Error::new(ErrorKind::Type, &m, lang())),
+            };
+            for h in handles {
+                heap::handle_release(h);
+            }
+            reply
+        }
+        Err(m) => bridge::raise(Error::new(ErrorKind::Runtime, &m, lang())),
+    })
 }
 
 unsafe extern "C-unwind" fn proxy_get(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {

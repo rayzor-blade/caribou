@@ -347,6 +347,16 @@ class Bridge {
 			var args = [for (p in params) haxeType(p, pack, classes)];
 			return TFunction(args, haxeType(Reflect.field(f, "ret"), pack, classes));
 		}
+		if (Reflect.hasField(ty, "Tuple")) {
+			// Several results at once are an anonymous structure, as Haxe
+			// code returns several values: each a field under its name.
+			var fields:Array<{name:String, ty:Dynamic}> = Reflect.field(ty, "Tuple");
+			return TAnonymous([for (f in fields) {
+				name: f.name,
+				pos: Context.currentPos(),
+				kind: FVar(haxeType(f.ty, pack, classes))
+			}]);
+		}
 		return macro :Dynamic;
 	}
 

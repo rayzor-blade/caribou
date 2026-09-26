@@ -33,7 +33,7 @@ The member's types determine its C signature (`link::CType`):
 | `Str` | `caribou_str *`, a core string |
 | `Object(_)` | `void *`, the object as its own language holds it |
 | `Array(_)`, `Function {..}` | `uint64_t`, a bridge value |
-| `Dyn`, `Fun` | None. The member stays on the bridge |
+| `Dyn`, `Fun`, `Tuple(_)` | None. The member stays on the bridge, where a tuple becomes each language's own form |
 
 An instance member takes its receiver first, as a `void *`. A constructor returns a `void *`. A setter returns nothing. A member with a `Dyn` or `Fun` anywhere in its signature has no static form. Its thunk calls the run-time bridge instead, and `Link::dynamic` lists the affected positions, counted from one, with 0 meaning the result. The run report uses this to say, per site, whether the member links statically or stays dynamic, and which type to declare to fix it.
 

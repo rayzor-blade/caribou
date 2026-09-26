@@ -5,13 +5,14 @@
 //! its static methods, each typed by the module's LuaLS annotations. A
 //! Wren function goes to Lua and is called there, a typed array is a
 //! buffer Lua reads in place, a Lua function comes back for Wren to
-//! call, and an instance a method returns is a `Counter`.
+//! call, an instance a method returns is a `Counter`, and several
+//! results are a list of them.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use caribou::registry::{self, Namespace, TypeRef};
+use caribou::registry::{self, Namespace, TupleField, TypeRef};
 use caribou::world::{Config, World};
 use caribou_zyntax::Frontend;
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
@@ -34,6 +35,9 @@ var add = Counter.adder(5)
 System.print(add.call(2))
 var d = c.next()
 System.print(d.bump(1))
+System.print(c.state())
+System.print(Counter.parse("12")[0])
+System.print(Counter.parse("x")[1])
 "#;
 
 #[test]
@@ -80,7 +84,10 @@ fn a_wren_program_uses_a_lua_class() {
         "{:?} {output:?}",
         errors.borrow()
     );
-    assert_eq!(output, "3\n7\n10\n10\n15\n30\ncount\n294\n7\n4\n");
+    assert_eq!(
+        output,
+        "3\n7\n10\n10\n15\n30\ncount\n294\n7\n4\n[2, count]\n12\nnot a number: x\n"
+    );
 
     // The class as it is published: what the chunk's types know of it,
     // typed by its annotations.
@@ -95,6 +102,19 @@ fn a_wren_program_uses_a_lua_class() {
         params: vec![TypeRef::Int],
         ret: Box::new(TypeRef::Int),
     };
+    // Several results are a tuple of them, each named.
+    let field = |name: &str, ty: TypeRef| TupleField {
+        name: name.to_owned(),
+        ty,
+    };
+    let state = TypeRef::Tuple(vec![
+        field("count", TypeRef::Int),
+        field("label", TypeRef::Str),
+    ]);
+    let parsed = TypeRef::Tuple(vec![
+        field("count", TypeRef::Dyn),
+        field("error", TypeRef::Dyn),
+    ]);
     let members: Vec<(&str, bool, &[TypeRef], &TypeRef)> = counter
         .methods
         .iter()
@@ -103,11 +123,13 @@ fn a_wren_program_uses_a_lua_class() {
     assert_eq!(
         members,
         [
+            ("parse", true, &[TypeRef::Str][..], &parsed),
             ("checksum", true, &[TypeRef::Dyn][..], &TypeRef::Int),
             ("adder", true, &[TypeRef::Int][..], &int_fn),
             ("bump", false, &[TypeRef::Int][..], &TypeRef::Int),
             ("sum", false, &[int_fn.clone()][..], &TypeRef::Int),
             ("next", false, &[][..], &own),
+            ("state", false, &[][..], &state),
         ]
     );
     let fields: Vec<(&str, &TypeRef)> = counter

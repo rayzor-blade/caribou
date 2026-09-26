@@ -276,6 +276,9 @@ The Lua frontend registers when a root holds a `.lua` file. A Lua module is the 
   * `---@type` types a static field.
   * `integer` is an `Int`, `number` a `Float`, `string`, `boolean`, a `fun(...)` type, and a class of the module by its name. Any other type, or one that may be nil, is dynamic.
   * An annotation that names a parameter the function does not have is an error when the module is described or loaded.
+* **Several results:** A Lua caller keeps as many results as it asks for; a caller in another language keeps as many as the function declares. With one `---@return` or none, the call gives the first result. With several, it gives all of them, missing ones as nil, as one value:
+  * Haxe gets an anonymous structure, each result a field under its `---@return` name (`_1`, `_2`, ... for an unnamed one): `var s = c.state(); s.count`.
+  * Wren gets a `List` of them, in order: `c.state()[0]`.
 
 ```lua
 -- src/game/counter.lua

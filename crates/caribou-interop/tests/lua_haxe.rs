@@ -4,8 +4,9 @@
 //! chunk's types and its LuaLS annotations, without running it. The
 //! program makes an instance, calls its methods, reads and writes its
 //! fields and the class's static, hands Lua a Haxe function to call and
-//! a buffer Lua reads in place, calls a Lua function Lua returns, and
-//! takes an instance a method returns as a `Counter`.
+//! a buffer Lua reads in place, calls a Lua function Lua returns, takes
+//! an instance a method returns as a `Counter`, and reads several
+//! results as an anonymous structure of them.
 
 use std::path::PathBuf;
 
@@ -25,5 +26,8 @@ fn a_haxe_program_uses_a_lua_class() {
     )
     .expect("the program opens with the Lua frontend");
     let output = captured(|| session.start().expect("main runs"));
-    assert_eq!(output, "3\n7\n10\n10\n15\n30\ncount\n294\n7\n4\n");
+    assert_eq!(
+        output,
+        "3\n7\n10\n10\n15\n30\ncount\n294\n7\n4\n2 count\n12\nnot a number: x\n"
+    );
 }

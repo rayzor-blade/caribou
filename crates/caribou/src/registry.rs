@@ -63,6 +63,18 @@ pub enum TypeRef {
         params: Vec<TypeRef>,
         ret: Box<TypeRef>,
     },
+    /// Several results a function gives at once, each named: a core
+    /// tuple (`caribou::data::tuple_new`), which each language takes in
+    /// its own form.
+    Tuple(Vec<TupleField>),
+}
+
+/// One of the results a [`TypeRef::Tuple`] holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TupleField {
+    pub name: String,
+    pub ty: TypeRef,
 }
 
 #[derive(Clone, Debug)]

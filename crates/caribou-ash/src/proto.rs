@@ -543,6 +543,8 @@ pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut v
                 return unsafe { crate::data::buffer_to_haxe(buffer) };
             } else if let Some(enumeration) = caribou::data::enum_of(v) {
                 return unsafe { crate::data::enum_to_haxe(enumeration) };
+            } else if let Some(tuple) = caribou::data::tuple_of(v) {
+                return unsafe { crate::data::tuple_to_haxe(tuple) };
             } else if let Some(text) = unsafe { Str::text(v) } {
                 match unsafe { alloc_string(text) } {
                     Some(s) => Some(s),
@@ -1261,7 +1263,7 @@ pub fn is_constructor(callable: Callable) -> bool {
 /// name took that one first. Asked of Ash once per symbol on each thread;
 /// a name keeps its hash once the cache holds it, so the copy never goes
 /// stale.
-fn field_hash(name: Symbol) -> i32 {
+pub(crate) fn field_hash(name: Symbol) -> i32 {
     // Outside the range `hlp_hash_gen` produces.
     const UNSET: i32 = i32::MIN;
     thread_local! {

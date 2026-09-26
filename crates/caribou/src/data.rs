@@ -1,17 +1,20 @@
-//! Heap-owned binary storage and algebraic enum values shared by adapters.
+//! Heap-owned binary storage, algebraic enum values and tuples shared by
+//! adapters.
 use crate::{
     describe,
     error::{Rooted, Str},
     heap::{self, Tracer, TypeDesc},
     protocol::{self, Protocol, REPLY_MISSING, REPLY_OK},
     registry::TypeRef,
+    symbol::Symbol,
 };
 use caribou_abi::{
     TypeTag, Value,
     data::{BufferData, EnumData},
 };
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    ffi::c_void,
     ptr,
     sync::{LazyLock, RwLock},
 };
@@ -563,6 +566,122 @@ pub unsafe fn describe_enum(d: &caribou_abi::EnumDesc) -> describe::EnumDesc {
     }
 }
 
+// ---------------------------------------------------------------------------
+// A tuple: several results a function gives at once, as one value
+// ---------------------------------------------------------------------------
+
+/// A tuple's header: its field names, one per value, then the values.
+#[repr(C, align(8))]
+pub struct TupleData {
+    core: *const c_void,
+    names: *const Symbol,
+    len: usize,
+    // Values follow, traced.
+}
+
+pub static TUPLE_DESC: TypeDesc = descriptor("caribou.Tuple", trace_tuple, &TUPLE_PROTO);
+
+static TUPLE_NAMES: LazyLock<RwLock<HashSet<&'static [Symbol]>>> =
+    LazyLock::new(|| RwLock::new(HashSet::new()));
+
+/// `names` as one interned list, which the tuples of one signature share.
+pub fn tuple_names(names: &[&str]) -> &'static [Symbol] {
+    let symbols: Vec<Symbol> = names.iter().map(|n| crate::symbol::intern(n)).collect();
+    if let Some(&found) = TUPLE_NAMES.read().unwrap().get(symbols.as_slice()) {
+        return found;
+    }
+    let mut interned = TUPLE_NAMES.write().unwrap();
+    if let Some(&found) = interned.get(symbols.as_slice()) {
+        return found;
+    }
+    let list: &'static [Symbol] = Box::leak(symbols.into_boxed_slice());
+    interned.insert(list);
+    list
+}
+
+/// A tuple of `values`, each under the name at its place in `names`.
+pub fn tuple_new(names: &'static [Symbol], values: &[Value]) -> *mut TupleData {
+    assert_eq!(names.len(), values.len(), "a tuple names each value");
+    let roots: Vec<_> = values.iter().copied().map(Rooted::of).collect();
+    let root = Rooted::alloc(
+        &TUPLE_DESC,
+        size_of::<TupleData>() + std::mem::size_of_val(values),
+    );
+    let p = root.ptr().cast::<TupleData>();
+    unsafe {
+        (*p).names = names.as_ptr();
+        (*p).len = values.len();
+        ptr::copy_nonoverlapping(values.as_ptr(), p.add(1).cast(), values.len());
+    }
+    drop(roots);
+    p
+}
+
+/// The tuple `v` is, when it is one.
+pub fn tuple_of(v: Value) -> Option<*mut TupleData> {
+    let p = crate::cell::unwrap(v).as_object()?.cast::<u8>();
+    if p.is_null() || !ptr::eq(unsafe { protocol::desc_of(p) }, &TUPLE_DESC) {
+        return None;
+    }
+    Some(p.cast())
+}
+
+/// The values of a tuple, in order.
+///
+/// # Safety
+/// `p` is a live tuple, as [`tuple_of`] returns one; the slice must not
+/// outlive it.
+pub unsafe fn tuple_values<'a>(p: *const TupleData) -> &'a [Value] {
+    unsafe { std::slice::from_raw_parts(p.add(1).cast(), (*p).len) }
+}
+
+/// The names of a tuple's values, in order.
+///
+/// # Safety
+/// `p` is a live tuple, as [`tuple_of`] returns one.
+pub unsafe fn tuple_field_names(p: *const TupleData) -> &'static [Symbol] {
+    unsafe { std::slice::from_raw_parts((*p).names, (*p).len) }
+}
+
+unsafe extern "C" fn trace_tuple(p: *mut u8, tracer: *mut Tracer) {
+    for v in unsafe { tuple_values(p.cast()) } {
+        unsafe { (*tracer).mark_value(v.to_bits()) };
+    }
+}
+unsafe extern "C-unwind" fn tuple_len(p: *mut u8, out: *mut usize) -> u8 {
+    unsafe { *out = (*p.cast::<TupleData>()).len };
+    REPLY_OK
+}
+unsafe extern "C-unwind" fn tuple_index(p: *mut u8, key: Value, out: *mut Value) -> u8 {
+    let Some(&v) = index(key).and_then(|i| unsafe { tuple_values(p.cast()).get(i) }) else {
+        return REPLY_MISSING;
+    };
+    unsafe { *out = v };
+    REPLY_OK
+}
+unsafe extern "C-unwind" fn tuple_member(p: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    let t = p.cast::<TupleData>();
+    let Some(i) = unsafe { tuple_field_names(t) }
+        .iter()
+        .position(|&n| n == name)
+    else {
+        return REPLY_MISSING;
+    };
+    unsafe { *out = tuple_values(t)[i] };
+    REPLY_OK
+}
+unsafe extern "C-unwind" fn tuple_type_name(_: *mut u8, out: *mut Symbol) -> u8 {
+    unsafe { *out = crate::symbol::intern("caribou.Tuple") };
+    REPLY_OK
+}
+static TUPLE_PROTO: Protocol = Protocol {
+    type_name: Some(tuple_type_name),
+    len: Some(tuple_len),
+    index: Some(tuple_index),
+    get_member: Some(tuple_member),
+    ..Protocol::NONE
+};
+
 /// Publish the core's `Buffer` class, `core:Buffer`, for a language with
 /// no mutable byte storage of its own to make one (Lua): constructed by
 /// its size, zeroed, read and written as a sequence of bytes.
@@ -607,6 +726,34 @@ pub(crate) fn publish() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_tuple_holds_named_values() {
+        let names = tuple_names(&["count", "label"]);
+        assert!(ptr::eq(names, tuple_names(&["count", "label"])));
+        let t = tuple_new(names, &[Value::int(3), Value::bool(true)]);
+        let v = Value::object(t.cast());
+        let t = tuple_of(v).expect("a tuple");
+        assert_eq!(
+            unsafe { tuple_values(t) },
+            [Value::int(3), Value::bool(true)]
+        );
+        let names: Vec<&str> = unsafe { tuple_field_names(t) }
+            .iter()
+            .map(|n| n.name())
+            .collect();
+        assert_eq!(names, ["count", "label"]);
+        let mut out = Value::null();
+        let label = crate::symbol::intern("label");
+        assert_eq!(unsafe { tuple_member(t.cast(), label, &mut out) }, REPLY_OK);
+        assert_eq!(out, Value::bool(true));
+        assert_eq!(
+            unsafe { tuple_index(t.cast(), Value::int(0), &mut out) },
+            REPLY_OK
+        );
+        assert_eq!(out, Value::int(3));
+        assert!(tuple_of(Value::int(1)).is_none());
+    }
 
     #[test]
     fn buffers_share_storage_and_check_bounds() {
