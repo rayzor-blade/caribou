@@ -42,7 +42,9 @@ An instance member takes its receiver first, as a `void *`. A constructor return
 * **WrenLift's AOT** emits the definition: a C-ABI thunk per exported member. The thunk takes the C arguments (a Num is passed as its raw bits), calls the compiled body, and returns the result in C form. For a Haxe class that Wren imports, it emits an undefined reference: `Bench.add(s)` compiles to `call caribou_4haxe_...`.
 * **Ash's AOT** emits the mirror image. A `caribou` native becomes an extern C function with the declared signature under that name, and an exported Haxe static or method gets a C-ABI symbol by the same rule. The published set seeds reachability analysis, so no body that a Wren module might call is removed as dead code.
 
-A standard linker resolves the references between the two object files. The build step, which runs both AOTs and then lld, belongs to the driver. A custom linker is only needed for wasm, where `ash_wasm_link` takes WrenLift's module as well. When both sides emit bitcode, lld with LTO inlines the thunk and the callee into the caller: `Bench.add(s)` in Wren compiles down to `s + 1`.
+A standard linker resolves the references between the two object files. The build step, which runs both AOTs and then lld, belongs to the driver. A custom linker is only needed for wasm, where `ash_wasm_link` takes WrenLift's module as well, compiled by WrenLift's wasm codegen in the same way as Ash's. When both sides emit bitcode, lld with LTO inlines the thunk and the callee into the caller: `Bench.add(s)` in Wren compiles down to `s + 1`.
+
+Neither target embeds an interpreter. On AOT and wasm, every module is compiled and linked; loading a module from source or bytecode belongs to hosted runs.
 
 ## What Remains at Run Time
 
