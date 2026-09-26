@@ -13,6 +13,7 @@ What the README leaves out: the crates, the comparison runners, the benchmarks, 
 | `caribou-plugin` | Stable | Plugin loader that registers native shared libraries as runtime languages using typed FFI dispatchers over C signatures. |
 | `caribou-zyntax` | Stable | Zyntax host adapter. Registers frontends (snapshots, `.zyn` grammars, or a frontend with its own parser) as guest languages, compiles modules via the embed runtime, and publishes what each frontend's own conventions export. |
 | `caribou-python` | Stable | The Python frontend of Zyntax (`zyntax_python`) as a guest language: registered when a root holds a `.py` file, with Python's module layout and export rules. |
+| `caribou-runtime` | Nightly | What an AOT or wasm program runs on: `ash_std`, WrenLift's runtime and the core with both adapters, in one static library. A static constructor fills both seams before the program's entry point creates the heap. |
 | `caribou-driver` | Nightly | Host execution supervisor. Discovers workspace files, initializes the `World`, loads guest languages, and backs the `caribou` CLI. |
 
 ## Standalone A/B Testing

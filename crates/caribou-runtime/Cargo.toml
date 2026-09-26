@@ -1,0 +1,21 @@
+[package]
+name = "caribou-runtime"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "What a linked program runs on: Ash's and WrenLift's runtimes over the caribou core, their seams filled before the program starts"
+
+[dependencies]
+ash_std = { workspace = true }
+caribou = { path = "../caribou" }
+caribou-ash = { path = "../caribou-ash" }
+caribou-wren = { path = "../caribou-wren", default-features = false }
+# The entry points and helpers WrenLift's compiled programs call.
+wren_lift = { workspace = true, features = ["aot_runtime"] }
+
+# A native program has threads, and WrenLift's host build to run them.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+caribou-wren = { path = "../caribou-wren", features = ["host"] }
+
+[lib]
+crate-type = ["staticlib", "rlib"]

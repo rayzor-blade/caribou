@@ -72,6 +72,7 @@ pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
         record_for(unsafe { &*vm }.object_class as *mut u8).set_entered(vm);
         // Wren runs on this thread from here; the view says so to
         // wren_lift's collector.
+        #[cfg(feature = "host")]
         if unsafe { (*vm).thread.is_safe() } {
             unsafe { crate::world::view_running(vm) };
         }
@@ -85,9 +86,12 @@ pub unsafe fn enter_vm(vm: *mut VM) -> *mut VM {
 /// # Safety
 /// `previous` is what the matching `enter_vm` returned.
 pub unsafe fn leave_vm(previous: *mut VM) {
-    let leaving = VM_HERE.with(Cell::get);
-    if !leaving.is_null() && leaving != previous && !unsafe { (*leaving).thread.is_safe() } {
-        unsafe { crate::world::view_safe(leaving) };
+    #[cfg(feature = "host")]
+    {
+        let leaving = VM_HERE.with(Cell::get);
+        if !leaving.is_null() && leaving != previous && !unsafe { (*leaving).thread.is_safe() } {
+            unsafe { crate::world::view_safe(leaving) };
+        }
     }
     unsafe { enter_vm(previous) };
 }

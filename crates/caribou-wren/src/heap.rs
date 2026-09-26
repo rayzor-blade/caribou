@@ -691,16 +691,18 @@ pub unsafe extern "C" fn scan_range(
     let mut p = lo.next_multiple_of(WORD);
     while p + WORD <= hi {
         let w = unsafe { ptr::read_volatile(p as *const usize) };
-        let mut found = unsafe { resolve(&gc, rec, w).or_else(|| viewed_cell(&gc, w)) };
+        let found = unsafe { resolve(&gc, rec, w).or_else(|| viewed_cell(&gc, w)) };
+        // On a 32-bit target a boxed object's address is its low word,
+        // which the plain read above already tried.
         #[cfg(target_pointer_width = "64")]
-        {
+        let found = found.or_else(|| {
             const TAG_OBJ: usize = 0xFFFC_0000_0000_0000;
             const PAYLOAD: usize = 0x0000_FFFF_FFFF_FFFF;
-            if found.is_none() && w & TAG_OBJ == TAG_OBJ {
-                let addr = w & PAYLOAD;
-                found = unsafe { resolve(&gc, rec, addr).or_else(|| viewed_cell(&gc, addr)) };
-            }
-        }
+            let addr = w & PAYLOAD;
+            (w & TAG_OBJ == TAG_OBJ)
+                .then(|| unsafe { resolve(&gc, rec, addr).or_else(|| viewed_cell(&gc, addr)) })
+                .flatten()
+        });
         if let Some((start, _)) = found {
             unsafe { visit((start + PREFIX) as *mut u8, ctx) };
         }

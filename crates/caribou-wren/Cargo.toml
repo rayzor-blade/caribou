@@ -8,12 +8,17 @@ description = "Hosts WrenLift on the caribou core by filling wren_lift's runtime
 # wren_lift builds on stable, as the core does; this crate needs no nightly.
 
 [features]
+default = ["host"]
+# WrenLift's host build: its JIT tiers, threads, and the world they share
+# with the core's scheduler. A wasm build leaves it out and runs compiled
+# Wren on one thread.
+host = ["wren_lift/host", "wren_lift/cranelift"]
 # The `caribou-wren` binary: WrenLift's interpreter and tiered JIT over the
 # core, and `--describe`, which prints a module's interface as JSON.
-runner = ["caribou/serde", "dep:serde_json"]
+runner = ["host", "caribou/serde", "dep:serde_json"]
 # WrenLift's LLVM top tier above its Cranelift baseline, off by default as
 # it is in wren_lift. Needs LLVM 21 on the build machine, linked statically.
-llvm = ["wren_lift/llvm"]
+llvm = ["host", "wren_lift/llvm"]
 
 [dependencies]
 caribou = { path = "../caribou" }

@@ -860,6 +860,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "caribou-runtime"
+version = "0.1.0"
+dependencies = [
+ "ash_std",
+ "caribou",
+ "caribou-ash",
+ "caribou-wren",
+ "wren_lift",
+]
+
+[[package]]
 name = "caribou-window"
 version = "0.1.0"
 dependencies = [

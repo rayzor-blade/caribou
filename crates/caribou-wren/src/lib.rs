@@ -28,6 +28,7 @@ mod proto;
 pub mod publish;
 pub mod report;
 pub mod types;
+#[cfg(feature = "host")]
 mod world;
 
 use std::fmt;
@@ -166,9 +167,12 @@ pub fn install() -> Result<(), InstallError> {
     // A stop of the core's world reaches every thread running Wren, and
     // the core's own transitions keep a thread's view safe or running.
     caribou::heap::set_stop_hook(heap::host_stop);
-    caribou::heap::set_safepoint_hook(world::safepoint_hook);
-    caribou::heap::set_blocking_hook(world::blocking_hook);
-    caribou::sched::add_task_hook(world::task_born);
+    #[cfg(feature = "host")]
+    {
+        caribou::heap::set_safepoint_hook(world::safepoint_hook);
+        caribou::heap::set_blocking_hook(world::blocking_hook);
+        caribou::sched::add_task_hook(world::task_born);
+    }
     INSTALLED.store(true, Ordering::Release);
     Ok(())
 }
@@ -207,20 +211,34 @@ fn table() -> RuntimeVTable {
         thread_stop: Some(heap::thread_stop),
         thread_safe: Some(heap::thread_safe),
         thread_running: Some(heap::thread_running),
+        #[cfg(feature = "host")]
         host_poll: Some(world::host_poll),
         run_guarded: Some(proto::run_guarded),
+        #[cfg(feature = "host")]
         world_waiter_new: Some(world::waiter_new),
+        #[cfg(feature = "host")]
         world_waiter_discard: Some(world::waiter_discard),
+        #[cfg(feature = "host")]
         world_wake: Some(world::wake),
+        #[cfg(feature = "host")]
         world_waiter_ready: Some(world::waiter_ready),
+        #[cfg(feature = "host")]
         world_park_request: Some(world::park_request),
+        #[cfg(feature = "host")]
         world_park_pending: Some(world::park_pending),
+        #[cfg(feature = "host")]
         world_resume_woken: Some(world::resume_woken),
+        #[cfg(feature = "host")]
         world_park_drive: Some(world::park_drive),
+        #[cfg(feature = "host")]
         world_spawn: Some(world::spawn),
+        #[cfg(feature = "host")]
         world_tick: Some(world::tick),
+        #[cfg(feature = "host")]
         world_idle: Some(world::idle),
+        #[cfg(feature = "host")]
         world_live: Some(world::live),
+        #[cfg(feature = "host")]
         world_workers: Some(world::workers),
         ..RuntimeVTable::new()
     }

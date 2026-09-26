@@ -55,6 +55,19 @@ pub fn dependencies(roots: &[impl AsRef<Path>]) -> Result<Vec<Package>, String> 
     Ok(out)
 }
 
+/// A dependency's bytes: a path dependency built from its workspace, a
+/// version from the cache. Resolving needs the host build of wren_lift.
+#[cfg(feature = "host")]
+fn resolve(root: &Path, name: &str, dep: &wh::Dependency) -> Result<Vec<u8>, String> {
+    wh::resolve_dependency_bytes(root, name, dep, None)
+        .map_err(|e| format!("resolving `{name}`: {e}"))
+}
+
+#[cfg(not(feature = "host"))]
+fn resolve(_: &Path, name: &str, _: &wh::Dependency) -> Result<Vec<u8>, String> {
+    Err(format!("`{name}`: hatch dependencies are resolved by a host build"))
+}
+
 fn resolve_into(
     root: &Path,
     manifest: &wh::Manifest,
@@ -64,8 +77,7 @@ fn resolve_into(
         if out.iter().any(|p| &p.name == name) {
             continue;
         }
-        let bytes = wh::resolve_dependency_bytes(root, name, dep, None)
-            .map_err(|e| format!("resolving `{name}`: {e}"))?;
+        let bytes = resolve(root, name, dep)?;
         let inner = wh::load(&bytes).map_err(|e| format!("`{name}` is not a hatch: {e}"))?;
         out.push(Package {
             name: name.clone(),

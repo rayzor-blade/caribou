@@ -19,6 +19,10 @@ System.print(Greet.hello("ada"))
 
 #[test]
 fn a_hatch_package_is_imported_as_it_is() {
+    // Before resolving: a path dependency is built on a VM of its own, and
+    // wren_lift takes no table once one exists.
+    caribou_ash::install().expect("ash takes the table in a fresh process");
+    caribou_wren::install().expect("wren_lift takes the table in a fresh process");
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
     let root = fixtures.join("hatch/src");
 

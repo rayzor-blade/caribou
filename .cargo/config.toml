@@ -6,3 +6,21 @@ rustflags = ["-C", "link-arg=-Wl,-export_dynamic"]
 
 [target.'cfg(all(unix, not(target_os = "macos")))']
 rustflags = ["-C", "link-arg=-Wl,--export-dynamic"]
+
+# A wasm build of Ash's runtime is what these flags make it, as in Ash's own
+# config: its exceptions are setjmp, which the backend rewrites into the
+# exceptions proposal, in the standard `try_table` encoding. Without them
+# `ash_std` calls a plain `longjmp` that nothing defines.
+[target.wasm32-wasip1]
+rustflags = [
+  "-Ctarget-feature=+exception-handling",
+  "-Cllvm-args=-wasm-enable-sjlj",
+  "-Cllvm-args=-wasm-use-legacy-eh=false",
+]
+
+[target.wasm32-wasip1-threads]
+rustflags = [
+  "-Ctarget-feature=+exception-handling",
+  "-Cllvm-args=-wasm-enable-sjlj",
+  "-Cllvm-args=-wasm-use-legacy-eh=false",
+]

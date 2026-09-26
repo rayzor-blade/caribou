@@ -68,11 +68,13 @@ pub fn quiesce<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 /// Whether a worker should park now.
 pub(super) fn requested() -> bool {
     REQUESTED.load(Ordering::Acquire)
 }
 
+#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
 /// Park this worker until the quiescent point ends. Called between turns.
 pub(super) fn park() {
     heap::gc_set_blocking(true);
