@@ -29,7 +29,7 @@ use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
 
 use ash_std::bytes::hlp_alloc_bytes;
 use ash_std::error::{
@@ -2128,6 +2128,72 @@ unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut V
     code
 }
 
+/// The bridge word of a Haxe class instance: the word past its fields,
+/// which `heap::gc_alloc_object` reserves, holding the complement of the
+/// one cell kept for it, or zero. A complement is never a heap address,
+/// so the collector's conservative scan of the object leaves the cell to
+/// its holders. `None` for any other object, and for an instance made
+/// elsewhere than the heap, as the AOT build lays out a constant.
+fn bridge_word<'a>(obj: *mut u8) -> Option<&'a AtomicUsize> {
+    let t = unsafe { *(obj as *const *mut hl_type) };
+    if t.is_null() || unsafe { (*t).kind } != hl::HOBJ {
+        return None;
+    }
+    let rt = unsafe { (*(*t).detail.obj).rt };
+    if rt.is_null() {
+        return None;
+    }
+    let at = crate::heap::fields_end(unsafe { (*rt).size } as usize);
+    let size = heap::small_allocation_size(obj as *const c_void)?;
+    (size >= at + size_of::<usize>()).then(|| unsafe { &*(obj.add(at) as *const AtomicUsize) })
+}
+
+/// The language a cell kept on an object holds it for.
+unsafe fn holder_of(cell: *mut u8) -> LangId {
+    unsafe { (*desc_of(cell)).lang }
+}
+
+/// The shadow is the instance's bridge word: one cell, of whichever
+/// language keeps one first.
+unsafe extern "C-unwind" fn shadow(obj: *mut u8, lang: LangId, out: *mut *mut u8) -> u8 {
+    let Some(word) = bridge_word(obj) else {
+        return REPLY_UNSUPPORTED;
+    };
+    let w = word.load(Ordering::Acquire);
+    let p = !w as *mut u8;
+    if w != 0 && unsafe { holder_of(p) } == lang {
+        unsafe { *out = p };
+        return REPLY_OK;
+    }
+    REPLY_MISSING
+}
+
+unsafe extern "C-unwind" fn keep_shadow(obj: *mut u8, shadow: *mut u8, out: *mut *mut u8) -> u8 {
+    let Some(word) = bridge_word(obj) else {
+        return REPLY_UNSUPPORTED;
+    };
+    match word.compare_exchange(0, !(shadow as usize), Ordering::AcqRel, Ordering::Acquire) {
+        Ok(_) => REPLY_OK,
+        Err(w) => {
+            let kept = !w as *mut u8;
+            if unsafe { holder_of(kept) == holder_of(shadow) } {
+                unsafe { *out = kept };
+                REPLY_MISSING
+            } else {
+                REPLY_UNSUPPORTED
+            }
+        }
+    }
+}
+
+/// From the cell's drop hook, under the GC lock.
+unsafe extern "C-unwind" fn drop_shadow(obj: *mut u8, shadow: *mut u8) -> u8 {
+    if let Some(word) = bridge_word(obj) {
+        let _ = word.compare_exchange(!(shadow as usize), 0, Ordering::AcqRel, Ordering::Relaxed);
+    }
+    REPLY_OK
+}
+
 static HAXE_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
@@ -2146,6 +2212,9 @@ static HAXE_PROTO: Protocol = Protocol {
     equals: Some(equals),
     unwrap_native: Some(unwrap_native),
     type_name: Some(type_name),
+    shadow: Some(shadow),
+    keep_shadow: Some(keep_shadow),
+    drop_shadow: Some(drop_shadow),
     ..Protocol::NONE
 };
 

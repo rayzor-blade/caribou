@@ -19,6 +19,17 @@ pub unsafe extern "C" fn gc_alloc(size: usize) -> *mut u8 {
     raw(heap::gc_alloc(size))
 }
 
+/// A class instance of `size` bytes, with its bridge word past the fields
+/// (see `proto::bridge_word`).
+pub unsafe extern "C" fn gc_alloc_object(size: usize) -> *mut u8 {
+    raw(heap::gc_alloc(fields_end(size) + size_of::<usize>()))
+}
+
+/// Where the fields of an instance of `size` bytes end: its bridge word.
+pub(crate) fn fields_end(size: usize) -> usize {
+    size.next_multiple_of(size_of::<usize>())
+}
+
 pub unsafe extern "C" fn gc_alloc_noptr(size: usize) -> *mut u8 {
     raw(heap::gc_alloc_noptr(size))
 }

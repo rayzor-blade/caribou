@@ -2293,6 +2293,20 @@ pub fn is_allocation_start(ptr: *const c_void) -> bool {
     unsafe { (*r.objects.add(index)).load(Ordering::Relaxed) & !OBJECT_KIND_MASK != 0 }
 }
 
+/// The size of the allocation starting at `ptr`, read without the lock:
+/// `None` for an address that starts none, or an allocation spanning
+/// lines, whose size the side table does not hold inline.
+pub fn small_allocation_size(ptr: *const c_void) -> Option<usize> {
+    let r = RESERVATION.get()?;
+    let addr = ptr as usize;
+    if addr < r.base || addr >= r.base + r.len || !addr.is_multiple_of(ALLOC_QUANTUM) {
+        return None;
+    }
+    let index = (addr - r.base) / ALLOC_QUANTUM;
+    let code = unsafe { (*r.objects.add(index)).load(Ordering::Relaxed) } & OBJECT_SIZE_MASK;
+    (code != 0 && code != SPAN_OBJECT).then(|| code as usize * ALLOC_QUANTUM)
+}
+
 /// Whether the allocation starting at `ptr` is traced through a
 /// descriptor at its word zero: what makes that word safe to read as one.
 pub fn is_traced_allocation(ptr: *const c_void) -> bool {

@@ -34,7 +34,7 @@ Each member is bound as a host native (`bind_host`): one entry function for ever
 
 ## Lifetime
 
-A Haxe object that enters Wren is held through a cell (`caribou::cell`, see [bridge.md](bridge.md#cells--shadows)): the one core object that represents it. The adapter creates the cell on the first crossing and finds it by the object's address afterward, because a Haxe object keeps no shadow.
+A Haxe object that enters Wren is held through a cell (`caribou::cell`, see [bridge.md](bridge.md#cells--shadows)): the one core object that represents it. The adapter creates the cell on the first crossing and finds it afterward through the word the instance keeps past its fields for it (see [bridge.md](bridge.md#cells--shadows)).
 
 **Views:** The cell keeps a view for Wren 16 bytes in, at the offset where WrenLift's prefix places an object's header. The view is an `ObjInstance` of the class installed for the object's type, with no fields, which `proxy` writes. Wren holds the cell through that view, so a send on it is WrenLift's own dispatch with the cell as the receiver, and `foreign_of` reads the cell back as the object it represents. The same object crossing twice is the same Wren value, including under `==`. A Haxe function or array is held the same way, under the `Function` or `Sequence` class. An object that is already a cell created by another language gets its view in that existing cell.
 

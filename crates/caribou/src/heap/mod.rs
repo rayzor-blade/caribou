@@ -102,6 +102,7 @@ pub use immix::{
     set_stack_top,
     set_stop_hook,
     should_collect,
+    small_allocation_size,
     stats,
     stop_requested,
     thread_registered,

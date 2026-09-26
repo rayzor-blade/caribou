@@ -203,10 +203,9 @@ pub fn make(v: Value, desc: &'static TypeDesc) -> Value {
 /// [`make`]'s cell for `obj`, whose language keeps a shadow on it when
 /// `kept`.
 fn made(v: Value, obj: usize, desc: &'static TypeDesc, kept: bool) -> Value {
-    // An object its language keeps a shadow on is retained through the
-    // allocation by its own heap record; any other by `v` on this frame
-    // where the collector scans the stack, else by a handle.
-    let root = if kept || heap::scans_current_stack() {
+    // `v` on this frame keeps the object through the allocation where the
+    // collector scans the stack; elsewhere a handle does.
+    let root = if heap::scans_current_stack() {
         Handle::NULL
     } else {
         heap::handle_new(obj as *mut u8)
