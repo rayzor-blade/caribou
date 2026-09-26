@@ -2132,8 +2132,9 @@ unsafe extern "C-unwind" fn iterate(obj: *mut u8, state: *mut Value, out: *mut V
 /// which `heap::gc_alloc_object` reserves, holding the complement of the
 /// one cell kept for it, or zero. A complement is never a heap address,
 /// so the collector's conservative scan of the object leaves the cell to
-/// its holders. `None` for any other object, and for an instance made
-/// elsewhere than the heap, as the AOT build lays out a constant.
+/// its holders. Every instance in the heap has one, since ash allocates
+/// each through that slot; `None` for any other object, and for an
+/// instance outside the heap, as the AOT build lays out a constant.
 fn bridge_word<'a>(obj: *mut u8) -> Option<&'a AtomicUsize> {
     let t = unsafe { *(obj as *const *mut hl_type) };
     if t.is_null() || unsafe { (*t).kind } != hl::HOBJ {
@@ -2143,9 +2144,14 @@ fn bridge_word<'a>(obj: *mut u8) -> Option<&'a AtomicUsize> {
     if rt.is_null() {
         return None;
     }
+    if !heap::in_heap(obj as *const c_void) {
+        return None;
+    }
     let at = crate::heap::fields_end(unsafe { (*rt).size } as usize);
-    let size = heap::small_allocation_size(obj as *const c_void)?;
-    (size >= at + size_of::<usize>()).then(|| unsafe { &*(obj.add(at) as *const AtomicUsize) })
+    debug_assert!(
+        unsafe { heap::allocation_size(obj as *const c_void) } >= at + size_of::<usize>()
+    );
+    Some(unsafe { &*(obj.add(at) as *const AtomicUsize) })
 }
 
 /// The language a cell kept on an object holds it for.
