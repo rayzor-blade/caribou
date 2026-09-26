@@ -42,7 +42,7 @@ use wren_lift::runtime::vm::VM;
 
 use crate::heap::{record_for, wren_lang};
 use crate::proto::from_wren;
-use crate::types::{Classes, Export};
+use crate::types::{Classes, Export, ExportTypes};
 
 /// The classes of one heap in the registry: each class to the type name
 /// its instances report.

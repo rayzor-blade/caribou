@@ -176,7 +176,8 @@ The attribute value is a signature:
 * `name` is the name Haxe sees. It can differ from the Wren name. The member is exported under it, and the runtime still calls the Wren method.
 * There is one entry per Wren parameter, in order. `a` names the parameter, `a: T` also types it, and `_: T` types it while keeping the name from the source. Types match by position, so the runtime can read the same attribute from the running class.
 * `-> R` types the result. Without it, the result type comes from inference.
-* The attribute must match its member: the same shape, and one entry per parameter. Otherwise the description fails with an error that explains why.
+* The attribute must match its member: the same shape, and one entry per parameter. Otherwise WrenLift refuses to compile the module, and the description fails with the same error.
+* A declared `Num`, `Bool` or `String` is a contract that WrenLift enforces in every tier. A parameter is checked when the member is entered, and the result each time it returns. A value of the wrong type raises as `Fiber.abort` does, for example ``bump(_) expects Num for `x` ``. `List`, `Fn`, class types and a `Null` result are not checked, because another language hands those over in its own form.
 * The attribute is optional. Without it, a member is exported under its own name with the parameter names from the source.
 
 Type names are Wren's own names, or a class from the same module:

@@ -22,7 +22,7 @@ use wren_lift::diagnostics::Severity;
 use wren_lift::intern::{Interner, SymbolId};
 use wren_lift::sema::types::{InferredType, TypeEnv, infer_types_with_classes};
 
-use crate::types::{Classes, Export};
+use crate::types::{Classes, Export, ExportTypes};
 
 /// The language name the description carries.
 pub const LANG: &str = "wren";
@@ -134,7 +134,8 @@ fn describe_class(
         let base_sym = base;
         let base = interner.resolve(base).to_owned();
         let export = Export::from_ast(&m.attributes, interner)
-            .and_then(|e| e.map_or(Ok(None), |e| check(e, shape, params.len()).map(Some)))
+            .map(|(e, _)| e.and_then(|e| e.check_member(&m.signature).map(|()| e)))
+            .transpose()
             .map_err(|e| format!("{name}.{base}: {e}"))?;
         let param_names: Vec<&str> = params.iter().map(|p| interner.resolve(p.0)).collect();
         let kind = match shape {
@@ -211,28 +212,6 @@ enum Kind {
     Getter,
     Setter,
     Construct,
-}
-
-/// An export fits its member when its shape and arity are the member's.
-fn check(e: Export, shape: Kind, arity: usize) -> Result<Export, String> {
-    let fits = match shape {
-        Kind::Getter => !e.has_params,
-        Kind::Setter => e.is_setter,
-        Kind::Method | Kind::Construct => e.has_params && !e.is_setter,
-    };
-    if !fits {
-        return Err(format!(
-            "`#export = \"{}\"` has the wrong shape for the member",
-            e.name
-        ));
-    }
-    if e.params.len() != arity {
-        return Err(format!(
-            "`#export` names {} parameters, the member takes {arity}",
-            e.params.len()
-        ));
-    }
-    Ok(e)
 }
 
 #[cfg(test)]
@@ -345,6 +324,6 @@ class Panel is Hud {
         assert!(err.contains("takes 2"), "{err}");
         let source = "class A {\n  #export = \"g()\"\n  g { 1 }\n}\n";
         let err = describe_source("m", source).unwrap_err();
-        assert!(err.contains("shape"), "{err}");
+        assert!(err.contains("the member is a getter"), "{err}");
     }
 }
