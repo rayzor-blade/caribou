@@ -164,6 +164,9 @@ pub unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
         V::Int(i) => made(Int64::value(i)),
         V::Float(f) => (Value::number(f), std::ptr::null_mut()),
         V::Str(s) => made(Str::value(Str::new(s))),
+        // Several values as one: a tuple of the core, each named by its
+        // place.
+        V::Tuple(items) => made(unsafe { tuple_of(items)? }),
         V::Foreign(word) => {
             let held = unsafe { held(word) };
             match held.value() {
@@ -193,6 +196,38 @@ pub unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
             }
         }
     })
+}
+
+/// The program's tuple `items` as a tuple of the core. Each value is
+/// rooted until the tuple holds it: making the next may collect.
+unsafe fn tuple_of(items: &[Any]) -> Result<Value, ForeignError> {
+    let mut values = Vec::with_capacity(items.len());
+    let mut handles = Vec::new();
+    let mut failed = None;
+    for &item in items {
+        match unsafe { value_of(item) } {
+            Ok((v, _)) => {
+                if let Some(p) = v.as_object().filter(|p| !p.is_null()) {
+                    handles.push(heap::handle_new(p as *mut u8));
+                }
+                values.push(v);
+            }
+            Err(e) => {
+                failed = Some(e);
+                break;
+            }
+        }
+    }
+    let out = match failed {
+        None => Ok(Value::object(
+            caribou::data::tuple_new(caribou::data::tuple_positions(values.len()), &values).cast(),
+        )),
+        Some(e) => Err(e),
+    };
+    for h in handles {
+        heap::handle_release(h);
+    }
+    out
 }
 
 /// The widest call the program makes of the world.
@@ -485,5 +520,22 @@ impl Foreign for World {
         let buffer = caribou::data::buffer_of(unsafe { held(word) }.value()?)?;
         let b = unsafe { &*buffer };
         Some((b.bytes, b.len))
+    }
+
+    /// A core tuple is several values given at once: a call that returns
+    /// one gives the program that many.
+    fn values(&self, word: usize) -> Option<usize> {
+        let tuple = caribou::data::tuple_of(unsafe { held(word) }.value()?)?;
+        Some(unsafe { caribou::data::tuple_values(tuple) }.len())
+    }
+
+    fn value(&self, word: usize, index: usize) -> Any {
+        let tuple = unsafe { held(word) }
+            .value()
+            .and_then(caribou::data::tuple_of);
+        match tuple.and_then(|t| unsafe { caribou::data::tuple_values(t) }.get(index)) {
+            Some(&v) => any_of(v),
+            None => foreign::none(),
+        }
     }
 }

@@ -599,6 +599,23 @@ pub fn tuple_names(names: &[&str]) -> &'static [Symbol] {
     list
 }
 
+/// The names of a tuple of `n` values named by their places: `_1`,
+/// `_2`, ...
+pub fn tuple_positions(n: usize) -> &'static [Symbol] {
+    static BY_LENGTH: RwLock<Vec<&'static [Symbol]>> = RwLock::new(Vec::new());
+    if let Some(&names) = BY_LENGTH.read().unwrap().get(n) {
+        return names;
+    }
+    let mut by_length = BY_LENGTH.write().unwrap();
+    while by_length.len() <= n {
+        let k = by_length.len();
+        let names: Vec<String> = (1..=k).map(|i| format!("_{i}")).collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        by_length.push(tuple_names(&names));
+    }
+    by_length[n]
+}
+
 /// A tuple of `values`, each under the name at its place in `names`.
 pub fn tuple_new(names: &'static [Symbol], values: &[Value]) -> *mut TupleData {
     assert_eq!(names.len(), values.len(), "a tuple names each value");

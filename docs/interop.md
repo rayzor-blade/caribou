@@ -279,6 +279,9 @@ The Lua frontend registers when a root holds a `.lua` file. A Lua module is the 
 * **Several results:** A Lua caller keeps as many results as it asks for; a caller in another language keeps as many as the function declares. With one `---@return` or none, the call gives the first result. With several, it gives all of them, missing ones as nil, as one value:
   * Haxe gets an anonymous structure, each result a field under its `---@return` name (`_1`, `_2`, ... for an unnamed one): `var s = c.state(); s.count`.
   * Wren gets a `List` of them, in order: `c.state()[0]`.
+  * Python gets a tuple: `q, r = qr(17, 5)`.
+  * Lua gets that many results from a call to another language that gives several values at once: `local a, b = f()`.
+* **Tuples of other languages:** A Python tuple passed to another language crosses as the same core tuple, its values named `_1`, `_2`, ...: a `List` in Wren, an anonymous structure in Haxe.
 
 ```lua
 -- src/game/counter.lua
