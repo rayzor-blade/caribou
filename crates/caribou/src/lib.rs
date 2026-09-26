@@ -23,5 +23,6 @@ pub mod protocol;
 pub mod registry;
 pub mod report;
 pub mod sched;
+pub mod spin;
 pub mod symbol;
 pub mod world;

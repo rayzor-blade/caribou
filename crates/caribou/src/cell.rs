@@ -48,7 +48,7 @@
 
 use core::ffi::c_void;
 use core::ptr;
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::LazyLock;
 
 use caribou_abi::hl::hl_type;
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
@@ -62,6 +62,7 @@ use crate::protocol::{
     CallSite, Fault, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Reply,
     Send, Symbol,
 };
+use crate::spin::{SpinGuard, SpinLock};
 use crate::world::LANG_CORE;
 
 #[repr(C)]
@@ -134,13 +135,13 @@ fn address_of(v: Value) -> Option<usize> {
 }
 
 /// Object address to cell address, for objects whose language keeps no
-/// shadow. Never held across an allocation: a collection's drop hooks
-/// take it.
-static CELLS: LazyLock<Mutex<AddressMap<usize>>> =
-    LazyLock::new(|| Mutex::new(AddressMap::default()));
+/// shadow. Held for one lookup at a time, and never across an allocation:
+/// a collection's drop hooks take it.
+static CELLS: LazyLock<SpinLock<AddressMap<usize>>> =
+    LazyLock::new(|| SpinLock::new(AddressMap::default()));
 
-fn cells() -> MutexGuard<'static, AddressMap<usize>> {
-    CELLS.lock().unwrap_or_else(|e| e.into_inner())
+fn cells() -> SpinGuard<'static, AddressMap<usize>> {
+    CELLS.lock()
 }
 
 fn alloc(desc: &'static TypeDesc, v: Value, flags: usize) -> *mut Cell {
@@ -170,23 +171,48 @@ pub fn wrap(v: Value, desc: &'static TypeDesc) -> Value {
     let Some(obj) = address_of(v) else {
         return v;
     };
-    let lang = desc.lang;
-    let kept = match unsafe { Send::shadow(obj as *mut u8, lang) } {
-        Ok(c) => return Value::object(c as *const c_void),
-        Err(Fault::Unsupported) => false,
-        Err(_) => true,
-    };
-    if !kept && let Some(&c) = cells().get(&obj) {
-        return Value::object(c as *const c_void);
+    match unsafe { Send::shadow(obj as *mut u8, desc.lang) } {
+        Ok(c) => Value::object(c as *const c_void),
+        Err(Fault::Unsupported) => {
+            // The map's lock goes before the allocation, whose collection
+            // may run drop hooks that take it.
+            let found = cells().get(&obj).copied();
+            match found {
+                Some(c) => Value::object(c as *const c_void),
+                None => made(v, obj, desc, false),
+            }
+        }
+        Err(_) => made(v, obj, desc, true),
     }
+}
+
+/// A new cell for `v`'s object under the holder `desc` is for, which the
+/// caller found has none; `v` itself when it is not an object. When
+/// another thread made one meanwhile, that one.
+pub fn make(v: Value, desc: &'static TypeDesc) -> Value {
+    let Some(obj) = address_of(v) else {
+        return v;
+    };
+    let kept = !matches!(
+        unsafe { Send::shadow(obj as *mut u8, desc.lang) },
+        Err(Fault::Unsupported)
+    );
+    made(v, obj, desc, kept)
+}
+
+/// [`make`]'s cell for `obj`, whose language keeps a shadow on it when
+/// `kept`.
+fn made(v: Value, obj: usize, desc: &'static TypeDesc, kept: bool) -> Value {
     // An object its language keeps a shadow on is retained through the
-    // allocation by its own heap record; any other is rooted here.
-    let root = if kept {
+    // allocation by its own heap record; any other by `v` on this frame
+    // where the collector scans the stack, else by a handle.
+    let root = if kept || heap::scans_current_stack() {
         Handle::NULL
     } else {
         heap::handle_new(obj as *mut u8)
     };
     let p = alloc(desc, v, if kept { 0 } else { MAPPED });
+    core::hint::black_box(v);
     heap::handle_release(root);
     // Another thread may have made one meanwhile. Ours is then garbage,
     // and its drop forgets nothing, not being the one kept.

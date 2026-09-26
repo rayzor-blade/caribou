@@ -90,6 +90,7 @@ pub use immix::{
     registered_threads,
     safepoint,
     scan_roots_done,
+    scans_current_stack,
     set_blocking_hook,
     set_deferred_collection,
     set_flags,

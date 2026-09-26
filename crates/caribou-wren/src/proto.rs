@@ -198,7 +198,8 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     // Any other object is held through the instance a subclass
     // constructed in front of its cell, else the view the cell keeps for
     // Wren, filled on first need.
-    if let Some(c) = crate::import::cell_of(v) {
+    let cell = crate::import::cell_of(v);
+    if let Some(c) = cell {
         if let Some(front) = cell::front(c) {
             return Some(WValue::object(front as *mut u8));
         }
@@ -208,7 +209,7 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
             return Some(WValue::object(unsafe { cell::view_at(start) }));
         }
     }
-    crate::import::proxy(vm, v)
+    crate::import::proxy_in(vm, v, cell)
 }
 
 /// [`from_wren`], for a host handing a Wren value to the bridge.

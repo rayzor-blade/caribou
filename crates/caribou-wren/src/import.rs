@@ -610,7 +610,7 @@ pub(crate) unsafe fn held(instance: *mut u8) -> *const u8 {
 /// instance in front, so the object comes back as it.
 fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
     let v = Value::object(obj as *const c_void);
-    let c = cell_of(v).unwrap_or_else(|| cell::wrap(v, view_desc()));
+    let c = cell_of(v).unwrap_or_else(|| cell::make(v, view_desc()));
     let cell_ptr = c.as_object().unwrap_or(ptr::null_mut()) as usize;
     unsafe { (*instance).set_field(OBJECT_FIELD, WValue::num(cell_ptr as f64)) };
     crate::heap::set_adopted(instance as *mut u8);
@@ -829,6 +829,11 @@ fn int64_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
 /// written into the view it keeps for Wren and is held through it; any
 /// other object gets an instance of the class holding it.
 pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
+    proxy_in(vm, v, cell_of(v))
+}
+
+/// [`proxy`] of `v`, whose cell the caller found: `cell`, or none.
+pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: Option<Value>) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
         return None;
@@ -868,7 +873,7 @@ pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
     let class = class?;
     // The object's cell, made here when it has none yet: a cell holds a
     // view for Wren whichever language made it.
-    let c = cell_of(v).unwrap_or_else(|| cell::wrap(v, view_desc()));
+    let c = cell.unwrap_or_else(|| cell::make(v, view_desc()));
     let start = c.as_object()? as *mut u8;
     let view = unsafe { cell::view_at(start) } as *mut ObjInstance;
     unsafe {

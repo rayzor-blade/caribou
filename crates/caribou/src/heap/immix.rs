@@ -5053,6 +5053,12 @@ pub fn init() {
     gc_locked_init();
 }
 
+/// Whether the collector scans this thread's stack: it is a registered
+/// mutator, so what its frames hold stays alive across a collection.
+pub fn scans_current_stack() -> bool {
+    TLAB.with(|t| t.registered.get())
+}
+
 /// Record the stack top for conservative scanning.
 /// Called once at JIT entry before running user code.
 pub unsafe fn set_stack_top(top: usize) {
