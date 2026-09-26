@@ -10,4 +10,7 @@ description = "Loads native plugins on the shared ABI and publishes their symbol
 [dependencies]
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
+
+# A wasm module opens no library.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
 libloading = "0.8"

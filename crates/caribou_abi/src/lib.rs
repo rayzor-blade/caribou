@@ -975,6 +975,62 @@ pub unsafe extern "C" fn drop_boxed<T>(p: *mut c_void) {
     drop(unsafe { alloc::boxed::Box::from_raw(p as *mut T) });
 }
 
+/// How a plugin is found: opened as a library, by the entry and version
+/// symbols the loader looks for.
+#[cfg(not(feature = "linked"))]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __plugin_entry {
+    ($info:ident) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn caribou_abi_version() -> u32 {
+            $crate::ABI_VERSION
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn caribou_plugin_entry(
+            host: *const $crate::host::Host,
+        ) -> *const $crate::PluginInfo {
+            $crate::host::install(host);
+            &$info
+        }
+    };
+}
+
+/// How a plugin is found in a program's own build (the `linked` feature),
+/// where nothing opens it and any number of plugins link together:
+/// registered with the runtime from a constructor, which runs before the
+/// program does.
+#[cfg(feature = "linked")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __plugin_entry {
+    ($info:ident) => {
+        const _: () = {
+            unsafe extern "C" fn entry(host: *const $crate::host::Host) -> *const $crate::PluginInfo {
+                $crate::host::install(host);
+                &$info
+            }
+            unsafe extern "C" {
+                fn caribou_plugin_register(
+                    entry: unsafe extern "C" fn(*const $crate::host::Host) -> *const $crate::PluginInfo,
+                );
+            }
+            extern "C" fn register() {
+                unsafe { caribou_plugin_register(entry) }
+            }
+            #[used]
+            #[cfg_attr(
+                any(target_os = "linux", target_os = "android", target_family = "wasm"),
+                unsafe(link_section = ".init_array")
+            )]
+            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
+            #[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
+            static REGISTER: extern "C" fn() = register;
+        };
+    };
+}
+
 /// A plugin's table: its name, and the functions it exports, declared
 /// by signature the way a header declares them. The functions are
 /// ordinary items of the crate, `extern "C"` over the types [`Param`] and
@@ -1100,16 +1156,7 @@ macro_rules! plugin {
             enum_count: $crate::plugin!(@count $($enums)*),
         };
 
-        #[unsafe(no_mangle)]
-        pub extern "C" fn caribou_abi_version() -> u32 {
-            $crate::ABI_VERSION
-        }
-
-        #[unsafe(no_mangle)]
-        pub extern "C" fn caribou_plugin_entry(host: *const $crate::host::Host) -> *const $crate::PluginInfo {
-            $crate::host::install(host);
-            &__CARIBOU_INFO
-        }
+        $crate::__plugin_entry!(__CARIBOU_INFO);
     };
     (@class "") => { "" };
     (@class $class:ident) => { stringify!($class) };

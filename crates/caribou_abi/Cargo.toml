@@ -5,6 +5,12 @@ edition.workspace = true
 repository.workspace = true
 description = "Layouts and constants every Caribou runtime, plugin and the core agree on"
 
+[features]
+# A program's own build, where plugins are linked in rather than opened:
+# each registers from a constructor instead of exporting the entry the
+# loader looks for.
+linked = []
+
 # Never depend on the core: that would duplicate its exported symbols in
 # every plugin archive. The derive runs only at compile time.
 [dependencies]

@@ -52,21 +52,61 @@ use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::host::Host;
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::{
-    ABI_VERSION, ABI_VERSION_SYMBOL, ClassDesc, ErrorKind, LangId, NO_CLASS, PLUGIN_ENTRY_SYMBOL,
-    PluginInfo, SymbolDesc, TypeTag, Value, sym,
+    ClassDesc, ErrorKind, LangId, NO_CLASS, PluginInfo, SymbolDesc, TypeTag, Value, sym,
 };
+#[cfg(not(target_family = "wasm"))]
+use caribou_abi::{ABI_VERSION, ABI_VERSION_SYMBOL, PLUGIN_ENTRY_SYMBOL};
 
 mod host;
 
 /// A loaded plugin: its library stays open for the process, since the
-/// registry holds its function addresses.
+/// registry holds its function addresses. A plugin linked into the
+/// program has no library of its own.
 pub struct Plugin {
     name: String,
     path: PathBuf,
     symbols: Vec<SymbolDesc>,
     classes: Vec<ClassDesc>,
     enums: Vec<caribou::describe::EnumDesc>,
-    _library: libloading::Library,
+    _library: Option<Library>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+type Library = libloading::Library;
+/// A wasm module opens no library; a plugin there is linked in, or a
+/// side module the host loads.
+#[cfg(target_family = "wasm")]
+type Library = ();
+
+/// A plugin's entry, which installs the host table and answers the
+/// plugin's own.
+pub type Entry = unsafe extern "C" fn(*const Host) -> *const PluginInfo;
+
+/// The tables of the plugins linked into the program, in registration
+/// order. A table is static data of the program.
+struct Tables(Vec<*const PluginInfo>);
+unsafe impl Send for Tables {}
+
+static LINKED: std::sync::Mutex<Tables> = std::sync::Mutex::new(Tables(Vec::new()));
+
+/// A plugin linked into the program rather than opened, registered by its
+/// own constructor through the runtime (`caribou_plugin_register`): its
+/// entry is given the host table, as `load` gives it one, and its table
+/// kept for [`linked`]. Constructors run in no set order, so nothing here
+/// reaches the core.
+pub fn register_linked(entry: Entry) {
+    let info = unsafe { entry(&host::HOST) };
+    LINKED.lock().unwrap_or_else(|e| e.into_inner()).0.push(info);
+}
+
+/// The plugins linked into the program, taken once.
+pub fn linked() -> Result<Vec<Plugin>, Error> {
+    let tables = std::mem::take(&mut LINKED.lock().unwrap_or_else(|e| e.into_inner()).0);
+    let path = PathBuf::from("(linked)");
+    tables
+        .into_iter()
+        .map(|info| from_info(info, &path, None))
+        .collect()
 }
 
 impl Plugin {
@@ -119,6 +159,15 @@ impl std::error::Error for Error {}
 
 /// Open the plugin at `path`: refused unless it exports the two symbols
 /// and was built against this ABI version.
+#[cfg(target_family = "wasm")]
+pub fn load(path: &Path) -> Result<Plugin, Error> {
+    Err(Error::NotAPlugin(
+        path.to_owned(),
+        "a wasm module opens no library: link the plugin in, or load it as a side module".into(),
+    ))
+}
+
+#[cfg(not(target_family = "wasm"))]
 pub fn load(path: &Path) -> Result<Plugin, Error> {
     // SAFETY: a plugin's initialisers are its own to run; nothing else is
     // called before its version is checked.
@@ -139,6 +188,12 @@ pub fn load(path: &Path) -> Result<Plugin, Error> {
         unsafe { library.get(PLUGIN_ENTRY_SYMBOL.as_bytes()) }
             .map_err(|e| Error::NotAPlugin(path.to_owned(), e.to_string()))?;
     let info = unsafe { entry(&host::HOST) };
+    from_info(info, path, Some(library))
+}
+
+/// The plugin a table describes, its enums checked against those already
+/// declared.
+fn from_info(info: *const PluginInfo, path: &Path, library: Option<Library>) -> Result<Plugin, Error> {
     if info.is_null() {
         return Err(Error::NoTable(path.to_owned()));
     }
