@@ -19,7 +19,9 @@ pub mod aot;
 pub mod bundle;
 pub mod cbproj;
 pub mod deps;
+pub mod linked;
 pub mod project;
 pub mod session;
+mod wasm_toolchain;
 
 pub use session::{Options, Session, run, run_project};

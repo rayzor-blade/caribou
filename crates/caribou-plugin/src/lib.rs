@@ -89,11 +89,11 @@ unsafe impl Send for Tables {}
 
 static LINKED: std::sync::Mutex<Tables> = std::sync::Mutex::new(Tables(Vec::new()));
 
-/// A plugin linked into the program rather than opened, registered by its
-/// own constructor through the runtime (`caribou_plugin_register`): its
-/// entry is given the host table, as `load` gives it one, and its table
-/// kept for [`linked`]. Constructors run in no set order, so nothing here
-/// reaches the core.
+/// A plugin linked into the program rather than opened, registered from a
+/// constructor of the program's build (`caribou_abi::linked_entry_symbol`):
+/// its entry is given the host table, as `load` gives it one, and its
+/// table kept for [`linked`]. Constructors run in no set order, so nothing
+/// here reaches the core.
 pub fn register_linked(entry: Entry) {
     let info = unsafe { entry(&host::HOST) };
     LINKED.lock().unwrap_or_else(|e| e.into_inner()).0.push(info);

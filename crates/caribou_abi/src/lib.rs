@@ -981,7 +981,7 @@ pub unsafe extern "C" fn drop_boxed<T>(p: *mut c_void) {
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __plugin_entry {
-    ($info:ident) => {
+    ($name:literal, $info:ident) => {
         #[unsafe(no_mangle)]
         pub extern "C" fn caribou_abi_version() -> u32 {
             $crate::ABI_VERSION
@@ -998,37 +998,27 @@ macro_rules! __plugin_entry {
 }
 
 /// How a plugin is found in a program's own build (the `linked` feature),
-/// where nothing opens it and any number of plugins link together:
-/// registered with the runtime from a constructor, which runs before the
-/// program does.
+/// where any number of plugins link together: by an entry named after the
+/// plugin, [`linked_entry_symbol`], which the program's build calls.
 #[cfg(feature = "linked")]
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __plugin_entry {
-    ($info:ident) => {
+    ($name:literal, $info:ident) => {
         const _: () = {
-            unsafe extern "C" fn entry(host: *const $crate::host::Host) -> *const $crate::PluginInfo {
+            #[unsafe(export_name = concat!("caribou_plugin_entry_", $name))]
+            extern "C" fn entry(host: *const $crate::host::Host) -> *const $crate::PluginInfo {
                 $crate::host::install(host);
                 &$info
             }
-            unsafe extern "C" {
-                fn caribou_plugin_register(
-                    entry: unsafe extern "C" fn(*const $crate::host::Host) -> *const $crate::PluginInfo,
-                );
-            }
-            extern "C" fn register() {
-                unsafe { caribou_plugin_register(entry) }
-            }
-            #[used]
-            #[cfg_attr(
-                any(target_os = "linux", target_os = "android", target_family = "wasm"),
-                unsafe(link_section = ".init_array")
-            )]
-            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
-            #[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
-            static REGISTER: extern "C" fn() = register;
         };
     };
+}
+
+/// The entry of the plugin `name` linked into a program: the loader's
+/// entry symbol and the plugin's name.
+pub fn linked_entry_symbol(name: &str) -> alloc::string::String {
+    alloc::format!("{PLUGIN_ENTRY_SYMBOL}_{name}")
 }
 
 /// A plugin's table: its name, and the functions it exports, declared
@@ -1156,7 +1146,7 @@ macro_rules! plugin {
             enum_count: $crate::plugin!(@count $($enums)*),
         };
 
-        $crate::__plugin_entry!(__CARIBOU_INFO);
+        $crate::__plugin_entry!($name, __CARIBOU_INFO);
     };
     (@class "") => { "" };
     (@class $class:ident) => { stringify!($class) };

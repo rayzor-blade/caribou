@@ -21,7 +21,8 @@
 //! penlight = "1.13.1"
 //!
 //! [plugins]
-//! gpu = { path = "plugins/libcaribou_gpu.dylib" }
+//! gpu = { path = "../plugins/cb_gpu" }
+//! window = { path = "plugins/libcaribou_window.dylib" }
 //! ```
 //!
 //! The entry is a module of one of the languages, `language:module`.
@@ -33,8 +34,11 @@
 //! declared or not: a `hatchfile` beside the project file or at a source
 //! root, a `requirements.txt` and `*.rockspec` files beside the project
 //! file ([`crate::deps`]); Python's and Lua's are found but not yet
-//! installed. Paths are relative to the file. What the project builds
-//! goes to `target/` beside it.
+//! installed. A plugin is its crate or its built library: a crate is
+//! built for this machine for a hosted run, and linked into a program
+//! built ahead of time ([`crate::linked`]); a library is loaded as it is.
+//! Paths are relative to the file. What the project builds goes to
+//! `target/` beside it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -117,7 +121,7 @@ pub struct Project {
     pub python: BTreeMap<String, String>,
     /// Lua rocks the file declares, by name, at a version or `*`.
     pub lua: BTreeMap<String, String>,
-    /// Each native plugin, by name, at its library's path.
+    /// Each native plugin, by name, at its crate's or its library's path.
     pub plugins: BTreeMap<String, PathBuf>,
 }
 
@@ -217,6 +221,15 @@ impl Project {
             command.arg("-cp").arg(source);
         }
         command.args(["-lib", "caribou"]);
+        // The declared plugins, which the library gives Haxe faces in place
+        // of any it would find beside the output.
+        let plugins = self.plugin_libraries()?;
+        if !plugins.is_empty() {
+            let list = std::env::join_paths(&plugins)?;
+            command
+                .arg("-D")
+                .arg(format!("caribou_plugins={}", list.to_string_lossy()));
+        }
         for (lib, version) in &self.haxelibs {
             match version.as_str() {
                 "*" | "" => command.args(["-lib", lib]),
@@ -272,11 +285,26 @@ impl Project {
         Ok(out)
     }
 
-    /// The declared native plugins, loaded.
-    pub fn load_plugins(&self) -> Result<Vec<caribou_plugin::Plugin>> {
+    /// The declared native plugins' libraries for this machine: a library
+    /// as it is, a crate built first.
+    pub fn plugin_libraries(&self) -> Result<Vec<PathBuf>> {
         self.plugins
             .values()
-            .map(|path| caribou_plugin::load(path).map_err(|e| anyhow!("{e}")))
+            .map(|path| {
+                if crate::linked::is_crate(path) {
+                    crate::linked::host_library(path, &self.target_dir())
+                } else {
+                    Ok(path.clone())
+                }
+            })
+            .collect()
+    }
+
+    /// The declared native plugins, loaded.
+    pub fn load_plugins(&self) -> Result<Vec<caribou_plugin::Plugin>> {
+        self.plugin_libraries()?
+            .iter()
+            .map(|library| caribou_plugin::load(library).map_err(|e| anyhow!("{e}")))
             .collect()
     }
 

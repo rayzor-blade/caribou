@@ -6,7 +6,7 @@ publish = false
 description = "A plugin for the interop tests: a few functions on the shared ABI"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 # A plugin depends on the ABI crate and nothing else of caribou.

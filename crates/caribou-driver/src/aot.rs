@@ -16,20 +16,52 @@ use ash_core::llvm::aot_link::is_wasm_triple;
 use ash_core::native_lib::{HostLink, Word};
 use caribou_abi::TypeTag;
 
+use crate::linked;
+
 /// Build `program` for `triple` into `out`, by default the program's name
-/// with the target's extension beside it, its calls into the plugins at
-/// `plugins` linked directly. Returns what was written.
+/// with the target's extension beside it. Its calls into `plugins` link
+/// directly: a plugin given as its crate is linked into the program, built
+/// under `target_dir` (by default `target/` beside the output). Returns
+/// what was written.
 pub fn build(
     program: &Path,
     triple: &str,
     out: Option<&Path>,
     plugins: &[PathBuf],
+    target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
     if !is_wasm_triple(triple) {
         bail!("`{triple}`: caribou builds wasm programs ahead of time so far");
     }
-    let runtime = wasm_runtime(triple)?;
     let exe = out.map_or_else(|| program.with_extension("wasm"), Path::to_path_buf);
+    let target_dir = target_dir.map_or_else(
+        || exe.parent().unwrap_or(Path::new(".")).join("target"),
+        Path::to_path_buf,
+    );
+    let (crates, libraries): (Vec<PathBuf>, Vec<PathBuf>) =
+        plugins.iter().cloned().partition(|p| linked::is_crate(p));
+    // A library joins a wasm program only as a side module.
+    let unlinkable = links(program, &libraries)?;
+    if let Some((_, name)) = unlinkable.keys().next() {
+        bail!(
+            "`{name}` is a plugin library's, which joins a wasm program only as a side module \
+             (git-bug ce0bba4); name the plugin's crate in the project to link it in"
+        );
+    }
+    let described = crates
+        .iter()
+        .map(|c| linked::host_library(c, &target_dir))
+        .collect::<Result<Vec<_>>>()?;
+    let runtime = if crates.is_empty() {
+        wasm_runtime(triple)?
+    } else {
+        let mut named = Vec::with_capacity(crates.len());
+        for (dir, library) in crates.iter().zip(&described) {
+            let plugin = caribou_plugin::load(library).map_err(|e| anyhow!("{e}"))?;
+            named.push((dir.clone(), plugin.name().to_owned()));
+        }
+        linked::runtime(&named, triple, &target_dir)?
+    };
     // Scratch, named after the module beside it and removed once linked.
     let mut name = exe.file_name().unwrap_or_default().to_os_string();
     name.push(".o");
@@ -44,7 +76,7 @@ pub fn build(
         allow_refused: false,
         abi_version: 1,
         quiet: false,
-        links: links(program, plugins)?,
+        links: links(program, &described)?,
     })?;
     Ok(exe)
 }

@@ -871,7 +871,6 @@ dependencies = [
  "ash_std",
  "caribou",
  "caribou-ash",
- "caribou-plugin",
  "caribou-wren",
  "wren_lift",
 ]
