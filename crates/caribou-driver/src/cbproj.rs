@@ -217,7 +217,14 @@ impl Project {
         let out = self.target_dir().join(format!("{}.hl", self.name));
         std::fs::create_dir_all(self.target_dir())?;
         let mut command = Command::new("haxe");
-        for source in &self.sources {
+        // Relative to the project, where the compiler runs: the library
+        // takes an absolute class path for the standard library's.
+        let sources: Vec<&Path> = self
+            .sources
+            .iter()
+            .map(|s| s.strip_prefix(&self.dir).unwrap_or(s))
+            .collect();
+        for source in &sources {
             command.arg("-cp").arg(source);
         }
         command.args(["-lib", "caribou"]);
@@ -238,8 +245,7 @@ impl Project {
         }
         // Every module in the sources, not only what the entry reaches:
         // another language may import any of them.
-        let sources: Vec<String> = self
-            .sources
+        let sources: Vec<String> = sources
             .iter()
             .map(|s| format!("'{}'", s.display()))
             .collect();
