@@ -9,7 +9,8 @@
 //! module's constructors at instantiation, and a native loader runs them
 //! before `main`. Each seam refuses an install once its heap exists.
 //! It also sets what the program's `main` runs before the entry: the
-//! WrenLift modules linked beside it, in a VM of their own ([`wren`]).
+//! world that gives each language its id, and the WrenLift modules linked
+//! beside it, in a VM of their own ([`wren`]).
 
 use std::process;
 
@@ -35,7 +36,25 @@ extern "C" fn start() {
         eprintln!("caribou: installing the core into WrenLift: {e}");
         process::abort();
     }
-    caribou_ash::on_program_start(wren::start);
+    caribou_ash::on_program_start(program_start);
+}
+
+/// Once the heap is up and before the program's entry: the world that
+/// gives each language its id, as a hosted run's does, then the linked
+/// Wren modules. The world lives as long as the program.
+fn program_start() -> i32 {
+    let world = caribou::world::World::new(caribou::world::Config::default());
+    for adapter in [
+        Box::new(caribou_ash::Runtime::new()) as Box<dyn caribou::world::Adapter>,
+        Box::new(caribou_wren::Runtime::new()),
+    ] {
+        if let Err(e) = world.register(adapter) {
+            eprintln!("caribou: registering a language: {e:?}");
+            return 70;
+        }
+    }
+    std::mem::forget(world);
+    wren::start()
 }
 
 #[cfg(test)]

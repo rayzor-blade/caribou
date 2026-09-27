@@ -43,6 +43,42 @@ pub unsafe fn string(t: *mut hl_type, text: &str) -> *mut vdynamic {
     unsafe { proto::alloc_string_typed(t, text) }
 }
 
+/// The core object a Haxe face stands for, for another language's cast;
+/// `None` for null or a face whose constructor has not bound it.
+///
+/// # Safety
+/// `face` is null or a live Haxe object.
+pub unsafe fn behind(face: *mut vdynamic) -> Option<Value> {
+    unsafe { crate::import::behind(face) }.ok()
+}
+
+/// Bind `face`, which the program just constructed, to the core object
+/// `v`: what a linked constructor's `init` does.
+///
+/// # Safety
+/// `face` is a live instance of a face class.
+pub unsafe fn bind(face: *mut vdynamic, v: Value) {
+    unsafe { crate::import::bind_face(face, crate::wrenref::wrap_foreign(v)) }
+}
+
+/// The face of type `t` for the core object `v`: the one already in front
+/// of it, else a new one bound to it. Null for null.
+///
+/// # Safety
+/// `t` is the program's type of a face class.
+pub unsafe fn face(v: Value, t: *mut hl_type) -> *mut vdynamic {
+    if v.is_null() {
+        return core::ptr::null_mut();
+    }
+    let cell = crate::wrenref::wrap_foreign(v);
+    if let Some(front) = caribou::cell::front(cell) {
+        return front.cast();
+    }
+    let face = unsafe { ash_std::obj::hlp_alloc_obj(t.cast()) } as *mut vdynamic;
+    unsafe { crate::import::bind_face(face, cell) };
+    face
+}
+
 /// Raise `message` into the Haxe code that made a linked call, as the
 /// error of the callee's language `origin`.
 pub fn raise(message: &str, origin: caribou_abi::LangId) {

@@ -89,6 +89,26 @@ const TALLY: &str = r#"
 System.print("wren module ran")
 
 class Tally {
+  #export = "new(t: Num)"
+  construct new(t) { _t = t }
+
+  #export = "bump(x: Num) -> Num"
+  bump(x) {
+    _t = _t + x
+    return _t
+  }
+
+  #export = "total -> Num"
+  total { _t }
+  #export = "total=(v: Num)"
+  total=(v) { _t = v }
+
+  #export = "make() -> Tally"
+  static make() { Tally.new(7) }
+
+  #export = "same(t: Tally) -> Tally"
+  static same(t) { t }
+
   #export = "add(x: Num) -> Num"
   static add(x) { x + 1 }
 
@@ -117,6 +137,12 @@ class Main {
     } catch (e:Dynamic) {
       Sys.println("caught: " + e);
     }
+    var t = new Tally(10);
+    Sys.println(t.bump(5));
+    t.total = 2;
+    Sys.println(t.total);
+    Sys.println(Tally.make().total);
+    Sys.println(Tally.same(t) == t);
   }
 }
 "#;
@@ -152,7 +178,17 @@ fn a_wren_module_links_into_a_wasm_program() {
     let lines: Vec<&str> = ran.lines().collect();
     assert_eq!(
         lines,
-        ["wren module ran", "42", "hello haxe", "true", "caught: wren says no"],
+        [
+            "wren module ran",
+            "42",
+            "hello haxe",
+            "true",
+            "caught: wren says no",
+            "15",
+            "2",
+            "7",
+            "true",
+        ],
         "{ran}"
     );
 }

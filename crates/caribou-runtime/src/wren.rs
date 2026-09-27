@@ -99,3 +99,37 @@ pub extern "C" fn caribou_wren_raise_pending() {
     let message = vm.last_error.take().unwrap_or_else(|| "runtime error".to_owned());
     caribou_ash::link::raise(&message, caribou_wren::lang());
 }
+
+/// A Haxe face as the Wren object it stands for: a receiver, or an object
+/// passed.
+///
+/// # Safety
+/// `face` is null or a live Haxe object.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_from_haxe_face(face: *mut vdynamic, _t: *mut hl_type) -> u64 {
+    let object = unsafe { caribou_ash::link::behind(face) };
+    match (vm(), object) {
+        (Some(vm), Some(object)) => caribou_wren::to_wren(vm, object).unwrap_or(Value::null()).to_bits(),
+        _ => Value::null().to_bits(),
+    }
+}
+
+/// Bind the face Haxe just constructed to the Wren object the linked
+/// constructor made.
+///
+/// # Safety
+/// `face` is a live instance of a face class.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_bind_face(face: *mut vdynamic, v: u64, _t: *mut hl_type) {
+    unsafe { caribou_ash::link::bind(face, caribou_wren::from_wren(Value::from_bits(v))) }
+}
+
+/// A Wren object as its Haxe face, of the program's type `t`: the face
+/// already in front of it, else a new one.
+///
+/// # Safety
+/// `t` is the program's type of a face class.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_to_haxe_face(v: u64, t: *mut hl_type) -> *mut vdynamic {
+    unsafe { caribou_ash::link::face(caribou_wren::from_wren(Value::from_bits(v)), t) }
+}

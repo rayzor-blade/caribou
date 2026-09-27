@@ -153,14 +153,14 @@ fn links(
     Ok(out)
 }
 
-/// A static of a linked Wren module as Ash links it, or `None` while one
+/// A member of a linked Wren module as Ash links it, or `None` while one
 /// of its types has no cast: every Wren value is a NaN-boxed word, cast
-/// directly from and to Haxe's form, and whatever the member raises is
-/// thrown after.
+/// directly from and to Haxe's form, an instance member's receiver and a
+/// Wren object being the Haxe face that stands for it. A constructor binds
+/// the face Haxe allocated to the object it makes. Whatever the member
+/// raises is thrown after.
 fn wren_host_link(wren: &wren_link::Library, m: &caribou_ash::link::Member) -> Option<HostLink> {
-    if m.kind != caribou::link::Kind::Static {
-        return None;
-    }
+    use caribou::link::Kind;
     let (module, desc) = wren.module(&m.namespace, &m.module)?;
     let member = desc
         .classes
@@ -168,37 +168,43 @@ fn wren_host_link(wren: &wren_link::Library, m: &caribou_ash::link::Member) -> O
         .find(|c| c.name == m.class)?
         .members
         .iter()
-        .find(|d| {
-            caribou::link::Kind::from(d.kind) == m.kind
-                && d.name == m.name
-                && d.params.len() == m.arity
-        })?;
-    let arg_casts = member
-        .params
-        .iter()
-        .map(|p| wren_casts(&p.ty).map(|(from_haxe, _)| Some(from_haxe.to_owned())))
-        .collect::<Option<Vec<_>>>()?;
-    let ret_cast = match &member.ret {
-        TypeRef::Void | TypeRef::Dyn => None,
-        ty => Some(wren_casts(ty)?.1.to_owned()),
+        .find(|d| Kind::from(d.kind) == m.kind && d.name == m.name && d.params.len() == m.arity)?;
+    let receiver = matches!(m.kind, Kind::Method | Kind::Getter | Kind::Setter);
+    let mut arg_casts = Vec::with_capacity(m.arity + usize::from(receiver));
+    if receiver {
+        arg_casts.push(Some(FACE.0.to_owned()));
+    }
+    for p in &member.params {
+        arg_casts.push(Some(wren_casts(&p.ty, desc)?.0.to_owned()));
+    }
+    let (ret_cast, init) = match (&member.ret, m.kind) {
+        (_, Kind::Constructor) => (None, Some("caribou_wren_bind_face".to_owned())),
+        (TypeRef::Void | TypeRef::Dyn, _) => (None, None),
+        (ty, _) => (Some(wren_casts(ty, desc)?.1.to_owned()), None),
     };
     Some(HostLink {
         symbol: caribou::link::symbol("wren", module, &m.class, m.kind, &m.name, m.arity),
-        params: vec![Word::I64; m.arity],
+        params: vec![Word::I64; arg_casts.len()],
         ret: Some(Word::I64),
         arg_casts,
         ret_cast,
         after: Some("caribou_wren_raise_pending".to_owned()),
+        init,
     })
 }
 
-/// The casts from Haxe's form of a declared Wren type and back to it.
-fn wren_casts(ty: &TypeRef) -> Option<(&'static str, &'static str)> {
+/// The casts between a Wren object and the Haxe face that stands for it.
+const FACE: (&str, &str) = ("caribou_wren_from_haxe_face", "caribou_wren_to_haxe_face");
+
+/// The casts from Haxe's form of a declared Wren type and back to it. An
+/// object of one of the module's own classes is its face.
+fn wren_casts(ty: &TypeRef, desc: &caribou::describe::ModuleDesc) -> Option<(&'static str, &'static str)> {
     Some(match ty {
         TypeRef::Float => ("caribou_wren_from_float", "caribou_wren_to_float"),
         TypeRef::Int => ("caribou_wren_from_int", "caribou_wren_to_int"),
         TypeRef::Bool => ("caribou_wren_from_bool", "caribou_wren_to_bool"),
         TypeRef::Str => ("caribou_wren_from_haxe_string", "caribou_wren_to_haxe_string"),
+        TypeRef::Object(name) if desc.classes.iter().any(|c| &c.type_name == name || &c.name == name) => FACE,
         _ => return None,
     })
 }
@@ -227,6 +233,7 @@ fn host_link(link: &caribou_plugin::Link) -> Option<HostLink> {
         arg_casts,
         ret_cast,
         after: Some("caribou_haxe_raise_pending".to_owned()),
+        init: None,
     })
 }
 

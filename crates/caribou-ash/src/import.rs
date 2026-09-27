@@ -606,7 +606,7 @@ pub(crate) unsafe fn behind_face(d: *mut vdynamic) -> Option<Value> {
 
 /// The foreign object a receiver stands for: a cell, or a constructed
 /// face holding one.
-unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
+pub(crate) unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
     if face.is_null() {
         return Err("the receiver is null".to_owned());
     }
@@ -623,7 +623,7 @@ unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
 }
 
 /// Put `face`, an instance Haxe constructed, in front of the cell `r`.
-unsafe fn bind_face(face: *mut vdynamic, r: Value) {
+pub(crate) unsafe fn bind_face(face: *mut vdynamic, r: Value) {
     unsafe { *ref_field(face) = wrenref::wrenref_as_abstract(r) };
     cell::set_front(r, face.cast());
 }
