@@ -626,7 +626,26 @@ fn stored_value(
 /// table. Backends implement the selected functions with integer handles;
 /// the generated ABI uses typed native objects, enums, Text and Buffer.
 pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<String, String> {
+    generate_parts(namespace, declaration, webidl).map(|(code, _)| code)
+}
+
+/// A backend function the generated members call: its argument and
+/// result types as the backend takes them, and what a caller gets back
+/// when it fails.
+struct BackendFn {
+    name: syn::Ident,
+    params: Vec<TokenStream>,
+    ret: TokenStream,
+    fallback: TokenStream,
+}
+
+fn generate_parts(
+    namespace: &str,
+    declaration: &str,
+    webidl: &str,
+) -> Result<(String, Vec<BackendFn>), String> {
     ident(namespace)?;
+    let mut backend_fns: Vec<BackendFn> = Vec::new();
     let file = syn::parse_file(declaration).map_err(error)?;
     let idl = tokens(webidl)?;
     let aliases = typedefs(&idl);
@@ -1230,6 +1249,7 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                     let mut params = Vec::new();
                     let mut types = Vec::new();
                     let mut args = Vec::new();
+                    let mut backend_types = Vec::new();
                     for (i, arg) in f.sig.inputs.iter().enumerate() {
                         let FnArg::Typed(arg) = arg else {
                             return Err("use an explicit this: &Class receiver".into());
@@ -1252,16 +1272,20 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                                 ));
                             }
                             if resources.contains(&target) {
+                                backend_types.push(quote!(i32));
                                 quote!(#param.handle)
                             } else {
+                                backend_types.push(quote!(#ty));
                                 quote!(#param)
                             }
                         } else if let Some(e) = generic(ty, "Enum") {
                             if !enums.contains(&type_name(&e).unwrap_or_default()) {
                                 return Err("unknown enum".into());
                             }
+                            backend_types.push(quote!(i32));
                             quote!(#param.get().native())
                         } else if scalar(ty) {
+                            backend_types.push(quote!(#ty));
                             quote!(#param)
                         } else {
                             return Err(format!("unsupported argument type in {class}.{name}"));
@@ -1308,6 +1332,23 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
                             (quote!(-> #ty), convert, fallback)
                         }
                     };
+                    if !backend_fns.iter().any(|b| b.name == native) {
+                        let ret = match &f.sig.output {
+                            ReturnType::Default => quote!(),
+                            ReturnType::Type(_, ty)
+                                if generic(ty, "Box").is_some() || generic(ty, "Enum").is_some() =>
+                            {
+                                quote!(-> i32)
+                            }
+                            ReturnType::Type(_, ty) => quote!(-> #ty),
+                        };
+                        backend_fns.push(BackendFn {
+                            name: native.clone(),
+                            params: backend_types.clone(),
+                            ret,
+                            fallback: fallback.clone(),
+                        });
+                    }
                     // A panic in the backend becomes a runtime error in the
                     // caller's language, and the fallback is returned.
                     let call = quote! {
@@ -1350,7 +1391,51 @@ pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<Stri
             _ => unreachable!(),
         }
     }
-    Ok(quote!(#output caribou_abi::plugin! { name: #namespace; #exports }).to_string())
+    Ok((
+        quote!(#output caribou_abi::plugin! { name: #namespace; #exports }).to_string(),
+        backend_fns,
+    ))
+}
+
+/// A backend for a target that has only some of the backend's functions:
+/// each function `implemented` (the source of a module, `crate::web`)
+/// defines is forwarded to it, and every other one raises that it is not
+/// available and returns what a failed call returns.
+pub fn web_backend(
+    namespace: &str,
+    declaration: &str,
+    webidl: &str,
+    implemented: &str,
+) -> Result<String, String> {
+    let (_, backend_fns) = generate_parts(namespace, declaration, webidl)?;
+    let file = syn::parse_file(implemented).map_err(error)?;
+    let defined: HashSet<String> = file
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Fn(f) if matches!(f.vis, syn::Visibility::Public(_)) => Some(f.sig.ident.to_string()),
+            _ => None,
+        })
+        .collect();
+    let mut out = TokenStream::new();
+    for b in &backend_fns {
+        let BackendFn { name, params, ret, fallback } = b;
+        let args: Vec<syn::Ident> = (0..params.len()).map(|i| quote::format_ident!("a{i}")).collect();
+        if defined.contains(&name.to_string()) {
+            out.extend(quote! {
+                pub unsafe fn #name(#(#args: #params),*) #ret { unsafe { crate::web::#name(#(#args),*) } }
+            });
+        } else {
+            let message = format!("{namespace}: `{name}` is not available on the web");
+            out.extend(quote! {
+                pub unsafe fn #name(#(_: #params),*) #ret {
+                    caribou_abi::host::raise(caribou_abi::ErrorKind::Runtime, #message);
+                    #fallback
+                }
+            });
+        }
+    }
+    Ok(out.to_string())
 }
 
 #[cfg(test)]

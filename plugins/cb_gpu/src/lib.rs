@@ -2,12 +2,23 @@
 #![allow(non_snake_case, clippy::too_many_arguments)]
 #![recursion_limit = "512"]
 
-#[cfg(not(feature = "native"))]
+#[cfg(not(any(feature = "native", feature = "web")))]
 compile_error!(
-    "caribou-gpu requires its wgpu backend; disable default features only for schema generation"
+    "caribou-gpu needs a backend: its wgpu one (native) or the browser's WebGPU (web)"
 );
 
+#[cfg(not(feature = "web"))]
 mod backend;
+#[cfg(feature = "web")]
+mod web;
+/// The web backend: what `web` defines, and a refusal for every other
+/// function.
+#[cfg(feature = "web")]
+#[allow(clippy::all)]
+mod backend {
+    use super::*;
+    include!(concat!(env!("OUT_DIR"), "/gpu_web_backend.rs"));
+}
 mod handles;
 mod types;
 /// The wire to a browser's WebGPU, generated from spec/webgpu.idl.

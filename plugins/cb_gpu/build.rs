@@ -13,6 +13,15 @@ fn main() {
     let wire = caribou_bindgen::wire::wire(&idl).expect("the WebGPU IDL generates its wire");
     std::fs::write(path.join("gpu_wire.rs"), wire.rust).unwrap();
     std::fs::write(path.join("gpu_agent.mjs"), wire.js).unwrap();
+    // With the web feature, the backend the members call: what src/web.rs
+    // defines, and a refusal for the rest.
+    println!("cargo:rerun-if-changed=src/web.rs");
+    if std::env::var_os("CARGO_FEATURE_WEB").is_some() {
+        let web = std::fs::read_to_string("src/web.rs").unwrap();
+        let backend = caribou_bindgen::web_backend("gpu", &api, &idl, &web)
+            .expect("the web backend generates");
+        std::fs::write(path.join("gpu_web_backend.rs"), backend).unwrap();
+    }
 }
 
 /// `enum NativeFeature`: every feature wgpu has, WebGPU's and its own, in
