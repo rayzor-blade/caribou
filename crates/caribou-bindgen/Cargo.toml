@@ -9,3 +9,5 @@ description = "Build-time generation of Caribou plugin bindings from typed decla
 syn = { version = "2", features = ["full", "extra-traits"] }
 quote = "1"
 proc-macro2 = "1"
+# The WebIDL parser the wire generator reads the whole IDL with.
+weedle2 = "5"
