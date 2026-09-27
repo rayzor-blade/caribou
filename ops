@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1790521977,"nonce":"uqypY7q/VouQ30R6ZWELTGu3M3Q=","message":"Landed: caribou 0049702 (the poll slot and guard), 50013ba (wren_lift 25856cc), 323e16b (ash 5db4e62, which carries 1ebf4b6).","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1790521977,"nonce":"U70g/PVb4NM0YR0JOEuPNM5d9iY=","status":2}]}
