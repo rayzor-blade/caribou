@@ -132,7 +132,12 @@ pub fn agent(name: &str, address: usize) -> bool {
 }
 
 /// Watch `word` on the calling thread's world; see [`Host::watch`].
-pub fn watch(
+///
+/// # Safety
+/// `word` is a 32-bit word that stays valid for as long as the world runs,
+/// and `handler` may be called with `ctx` on the world's main context at any
+/// turn from now on.
+pub unsafe fn watch(
     word: *const u32,
     handler: unsafe extern "C" fn(*mut c_void),
     ctx: *mut c_void,
