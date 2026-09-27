@@ -7,6 +7,7 @@
 //! does not infer native GPU semantics from WebIDL interfaces or generate a
 //! language-specific heap layout.
 pub mod idl;
+pub mod wire;
 
 use proc_macro2::TokenStream;
 use quote::quote;

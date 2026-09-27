@@ -32,7 +32,8 @@ pub enum Ty {
     /// A record keyed by strings.
     Record(Box<Ty>),
     Nullable(Box<Ty>),
-    Union(Vec<Ty>),
+    /// The typedef that names it, when one does, and the alternatives.
+    Union(Option<String>, Vec<Ty>),
     Promise(Box<Ty>),
     /// What the wire does not carry: `any`, `object`, callbacks, events.
     Opaque(String),
@@ -368,7 +369,7 @@ impl<'a> Resolver<'_, 'a> {
                         UnionMemberType::Union(inner) => self.ty(&Type::Union(inner.clone())),
                     })
                     .collect();
-                nullable(Ty::Union(alternatives), u.q_mark.is_some())
+                nullable(Ty::Union(None, alternatives), u.q_mark.is_some())
             }
         }
     }
@@ -421,10 +422,20 @@ impl<'a> Resolver<'_, 'a> {
 
     fn named(&self, name: &str) -> Ty {
         if let Some(ty) = self.typedefs.get(name) {
-            return self.ty(ty);
+            return match self.ty(ty) {
+                Ty::Union(None, alternatives) => Ty::Union(Some(name.to_owned()), alternatives),
+                Ty::Nullable(inner) => match *inner {
+                    Ty::Union(None, alternatives) => {
+                        Ty::Nullable(Box::new(Ty::Union(Some(name.to_owned()), alternatives)))
+                    }
+                    other => Ty::Nullable(Box::new(other)),
+                },
+                other => other,
+            };
         }
         match (name, self.kinds.get(name)) {
             ("AllowSharedBufferSource", _) => Ty::Bytes,
+            ("undefined", _) => Ty::Undefined,
             (_, Some(Kind::Enum)) => Ty::Enum(name.to_owned()),
             (_, Some(Kind::Dictionary)) => Ty::Dictionary(name.to_owned()),
             (_, Some(Kind::Interface)) => Ty::Interface(name.to_owned()),
