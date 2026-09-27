@@ -33,13 +33,6 @@ extern "C" fn start() {
     }
 }
 
-/// Where a plugin linked into the program registers, from its own
-/// constructor (`caribou_abi::plugin!` with the `linked` feature).
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_plugin_register(entry: caribou_plugin::Entry) {
-    caribou_plugin::register_linked(entry);
-}
-
 #[cfg(test)]
 mod tests {
     #[test]

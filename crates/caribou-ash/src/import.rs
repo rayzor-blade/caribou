@@ -41,7 +41,7 @@ use ash_std::error::hlp_throw;
 use ash_std::obj::hlp_get_obj_rt;
 use caribou::bridge;
 use caribou::cell;
-use caribou::error::Int64;
+use caribou::error::{Int64, Str};
 use caribou::hash::{AddressMap, BuildAddressHasher};
 use caribou::heap::TypeDesc;
 use caribou::protocol::{CallSite, Callable, Symbol};
@@ -856,6 +856,15 @@ pub(crate) unsafe fn value_to_word(
         // A function of the declared type, when the value is one.
         hl::HFUN if !ty.is_null() && bridge::arity(v).is_some() => {
             Some(crate::callback::function_for_typed(v, ty) as i64)
+        }
+        // A declared `String` takes a string or null, not whatever else a
+        // dynamic would.
+        hl::HOBJ
+            if unsafe { proto::obj_name_is(ty, "String") }
+                && !v.is_null()
+                && unsafe { Str::text(v) }.is_none() =>
+        {
+            None
         }
         _ => return unsafe { proto::value_to_dyn(v, kind) }.map(|p| p as i64),
     };

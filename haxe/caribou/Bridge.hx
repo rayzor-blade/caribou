@@ -171,11 +171,16 @@ class Bridge {
 		}
 	}
 
-	/** The plugin libraries beside the program: `plugins/` under the
-		directory the compiler writes the program to. */
+	/** The plugin libraries: those a project declares, which caribou
+		passes as `caribou_plugins`, else those beside the program, in
+		`plugins/` under the directory the compiler writes it to. */
 	static function pluginLibraries():Array<String> {
+		var declared = Context.definedValue("caribou_plugins");
+		if (declared != null && declared != "") {
+			return declared.split(Sys.systemName() == "Windows" ? ";" : ":");
+		}
 		var output = haxe.macro.Compiler.getOutput();
-		
+
 		if (output == null || output == "") {
 			return [];
 		}
@@ -502,13 +507,13 @@ class Bridge {
 			var arity = m.params.length;
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
-			// A scalar or a function comes back from the native in a
-			// register, and nothing comes back from a `Null` result; anything
+			// A scalar, a string or a function comes back from the native as
+			// itself, and nothing comes back from a `Null` result; anything
 			// else as a boxed dynamic the wrapper casts.
 			var nativeRet = switch (ret) {
 				case TFunction(_, _): ret;
 				default: switch (haxe.macro.ComplexTypeTools.toString(ret)) {
-					case "Int", "haxe.Int64", "Float", "Bool", "Void": ret;
+					case "Int", "haxe.Int64", "Float", "Bool", "Void", "String": ret;
 					default: macro :Dynamic;
 				}
 			}
