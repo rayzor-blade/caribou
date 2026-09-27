@@ -77,18 +77,21 @@ class Tally {
 
   // Baselines.
 
+  #export = "wrenStatic(n: Num) -> Num"
   static wrenStatic(n) {
     var s = 0
     for (i in 0...n) s = Tally.add(s)
     return s
   }
 
+  #export = "wrenMethod(n: Num) -> Num"
   static wrenMethod(n) {
     var t = Tally.new(0)
     for (i in 0...n) t.bump(1)
     return t.total
   }
 
+  #export = "wrenGetter(n: Num) -> Num"
   static wrenGetter(n) {
     var t = Tally.new(3)
     var s = 0
@@ -96,12 +99,14 @@ class Tally {
     return s
   }
 
+  #export = "wrenSetter(n: Num) -> Num"
   static wrenSetter(n) {
     var t = Tally.new(0)
     for (i in 0...n) t.total = i
     return t.total
   }
 
+  #export = "wrenClosure(n: Num) -> Num"
   static wrenClosure(n) {
     var f = Tally.adder()
     var s = 0
@@ -109,6 +114,7 @@ class Tally {
     return s
   }
 
+  #export = "wrenNew(n: Num) -> Num"
   static wrenNew(n) {
     var t = null
     for (i in 0...n) t = Tally.new(i)
@@ -117,18 +123,21 @@ class Tally {
 
   // Into Haxe.
 
+  #export = "haxeStatic(n: Num) -> Num"
   static haxeStatic(n) {
     var s = 0
     for (i in 0...n) s = Bench.add(s)
     return s
   }
 
+  #export = "haxeMethod(n: Num) -> Num"
   static haxeMethod(n) {
     var b = Bench.new()
     for (i in 0...n) b.bump(1)
     return b.v
   }
 
+  #export = "haxeGetter(n: Num) -> Num"
   static haxeGetter(n) {
     var b = Bench.new()
     b.v = 3
@@ -137,12 +146,14 @@ class Tally {
     return s
   }
 
+  #export = "haxeSetter(n: Num) -> Num"
   static haxeSetter(n) {
     var b = Bench.new()
     for (i in 0...n) b.v = i
     return b.v
   }
 
+  #export = "haxeClosure(n: Num) -> Num"
   static haxeClosure(n) {
     var f = Bench.adder()
     var s = 0
@@ -150,6 +161,7 @@ class Tally {
     return s
   }
 
+  #export = "haxeNew(n: Num) -> Num"
   static haxeNew(n) {
     var b = null
     for (i in 0...n) b = Bench.new()

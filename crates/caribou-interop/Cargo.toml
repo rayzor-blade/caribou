@@ -8,8 +8,9 @@ description = "Cross-language proofs: both adapters in one process, values cross
 # Tests only. Nightly, like caribou-ash: ash_std needs it.
 
 [features]
-# WrenLift's LLVM top tier; see caribou-wren.
-llvm = ["caribou-wren/llvm"]
+# WrenLift's LLVM top tier (see caribou-wren), and programs built ahead of
+# time, which the wasm benchmark needs.
+llvm = ["caribou-wren/llvm", "caribou-driver/llvm"]
 
 [dependencies]
 libc = { workspace = true }
@@ -48,3 +49,9 @@ harness = false
 [[bench]]
 name = "transfer"
 harness = false
+
+# Needs the `llvm` feature, which builds ahead of time.
+[[bench]]
+name = "interop_wasm"
+harness = false
+required-features = ["llvm"]
