@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use std::collections::HashMap;
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use ash_core::llvm::aot_build::{AotRequest, emit_aot};
 use ash_core::llvm::aot_link::is_wasm_triple;
 use ash_core::native_lib::{HostLink, Word};
@@ -73,8 +73,8 @@ pub fn build_with_languages(
         .iter()
         .map(|c| linked::host_library(c, &target_dir))
         .collect::<Result<Vec<_>>>()?;
-    let runtime = if crates.is_empty() {
-        wasm_runtime(triple, &target_dir)?
+    let (runtime, mut agents) = if crates.is_empty() {
+        (wasm_runtime(triple, &target_dir)?, Vec::new())
     } else {
         let mut named = Vec::with_capacity(crates.len());
         for (dir, library) in crates.iter().zip(&described) {
@@ -94,11 +94,29 @@ pub fn build_with_languages(
             .map_err(|e| anyhow!("{e}"))?
             .into_iter()
             .map(|l| l.symbol)
-            .chain([caribou_abi::PLUGIN_ENTRY_SYMBOL, caribou_abi::ABI_VERSION_SYMBOL].map(String::from))
+            .chain(
+                [
+                    caribou_abi::PLUGIN_ENTRY_SYMBOL,
+                    caribou_abi::ABI_VERSION_SYMBOL,
+                ]
+                .map(String::from),
+            )
             .collect();
         let module = exe.with_file_name(format!("{name}.wasm"));
-        linked::side_module(dir, triple, &exports, &target_dir, &module)?;
+        agents.extend(linked::side_module(
+            dir,
+            &name,
+            triple,
+            &exports,
+            &target_dir,
+            &module,
+        )?);
         described.push((library, Some(name)));
+    }
+    // What a page starts beside the program when a plugin asks for its agent.
+    for agent in &agents {
+        let beside = exe.with_file_name(agent.file_name().unwrap_or_default());
+        std::fs::copy(agent, &beside).with_context(|| format!("writing {}", beside.display()))?;
     }
     let languages = aot_languages::Artifacts::build(
         languages,
@@ -142,7 +160,7 @@ fn wasm_runtime(triple: &str, target_dir: &Path) -> Result<PathBuf> {
         return Ok(found);
     }
     if triple != "wasm32-wasip1" {
-        return linked::runtime(&[], triple, target_dir);
+        return linked::runtime(&[], triple, target_dir).map(|(object, _)| object);
     }
     Err(anyhow!(
         "no {NAME} for {triple}: this caribou was built without a WASI sysroot. \
@@ -253,11 +271,17 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
         // Bytes shared both ways, as a core buffer over Haxe's own.
         TypeTag::BUFFER | TypeTag::BUFFER_MUT => (
             Word::Ptr,
-            Some(("caribou_haxe_bytes_to_buffer", "caribou_haxe_buffer_to_bytes")),
+            Some((
+                "caribou_haxe_bytes_to_buffer",
+                "caribou_haxe_buffer_to_bytes",
+            )),
         ),
         TypeTag::ENUM => (
             Word::Ptr,
-            Some(("caribou_plugin_enum_from_haxe", "caribou_plugin_enum_to_haxe")),
+            Some((
+                "caribou_plugin_enum_from_haxe",
+                "caribou_plugin_enum_to_haxe",
+            )),
         ),
         // Any value, as the core's.
         TypeTag::DYN => (
@@ -267,7 +291,10 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
         // An instance: its payload to the plugin, its face to Haxe.
         TypeTag::OBJ => (
             Word::Ptr,
-            Some(("caribou_plugin_from_haxe_face", "caribou_plugin_to_haxe_face")),
+            Some((
+                "caribou_plugin_from_haxe_face",
+                "caribou_plugin_to_haxe_face",
+            )),
         ),
         _ => return None,
     })

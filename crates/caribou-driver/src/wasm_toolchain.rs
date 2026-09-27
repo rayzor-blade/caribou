@@ -152,7 +152,10 @@ pub fn side_module(
         .status()
         .map_err(|e| format!("running {}: {e}", lld.display()))?;
     if !status.success() {
-        return Err(format!("linking the side module {}: {status}", out.display()));
+        return Err(format!(
+            "linking the side module {}: {status}",
+            out.display()
+        ));
     }
     Ok(())
 }

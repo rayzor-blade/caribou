@@ -102,16 +102,38 @@ pub fn host_library(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
 /// that way, with `caribou_abi`'s `side_module` feature, so it allocates
 /// with the program's `malloc` and takes the host table from the program.
 /// It exports `exports`, its members' link symbols, which the program
-/// finds in it when it starts. Built under `target_dir`.
-pub fn side_module(dir: &Path, triple: &str, exports: &[String], target_dir: &Path, out: &Path) -> Result<()> {
+/// finds in it when it starts. Built under `target_dir`. Returns the agent
+/// module the plugin ships, if it has one ([`agents`]).
+pub fn side_module(
+    dir: &Path,
+    name: &str,
+    triple: &str,
+    exports: &[String],
+    target_dir: &Path,
+    out: &Path,
+) -> Result<Vec<PathBuf>> {
     let root = source_root()?;
     let (dir, target_dir) = (std::path::absolute(dir)?, std::path::absolute(target_dir)?);
     let (_, lib) = names(&dir)?;
     let build_dir = target_dir.join("side-modules");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = std::process::Command::new(cargo)
-        .args(["rustc", "--release", "--lib", "--crate-type", "staticlib", "--target", triple])
-        .args(["-Z", "build-std=std,panic_abort", "--features", "caribou_abi/side_module"])
+    let mut build = std::process::Command::new(cargo);
+    build
+        .args([
+            "rustc",
+            "--release",
+            "--lib",
+            "--crate-type",
+            "staticlib",
+            "--target",
+            triple,
+        ])
+        .args([
+            "-Z",
+            "build-std=std,panic_abort",
+            "--features",
+            "caribou_abi/side_module",
+        ])
         .arg("--manifest-path")
         .arg(dir.join("Cargo.toml"))
         .arg("--target-dir")
@@ -120,25 +142,72 @@ pub fn side_module(dir: &Path, triple: &str, exports: &[String], target_dir: &Pa
         // In place of the config's flags for the target: a side module is
         // position-independent, and its globals are the program's to move.
         .env(
-            format!("CARGO_TARGET_{}_RUSTFLAGS", triple.replace('-', "_").to_uppercase()),
+            format!(
+                "CARGO_TARGET_{}_RUSTFLAGS",
+                triple.replace('-', "_").to_uppercase()
+            ),
             "-Crelocation-model=pic -Ctarget-feature=+mutable-globals",
         )
         .env_remove("RUSTFLAGS")
-        .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        .status()
-        .context("running cargo")?;
-    if !status.success() {
-        bail!("building the plugin crate {} as a side module: {status}", dir.display());
-    }
-    let archive = build_dir.join(triple).join("release").join(format!("lib{lib}.a"));
+        .env_remove("CARGO_ENCODED_RUSTFLAGS");
+    let out_dirs = build_reporting(&mut build).with_context(|| {
+        format!(
+            "building the plugin crate {} as a side module",
+            dir.display()
+        )
+    })?;
+    let archive = build_dir
+        .join(triple)
+        .join("release")
+        .join(format!("lib{lib}.a"));
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-    wasm_toolchain::side_module(&rustc, &root, &archive, exports, out).map_err(|e| anyhow!(e))
+    wasm_toolchain::side_module(&rustc, &root, &archive, exports, out).map_err(|e| anyhow!(e))?;
+    Ok(agents(&out_dirs, &[name]))
+}
+
+/// Run a cargo build, its messages read for the `OUT_DIR` of every build
+/// script in it, ran or fresh.
+fn build_reporting(build: &mut std::process::Command) -> Result<Vec<PathBuf>> {
+    let out = build
+        .arg("--message-format=json-render-diagnostics")
+        .stdout(std::process::Stdio::piped())
+        .output()
+        .context("running cargo")?;
+    if !out.status.success() {
+        bail!("{}", out.status);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|m| m["reason"] == "build-script-executed")
+        .filter_map(|m| m["out_dir"].as_str().map(PathBuf::from))
+        .collect())
+}
+
+/// The agent modules of the plugins `named`: a plugin whose page-side half
+/// runs as an agent beside the program writes it to its build script's
+/// `OUT_DIR` as `<name>_agent.mjs`, which a page starts when the plugin
+/// asks the host for its agent. The program ships it beside the module.
+fn agents(out_dirs: &[PathBuf], named: &[&str]) -> Vec<PathBuf> {
+    named
+        .iter()
+        .flat_map(|name| {
+            out_dirs
+                .iter()
+                .map(move |dir| dir.join(format!("{name}_agent.mjs")))
+        })
+        .filter(|module| module.is_file())
+        .collect()
 }
 
 /// Build the runtime object for `triple` with `plugins` linked in, each
 /// its crate and the name it registers under, under `target_dir`. Returns
-/// the object.
-pub fn runtime(plugins: &[(PathBuf, String)], triple: &str, target_dir: &Path) -> Result<PathBuf> {
+/// the object, and the agent modules the plugins ship ([`agents`]).
+pub fn runtime(
+    plugins: &[(PathBuf, String)],
+    triple: &str,
+    target_dir: &Path,
+) -> Result<(PathBuf, Vec<PathBuf>)> {
     let root = source_root()?;
     let target_dir = std::path::absolute(target_dir)?;
     let sysroot = wasm_toolchain::sysroot(triple).ok_or_else(|| {
@@ -233,20 +302,17 @@ crate-type = ["staticlib"]
 
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let build_dir = target_dir.join("linked-build");
-    let status = wasm_toolchain::cargo_build(&cargo, &root, triple, &sysroot, &build_dir)
-        .arg("--manifest-path")
-        .arg(dir.join("Cargo.toml"))
-        .status()
-        .context("running cargo")?;
-    if !status.success() {
-        bail!("building the program's runtime with its plugins for {triple}: {status}");
-    }
+    let mut build = wasm_toolchain::cargo_build(&cargo, &root, triple, &sysroot, &build_dir);
+    build.arg("--manifest-path").arg(dir.join("Cargo.toml"));
+    let out_dirs = build_reporting(&mut build)
+        .with_context(|| format!("building the program's runtime with its plugins for {triple}"))?;
     let archive = build_dir.join(triple).join("release/libcaribou_program.a");
     let object = target_dir.join(triple).join("caribou_runtime.o");
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     wasm_toolchain::prelink(&rustc, &root, &archive, &sysroot, triple, &object)
         .map_err(|e| anyhow!(e))?;
-    Ok(object)
+    let named: Vec<&str> = plugins.iter().map(|(_, name)| name.as_str()).collect();
+    Ok((object, agents(&out_dirs, &named)))
 }
 
 /// The source workspace's `[patch]` and `[profile]` tables, with each

@@ -64,13 +64,24 @@ fn caribou_with_env(dir: &Path, haxelib: &Path, args: &[&str], env: &[(&str, &st
 
 #[test]
 fn a_plugin_crate_links_into_a_wasm_program() {
-    plugin_program("caribou-linked", "");
+    let dir = plugin_program("caribou-linked", "");
+    assert!(
+        dir.join("target/math_agent.mjs").is_file(),
+        "the plugin's agent beside the program"
+    );
 }
 
 #[test]
 fn a_plugin_crate_loads_beside_a_wasm_program_as_a_side_module() {
     let dir = plugin_program("caribou-side-module", ", link = \"side\"");
-    assert!(dir.join("target/math.wasm").is_file(), "the side module beside the program");
+    assert!(
+        dir.join("target/math.wasm").is_file(),
+        "the side module beside the program"
+    );
+    assert!(
+        dir.join("target/math_agent.mjs").is_file(),
+        "the plugin's agent beside the program"
+    );
 }
 
 /// Build and run the math plugin's program with the plugin taken by `link`,
@@ -282,7 +293,10 @@ fn a_wren_module_links_into_a_wasm_program() {
 
 #[test]
 fn plugin_data_crosses_a_wasm_program_linked_and_as_a_side_module() {
-    for (name, link) in [("caribou-data", ""), ("caribou-data-side", ", link = \"side\"")] {
+    for (name, link) in [
+        ("caribou-data", ""),
+        ("caribou-data-side", ", link = \"side\""),
+    ] {
         let ran = data_program(name, link);
         let lines: Vec<&str> = ran.lines().filter(|l| !l.starts_with("[ash]")).collect();
         assert_eq!(lines, ["data ok"], "{name}: {ran}");
