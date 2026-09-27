@@ -90,9 +90,9 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                 })?;
             }
         }
-        if (skip || pattern.is_some()) && source.is_none() {
-            return Err(syn::Error::new(v.span(), "pattern and skip require from"));
-        }
+        // `pattern`, `skip` and a field's `value` describe the conversion
+        // from `from`'s type; without one they have nothing to do, which lets
+        // an enum drop its source on a target that lacks the type.
         if skip && pattern.is_some() {
             return Err(syn::Error::new(
                 v.span(),
@@ -122,7 +122,7 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
                     })?;
                 }
             }
-            if value.is_some() && (source.is_none() || skip) {
+            if value.is_some() && skip && source.is_some() {
                 return Err(syn::Error::new(
                     field.span(),
                     "value requires a mapped source variant",
@@ -274,29 +274,31 @@ mod tests {
                 ),
                 "at least one variant",
             ),
-            (
-                quote!(
-                    #[caribou(name = "test.Bad")]
-                    enum Bad {
-                        #[caribou(skip)]
-                        A,
-                    }
-                ),
-                "require from",
-            ),
-            (
-                quote!(
-                    #[caribou(name = "test.Bad")]
-                    enum Bad {
-                        A(#[caribou(value = 1)] i32),
-                    }
-                ),
-                "requires a mapped source",
-            ),
         ] {
             let error = expand(syn::parse2(input).unwrap()).unwrap_err();
             assert!(error.to_string().contains(message), "{error}");
         }
+    }
+
+    #[test]
+    fn conversion_attributes_without_a_source_are_ignored() {
+        // A target without the source type drops `from` and keeps the rest.
+        let expanded = expand(
+            syn::parse2(quote!(
+                #[caribou(name = "test.Kept")]
+                enum Kept {
+                    #[caribou(skip)]
+                    A,
+                    #[caribou(pattern = native::Kept::B(x))]
+                    B(#[caribou(value = x.0)] i32),
+                }
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+        .to_string();
+        assert!(expanded.contains("impl :: caribou_abi :: PluginEnum for Kept"));
+        assert!(!expanded.contains("From"), "{expanded}");
     }
 }
 
