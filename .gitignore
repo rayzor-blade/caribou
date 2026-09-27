@@ -10,3 +10,5 @@ dist/
 bench-out/
 site/install.sh
 site/install.ps1
+# A project's build output.
+examples/*/target/

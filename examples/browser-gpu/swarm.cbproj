@@ -1,0 +1,7 @@
+[project]
+name = "swarm"
+entry = "haxe:Main"
+languages = ["haxe"]
+
+[plugins]
+gpu = { path = "../../plugins/cb_gpu" }
