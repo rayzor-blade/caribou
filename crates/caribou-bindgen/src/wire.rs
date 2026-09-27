@@ -1134,10 +1134,18 @@ export function execute(wire, at, len) {
 }
 
 /// Serve, from this worker, the program the page started it for: the page
-/// posts the program's memory and its mailbox's address, and `roots` makes
-/// the objects the plugin names by the first handles.
-export function start(roots) {
-  self.onmessage = ({ data: { memory, address } }) => serve(new Wire(memory, roots()), address);
+/// posts the program's memory and its mailbox's address. `roots` makes
+/// the objects the plugin names by the first handles, and may ask the page
+/// for more first; `setup`, if given, then prepares the wire.
+export function start(roots, setup) {
+  const first = async ({ data }) => {
+    if (data.memory === undefined) return;
+    self.removeEventListener("message", first);
+    const wire = new Wire(data.memory, await roots());
+    if (setup) setup(wire);
+    serve(wire, data.address);
+  };
+  self.addEventListener("message", first);
 }
 
 /// Serve the program's mailbox at `address`: run each batch it hands
@@ -1153,6 +1161,9 @@ export async function serve(wire, address) {
     const sent = Atomics.load(words, 0);
     if (sent === seen) continue;
     execute(wire, words[2] >>> 0, words[3] >>> 0);
+    // What the plugin's agent waits for before the batch counts as run,
+    // such as the frame it drew reaching the page.
+    if (wire.after) await wire.after();
     seen = sent;
     Atomics.store(words, 1, seen);
     Atomics.notify(words, 1);
