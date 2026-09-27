@@ -24,7 +24,9 @@ fn a_haxe_program_reaches_a_plugin() {
         std::env::consts::DLL_EXTENSION
     );
     let _staged = caribou_interop::StagedPlugin::new(
-        &PathBuf::from(env!("OUT_DIR")).join("plugins/debug").join(&library),
+        &PathBuf::from(env!("OUT_DIR"))
+            .join("plugins/debug")
+            .join(&library),
         &fixtures,
     );
 
