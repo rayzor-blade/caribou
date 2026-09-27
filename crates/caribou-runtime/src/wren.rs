@@ -15,11 +15,14 @@ use wren_lift::runtime::vm::VM;
 /// The VM the linked modules run in, from program start.
 static VM_PTR: AtomicPtr<VM> = AtomicPtr::new(std::ptr::null_mut());
 
-/// Run at program start: a VM for the linked modules, and their bodies
-/// run in it, in link order. Their status is the program's when nonzero.
+/// Run at program start: a VM for the linked modules, entered on the
+/// starting thread for the program's life so the bridge's calls into Wren
+/// (a Wren function Haxe holds, say) reach it, and the modules' bodies run
+/// in it, in link order. Their status is the program's when nonzero.
 pub(crate) fn start() -> i32 {
     let vm = wlift_aot_new_vm();
     VM_PTR.store(vm, Ordering::Release);
+    unsafe { caribou_wren::enter_vm(vm) };
     unsafe { wlift_aot_run_programs(vm) }
 }
 
@@ -146,4 +149,36 @@ pub unsafe extern "C" fn caribou_wren_to_haxe_face(v: u64, t: *mut hl_type) -> *
     let v = Value::from_bits(v);
     let _kept = caribou_wren::keep_value(v);
     unsafe { caribou_ash::link::face(caribou_wren::from_wren(v), t) }
+}
+
+/// A Wren function as a Haxe closure of the program's function type `t`;
+/// null for null.
+///
+/// # Safety
+/// `t` is one of the program's function types.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_to_haxe_function(v: u64, t: *mut hl_type) -> *mut vdynamic {
+    let v = Value::from_bits(v);
+    let _kept = caribou_wren::keep_value(v);
+    unsafe { caribou_ash::link::function(caribou_wren::from_wren(v), t) }
+}
+
+/// A Haxe closure as the Wren function standing for it: the function
+/// itself when it came from Wren.
+///
+/// # Safety
+/// `c` is null or a live Haxe closure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_from_haxe_function(
+    c: *mut vdynamic,
+    _t: *mut hl_type,
+) -> u64 {
+    let _kept = (!c.is_null()).then(|| caribou::heap::keep(c.cast()));
+    let function = unsafe { caribou_ash::link::closure(c) };
+    match vm() {
+        Some(vm) => caribou_wren::to_wren(vm, function)
+            .unwrap_or(Value::null())
+            .to_bits(),
+        None => Value::null().to_bits(),
+    }
 }

@@ -94,6 +94,28 @@ pub unsafe fn face(v: Value, t: *mut hl_type) -> *mut vdynamic {
     face
 }
 
+/// The Haxe closure of the program's function type `t` for the function
+/// `v` of another language (`callback.rs`). Null for null.
+///
+/// # Safety
+/// `t` is one of the program's function types.
+pub unsafe fn function(v: Value, t: *mut hl_type) -> *mut vdynamic {
+    if v.is_null() {
+        return core::ptr::null_mut();
+    }
+    let _value_kept = heap::keep_value(v);
+    crate::callback::function_for_typed(v, t)
+}
+
+/// A Haxe closure as the core value another language holds it by: the
+/// function itself when it came from one.
+///
+/// # Safety
+/// `c` is null or a live Haxe closure.
+pub unsafe fn closure(c: *mut vdynamic) -> Value {
+    unsafe { proto::dyn_to_value(c) }
+}
+
 /// Raise `message` into the Haxe code that made a linked call, as the
 /// error of the callee's language `origin`.
 pub fn raise(message: &str, origin: caribou_abi::LangId) {
@@ -505,7 +527,10 @@ mod tests {
         let m = member_of("game:hud.Hud.score").unwrap();
         assert_eq!((m.kind, m.arity), (Kind::Getter, 0));
         let m = member_of("game:hud.Hud.static:count").unwrap();
-        assert_eq!((m.kind, m.name.as_str(), m.arity), (Kind::Static, "count", 0));
+        assert_eq!(
+            (m.kind, m.name.as_str(), m.arity),
+            (Kind::Static, "count", 0)
+        );
         assert!(member_of("game:hud.Hud.static:count=(_)").is_none());
     }
 }

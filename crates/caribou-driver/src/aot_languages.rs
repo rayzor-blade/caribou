@@ -339,6 +339,10 @@ fn wren_casts(
             "caribou_wren_from_haxe_string",
             "caribou_wren_to_haxe_string",
         ),
+        TypeRef::Function { .. } => (
+            "caribou_wren_from_haxe_function",
+            "caribou_wren_to_haxe_function",
+        ),
         TypeRef::Object(name)
             if desc
                 .classes
