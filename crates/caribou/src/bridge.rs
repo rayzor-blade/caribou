@@ -82,12 +82,19 @@ pub fn take_pending() -> Option<Value> {
 }
 
 pub fn has_pending() -> bool {
+    if PENDING.with(|slots| slots.borrow().is_empty()) {
+        return false;
+    }
     let task = sched::current_task();
     PENDING.with(|slots| slots.borrow().contains_key(&task))
 }
 
 /// `take_pending` keeping the slot's root, for the bridge's own use.
 fn take_pending_rooted() -> Option<Rooted> {
+    // Checked after every linked call, where nothing is pending.
+    if PENDING.with(|slots| slots.borrow().is_empty()) {
+        return None;
+    }
     let task = sched::current_task();
     let pending = PENDING.with(|slots| slots.borrow_mut().remove(&task))?;
     let pending = ManuallyDrop::new(pending);
