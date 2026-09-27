@@ -11,5 +11,12 @@ crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 caribou_abi = { workspace = true }
+
+# A desktop's windows.
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
 winit = "0.30"
 raw-window-handle = "0.6"
+
+# In a page, the canvas, through Ash's window block.
+[target.'cfg(target_os = "wasi")'.dependencies]
+ash_window = { workspace = true }

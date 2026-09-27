@@ -67,6 +67,10 @@ class Main {
 }
 ```
 
+## In a page
+
+Built for `wasm32-wasip1-threads`, the plugin's window is the page's canvas, with no winit in the module. `WindowBuilder.open` sets up a block of shared memory in Ash's window format (Ash's `docs/wasm/window.md`) and asks the host for its `window` agent, which Ash's page runs; the page writes the canvas's events there, and `poll` turns them into the same `Event` values a desktop window gives. Members the page can carry out (title, size, cursor, fullscreen, focus, IME area, redraw requests) become commands the page runs at its next frame; `platform` is 5 and `raw` is 0, and the GPU plugin's web surface is the same canvas. What a page cannot do, such as placing or decorating the window, does nothing; `spec/README.md` maps each member and event.
+
 ## Window events
 
 `events.rs` contains the plugin's event definitions and conversions. `events/keys.rs` lists all 194 `KeyCode` and 306 `NamedKey` variants in winit 0.30.13. `lib.rs` owns windows, pumps winit and exposes the plugin API.

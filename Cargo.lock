@@ -410,6 +410,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ash_window"
+version = "0.1.0"
+
+[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1031,6 +1035,7 @@ version = "0.1.0"
 name = "caribou-window"
 version = "0.1.0"
 dependencies = [
+ "ash_window",
  "caribou_abi",
  "raw-window-handle",
  "winit",

@@ -26,6 +26,7 @@ ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "7ca2f7b4eaa
 ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "7ca2f7b4eaab3544e81f7ffd360832b15d070e2b", default-features = false }
 ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "7ca2f7b4eaab3544e81f7ffd360832b15d070e2b", default-features = false }
 ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "7ca2f7b4eaab3544e81f7ffd360832b15d070e2b" }
+ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "7ca2f7b4eaab3544e81f7ffd360832b15d070e2b" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "25856cc78b3552adcb28dcf20cca72a58f3fd873", default-features = false }
 zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
@@ -49,6 +50,7 @@ ash_core = { path = "../ash/crates/ash" }
 ash_interp = { path = "../ash/crates/ash_interp" }
 ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
 ash_page = { path = "../ash/crates/ash_page" }
+ash_window = { path = "../ash/crates/ash_window" }
 
 [profile.dev]
 opt-level = 1

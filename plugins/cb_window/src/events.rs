@@ -1,14 +1,18 @@
 //! Window and raw device events. Values remain Rust-owned in the queue;
 //! encoding into Caribou's heap happens only when the caller polls.
-use std::{cell::RefCell, collections::HashMap, path::PathBuf};
+use std::path::PathBuf;
+#[cfg(not(target_os = "wasi"))]
+use std::{cell::RefCell, collections::HashMap};
 
 use caribou_abi::{Buffer, Enum, EnumField, ErrorKind, Kept, PluginEnum, TypeTag, Value, host};
+#[cfg(not(target_os = "wasi"))]
 use winit::{event as native, event_loop::AsyncRequestSerial, keyboard};
 
 #[path = "events/keys.rs"]
 mod keys;
 pub use keys::{KeyCode, NamedKey};
 
+#[cfg(not(target_os = "wasi"))]
 thread_local! {
     // Winit deliberately keeps its IDs opaque. Intern by identity, never by
     // Debug output, hash value, pointer cast or platform-specific layout.
@@ -16,11 +20,13 @@ thread_local! {
     static REQUESTS: RefCell<Requests> = const { RefCell::new(Requests { next: 1, pending: Vec::new() }) };
 }
 
+#[cfg(not(target_os = "wasi"))]
 struct Requests {
     next: i64,
     pending: Vec<(AsyncRequestSerial, i64)>,
 }
 
+#[cfg(not(target_os = "wasi"))]
 pub(crate) fn device_key(id: native::DeviceId) -> i32 {
     DEVICES.with(|devices| {
         let mut devices = devices.borrow_mut();
@@ -29,6 +35,7 @@ pub(crate) fn device_key(id: native::DeviceId) -> i32 {
     })
 }
 
+#[cfg(not(target_os = "wasi"))]
 pub(crate) fn request_key(serial: AsyncRequestSerial) -> i64 {
     REQUESTS.with(|requests| {
         let mut requests = requests.borrow_mut();
@@ -42,6 +49,7 @@ pub(crate) fn request_key(serial: AsyncRequestSerial) -> i64 {
     })
 }
 
+#[cfg(not(target_os = "wasi"))]
 fn activation_key(serial: AsyncRequestSerial) -> i64 {
     let id = request_key(serial);
     REQUESTS.with(|requests| {
@@ -114,7 +122,8 @@ impl<T: ToString> From<Option<T>> for OptionalText {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.OptionalFloat", from = Option::<f64>)]
+#[caribou(name = "window.OptionalFloat")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = Option::<f64>))]
 pub enum OptionalFloat {
     None,
     Some(#[caribou(name = "value")] f64),
@@ -136,7 +145,8 @@ impl From<Option<(usize, usize)>> for CursorRange {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.Ime", from = native::Ime)]
+#[caribou(name = "window.Ime")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::Ime))]
 pub enum Ime {
     Enabled,
     Preedit(
@@ -148,7 +158,8 @@ pub enum Ime {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.MouseButton", from = native::MouseButton)]
+#[caribou(name = "window.MouseButton")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::MouseButton))]
 pub enum MouseButton {
     Left,
     Right,
@@ -159,14 +170,16 @@ pub enum MouseButton {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.MouseElementState", from = native::ElementState)]
+#[caribou(name = "window.MouseElementState")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::ElementState))]
 pub enum MouseElementState {
     Pressed,
     Released,
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.MouseScrollDelta", from = native::MouseScrollDelta)]
+#[caribou(name = "window.MouseScrollDelta")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::MouseScrollDelta))]
 pub enum MouseScrollDelta {
     LineDelta(#[caribou(name = "x")] f32, #[caribou(name = "y")] f32),
     #[caribou(pattern = native::MouseScrollDelta::PixelDelta(position))]
@@ -179,7 +192,8 @@ pub enum MouseScrollDelta {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.TouchPhase", from = native::TouchPhase)]
+#[caribou(name = "window.TouchPhase")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::TouchPhase))]
 pub enum TouchPhase {
     Started,
     Moved,
@@ -188,7 +202,8 @@ pub enum TouchPhase {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.TouchForce", from = native::Force)]
+#[caribou(name = "window.TouchForce")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::Force))]
 pub enum TouchForce {
     #[caribou(skip)]
     None,
@@ -199,6 +214,7 @@ pub enum TouchForce {
     },
     Normalized(#[caribou(name = "force")] f64),
 }
+#[cfg(not(target_os = "wasi"))]
 impl From<Option<native::Force>> for TouchForce {
     fn from(value: Option<native::Force>) -> Self {
         value.map_or(Self::None, Self::from)
@@ -206,14 +222,16 @@ impl From<Option<native::Force>> for TouchForce {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.Theme", from = winit::window::Theme)]
+#[caribou(name = "window.Theme")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = winit::window::Theme))]
 pub enum Theme {
     Light,
     Dark,
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.NativeKeyCode", from = keyboard::NativeKeyCode)]
+#[caribou(name = "window.NativeKeyCode")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = keyboard::NativeKeyCode))]
 pub enum NativeKeyCode {
     Unidentified,
     Android(#[caribou(name = "code")] i64),
@@ -223,7 +241,8 @@ pub enum NativeKeyCode {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.NativeKey", from = keyboard::NativeKey)]
+#[caribou(name = "window.NativeKey")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = keyboard::NativeKey))]
 pub enum NativeKey {
     Unidentified,
     Android(#[caribou(name = "code")] i64),
@@ -234,14 +253,16 @@ pub enum NativeKey {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.PhysicalKey", from = keyboard::PhysicalKey)]
+#[caribou(name = "window.PhysicalKey")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = keyboard::PhysicalKey))]
 pub enum PhysicalKey {
     Code(#[caribou(name = "code")] KeyCode),
     Unidentified(#[caribou(name = "code")] NativeKeyCode),
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.Key", from = keyboard::Key)]
+#[caribou(name = "window.Key")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = keyboard::Key))]
 pub enum Key {
     Named(#[caribou(name = "key")] NamedKey),
     Character(#[caribou(name = "text", value = a0.to_string())] String),
@@ -250,7 +271,8 @@ pub enum Key {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.KeyLocation", from = keyboard::KeyLocation)]
+#[caribou(name = "window.KeyLocation")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = keyboard::KeyLocation))]
 pub enum KeyLocation {
     Standard,
     Left,
@@ -281,6 +303,7 @@ pub enum KeyEvent {
         supplement: KeySupplement,
     },
 }
+#[cfg(not(target_os = "wasi"))]
 impl From<native::KeyEvent> for KeyEvent {
     fn from(event: native::KeyEvent) -> Self {
         #[cfg(any(
@@ -324,7 +347,8 @@ impl From<native::KeyEvent> for KeyEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.ModifiersKeyState", from = keyboard::ModifiersKeyState)]
+#[caribou(name = "window.ModifiersKeyState")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = keyboard::ModifiersKeyState))]
 pub enum ModifiersKeyState {
     Unknown,
     Pressed,
@@ -348,6 +372,7 @@ pub enum Modifiers {
         right_super: ModifiersKeyState,
     },
 }
+#[cfg(not(target_os = "wasi"))]
 impl From<native::Modifiers> for Modifiers {
     fn from(m: native::Modifiers) -> Self {
         Self::State {
@@ -368,7 +393,8 @@ impl From<native::Modifiers> for Modifiers {
 }
 
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.DeviceEvent", from = native::DeviceEvent)]
+#[caribou(name = "window.DeviceEvent")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::DeviceEvent))]
 pub enum DeviceEvent {
     Added,
     Removed,
@@ -411,7 +437,8 @@ pub enum ScaleSize {
 // No fallback: upgrading winit with an additional WindowEvent must fail to
 // compile until its payload has an explicit representation here.
 #[derive(Debug, Clone, PartialEq, PluginEnum)]
-#[caribou(name = "window.Event", from = native::WindowEvent)]
+#[caribou(name = "window.Event")]
+#[cfg_attr(not(target_os = "wasi"), caribou(from = native::WindowEvent))]
 pub enum Event {
     #[caribou(skip)]
     None,
@@ -582,7 +609,7 @@ pub(crate) fn scale_request(callback: &Kept, factor: f64) -> Result<ScaleSize, C
     Ok(size)
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
     use winit::dpi::{PhysicalPosition, PhysicalSize};

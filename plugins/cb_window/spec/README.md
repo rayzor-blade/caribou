@@ -7,8 +7,10 @@ from each specification's IDL, as W3C's
 revision `89e7d68c6612fbedb740c1632d36e482ca39e999` (2026-09-22). Each
 section of the file names its specification and licence.
 
-The plugin's native backend is winit. This file is the input for a web
-backend, as `plugins/cb_gpu/spec/webgpu.idl` is for the GPU plugin's.
+The plugin's native backend is winit. Its web backend (`src/web.rs`) reaches
+these APIs through Ash's page, which owns the canvas and its events and
+writes them into a block of the program's memory in the format of Ash's
+`docs/wasm/window.md`. This file is the reference for that mapping.
 `caribou_bindgen::idl` parses it whole, and `caribou_bindgen::wire`
 generates a wire from it.
 
