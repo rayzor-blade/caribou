@@ -10,7 +10,11 @@ fn main() {
     std::fs::write(path.join("gpu.rs"), generated).unwrap();
     // The wire to a browser's WebGPU: the plugin's encoder, and the GPU
     // agent's decoder, which a web build carries for the program to ship.
-    let wire = caribou_bindgen::wire::wire(&idl).expect("the WebGPU IDL generates its wire");
+    // The wire also carries the canvas, whose size the agent sets.
+    println!("cargo:rerun-if-changed=spec/canvas.idl");
+    let canvas = std::fs::read_to_string("spec/canvas.idl").unwrap();
+    let wire = caribou_bindgen::wire::wire(&format!("{idl}\n{canvas}"))
+        .expect("the WebGPU IDL generates its wire");
     std::fs::write(path.join("gpu_wire.rs"), wire.rust).unwrap();
     // The agent, and the page's shim that starts it.
     let agent = wire.js + AGENT_START;
@@ -52,7 +56,8 @@ fn native_features() -> String {
 
 /// The GPU agent's start, after the generated wire: the browser's GPU under
 /// handle 1 and, when its starter gives it the page's canvas, the canvas's
-/// WebGPU context under handle 2, the program's surface. A batch that drew
+/// WebGPU context under handle 2, the program's surface, and the canvas
+/// itself under handle 3, whose size is its drawing buffer's. A batch that drew
 /// on the canvas counts as run once the frame reached the page, which paces
 /// a program that draws to the display.
 const AGENT_START: &str = r#"
@@ -60,7 +65,10 @@ if (typeof WorkerGlobalScope !== "undefined") {
   start(
     (data) => {
       const roots = new Map([[1, navigator.gpu]]);
-      if (data.canvas) roots.set(2, data.canvas.getContext("webgpu"));
+      if (data.canvas) {
+        roots.set(2, data.canvas.getContext("webgpu"));
+        roots.set(3, data.canvas);
+      }
       return roots;
     },
     (wire) => {

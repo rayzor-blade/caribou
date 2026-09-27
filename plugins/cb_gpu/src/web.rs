@@ -32,6 +32,9 @@ const GPU: Handle = Handle(1);
 /// The page's canvas's WebGPU context, when the page gave the agent one.
 const CANVAS: Handle = Handle(2);
 
+/// That canvas itself, whose size is the drawing buffer's.
+const CANVAS_ELEMENT: Handle = Handle(3);
+
 /// Handles of objects the plugin makes and releases in one batch (passes,
 /// command buffers, layouts it only borrows), below every plugin handle.
 const TRANSIENT: u32 = 1 << 26;
@@ -456,11 +459,14 @@ pub unsafe fn instance_create() -> i32 {
     let mut s = state();
     if !s.agent {
         // Watched before any request can be answered, so none is missed.
-        let wake = host::watch(
-            MAILBOX.settled.as_ptr().cast_const().cast(),
-            settled,
-            std::ptr::null_mut(),
-        );
+        // The mailbox is static, and `settled` needs no context.
+        let wake = unsafe {
+            host::watch(
+                MAILBOX.settled.as_ptr().cast_const().cast(),
+                settled,
+                std::ptr::null_mut(),
+            )
+        };
         if wake.is_null() {
             host::raise(
                 ErrorKind::Runtime,
@@ -1341,6 +1347,7 @@ pub unsafe fn surface_preferred_format(surface: i32, _adapter: i32) -> i32 {
 fn configure(
     device: i32,
     surface: i32,
+    size: (i32, i32),
     format: i32,
     usage: Option<i32>,
     view_formats: &[i32],
@@ -1368,6 +1375,15 @@ fn configure(
         Some(2) => Some(wire::GPUCanvasAlphaMode::Premultiplied),
         _ => None,
     };
+    // The drawing buffer takes the configuration's size, in physical pixels,
+    // as a native surface does; the page keeps the canvas's CSS size.
+    let (width, height) = size;
+    if width > 0 && height > 0 {
+        s.commands
+            .offscreen_canvas_set_width(CANVAS_ELEMENT, &(width as u64));
+        s.commands
+            .offscreen_canvas_set_height(CANVAS_ELEMENT, &(height as u64));
+    }
     s.commands.gpu_canvas_context_configure(
         CANVAS,
         &wire::GPUCanvasConfiguration {
@@ -1381,10 +1397,8 @@ fn configure(
     );
 }
 
-/// The canvas keeps the size the page gave it; the configuration's size is
-/// the native window's.
-pub unsafe fn surface_configure(device: i32, surface: i32, _width: i32, _height: i32, format: i32) {
-    configure(device, surface, format, None, &[], None);
+pub unsafe fn surface_configure(device: i32, surface: i32, width: i32, height: i32, format: i32) {
+    configure(device, surface, (width, height), format, None, &[], None);
 }
 
 pub unsafe fn surface_configure_with(
@@ -1395,6 +1409,7 @@ pub unsafe fn surface_configure_with(
     configure(
         device,
         surface,
+        (configuration.width, configuration.height),
         configuration.format,
         configuration.usage,
         &configuration.viewFormats,

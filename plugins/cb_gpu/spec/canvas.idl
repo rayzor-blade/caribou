@@ -1,0 +1,20 @@
+// The canvas a page gives the GPU plugin's agent: its drawing buffer's size is
+// set here, by the canvas's owner. Verbatim from the HTML standard's IDL as
+// W3C's webref collects it (https://github.com/w3c/webref, curated branch,
+// revision 89e7d68c6612fbedb740c1632d36e482ca39e999, ed/idl/html.idl);
+// WHATWG, CC BY 4.0.
+
+[Exposed=(Window,Worker), Transferable]
+interface OffscreenCanvas : EventTarget {
+  constructor([EnforceRange] unsigned long long width, [EnforceRange] unsigned long long height);
+
+  attribute [EnforceRange] unsigned long long width;
+  attribute [EnforceRange] unsigned long long height;
+
+  OffscreenRenderingContext? getContext(OffscreenRenderingContextId contextId, optional any options = null);
+  ImageBitmap transferToImageBitmap();
+  Promise<Blob> convertToBlob(optional ImageEncodeOptions options = {});
+
+  attribute EventHandler oncontextlost;
+  attribute EventHandler oncontextrestored;
+};

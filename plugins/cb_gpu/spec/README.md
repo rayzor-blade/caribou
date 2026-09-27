@@ -9,6 +9,10 @@ as fetched on 2026-09-07 from
 <https://gpuweb.github.io/gpuweb/webgpu.idl>. It is checked in so builds use
 a fixed input and do not fetch the specification over the network.
 
+`canvas.idl` holds the HTML standard's `OffscreenCanvas`, verbatim from
+W3C's webref at the revision its header names. The web backend's wire
+carries it beside WebGPU, so the agent can set the size of the canvas it owns.
+
 ## How the plugin uses it
 
 [`../gpu.api.rs`](../gpu.api.rs) selects the WebIDL declarations to expose:
