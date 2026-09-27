@@ -2,23 +2,23 @@
 #![allow(non_snake_case, clippy::too_many_arguments)]
 #![recursion_limit = "512"]
 // The web backend reaches only part of what the plugin declares.
-#![cfg_attr(feature = "web", allow(dead_code))]
+#![cfg_attr(target_os = "wasi", allow(dead_code))]
 // The web backend's mailbox waits with wasm's atomic wait.
 #![cfg_attr(
-    all(feature = "web", target_arch = "wasm32", target_feature = "atomics"),
+    all(target_os = "wasi", target_feature = "atomics"),
     feature(stdarch_wasm_atomic_wait)
 )]
 
-#[cfg(not(any(feature = "native", feature = "web")))]
-compile_error!("caribou-gpu needs a backend: its wgpu one (native) or the browser's WebGPU (web)");
+#[cfg(not(any(feature = "native", target_os = "wasi")))]
+compile_error!("caribou-gpu needs a backend: its wgpu one (native), or a WASI target's WebGPU");
 
-#[cfg(not(feature = "web"))]
+#[cfg(not(target_os = "wasi"))]
 mod backend;
-#[cfg(feature = "web")]
+#[cfg(target_os = "wasi")]
 mod web;
 /// The web backend: what `web` defines, and a refusal for every other
 /// function.
-#[cfg(feature = "web")]
+#[cfg(target_os = "wasi")]
 #[allow(clippy::all)]
 mod backend {
     use super::*;
@@ -27,14 +27,14 @@ mod backend {
 mod handles;
 mod types;
 /// The wire to a browser's WebGPU, generated from spec/webgpu.idl.
-#[cfg(feature = "web")]
+#[cfg(target_os = "wasi")]
 #[allow(dead_code, non_camel_case_types, unused_variables, clippy::all)]
 pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/gpu_wire.rs"));
 }
 
 /// The GPU agent's half of the wire: an ES module, for the program to ship.
-#[cfg(feature = "web")]
+#[cfg(target_os = "wasi")]
 pub const AGENT: &str = include_str!(concat!(env!("OUT_DIR"), "/gpu_agent.mjs"));
 use caribou_abi::{Buffer, BufferMut, Enum, Future, Text};
 include!(concat!(env!("OUT_DIR"), "/gpu.rs"));
