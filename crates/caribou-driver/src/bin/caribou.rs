@@ -93,7 +93,15 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                 Some(triple) => {
                     let out = out.unwrap_or_else(|| target_dir.join(format!("{}.wasm", project.name)));
                     let plugins: Vec<PathBuf> = project.plugins.values().cloned().collect();
-                    aot(&hl, &triple, Some(&out), &plugins, &project.sources, Some(&target_dir))?
+                    aot(
+                        &hl,
+                        &triple,
+                        Some(&out),
+                        &plugins,
+                        &project.sources,
+                        &project.languages,
+                        Some(&target_dir),
+                    )?
                 }
                 None => {
                     let out = out.unwrap_or_else(|| target_dir.join(format!("{}.cb", project.name)));
@@ -111,6 +119,7 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                     out.as_deref(),
                     &plugins_beside(&program),
                     &caribou_driver::project::roots(&program),
+                    &[],
                     None,
                 )?,
                 None => caribou_driver::bundle::write(&program, out.as_deref())
@@ -161,9 +170,13 @@ fn aot(
     out: Option<&Path>,
     plugins: &[PathBuf],
     sources: &[PathBuf],
+    languages: &[String],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    caribou_driver::aot::build(program, triple, out, plugins, sources, target_dir).map_err(|e| format!("{e:#}"))
+    caribou_driver::aot::build_with_languages(
+        program, triple, out, plugins, sources, languages, target_dir,
+    )
+    .map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(not(feature = "llvm"))]
@@ -173,6 +186,7 @@ fn aot(
     _: Option<&Path>,
     _: &[PathBuf],
     _: &[PathBuf],
+    _: &[String],
     _: Option<&Path>,
 ) -> Result<PathBuf, String> {
     Err(format!(

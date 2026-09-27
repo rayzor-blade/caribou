@@ -1,7 +1,7 @@
 //! A program built ahead of time: Ash's AOT build of the `.hl`, linked
-//! against caribou's runtime in place of Ash's own, so the program runs on
-//! the core's heap and scheduler with every adapter present. Nothing is
-//! interpreted and nothing loads at run time.
+//! against caribou's runtime in place of Ash's own. Other language
+//! frontends contribute relocatable objects to the same Ash link. No
+//! language interpreter or source-module loader participates.
 //!
 //! Only wasm for now: the wasm runtime object is built with the driver
 //! (`build.rs`), and a release puts it beside the binary as Ash's does.
@@ -14,23 +14,35 @@ use anyhow::{Result, anyhow, bail};
 use ash_core::llvm::aot_build::{AotRequest, emit_aot};
 use ash_core::llvm::aot_link::is_wasm_triple;
 use ash_core::native_lib::{HostLink, Word};
-use caribou::registry::TypeRef;
 use caribou_abi::TypeTag;
 
-use crate::{linked, wren_link};
+use crate::{aot_languages, linked};
 
 /// Build `program` for `triple` into `out`, by default the program's name
-/// with the target's extension beside it. Its calls into `plugins`, and
-/// into the Wren modules under `sources`, link directly: a plugin given as
-/// its crate, and the Wren modules compiled by WrenLift, are linked into
-/// the program, built under `target_dir` (by default `target/` beside the
-/// output). Returns what was written.
+/// with the target's extension beside it. Plugin crates use the linked
+/// compatibility path, while language frontends contribute objects to Ash's
+/// final link. Build artifacts live under `target_dir` (by default `target/`
+/// beside the output). Returns what was written.
 pub fn build(
     program: &Path,
     triple: &str,
     out: Option<&Path>,
     plugins: &[PathBuf],
     sources: &[PathBuf],
+    target_dir: Option<&Path>,
+) -> Result<PathBuf> {
+    build_with_languages(program, triple, out, plugins, sources, &[], target_dir)
+}
+
+/// Build with the languages declared by a project. A frontend without a
+/// relocatable-object emitter is reported before the final link.
+pub fn build_with_languages(
+    program: &Path,
+    triple: &str,
+    out: Option<&Path>,
+    plugins: &[PathBuf],
+    sources: &[PathBuf],
+    languages: &[String],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
     if !is_wasm_triple(triple) {
@@ -47,8 +59,8 @@ pub fn build(
     let unlinkable = links(program, &libraries, None)?;
     if let Some((_, name)) = unlinkable.keys().next() {
         bail!(
-            "`{name}` is a plugin library's, which joins a wasm program only as a side module \
-             (git-bug ce0bba4); name the plugin's crate in the project to link it in"
+            "`{name}` is a native plugin member; a wasm program requires its plugin as an Ash \
+             side module; see git-bug issue `wasm: plugins load as Ash side modules`"
         );
     }
     let described = crates
@@ -65,15 +77,12 @@ pub fn build(
         }
         linked::runtime(&named, triple, &target_dir)?
     };
-    let wren = wren_link::build(sources, triple, &target_dir.join(triple).join("wren.o"))?;
-    let runtime = match &wren {
-        Some(wren) => {
-            let joined = target_dir.join(triple).join("program_runtime.o");
-            linked::join(&[&runtime, &wren.object], &joined)?;
-            joined
-        }
-        None => runtime,
-    };
+    let languages = aot_languages::Artifacts::build(
+        languages,
+        sources,
+        triple,
+        &target_dir.join(triple).join("languages"),
+    )?;
     // Scratch, named after the module beside it and removed once linked.
     let mut name = exe.file_name().unwrap_or_default().to_os_string();
     name.push(".o");
@@ -88,7 +97,8 @@ pub fn build(
         allow_refused: false,
         abi_version: 1,
         quiet: false,
-        links: links(program, &described, wren.as_ref())?,
+        links: links(program, &described, Some(&languages))?,
+        objects: languages.objects(),
     })?;
     Ok(exe)
 }
@@ -120,7 +130,7 @@ fn wasm_runtime(triple: &str) -> Result<PathBuf> {
 fn links(
     program: &Path,
     plugins: &[PathBuf],
-    wren: Option<&wren_link::Library>,
+    languages: Option<&aot_languages::Artifacts>,
 ) -> Result<HashMap<(String, String), HostLink>> {
     let mut members = Vec::new();
     for plugin in plugins {
@@ -144,69 +154,13 @@ fn links(
         });
         let link = match found {
             Some(found) => host_link(found),
-            None => wren.and_then(|w| wren_host_link(w, &m)),
+            None => languages.and_then(|languages| languages.host_link(&m)),
         };
         if let Some(link) = link {
             out.insert((lib, name), link);
         }
     }
     Ok(out)
-}
-
-/// A member of a linked Wren module as Ash links it, or `None` while one
-/// of its types has no cast: every Wren value is a NaN-boxed word, cast
-/// directly from and to Haxe's form, an instance member's receiver and a
-/// Wren object being the Haxe face that stands for it. A constructor binds
-/// the face Haxe allocated to the object it makes. Whatever the member
-/// raises is thrown after.
-fn wren_host_link(wren: &wren_link::Library, m: &caribou_ash::link::Member) -> Option<HostLink> {
-    use caribou::link::Kind;
-    let (module, desc) = wren.module(&m.namespace, &m.module)?;
-    let member = desc
-        .classes
-        .iter()
-        .find(|c| c.name == m.class)?
-        .members
-        .iter()
-        .find(|d| Kind::from(d.kind) == m.kind && d.name == m.name && d.params.len() == m.arity)?;
-    let receiver = matches!(m.kind, Kind::Method | Kind::Getter | Kind::Setter);
-    let mut arg_casts = Vec::with_capacity(m.arity + usize::from(receiver));
-    if receiver {
-        arg_casts.push(Some(FACE.0.to_owned()));
-    }
-    for p in &member.params {
-        arg_casts.push(Some(wren_casts(&p.ty, desc)?.0.to_owned()));
-    }
-    let (ret_cast, init) = match (&member.ret, m.kind) {
-        (_, Kind::Constructor) => (None, Some("caribou_wren_bind_face".to_owned())),
-        (TypeRef::Void | TypeRef::Dyn, _) => (None, None),
-        (ty, _) => (Some(wren_casts(ty, desc)?.1.to_owned()), None),
-    };
-    Some(HostLink {
-        symbol: caribou::link::symbol("wren", module, &m.class, m.kind, &m.name, m.arity),
-        params: vec![Word::I64; arg_casts.len()],
-        ret: Some(Word::I64),
-        arg_casts,
-        ret_cast,
-        after: Some("caribou_wren_raise_pending".to_owned()),
-        init,
-    })
-}
-
-/// The casts between a Wren object and the Haxe face that stands for it.
-const FACE: (&str, &str) = ("caribou_wren_from_haxe_face", "caribou_wren_to_haxe_face");
-
-/// The casts from Haxe's form of a declared Wren type and back to it. An
-/// object of one of the module's own classes is its face.
-fn wren_casts(ty: &TypeRef, desc: &caribou::describe::ModuleDesc) -> Option<(&'static str, &'static str)> {
-    Some(match ty {
-        TypeRef::Float => ("caribou_wren_from_float", "caribou_wren_to_float"),
-        TypeRef::Int => ("caribou_wren_from_int", "caribou_wren_to_int"),
-        TypeRef::Bool => ("caribou_wren_from_bool", "caribou_wren_to_bool"),
-        TypeRef::Str => ("caribou_wren_from_haxe_string", "caribou_wren_to_haxe_string"),
-        TypeRef::Object(name) if desc.classes.iter().any(|c| &c.type_name == name || &c.name == name) => FACE,
-        _ => return None,
-    })
 }
 
 /// A plugin member as Ash links it, or `None` while one of its types has

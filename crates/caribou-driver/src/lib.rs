@@ -16,6 +16,8 @@
 
 #[cfg(feature = "llvm")]
 pub mod aot;
+#[cfg(feature = "llvm")]
+pub mod aot_languages;
 pub mod bundle;
 pub mod cbproj;
 pub mod deps;
@@ -23,7 +25,4 @@ pub mod linked;
 pub mod project;
 pub mod session;
 mod wasm_toolchain;
-#[cfg(feature = "llvm")]
-pub mod wren_link;
-
 pub use session::{Options, Session, run, run_project};

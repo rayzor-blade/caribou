@@ -2,7 +2,7 @@
 
 ## Overview
 
-At AOT, a cross-language call site does not go through the bridge. `wren_call`, the host entry, the kinds, and the direct sends all exist because the callee is found at run time. At link time, the callee is a symbol, and a send is a plain call with a cast on each side of it. Every side names members by one shared rule, `caribou::link`, so the caller and the callee agree by construction, in the same way the build macro and the publisher already agree on types.
+At AOT, a cross-language call site does not go through the bridge. The host entry, member kinds, and dynamic sends exist because a hosted build finds the callee at run time. At link time, the callee is a symbol, and a send is a plain call with a cast on each side of it. Every frontend names members by one shared rule, `caribou::link`, so the caller and callee agree by construction, in the same way the build macro and publisher already agree on types.
 
 ## Symbol Naming
 
@@ -25,7 +25,7 @@ A member's symbol consists of `caribou`, then the language, the module as its la
 Types are erased at the machine level, so each side keeps its own compiled types. The callee is its language's own compiled function, exported under its link symbol in its own calling convention. The caller casts each value at the boundary. Both sides' types are known when the program is built, so the build chooses every cast, and nothing is decided at run time.
 
 * **A plugin** takes and returns its ABI's C types (`caribou_abi`): `double`, `int32_t`, `bool`, and a core string as a pointer. An instance member takes its receiver first.
-* **A Wren member** takes and returns WrenLift's NaN-boxed values, one `uint64_t` each. A `Num` is its `double`'s bits. An instance member takes its receiver first.
+* **A compiled language member** uses that frontend's native calling convention. Its Caribou adapter supplies the casts between those values and the caller's values. WrenLift, for example, uses one NaN-boxed `uint64_t` per value.
 * **Haxe** calls through the program's `caribou` natives. Each one is linked to the member's symbol rather than bound at run time.
 
 A cast is a function that takes the value and the program's `hl_type` for its Haxe side. That is how a cast that produces a Haxe object allocates one, since a compiled program has no other way to name its types. Casts go directly between two languages' forms: a Haxe `String` becomes a Wren string in one step, not through the core's. A number passes unchanged wherever the two sides' words agree.
@@ -38,14 +38,14 @@ Members with `Dyn` or `Fun` types have no static form and stay on the bridge. Th
 
 `caribou build --target wasm32-wasip1` builds a program in these steps:
 
-1. **Plugins.** A plugin named by its crate is built together with `caribou-runtime` as one crate graph. Two Rust libraries built apart would each carry std and an allocator. The graph enables `caribou_abi`'s `linked` feature, under which each plugin exports its entry under a name of its own and a constructor of the graph registers it.
-2. **Wren modules.** The project's Wren modules are compiled by WrenLift as one library object. Each module's link name is its path under the sources.
-3. **Joining.** The runtime staticlib is joined with WASI's libc into one relocatable object, and the Wren object is joined to it.
-4. **Linking.** Ash's AOT compiles the Haxe program and links it against that object with `ash_wasm_link`.
+1. **Language objects.** Each resident frontend compiles its modules into relocatable objects and describes the exports in those objects. Its artifact carries the adapter that maps those exports' machine types to Haxe calls. WrenLift currently implements this contract. Zyntax frontends still need an object-emission mode; their WASM backend currently produces final runtime modules.
+2. **Haxe object.** Ash lowers the `.hl` program into its own relocatable object and binds its Caribou natives to the described member symbols.
+3. **One final link.** Caribou passes all language objects to Ash's AOT request. `ash_wasm_link` links them together with the Caribou runtime and WASI support. Caribou does not prejoin one language into the runtime.
+4. **Native plugin side modules.** Native plugins are WASM side modules beside the program. They remain outside the language-object graph and load through the native-library boundary. The existing statically linked plugin-crate path is a compatibility path until Caribou's typed plugin lookup uses Ash's side-module loader. Git-bug tracks that work as `wasm: plugins load as Ash side modules`.
 
-At run time, the program's `main` brings the heap up, initialises the Haxe module, and calls the runtime's `program_start`. That call is a slot of Ash's seam, which caribou fills. Caribou starts WrenLift's VM there and runs the linked modules' bodies before the Haxe entry.
+At run time, the program's `main` brings the heap up, initialises the Haxe module, and calls the runtime's `program_start`. That call is a slot of Ash's seam, which Caribou fills. Each linked language adapter initialises its compiled module state before the Haxe entry. Native plugin side modules may load at the native-library boundary.
 
-Neither target embeds an interpreter. On AOT and wasm, every module is compiled and linked. Loading a module from source or bytecode belongs to hosted runs.
+A language included in an AOT program must supply a relocatable-object emitter. No interpreter is embedded as a fallback. Loading a language module from source or bytecode belongs to hosted runs.
 
 ## What Remains at Run Time
 
