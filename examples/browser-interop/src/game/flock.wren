@@ -7,10 +7,15 @@ class Flock {
   construct new(count, width, height) {
     _width = width
     _height = height
-    _x = []
-    _y = []
-    _vx = []
-    _vy = []
+    // Each bird as the engine draws it, four floats: x, y, heading, hue.
+    _birds = Float32Array.new(Flock.limit * 4)
+    _vx = Float32Array.new(Flock.limit)
+    _vy = Float32Array.new(Flock.limit)
+    // The neighbour grid: the first bird in each cell, and the next bird
+    // in the same cell after each bird.
+    _head = Int32Array.new(0)
+    _next = Int32Array.new(Flock.limit)
+    _count = 0
     _seed = 7
     _time = 0
     _targetX = width / 2
@@ -25,10 +30,11 @@ class Flock {
   }
 
   add_(x, y) {
-    _x.add(x)
-    _y.add(y)
-    _vx.add(random_ * 200 - 100)
-    _vy.add(random_ * 200 - 100)
+    _birds[_count * 4] = x
+    _birds[_count * 4 + 1] = y
+    _vx[_count] = random_ * 200 - 100
+    _vy[_count] = random_ * 200 - 100
+    _count = _count + 1
   }
 
   #export = "resize(width: Num, height: Num) -> Null"
@@ -40,7 +46,7 @@ class Flock {
   // A burst of birds where the player clicked; a full flock refuses.
   #export = "spawn(x: Num, y: Num) -> Null"
   spawn(x, y) {
-    if (_x.count >= Flock.limit) Fiber.abort("the flock is full")
+    if (_count >= Flock.limit) Fiber.abort("the flock is full")
     for (i in 0...25) add_(x, y)
     _targetX = x
     _targetY = y
@@ -64,16 +70,17 @@ class Flock {
     var heeded = 7
     var columns = (_width / reach).ceil + 1
     var rows = (_height / reach).ceil + 1
-    var head = List.filled(columns * rows, -1)
-    var next = List.filled(_x.count, -1)
-    for (i in 0..._x.count) {
-      var cell = (_x[i] / reach).floor + (_y[i] / reach).floor * columns
-      next[i] = head[cell]
-      head[cell] = i
+    if (_head.count != columns * rows) _head = Int32Array.new(columns * rows)
+    for (cell in 0..._head.count) _head[cell] = -1
+    var birds = _birds
+    for (i in 0..._count) {
+      var cell = (birds[i * 4] / reach).floor + (birds[i * 4 + 1] / reach).floor * columns
+      _next[i] = _head[cell]
+      _head[cell] = i
     }
-    for (i in 0..._x.count) {
-      var x = _x[i]
-      var y = _y[i]
+    for (i in 0..._count) {
+      var x = birds[i * 4]
+      var y = birds[i * 4 + 1]
       var column = (x / reach).floor
       var row = (y / reach).floor
       var seen = 0
@@ -83,18 +90,23 @@ class Flock {
       var avy = 0
       var sx = 0
       var sy = 0
-      for (r in (row - 1).max(0)..(row + 1).min(rows - 1)) {
-        for (c in (column - 1).max(0)..(column + 1).min(columns - 1)) {
-          var j = head[c + r * columns]
+      var lastRow = (row + 1).min(rows - 1)
+      var firstColumn = (column - 1).max(0)
+      var lastColumn = (column + 1).min(columns - 1)
+      var r = (row - 1).max(0)
+      while (r <= lastRow) {
+        var c = firstColumn
+        while (c <= lastColumn) {
+          var j = _head[c + r * columns]
           while (j >= 0 && seen < heeded) {
             if (j != i) {
-              var dx = x - _x[j]
-              var dy = y - _y[j]
+              var dx = x - birds[j * 4]
+              var dy = y - birds[j * 4 + 1]
               var d2 = dx * dx + dy * dy
               if (d2 < reach * reach) {
                 seen = seen + 1
-                cx = cx + _x[j]
-                cy = cy + _y[j]
+                cx = cx + birds[j * 4]
+                cy = cy + birds[j * 4 + 1]
                 avx = avx + _vx[j]
                 avy = avy + _vy[j]
                 if (d2 < near * near) {
@@ -104,9 +116,11 @@ class Flock {
                 }
               }
             }
-            j = next[j]
+            j = _next[j]
           }
+          c = c + 1
         }
+        r = r + 1
       }
       var ax = sx * 60
       var ay = sy * 60
@@ -123,30 +137,29 @@ class Flock {
       var vy = _vy[i] + ay * dt
       var speed = (vx * vx + vy * vy).sqrt + 0.01
       var bounded = speed.clamp(70, 170)
-      _vx[i] = vx / speed * bounded
-      _vy[i] = vy / speed * bounded
-      _x[i] = (x + _vx[i] * dt) % _width
-      _y[i] = (y + _vy[i] * dt) % _height
-      if (_x[i] < 0) _x[i] = _x[i] + _width
-      if (_y[i] < 0) _y[i] = _y[i] + _height
+      vx = vx / speed * bounded
+      vy = vy / speed * bounded
+      _vx[i] = vx
+      _vy[i] = vy
+      x = (x + vx * dt) % _width
+      y = (y + vy * dt) % _height
+      if (x < 0) x = x + _width
+      if (y < 0) y = y + _height
+      birds[i * 4] = x
+      birds[i * 4 + 1] = y
+      birds[i * 4 + 2] = vy.atan(vx)
+      birds[i * 4 + 3] = Palette.hue(i, _time)
     }
   }
 
   #export = "count -> Num"
-  count { _x.count }
+  count { _count }
 
-  #export = "x(i: Num) -> Num"
-  x(i) { _x[i] }
-
-  #export = "y(i: Num) -> Num"
-  y(i) { _y[i] }
-
-  #export = "heading(i: Num) -> Num"
-  heading(i) { _vy[i].atan(_vx[i]) }
-
-  #export = "hue(i: Num) -> Num"
-  hue(i) { Palette.hue(i, _time) }
+  // The birds as the engine draws them, the first `count` of them in use:
+  // the array itself, which the engine reads where it lies.
+  #export = "birds -> Float32Array"
+  birds { _birds }
 
   #export = "hud -> String"
-  hud { "%(_x.count) birds at %((_time * 10).floor / 10)s" }
+  hud { "%(_count) birds at %((_time * 10).floor / 10)s" }
 }

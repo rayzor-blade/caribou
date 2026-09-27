@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicPtr, Ordering};
 use caribou_abi::hl::{hl_type, vdynamic};
 use wren_lift::capi::{wlift_aot_new_vm, wlift_aot_run_programs};
 use wren_lift::runtime::core::as_string;
+use wren_lift::runtime::object::{ObjHeader, ObjType};
 use wren_lift::runtime::value::Value;
 use wren_lift::runtime::vm::VM;
 
@@ -177,6 +178,51 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_function(
     let function = unsafe { caribou_ash::link::closure(c) };
     match vm() {
         Some(vm) => caribou_wren::to_wren(vm, function)
+            .unwrap_or(Value::null())
+            .to_bits(),
+        None => Value::null().to_bits(),
+    }
+}
+
+/// A Wren typed array as a Haxe `Bytes` of the program's type `t`, over
+/// the array's storage; null for anything else.
+///
+/// # Safety
+/// `t` is the program's `haxe.io.Bytes`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_to_haxe_bytes(v: u64, t: *mut hl_type) -> *mut vdynamic {
+    let v = Value::from_bits(v);
+    let typed_array = v.as_object().is_some_and(|p| {
+        let kind = unsafe { (*(p as *const ObjHeader)).obj_type };
+        kind == ObjType::TypedArray
+    });
+    if !typed_array {
+        return std::ptr::null_mut();
+    }
+    let _kept = caribou_wren::keep_value(v);
+    let buffer = caribou_wren::from_wren(v);
+    let _buffer_kept = caribou::heap::keep_value(buffer);
+    match buffer.as_object() {
+        Some(p) => unsafe { caribou_ash::link::caribou_haxe_buffer_to_bytes(p as *mut _, t) },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// A Haxe `Bytes` as Wren sees a buffer: the typed array it came from, or
+/// a sequence of its bytes.
+///
+/// # Safety
+/// `b` is null or a live `Bytes` of the program's type `t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_from_haxe_bytes(b: *mut vdynamic, t: *mut hl_type) -> u64 {
+    let buffer = unsafe { caribou_ash::link::caribou_haxe_bytes_to_buffer(b, t) };
+    if buffer.is_null() {
+        return Value::null().to_bits();
+    }
+    let buffer = caribou_abi::Value::object(buffer.cast());
+    let _kept = caribou::heap::keep_value(buffer);
+    match vm() {
+        Some(vm) => caribou_wren::to_wren(vm, buffer)
             .unwrap_or(Value::null())
             .to_bits(),
         None => Value::null().to_bits(),

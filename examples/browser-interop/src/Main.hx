@@ -35,8 +35,8 @@ class Bird implements caribou.hxsl.Shader {
 /**
 	Haxe as the engine and Wren as the gameplay, in one program: the flock
 	lives in `game/flock.wren` (which imports `game/palette.wren`), and this
-	engine opens the window, draws each bird on the GPU from what the flock
-	answers, and hands it the player's clicks. A full flock refuses a click
+	engine opens the window, draws the birds on the GPU straight from the
+	flock's own `Float32Array`, and hands it the player's clicks. A full flock refuses a click
 	with a Wren error, which arrives here as an exception.
 **/
 class Main {
@@ -53,10 +53,11 @@ class Main {
 		var flock = new Flock(200, 800, 500);
 		trace('Wren says: ${flock.hud}');
 
-		// Each bird's instance data, filled from the flock every frame.
+		// Each bird's instance data is the flock's own array, which Haxe
+		// reads where it lies and uploads every frame.
 		var limit = Std.int(Flock.limit);
+		var data = flock.birds;
 		var birds = device.createBuffer(new GpuBufferDescriptor(limit * 16, BufferUsage.VERTEX() | BufferUsage.COPY_DST()));
-		var data = haxe.io.Bytes.alloc(limit * 16);
 		var params = device.createBuffer(new GpuBufferDescriptor(Bird.PARAMS_SIZE, BufferUsage.UNIFORM() | BufferUsage.COPY_DST()));
 		var values = haxe.io.Bytes.alloc(Bird.PARAMS_SIZE);
 
@@ -96,12 +97,6 @@ class Main {
 			flock.step(Math.min(now - last, 0.05));
 			last = now;
 			var count = Std.int(flock.count);
-			for (i in 0...count) {
-				data.setFloat(i * 16, flock.x(i));
-				data.setFloat(i * 16 + 4, flock.y(i));
-				data.setFloat(i * 16 + 8, flock.heading(i));
-				data.setFloat(i * 16 + 12, flock.hue(i));
-			}
 			queue.writeBuffer(birds, 0, data, count * 16);
 
 			var view = surface.acquire();

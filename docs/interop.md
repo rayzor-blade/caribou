@@ -89,7 +89,8 @@ of its bytes, `b[i]`, `b[i] = v`, `b.count`. Wren makes one from its own
 typed arrays: a `ByteArray`, `Int32Array`, `Float32Array` or `Float64Array`
 passed where a buffer is taken crosses as a buffer over the array's storage,
 without a copy. What the callee writes is in the array, and the buffer comes
-back to Wren as the same array.
+back to Wren as the same array. An `#export` names a typed array by its class:
+`birds -> Float32Array` gives Haxe a `haxe.io.Bytes` over the array itself.
 
 A string passed where a buffer is taken is its bytes: a read-only buffer over
 the string's own bytes, without a copy. A function that writes a buffer

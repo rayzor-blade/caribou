@@ -339,6 +339,7 @@ fn wren_casts(
             "caribou_wren_from_haxe_string",
             "caribou_wren_to_haxe_string",
         ),
+        TypeRef::Buffer => ("caribou_wren_from_haxe_bytes", "caribou_wren_to_haxe_bytes"),
         TypeRef::Function { .. } => (
             "caribou_wren_from_haxe_function",
             "caribou_wren_to_haxe_function",

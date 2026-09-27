@@ -129,6 +129,8 @@ pub fn type_ref(name: &str, classes: &Classes<'_>) -> TypeRef {
         "Null" => TypeRef::Void,
         "List" => TypeRef::Array(Box::new(TypeRef::Dyn)),
         "Fn" => TypeRef::Fun,
+        // A typed array crosses as a buffer over its storage.
+        "ByteArray" | "Int32Array" | "Float32Array" | "Float64Array" => TypeRef::Buffer,
         _ if let Some(type_name) = classes.type_name(name) => TypeRef::Object(type_name),
         _ => TypeRef::Dyn,
     }
@@ -158,6 +160,10 @@ mod tests {
             e.param(0, &classes),
             TypeRef::Object("swarm:Entity.Entity".to_owned())
         );
+        // A typed array is a buffer over its storage.
+        let e = Export::parse("fill(into: Float32Array) -> ByteArray").unwrap();
+        assert_eq!(e.param(0, &classes), TypeRef::Buffer);
+        assert_eq!(e.ret(&classes), Some(TypeRef::Buffer));
         let e = Export::parse("adder() -> Fn(Num) -> Num").unwrap();
         assert_eq!(
             e.ret(&classes),
