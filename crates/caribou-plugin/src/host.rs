@@ -168,10 +168,22 @@ unsafe extern "C" fn raise_value(err: Value) {
     bridge::set_pending(err);
 }
 
-// Agents run beside a program in a page, whose host starts them; no host
-// here does yet.
-unsafe extern "C" fn agent(_name: *const u8, _len: usize, _address: usize) -> bool {
-    false
+/// Agents run beside a wasm program in a page, which Ash's host asks to
+/// start one; a native program has none.
+unsafe extern "C" fn agent(name: *const u8, len: usize, address: usize) -> bool {
+    #[cfg(target_family = "wasm")]
+    {
+        #[link(wasm_import_module = "env")]
+        unsafe extern "C" {
+            fn ash_host_agent(name: *const u8, name_len: u32, address: u32) -> i32;
+        }
+        unsafe { ash_host_agent(name, len as u32, address as u32) != 0 }
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (name, len, address);
+        false
+    }
 }
 
 unsafe extern "C" fn buffer_new(p: *const u8, len: usize) -> caribou_abi::Buffer {
