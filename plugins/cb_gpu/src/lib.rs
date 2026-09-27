@@ -1,11 +1,16 @@
 //! Generated object bindings over the native GPU backend. See gpu.api.rs.
 #![allow(non_snake_case, clippy::too_many_arguments)]
 #![recursion_limit = "512"]
+// The web backend reaches only part of what the plugin declares.
+#![cfg_attr(feature = "web", allow(dead_code))]
+// The web backend's mailbox waits with wasm's atomic wait.
+#![cfg_attr(
+    all(feature = "web", target_arch = "wasm32", target_feature = "atomics"),
+    feature(stdarch_wasm_atomic_wait)
+)]
 
 #[cfg(not(any(feature = "native", feature = "web")))]
-compile_error!(
-    "caribou-gpu needs a backend: its wgpu one (native) or the browser's WebGPU (web)"
-);
+compile_error!("caribou-gpu needs a backend: its wgpu one (native) or the browser's WebGPU (web)");
 
 #[cfg(not(feature = "web"))]
 mod backend;
