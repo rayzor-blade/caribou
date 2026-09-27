@@ -602,8 +602,20 @@ fn flat_fields(types: &[HLType], index: usize) -> Vec<&str> {
         .collect()
 }
 
-/// Publish every publishable class of `bytecode` as one module each,
-/// named after the class: `game.Player` holds `Player`.
+/// A class as the bytecode lays it out, before anything runs: what
+/// publishing and describing share.
+struct Shape<'a> {
+    index: usize,
+    obj: &'a HLTypeObj,
+    fields: Vec<FieldIface>,
+    statics: Vec<FieldIface>,
+    /// Instance methods and statics: name, whether static, the function.
+    methods: Vec<(String, bool, i32)>,
+    /// The constructor's function.
+    ctor: Option<i32>,
+}
+
+/// Every publishable class of `bytecode`.
 ///
 /// HashLink's shape: an instance type carries the fields and the instance
 /// methods as protos; its companion type (`game.$Player`, an `hl.Class`)
@@ -611,46 +623,14 @@ fn flat_fields(types: &[HLType], index: usize) -> Vec<&str> {
 /// to their functions, and binds the inherited `__constructor__` field to
 /// the constructor. A binding is a pair of field index, counted through the
 /// inherited fields, and function index.
-pub fn publish_module(
-    bytecode: &DecodedBytecode,
-    program: &mut Program,
-) -> Result<Vec<Arc<Interface>>> {
-    let m = program.module_context()?;
+fn shapes(bytecode: &DecodedBytecode) -> Vec<Shape<'_>> {
     let types = &bytecode.types;
-    let functions: HashMap<i32, &HLFunction> =
-        bytecode.functions.iter().map(|f| (f.findex, f)).collect();
     let by_name: HashMap<&str, usize> = types
         .iter()
         .enumerate()
         .filter_map(|(i, t)| Some((t.obj.as_ref()?.name.as_str(), i)))
         .collect();
-    let lang = proto::lang();
-    let signature = |findex: i32, skip_this: bool| -> Option<(Vec<TypeRef>, TypeRef)> {
-        let f = functions.get(&findex)?;
-        let fun = types.get(f.type_.0)?.fun.as_ref()?;
-        let args = fun.args.iter().skip(usize::from(skip_this));
-        Some((
-            args.map(|a| type_ref(types, a)).collect(),
-            type_ref(types, &fun.ret),
-        ))
-    };
-    // The function's cell in the module context: the interpreter's stub
-    // until a tier promotes the function, then its compiled entry.
-    let target = |findex: i32| -> Option<Callable> {
-        functions.contains_key(&findex).then(|| Callable::Cell {
-            cell: unsafe { (*m).functions_ptrs.add(findex as usize) }.cast(),
-            signature: unsafe { *(*m).functions_types.add(findex as usize) },
-            lang,
-        })
-    };
-    // The instance type: the receiver of any function taking `this`.
-    let this_type = |findex: i32| -> Option<*mut hl_type> {
-        let sig = unsafe { *(*m).functions_types.add(findex as usize) };
-        let fun = unsafe { (*sig).detail.fun.as_ref()? };
-        (fun.nargs > 0).then(|| unsafe { *fun.args })
-    };
-
-    let mut published = Vec::new();
+    let mut out = Vec::new();
     for (index, ty) in types.iter().enumerate() {
         if ty.kind != hl::HOBJ {
             continue;
@@ -663,9 +643,8 @@ pub fn publish_module(
         }
 
         let mut fields: Vec<FieldIface> = Vec::new();
-        let mut methods: Vec<MethodIface> = Vec::new();
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-        let mut instance_t: Option<*mut hl_type> = None;
+        let mut methods = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for level in chain(types, index) {
             for field in &level.fields {
                 if !field.name.starts_with("__") && seen.insert(&field.name) {
@@ -676,24 +655,9 @@ pub fn publish_module(
                 }
             }
             for p in &level.proto {
-                if !seen.insert(&p.name) {
-                    continue;
+                if seen.insert(&p.name) {
+                    methods.push((p.name.clone(), false, p.findex));
                 }
-                let (Some((params, ret)), Some(target)) =
-                    (signature(p.findex, true), target(p.findex))
-                else {
-                    continue;
-                };
-                if std::ptr::eq(level, obj) && instance_t.is_none() {
-                    instance_t = this_type(p.findex);
-                }
-                methods.push(MethodIface {
-                    name: p.name.clone(),
-                    is_static: false,
-                    params,
-                    ret,
-                    target,
-                });
             }
         }
 
@@ -719,60 +683,127 @@ pub fn publish_module(
                 let Some(&name) = flat.get(fid) else {
                     continue;
                 };
-                let Some(target) = target(findex) else {
-                    continue;
-                };
                 if name == "__constructor__" {
-                    let (Some((params, _)), Some(t)) = (signature(findex, true), this_type(findex))
-                    else {
-                        continue;
-                    };
-                    let Callable::Cell {
-                        cell, signature, ..
-                    } = target
-                    else {
-                        continue;
-                    };
-                    ctor = Some(MethodIface {
-                        name: "new".to_owned(),
-                        is_static: true,
-                        params,
-                        ret: TypeRef::Object(obj.name.clone()),
-                        target: Callable::Dynamic(proto::constructor(t, cell, signature)),
-                    });
+                    ctor = Some(findex);
                 } else if fid >= inherited {
-                    let Some((params, ret)) = signature(findex, false) else {
-                        continue;
-                    };
-                    methods.push(MethodIface {
-                        name: name.to_owned(),
-                        is_static: true,
-                        params,
-                        ret,
-                        target,
-                    });
+                    methods.push((name.to_owned(), true, findex));
                 }
             }
         }
+        out.push(Shape {
+            index,
+            obj,
+            fields,
+            statics,
+            methods,
+            ctor,
+        });
+    }
+    out
+}
 
-        let superclass = obj
-            .super_
-            .as_ref()
-            .and_then(|s| types.get(s.0))
-            .and_then(|t| t.obj.as_ref())
-            .map(|o| o.name.clone());
+/// A function's parameters and result, without the receiver when
+/// `skip_this`.
+fn signature(
+    bytecode: &DecodedBytecode,
+    functions: &HashMap<i32, &HLFunction>,
+    findex: i32,
+    skip_this: bool,
+) -> Option<(Vec<TypeRef>, TypeRef)> {
+    let types = &bytecode.types;
+    let f = functions.get(&findex)?;
+    let fun = types.get(f.type_.0)?.fun.as_ref()?;
+    let args = fun.args.iter().skip(usize::from(skip_this));
+    Some((
+        args.map(|a| type_ref(types, a)).collect(),
+        type_ref(types, &fun.ret),
+    ))
+}
+
+fn superclass(bytecode: &DecodedBytecode, obj: &HLTypeObj) -> Option<String> {
+    obj.super_
+        .as_ref()
+        .and_then(|s| bytecode.types.get(s.0))
+        .and_then(|t| t.obj.as_ref())
+        .map(|o| o.name.clone())
+}
+
+/// Publish every publishable class of `bytecode` as one module each,
+/// named after the class: `game.Player` holds `Player`.
+pub fn publish_module(
+    bytecode: &DecodedBytecode,
+    program: &mut Program,
+) -> Result<Vec<Arc<Interface>>> {
+    let m = program.module_context()?;
+    let functions: HashMap<i32, &HLFunction> =
+        bytecode.functions.iter().map(|f| (f.findex, f)).collect();
+    let lang = proto::lang();
+    // The function's cell in the module context: the interpreter's stub
+    // until a tier promotes the function, then its compiled entry.
+    let target = |findex: i32| -> Option<Callable> {
+        functions.contains_key(&findex).then(|| Callable::Cell {
+            cell: unsafe { (*m).functions_ptrs.add(findex as usize) }.cast(),
+            signature: unsafe { *(*m).functions_types.add(findex as usize) },
+            lang,
+        })
+    };
+    // The instance type: the receiver of any function taking `this`.
+    let this_type = |findex: i32| -> Option<*mut hl_type> {
+        let sig = unsafe { *(*m).functions_types.add(findex as usize) };
+        let fun = unsafe { (*sig).detail.fun.as_ref()? };
+        (fun.nargs > 0).then(|| unsafe { *fun.args })
+    };
+
+    let mut published = Vec::new();
+    for shape in shapes(bytecode) {
+        let obj = shape.obj;
+        let mut methods: Vec<MethodIface> = Vec::new();
+        for (name, is_static, findex) in &shape.methods {
+            let (Some((params, ret)), Some(target)) = (
+                signature(bytecode, &functions, *findex, !is_static),
+                target(*findex),
+            ) else {
+                continue;
+            };
+            methods.push(MethodIface {
+                name: name.clone(),
+                is_static: *is_static,
+                params,
+                ret,
+                target,
+            });
+        }
+        let ctor = shape.ctor.and_then(|findex| {
+            let (params, _) = signature(bytecode, &functions, findex, true)?;
+            let t = this_type(findex)?;
+            let Callable::Cell {
+                cell, signature, ..
+            } = target(findex)?
+            else {
+                return None;
+            };
+            Some(MethodIface {
+                name: "new".to_owned(),
+                is_static: true,
+                params,
+                ret: TypeRef::Object(obj.name.clone()),
+                target: Callable::Dynamic(proto::constructor(t, cell, signature)),
+            })
+        });
         let iface = Interface {
             lang,
             module: obj.name.clone(),
             classes: vec![ClassIface {
                 name: obj.name.rsplit('.').next().unwrap_or(&obj.name).to_owned(),
                 type_name: obj.name.clone(),
-                superclass,
-                fields,
-                statics,
+                superclass: superclass(bytecode, obj),
+                fields: shape.fields,
+                statics: shape.statics,
                 methods,
                 ctor,
-                class_object: proto::class_object(program.interpreter.c_type_of(index).cast()),
+                class_object: proto::class_object(
+                    program.interpreter.c_type_of(shape.index).cast(),
+                ),
             }],
             functions: Vec::new(),
         };
@@ -780,4 +811,77 @@ pub fn publish_module(
         published.push(Arc::new(iface));
     }
     Ok(published)
+}
+
+/// Every publishable class of the program at `path`, one module each as
+/// [`publish_module`] publishes them, described without loading it: what
+/// a build links another language's calls into Haxe by.
+pub fn describe_program(path: &Path) -> Result<Vec<caribou::describe::ModuleDesc>> {
+    use caribou::describe::{ClassDesc, FieldDesc, MemberDesc, MemberKind, ModuleDesc, ParamDesc};
+    bring_up(path, true)?;
+    let bytecode =
+        BytecodeDecoder::decode(path).with_context(|| format!("decoding {}", path.display()))?;
+    let functions: HashMap<i32, &HLFunction> =
+        bytecode.functions.iter().map(|f| (f.findex, f)).collect();
+    let member = |name: &str, kind: MemberKind, params: Vec<TypeRef>, ret: TypeRef| MemberDesc {
+        name: name.to_owned(),
+        kind,
+        signature: format!("{name}({})", vec!["_"; params.len()].join(",")),
+        params: params
+            .into_iter()
+            .enumerate()
+            .map(|(i, ty)| ParamDesc {
+                name: format!("a{i}"),
+                ty,
+            })
+            .collect(),
+        ret,
+        exported: false,
+    };
+    let field = |f: FieldIface| FieldDesc {
+        name: f.name,
+        ty: f.ty,
+    };
+    let mut out = Vec::new();
+    for shape in shapes(&bytecode) {
+        let obj = shape.obj;
+        let mut members = Vec::new();
+        if let Some((params, _)) = shape
+            .ctor
+            .and_then(|findex| signature(&bytecode, &functions, findex, true))
+        {
+            members.push(member(
+                "new",
+                MemberKind::Constructor,
+                params,
+                TypeRef::Object(obj.name.clone()),
+            ));
+        }
+        for (name, is_static, findex) in &shape.methods {
+            if let Some((params, ret)) = signature(&bytecode, &functions, *findex, !is_static) {
+                let kind = if *is_static {
+                    MemberKind::Static
+                } else {
+                    MemberKind::Method
+                };
+                members.push(member(name, kind, params, ret));
+            }
+        }
+        out.push(ModuleDesc {
+            lang: "haxe".to_owned(),
+            module: obj.name.clone(),
+            classes: vec![ClassDesc {
+                name: obj.name.rsplit('.').next().unwrap_or(&obj.name).to_owned(),
+                type_name: obj.name.clone(),
+                superclass: superclass(&bytecode, obj),
+                fields: shape.fields.into_iter().map(field).collect(),
+                statics: shape.statics.into_iter().map(field).collect(),
+                members,
+            }],
+            enums: Vec::new(),
+            functions: Vec::new(),
+            path: None,
+        });
+    }
+    Ok(out)
 }

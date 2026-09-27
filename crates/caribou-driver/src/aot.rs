@@ -124,9 +124,13 @@ pub fn build_with_languages(
         let beside = exe.with_file_name(file.file_name().unwrap_or_default());
         std::fs::copy(file, &beside).with_context(|| format!("writing {}", beside.display()))?;
     }
+    // The program's Haxe classes, which the other languages' modules may
+    // import.
+    let haxe = caribou_ash::program::describe_program(program)?;
     let languages = aot_languages::Artifacts::build(
         languages,
         sources,
+        &haxe,
         triple,
         &target_dir.join(triple).join("languages"),
     )?;
@@ -146,6 +150,8 @@ pub fn build_with_languages(
         quiet: false,
         links: links(program, &described, Some(&languages))?,
         objects: languages.objects(),
+        // The Haxe members the other languages' objects call.
+        exports: languages.exports(),
         // Caribou's tasks run on Ash's fibers in a wasm program, which
         // suspend only in a module the transform instrumented.
         wasm_fibers: true,

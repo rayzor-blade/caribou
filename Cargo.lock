@@ -2453,8 +2453,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "wasi",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -7021,7 +7023,7 @@ dependencies = [
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=c85602790b32311373531d561a08417dfa5aa627#c85602790b32311373531d561a08417dfa5aa627"
+source = "git+file:///Users/amaterasu/Vibranium/wren_lift?rev=17edace259f84ed0b7c730b024469e44190daaed#17edace259f84ed0b7c730b024469e44190daaed"
 dependencies = [
  "libc",
 ]
@@ -7029,7 +7031,7 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.22"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=c85602790b32311373531d561a08417dfa5aa627#c85602790b32311373531d561a08417dfa5aa627"
+source = "git+file:///Users/amaterasu/Vibranium/wren_lift?rev=17edace259f84ed0b7c730b024469e44190daaed#17edace259f84ed0b7c730b024469e44190daaed"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -7048,6 +7050,7 @@ dependencies = [
  "dynasm",
  "dynasmrt",
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "getrandom 0.3.4",
  "hmac",
  "indexmap 2.14.2",

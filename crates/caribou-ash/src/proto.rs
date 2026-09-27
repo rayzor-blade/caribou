@@ -237,6 +237,11 @@ fn kind_of_message(message: &str) -> ErrorKind {
     }
 }
 
+/// A thrown value's message, as [`describe_exception`] reads it.
+pub(crate) unsafe fn exception_text(exc: *mut vdynamic) -> String {
+    unsafe { describe_exception(exc) }.1
+}
+
 /// A thrown value's kind and message, read without running Haxe code: a
 /// bytes value is the runtime's own error, a String is the program's, and
 /// any other object is named by its class.

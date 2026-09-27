@@ -34,6 +34,16 @@ After the call, a check raises what the callee left pending, such as a plugin's 
 
 Members with `Dyn` or `Fun` types have no static form and stay on the bridge. The run report names each one.
 
+## Calls into Haxe
+
+A compiled language calls Haxe the same way, with the sides swapped. Only Ash knows the program's `hl_type`s, so the casts run on Haxe's side:
+
+* **Ash exports each Haxe member another language calls.** The export is a thunk under the member's link symbol, in the caller's convention: for WrenLift, one NaN-boxed word per argument, the receiver first, and one word for the result (`ash_core::host_export`). Inside, the thunk casts each word to the Haxe type, calls the member, and casts the result back. A Haxe throw is caught there and becomes the caller's error.
+* **The caller treats the Haxe class as a module of its own that calls those symbols.** An `import "bench:Bench" for Bench` in compiled Wren becomes the module `haxe:Bench`. WrenLift makes that class at start-up, and each of its members calls its symbol (`AotForeignModule`).
+* **The driver decides what crosses.** It describes the program's Haxe classes from the bytecode, finds each Wren import that names one, picks the casts by type, and hands Ash the exports and WrenLift the classes (`caribou-driver`'s `foreign.rs`). A Haxe object that crosses into Wren becomes an instance of that class, held through its cell as in a hosted run.
+
+A Wren class cannot extend such a class.
+
 The `caribou` library's own natives, which `caribou.Future` and `caribou.Sequence` declare, link to entry points in `caribou-ash` that run the same bridge operations a hosted run's natives run. A plugin's future crosses as a `caribou.Future`. A foreign object that crosses as a `Dynamic`, such as an awaited result, needs the Haxe class that stands for its type. A hosted run finds that class by reading the program. A compiled program can't, so each face class names its `hl_type` to the runtime as the program starts.
 
 ## Building a Program

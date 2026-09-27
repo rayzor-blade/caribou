@@ -107,13 +107,22 @@ pub unsafe fn function(v: Value, t: *mut hl_type) -> *mut vdynamic {
     crate::callback::function_for_typed(v, t)
 }
 
-/// A Haxe closure as the core value another language holds it by: the
-/// function itself when it came from one.
+/// A Haxe value as the core value another language holds it by: a
+/// function or an object that came from one as itself, any other object
+/// as the object.
 ///
 /// # Safety
-/// `c` is null or a live Haxe closure.
-pub unsafe fn closure(c: *mut vdynamic) -> Value {
-    unsafe { proto::dyn_to_value(c) }
+/// `d` is null or a live Haxe value.
+pub unsafe fn value(d: *mut vdynamic) -> Value {
+    unsafe { proto::dyn_to_value(d) }
+}
+
+/// What a Haxe exception says, read without running Haxe code.
+///
+/// # Safety
+/// `exc` is null or a live Haxe value.
+pub unsafe fn exception_text(exc: *mut vdynamic) -> String {
+    unsafe { proto::exception_text(exc) }
 }
 
 /// Raise `message` into the Haxe code that made a linked call, as the

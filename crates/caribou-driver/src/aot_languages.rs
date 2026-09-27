@@ -10,13 +10,21 @@ use ash_core::native_lib::{HostLink, Word};
 use caribou::describe::ModuleDesc;
 use caribou::registry::TypeRef;
 use wren_lift::codegen::aot::{AotBundleMeta, AotModule, walk_imports};
-use wren_lift::codegen::llvm_aot::{AotEntry, LlvmTarget, compile_modules_to_llvm_object_as};
+use wren_lift::codegen::llvm_aot::{AotEntry, LlvmTarget, compile_modules_to_llvm_object_with};
 
 /// A frontend that can contribute relocatable objects to an AOT build.
 pub trait Emitter {
     fn language(&self) -> &str;
 
-    fn emit(&self, sources: &[PathBuf], triple: &str, out_dir: &Path) -> Result<Vec<Artifact>>;
+    /// Compile the modules under `sources`. `haxe` is the program's Haxe
+    /// classes, which a module may import.
+    fn emit(
+        &self,
+        sources: &[PathBuf],
+        haxe: &[ModuleDesc],
+        triple: &str,
+        out_dir: &Path,
+    ) -> Result<Vec<Artifact>>;
 }
 
 /// The caller-side ABI adapter for one frontend's compiled exports.
@@ -33,6 +41,8 @@ pub struct Artifact {
     pub language: String,
     pub object: PathBuf,
     pub modules: Vec<(String, ModuleDesc)>,
+    /// The Haxe members the object calls, for Ash to export.
+    pub exports: Vec<ash_core::host_export::HostExport>,
     linker: Box<dyn Linker>,
 }
 
@@ -47,6 +57,7 @@ impl Artifact {
             language: language.into(),
             object,
             modules,
+            exports: Vec::new(),
             linker,
         }
     }
@@ -72,16 +83,18 @@ impl Artifacts {
     pub fn build(
         declared: &[String],
         sources: &[PathBuf],
+        haxe: &[ModuleDesc],
         triple: &str,
         out_dir: &Path,
     ) -> Result<Self> {
-        Self::build_with(declared, sources, triple, out_dir, &[&WrenEmitter])
+        Self::build_with(declared, sources, haxe, triple, out_dir, &[&WrenEmitter])
     }
 
     /// Compile with the frontend emitters available in this driver.
     pub fn build_with(
         declared: &[String],
         sources: &[PathBuf],
+        haxe: &[ModuleDesc],
         triple: &str,
         out_dir: &Path,
         emitters: &[&dyn Emitter],
@@ -110,7 +123,7 @@ impl Artifacts {
                     .iter()
                     .any(|language| language == emitter.language())
             {
-                items.extend(emitter.emit(sources, triple, out_dir)?);
+                items.extend(emitter.emit(sources, haxe, triple, out_dir)?);
             }
         }
         Ok(Self { items })
@@ -121,6 +134,14 @@ impl Artifacts {
         self.items
             .iter()
             .map(|artifact| artifact.object.clone())
+            .collect()
+    }
+
+    /// The Haxe members the objects call, for Ash to export.
+    pub fn exports(&self) -> Vec<ash_core::host_export::HostExport> {
+        self.items
+            .iter()
+            .flat_map(|artifact| artifact.exports.iter().cloned())
             .collect()
     }
 
@@ -139,8 +160,14 @@ impl Emitter for WrenEmitter {
         "wren"
     }
 
-    fn emit(&self, sources: &[PathBuf], triple: &str, out_dir: &Path) -> Result<Vec<Artifact>> {
-        Ok(build_wren(sources, triple, &out_dir.join("wren.o"))?
+    fn emit(
+        &self,
+        sources: &[PathBuf],
+        haxe: &[ModuleDesc],
+        triple: &str,
+        out_dir: &Path,
+    ) -> Result<Vec<Artifact>> {
+        Ok(build_wren(sources, haxe, triple, &out_dir.join("wren.o"))?
             .into_iter()
             .collect())
     }
@@ -148,7 +175,12 @@ impl Emitter for WrenEmitter {
 
 /// Compile the Wren modules under `sources` for `triple` into `out`, or
 /// `None` when there are none.
-fn build_wren(sources: &[PathBuf], triple: &str, out: &Path) -> Result<Option<Artifact>> {
+fn build_wren(
+    sources: &[PathBuf],
+    haxe: &[ModuleDesc],
+    triple: &str,
+    out: &Path,
+) -> Result<Option<Artifact>> {
     let mut found = Vec::new();
     for root in sources.iter().filter(|root| root.is_dir()) {
         crate::bundle::wren_modules(root, root, &mut found)?;
@@ -182,24 +214,24 @@ fn build_wren(sources: &[PathBuf], triple: &str, out: &Path) -> Result<Option<Ar
         described.push((name.clone(), desc));
     }
     name_imports(&mut modules, &found);
+    let (foreign, exports) = crate::foreign::plan(&mut modules, haxe);
     let modules = dependencies_first(modules);
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    compile_modules_to_llvm_object_as(
+    compile_modules_to_llvm_object_with(
         &modules,
         &bundle,
         &LlvmTarget::new(triple, None, None),
         AotEntry::Library,
+        false,
+        &foreign,
         out,
     )
     .map_err(|error| anyhow!("compiling the Wren modules: {error:?}"))?;
-    Ok(Some(Artifact::new(
-        "wren",
-        out.to_path_buf(),
-        described,
-        Box::new(WrenLinker),
-    )))
+    let mut artifact = Artifact::new("wren", out.to_path_buf(), described, Box::new(WrenLinker));
+    artifact.exports = exports;
+    Ok(Some(artifact))
 }
 
 /// Give each module under the roots its name there, and each of its
@@ -365,6 +397,7 @@ mod tests {
         let error = Artifacts::build(
             &["haxe".to_owned(), "python".to_owned()],
             &[],
+            &[],
             "wasm32-wasip1",
             Path::new("unused"),
         )
@@ -380,7 +413,13 @@ mod tests {
             "python"
         }
 
-        fn emit(&self, _: &[PathBuf], _: &str, _: &Path) -> Result<Vec<Artifact>> {
+        fn emit(
+            &self,
+            _: &[PathBuf],
+            _: &[ModuleDesc],
+            _: &str,
+            _: &Path,
+        ) -> Result<Vec<Artifact>> {
             Ok(Vec::new())
         }
     }
@@ -389,6 +428,7 @@ mod tests {
     fn accepts_any_registered_frontend_emitter() {
         Artifacts::build_with(
             &["haxe".to_owned(), "python".to_owned()],
+            &[],
             &[],
             "wasm32-wasip1",
             Path::new("unused"),

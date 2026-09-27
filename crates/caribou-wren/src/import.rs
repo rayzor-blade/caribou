@@ -372,6 +372,17 @@ pub fn configure(config: &mut VMConfig) {
     }));
 }
 
+/// Take `class`, which a compiled program made for another language's type
+/// `type_name`, as the class that type's objects cross into Wren as: what
+/// `install` records for a class it made.
+pub fn adopt_class(vm: &mut VM, lang: LangId, type_name: &str, class: *mut ObjClass) {
+    let rec = record_for(vm.object_class as *mut u8);
+    rec.imports()
+        .borrow_mut()
+        .by_type
+        .insert((lang, symbol::intern(type_name)), class);
+}
+
 /// Install the published module `module` of `lang` into `vm`, if it is not
 /// already, and return its Wren module name.
 pub fn install(vm: &mut VM, lang: LangId, module: &str) -> Result<String, ImportError> {
