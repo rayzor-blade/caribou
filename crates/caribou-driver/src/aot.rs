@@ -76,7 +76,7 @@ pub fn build_with_languages(
         .iter()
         .map(|c| linked::host_library(c, &target_dir))
         .collect::<Result<Vec<_>>>()?;
-    let (runtime, mut agents) = if crates.is_empty() {
+    let (runtime, mut page) = if crates.is_empty() {
         (wasm_runtime(triple, &target_dir)?, Vec::new())
     } else {
         let mut named = Vec::with_capacity(crates.len());
@@ -106,9 +106,8 @@ pub fn build_with_languages(
             )
             .collect();
         let module = exe.with_file_name(format!("{name}.wasm"));
-        agents.extend(linked::side_module(
+        page.extend(linked::side_module(
             dir,
-            &name,
             triple,
             &exports,
             &target_dir,
@@ -116,10 +115,10 @@ pub fn build_with_languages(
         )?);
         described.push((library, Some(name)));
     }
-    // What a page starts beside the program when a plugin asks for its agent.
-    for agent in &agents {
-        let beside = exe.with_file_name(agent.file_name().unwrap_or_default());
-        std::fs::copy(agent, &beside).with_context(|| format!("writing {}", beside.display()))?;
+    // What the plugins run in a page, beside the program.
+    for file in &page {
+        let beside = exe.with_file_name(file.file_name().unwrap_or_default());
+        std::fs::copy(file, &beside).with_context(|| format!("writing {}", beside.display()))?;
     }
     let languages = aot_languages::Artifacts::build(
         languages,

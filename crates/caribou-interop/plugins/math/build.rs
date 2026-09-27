@@ -1,6 +1,7 @@
-//! An agent module, as a plugin whose page-side half runs beside the
-//! program ships one: the driver writes it beside a wasm build.
+//! A page part, as a plugin that has one ships it: its files in
+//! `OUT_DIR/page`, which the driver writes beside a wasm build.
 fn main() {
-    let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
-    std::fs::write(out.join("math_agent.mjs"), "// The math plugin's agent.\n").unwrap();
+    let page = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("page");
+    std::fs::create_dir_all(&page).unwrap();
+    std::fs::write(page.join("math.mjs"), "export function start() {}\n").unwrap();
 }

@@ -66,8 +66,8 @@ fn caribou_with_env(dir: &Path, haxelib: &Path, args: &[&str], env: &[(&str, &st
 fn a_plugin_crate_links_into_a_wasm_program() {
     let dir = plugin_program("caribou-linked", "");
     assert!(
-        dir.join("target/math_agent.mjs").is_file(),
-        "the plugin's agent beside the program"
+        dir.join("target/math.mjs").is_file(),
+        "the plugin's page part beside the program"
     );
 }
 
@@ -79,8 +79,8 @@ fn a_plugin_crate_loads_beside_a_wasm_program_as_a_side_module() {
         "the side module beside the program"
     );
     assert!(
-        dir.join("target/math_agent.mjs").is_file(),
-        "the plugin's agent beside the program"
+        dir.join("target/math.mjs").is_file(),
+        "the plugin's page part beside the program"
     );
 }
 

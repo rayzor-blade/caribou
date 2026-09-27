@@ -154,10 +154,22 @@ These additions change the host and plugin tables. ABI version **2** requires re
 * **Create strings** with `text`, buffers with `Buffer::new`, and enums through `Enum<T>`.
 * **Call values it was given** with `call`. The `Err` case is the error value the call raised.
 * **Raise errors.** `raise` creates an error of a given kind with a message and marks it pending. `raise_value` marks an error value that a call returned as pending. In both cases the plugin function then returns, its result is ignored, and its caller sees the error the same way it sees an error raised by any language.
-* **Start an agent** with `agent`. In a page, Ash's browser host has the page start the plugin's agent module (`<name>_agent.mjs`, shipped beside the program) as a worker. The page hands the worker the program's memory and an address in it, and the plugin and its agent then work through shared memory. Anywhere else, `agent` returns false.
+* **Start its part in a page** with `agent`. See [A Plugin in a Page](#a-plugin-in-a-page). Anywhere else, `agent` returns false.
+* **Watch a word** with `watch`. The plugin's handler runs on the world's main context each time the word changes. The call returns the world's wake word, which whatever changes the word from outside the world, such as the plugin's part in a page, adds one to and notifies.
 * **Keep values across calls** in a `Kept`. A `Kept` is a handle that the collector honors until the `Kept` is dropped. A bare `Value` stored in the plugin's own memory is invisible to the collector. A plugin object that keeps a callback stores it in a `Kept` and invokes it with `call` when needed. The function can come from Wren or from Haxe, and anything it raises comes back to the plugin to handle or pass on.
 
 Every entry in the table is called on the caller's thread, inside the plugin function the dispatcher is calling. A plugin has no thread of its own to call from.
+
+## A Plugin in a Page
+
+A plugin that runs in a browser can bring its own JavaScript, for the parts only a page can do. For example, the GPU plugin's page part holds the browser's WebGPU. The page itself stays generic: what it knows about any plugin is this convention.
+
+* **What the plugin ships.** The plugin crate's build script writes its page files to `$OUT_DIR/page/`. The entry is `<name>.mjs`, named after the plugin. Any other file there is the plugin's own, loaded by the entry relative to itself. `caribou build` for wasm writes every file in that directory beside the program, whether the plugin is linked or a side module.
+* **How it starts.** When the program calls `host::agent(name, address)`, the page imports `./<name>.mjs` on its own thread and calls its exported `start({ memory, address, canvas })`. `memory` is the program's shared `WebAssembly.Memory`, `address` is what the plugin passed, and `canvas` is the page's `<canvas>` element.
+* **What it may do.** The entry runs on the page's thread, so it can listen for DOM events and start Workers, which a Worker cannot always do. A part that needs its own event loop, such as the GPU plugin's, runs in a Worker the entry starts. The entry may give that Worker the canvas with `transferControlToOffscreen`; only one part can take it, and whoever takes it then owns the drawing buffer's size.
+* **How it talks to the program.** Only through the program's shared memory, at the address it was given. It can wait with `Atomics.waitAsync` and wake the program by notifying. It can also wake the program's world when a word the plugin watches changes, by adding one to the wake word and notifying. It never calls into the program.
+
+The page's own concerns stay the page's. The window, meaning the canvas, its size and its DOM events, is Ash's page's, not a plugin's.
 
 ## Hatch Packages
 

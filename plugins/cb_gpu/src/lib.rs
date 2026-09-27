@@ -33,9 +33,6 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/gpu_wire.rs"));
 }
 
-/// The GPU agent's half of the wire: an ES module, for the program to ship.
-#[cfg(target_os = "wasi")]
-pub const AGENT: &str = include_str!(concat!(env!("OUT_DIR"), "/gpu_agent.mjs"));
 use caribou_abi::{Buffer, BufferMut, Enum, Future, Text};
 include!(concat!(env!("OUT_DIR"), "/gpu.rs"));
 

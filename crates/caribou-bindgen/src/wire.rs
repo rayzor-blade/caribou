@@ -1142,15 +1142,15 @@ export function execute(wire, at, len) {
   }
 }
 
-/// Serve, from this worker, the program the page started it for: the page
-/// posts the program's memory and its mailbox's address. `roots` makes
-/// the objects the plugin names by the first handles, and may ask the page
-/// for more first; `setup`, if given, then prepares the wire.
+/// Serve, from this worker, the program its starter posts it: the
+/// program's memory and its mailbox's address, and whatever else the
+/// starter gives. `roots` makes, from that message, the objects the plugin
+/// names by the first handles; `setup`, if given, then prepares the wire.
 export function start(roots, setup) {
   const first = async ({ data }) => {
     if (data.memory === undefined) return;
     self.removeEventListener("message", first);
-    const wire = new Wire(data.memory, await roots());
+    const wire = new Wire(data.memory, await roots(data));
     if (setup) setup(wire);
     serve(wire, data.address);
   };

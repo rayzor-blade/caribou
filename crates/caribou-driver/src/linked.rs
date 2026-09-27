@@ -102,11 +102,10 @@ pub fn host_library(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
 /// that way, with `caribou_abi`'s `side_module` feature, so it allocates
 /// with the program's `malloc` and takes the host table from the program.
 /// It exports `exports`, its members' link symbols, which the program
-/// finds in it when it starts. Built under `target_dir`. Returns the agent
-/// module the plugin ships, if it has one ([`agents`]).
+/// finds in it when it starts. Built under `target_dir`. Returns what the
+/// plugin wrote for a page ([`page_files`]).
 pub fn side_module(
     dir: &Path,
-    name: &str,
     triple: &str,
     exports: &[String],
     target_dir: &Path,
@@ -162,7 +161,7 @@ pub fn side_module(
         .join(format!("lib{lib}.a"));
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     wasm_toolchain::side_module(&rustc, &root, &archive, exports, out).map_err(|e| anyhow!(e))?;
-    Ok(agents(&out_dirs, &[name]))
+    Ok(page_files(&out_dirs))
 }
 
 /// Run a cargo build, its messages read for the `OUT_DIR` of every build
@@ -184,25 +183,28 @@ fn build_reporting(build: &mut std::process::Command) -> Result<Vec<PathBuf>> {
         .collect())
 }
 
-/// The agent modules of the plugins `named`: a plugin whose page-side half
-/// runs as an agent beside the program writes it to its build script's
-/// `OUT_DIR` as `<name>_agent.mjs`, which a page starts when the plugin
-/// asks the host for its agent. The program ships it beside the module.
-fn agents(out_dirs: &[PathBuf], named: &[&str]) -> Vec<PathBuf> {
-    named
+/// What the plugins' builds wrote for a page: every file in an `OUT_DIR`'s
+/// `page` directory, which the program ships beside the module. A plugin's
+/// entry there is `<name>.mjs`, which the page imports on its own thread
+/// when the plugin asks the host for its agent (see `docs/architecture/
+/// plugins.md`).
+fn page_files(out_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    out_dirs
         .iter()
-        .flat_map(|name| {
-            out_dirs
-                .iter()
-                .map(move |dir| dir.join(format!("{name}_agent.mjs")))
+        .flat_map(|dir| {
+            std::fs::read_dir(dir.join("page"))
+                .into_iter()
+                .flatten()
+                .flatten()
         })
-        .filter(|module| module.is_file())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_file())
         .collect()
 }
 
 /// Build the runtime object for `triple` with `plugins` linked in, each
 /// its crate and the name it registers under, under `target_dir`. Returns
-/// the object, and the agent modules the plugins ship ([`agents`]).
+/// the object, and what the plugins wrote for a page ([`page_files`]).
 pub fn runtime(
     plugins: &[(PathBuf, String)],
     triple: &str,
@@ -311,8 +313,7 @@ crate-type = ["staticlib"]
     let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
     wasm_toolchain::prelink(&rustc, &root, &archive, &sysroot, triple, &object)
         .map_err(|e| anyhow!(e))?;
-    let named: Vec<&str> = plugins.iter().map(|(_, name)| name.as_str()).collect();
-    Ok((object, agents(&out_dirs, &named)))
+    Ok((object, page_files(&out_dirs)))
 }
 
 /// The source workspace's `[patch]` and `[profile]` tables, with each
