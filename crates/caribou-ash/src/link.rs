@@ -26,6 +26,31 @@ pub unsafe extern "C" fn caribou_haxe_string_to_str(s: *mut vdynamic, _t: *mut h
     Str::new(&unsafe { proto::string_text(s) }) as *mut u8
 }
 
+/// The text of a Haxe `String`, for another language's cast.
+///
+/// # Safety
+/// `s` is a live `String` object.
+pub unsafe fn string_text(s: *mut vdynamic) -> String {
+    unsafe { proto::string_text(s) }
+}
+
+/// A Haxe `String` of the program's type `t` holding `text`, for another
+/// language's cast. Unrooted, like every fresh Haxe object.
+///
+/// # Safety
+/// `t` is the program's `String` type.
+pub unsafe fn string(t: *mut hl_type, text: &str) -> *mut vdynamic {
+    unsafe { proto::alloc_string_typed(t, text) }
+}
+
+/// Raise `message` into the Haxe code that made a linked call, as the
+/// error of the callee's language `origin`.
+pub fn raise(message: &str, origin: caribou_abi::LangId) {
+    let e = caribou::error::Error::new(caribou_abi::ErrorKind::Runtime, message, origin);
+    bridge::set_pending(caribou::error::Error::value(e));
+    unsafe { caribou_haxe_raise_pending() };
+}
+
 /// A core string as a Haxe `String` of the program's type `t`.
 ///
 /// # Safety

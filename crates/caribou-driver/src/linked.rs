@@ -223,3 +223,11 @@ fn source_tables(root: &Path) -> Result<(Option<toml::Value>, Option<toml::Value
     }
     Ok((patch, table.remove("profile")))
 }
+
+/// Join relocatable wasm objects into `out`: a runtime object and what the
+/// program links beside it.
+pub fn join(objects: &[&Path], out: &Path) -> Result<()> {
+    let root = source_root()?;
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    wasm_toolchain::join(&rustc, &root, objects, out).map_err(|e| anyhow!(e))
+}

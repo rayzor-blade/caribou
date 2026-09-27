@@ -28,7 +28,7 @@ mod sched;
 mod wrenref;
 
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 use ash_std::rt::RuntimeVTable;
 use caribou::world::Adapter;
@@ -208,6 +208,24 @@ pub fn installed() -> bool {
     INSTALLED.load(Ordering::Acquire)
 }
 
+static PROGRAM_START: AtomicPtr<()> = AtomicPtr::new(std::ptr::null_mut());
+
+/// Set what a compiled program's `main` runs once the heap and the
+/// module are up, before its entry: what the program links beside itself
+/// starts here. A nonzero status ends the program with it.
+pub fn on_program_start(start: fn() -> i32) {
+    PROGRAM_START.store(start as *mut (), Ordering::Release);
+}
+
+unsafe extern "C" fn program_start() -> i32 {
+    let start = PROGRAM_START.load(Ordering::Acquire);
+    if start.is_null() {
+        return 0;
+    }
+    let start: fn() -> i32 = unsafe { std::mem::transmute(start) };
+    start()
+}
+
 /// Every slot, filled: a `None` would leave Ash's own implementation
 /// sharing a process with the core's.
 fn table() -> RuntimeVTable {
@@ -286,6 +304,8 @@ fn table() -> RuntimeVTable {
         mark_main_thread: Some(sched::mark_main_thread),
         is_main_thread: Some(sched::is_main_thread),
         foreign_threads_seen: Some(sched::foreign_threads_seen),
+        // Program.
+        program_start: Some(program_start),
     }
 }
 

@@ -14,20 +14,23 @@ use anyhow::{Result, anyhow, bail};
 use ash_core::llvm::aot_build::{AotRequest, emit_aot};
 use ash_core::llvm::aot_link::is_wasm_triple;
 use ash_core::native_lib::{HostLink, Word};
+use caribou::registry::TypeRef;
 use caribou_abi::TypeTag;
 
-use crate::linked;
+use crate::{linked, wren_link};
 
 /// Build `program` for `triple` into `out`, by default the program's name
-/// with the target's extension beside it. Its calls into `plugins` link
-/// directly: a plugin given as its crate is linked into the program, built
-/// under `target_dir` (by default `target/` beside the output). Returns
-/// what was written.
+/// with the target's extension beside it. Its calls into `plugins`, and
+/// into the Wren modules under `sources`, link directly: a plugin given as
+/// its crate, and the Wren modules compiled by WrenLift, are linked into
+/// the program, built under `target_dir` (by default `target/` beside the
+/// output). Returns what was written.
 pub fn build(
     program: &Path,
     triple: &str,
     out: Option<&Path>,
     plugins: &[PathBuf],
+    sources: &[PathBuf],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
     if !is_wasm_triple(triple) {
@@ -41,7 +44,7 @@ pub fn build(
     let (crates, libraries): (Vec<PathBuf>, Vec<PathBuf>) =
         plugins.iter().cloned().partition(|p| linked::is_crate(p));
     // A library joins a wasm program only as a side module.
-    let unlinkable = links(program, &libraries)?;
+    let unlinkable = links(program, &libraries, None)?;
     if let Some((_, name)) = unlinkable.keys().next() {
         bail!(
             "`{name}` is a plugin library's, which joins a wasm program only as a side module \
@@ -62,6 +65,15 @@ pub fn build(
         }
         linked::runtime(&named, triple, &target_dir)?
     };
+    let wren = wren_link::build(sources, triple, &target_dir.join(triple).join("wren.o"))?;
+    let runtime = match &wren {
+        Some(wren) => {
+            let joined = target_dir.join(triple).join("program_runtime.o");
+            linked::join(&[&runtime, &wren.object], &joined)?;
+            joined
+        }
+        None => runtime,
+    };
     // Scratch, named after the module beside it and removed once linked.
     let mut name = exe.file_name().unwrap_or_default().to_os_string();
     name.push(".o");
@@ -76,7 +88,7 @@ pub fn build(
         allow_refused: false,
         abi_version: 1,
         quiet: false,
-        links: links(program, &described)?,
+        links: links(program, &described, wren.as_ref())?,
     })?;
     Ok(exe)
 }
@@ -101,11 +113,15 @@ fn wasm_runtime(triple: &str) -> Result<PathBuf> {
         })
 }
 
-/// The program's `caribou` natives that a plugin defines, each linked to
-/// the plugin's member by its symbol: the plugin's own machine types, and
-/// the casts between them and Haxe's. A member whose types have no cast
-/// yet is left to the program's run-time path.
-fn links(program: &Path, plugins: &[PathBuf]) -> Result<HashMap<(String, String), HostLink>> {
+/// The program's `caribou` natives that a plugin or a linked Wren module
+/// defines, each linked to the member by its symbol: the callee's own
+/// machine types, and the casts between them and Haxe's. A member whose
+/// types have no cast yet is left to the program's run-time path.
+fn links(
+    program: &Path,
+    plugins: &[PathBuf],
+    wren: Option<&wren_link::Library>,
+) -> Result<HashMap<(String, String), HostLink>> {
     let mut members = Vec::new();
     for plugin in plugins {
         members.extend(caribou_plugin::links(plugin).map_err(|e| anyhow!("{e}"))?);
@@ -126,11 +142,65 @@ fn links(program: &Path, plugins: &[PathBuf]) -> Result<HashMap<(String, String)
                 && l.name == m.name
                 && l.arity == m.arity
         });
-        if let Some(link) = found.and_then(host_link) {
+        let link = match found {
+            Some(found) => host_link(found),
+            None => wren.and_then(|w| wren_host_link(w, &m)),
+        };
+        if let Some(link) = link {
             out.insert((lib, name), link);
         }
     }
     Ok(out)
+}
+
+/// A static of a linked Wren module as Ash links it, or `None` while one
+/// of its types has no cast: every Wren value is a NaN-boxed word, cast
+/// directly from and to Haxe's form, and whatever the member raises is
+/// thrown after.
+fn wren_host_link(wren: &wren_link::Library, m: &caribou_ash::link::Member) -> Option<HostLink> {
+    if m.kind != caribou::link::Kind::Static {
+        return None;
+    }
+    let (module, desc) = wren.module(&m.namespace, &m.module)?;
+    let member = desc
+        .classes
+        .iter()
+        .find(|c| c.name == m.class)?
+        .members
+        .iter()
+        .find(|d| {
+            caribou::link::Kind::from(d.kind) == m.kind
+                && d.name == m.name
+                && d.params.len() == m.arity
+        })?;
+    let arg_casts = member
+        .params
+        .iter()
+        .map(|p| wren_casts(&p.ty).map(|(from_haxe, _)| Some(from_haxe.to_owned())))
+        .collect::<Option<Vec<_>>>()?;
+    let ret_cast = match &member.ret {
+        TypeRef::Void | TypeRef::Dyn => None,
+        ty => Some(wren_casts(ty)?.1.to_owned()),
+    };
+    Some(HostLink {
+        symbol: caribou::link::symbol("wren", module, &m.class, m.kind, &m.name, m.arity),
+        params: vec![Word::I64; m.arity],
+        ret: Some(Word::I64),
+        arg_casts,
+        ret_cast,
+        after: Some("caribou_wren_raise_pending".to_owned()),
+    })
+}
+
+/// The casts from Haxe's form of a declared Wren type and back to it.
+fn wren_casts(ty: &TypeRef) -> Option<(&'static str, &'static str)> {
+    Some(match ty {
+        TypeRef::Float => ("caribou_wren_from_float", "caribou_wren_to_float"),
+        TypeRef::Int => ("caribou_wren_from_int", "caribou_wren_to_int"),
+        TypeRef::Bool => ("caribou_wren_from_bool", "caribou_wren_to_bool"),
+        TypeRef::Str => ("caribou_wren_from_haxe_string", "caribou_wren_to_haxe_string"),
+        _ => return None,
+    })
 }
 
 /// A plugin member as Ash links it, or `None` while one of its types has

@@ -8,6 +8,8 @@
 use std::env;
 use std::path::PathBuf;
 
+// The driver uses all of it; this script, the runtime build.
+#[allow(dead_code)]
 #[path = "src/wasm_toolchain.rs"]
 mod wasm_toolchain;
 

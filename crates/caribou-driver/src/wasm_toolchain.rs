@@ -120,3 +120,19 @@ pub fn prelink(
     }
     Ok(())
 }
+
+/// Join relocatable objects into one, `out`: a runtime object and what
+/// the program links beside it.
+pub fn join(rustc: &OsStr, root: &Path, objects: &[&Path], out: &Path) -> Result<(), String> {
+    let lld = lld(rustc, root)?;
+    let status = Command::new(&lld)
+        .args(["-flavor", "wasm", "-r", "-o"])
+        .arg(out)
+        .args(objects)
+        .status()
+        .map_err(|e| format!("running {}: {e}", lld.display()))?;
+    if !status.success() {
+        return Err(format!("joining the program's objects: {status}"));
+    }
+    Ok(())
+}

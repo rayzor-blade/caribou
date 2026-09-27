@@ -8,8 +8,12 @@
 //! the program's entry point creates the heap: the engine runs a wasm
 //! module's constructors at instantiation, and a native loader runs them
 //! before `main`. Each seam refuses an install once its heap exists.
+//! It also sets what the program's `main` runs before the entry: the
+//! WrenLift modules linked beside it, in a VM of their own ([`wren`]).
 
 use std::process;
+
+mod wren;
 
 #[used]
 #[cfg_attr(
@@ -31,6 +35,7 @@ extern "C" fn start() {
         eprintln!("caribou: installing the core into WrenLift: {e}");
         process::abort();
     }
+    caribou_ash::on_program_start(wren::start);
 }
 
 #[cfg(test)]

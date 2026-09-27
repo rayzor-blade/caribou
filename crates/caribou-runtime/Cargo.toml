@@ -8,6 +8,7 @@ description = "What a linked program runs on: Ash's and WrenLift's runtimes over
 [dependencies]
 ash_std = { workspace = true }
 caribou = { path = "../caribou" }
+caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash" }
 caribou-wren = { path = "../caribou-wren", default-features = false }
 # The entry points and helpers WrenLift's compiled programs call.

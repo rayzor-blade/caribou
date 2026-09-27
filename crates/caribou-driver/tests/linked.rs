@@ -1,5 +1,5 @@
-//! A project whose plugin is its crate, built ahead of time for wasm: the
-//! plugin links into the program's runtime, the program calls its members
+//! A project built ahead of time for wasm, its plugin crate and its Wren
+//! modules linked into the program: the program calls their members
 //! directly, and `caribou run` runs the module. Needs the `llvm` feature,
 //! which is what builds ahead of time.
 #![cfg(feature = "llvm")]
@@ -81,6 +81,78 @@ fn a_plugin_crate_links_into_a_wasm_program() {
     assert_eq!(
         lines,
         ["5", "42", "true", "HÉLLO!", "5", "3.5", "caught: quotient by zero"],
+        "{ran}"
+    );
+}
+
+const TALLY: &str = r#"
+System.print("wren module ran")
+
+class Tally {
+  #export = "add(x: Num) -> Num"
+  static add(x) { x + 1 }
+
+  #export = "greet(s: String) -> String"
+  static greet(s) { "hello " + s }
+
+  #export = "even(n: Num) -> Bool"
+  static even(n) { n % 2 == 0 }
+
+  #export = "fail() -> Num"
+  static fail() { Fiber.abort("wren says no") }
+}
+"#;
+
+const CALLS_WREN: &str = r#"
+import calc.tally.Tally;
+
+class Main {
+  static function main() {
+    Sys.println(Tally.add(41));
+    Sys.println(Tally.greet("haxe"));
+    Sys.println(Tally.even(6));
+    try {
+      Tally.fail();
+      Sys.println("no error");
+    } catch (e:Dynamic) {
+      Sys.println("caught: " + e);
+    }
+  }
+}
+"#;
+
+#[test]
+fn a_wren_module_links_into_a_wasm_program() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("caribou-linked-wren");
+    std::fs::create_dir_all(dir.join("src/calc")).unwrap();
+    std::fs::write(dir.join("src/calc/tally.wren"), TALLY).unwrap();
+    std::fs::write(dir.join("src/Main.hx"), CALLS_WREN).unwrap();
+    std::fs::write(
+        dir.join("hw.cbproj"),
+        "[project]\nname = \"hw\"\nentry = \"haxe:Main\"\nlanguages = [\"haxe\", \"wren\"]\n",
+    )
+    .unwrap();
+    let haxelib = dir.join("haxelib");
+    std::fs::create_dir_all(&haxelib).unwrap();
+    let status = Command::new("haxelib")
+        .env("HAXELIB_PATH", &haxelib)
+        .args(["dev", "caribou"])
+        .arg(root.join("haxe"))
+        .status()
+        .expect("haxelib runs");
+    assert!(status.success());
+
+    let built = caribou(&dir, &haxelib, &["build", "--target", "wasm32-wasip1"]);
+    let module = PathBuf::from(built.lines().last().expect("the module's path").trim());
+    let ran = caribou(&dir, &haxelib, &["run", module.to_str().unwrap()]);
+    let lines: Vec<&str> = ran.lines().collect();
+    assert_eq!(
+        lines,
+        ["wren module ran", "42", "hello haxe", "true", "caught: wren says no"],
         "{ran}"
     );
 }

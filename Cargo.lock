@@ -285,7 +285,7 @@ dependencies = [
  "anyhow",
  "ash_macro",
  "ash_std",
- "ash_wasm_link",
+ "ash_wasm_link 0.1.0",
  "beadie",
  "bindgen",
  "byteorder",
@@ -379,11 +379,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ash_wasm_link"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/ash?rev=312b4a4f0da6cf3f26807aa3d3d6b2dd01da3f56#312b4a4f0da6cf3f26807aa3d3d6b2dd01da3f56"
+dependencies = [
+ "anyhow",
+ "wasm-encoder 0.258.0",
+ "wasmparser 0.258.0",
+]
+
+[[package]]
 name = "ash_wasm_runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "ash_wasm_link",
+ "ash_wasm_link 0.1.0",
  "clap",
  "libc",
  "tokio",
@@ -997,6 +1007,7 @@ dependencies = [
  "caribou",
  "caribou-ash",
  "caribou-wren",
+ "caribou_abi",
  "wren_lift",
 ]
 
@@ -1634,6 +1645,21 @@ source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e83
 dependencies = [
  "cranelift-codegen 0.136.0-dev",
  "libc",
+ "target-lexicon",
+]
+
+[[package]]
+name = "cranelift-object"
+version = "0.136.0-dev"
+source = "git+https://github.com/bytecodealliance/wasmtime?rev=bc2f967927f9f0e839095a752bf554c4a09fdd13#bc2f967927f9f0e839095a752bf554c4a09fdd13"
+dependencies = [
+ "anyhow",
+ "cranelift-codegen 0.136.0-dev",
+ "cranelift-control 0.136.0-dev",
+ "cranelift-module",
+ "gimli",
+ "log",
+ "object 0.40.0",
  "target-lexicon",
 ]
 
@@ -3835,6 +3861,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
+ "crc32fast",
+ "hashbrown 0.17.1",
+ "indexmap 2.14.2",
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5187,7 +5225,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -6898,6 +6936,7 @@ dependencies = [
  "aes-gcm",
  "argon2",
  "ariadne",
+ "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash?rev=312b4a4f0da6cf3f26807aa3d3d6b2dd01da3f56)",
  "base64",
  "beadie",
  "bincode 2.0.1",
@@ -6907,6 +6946,7 @@ dependencies = [
  "cranelift-jit",
  "cranelift-module",
  "cranelift-native 0.136.0-dev",
+ "cranelift-object",
  "dynasm",
  "dynasmrt",
  "ed25519-dalek",
@@ -6929,6 +6969,7 @@ dependencies = [
  "sha1",
  "sha2",
  "smallvec",
+ "target-lexicon",
  "tempfile",
  "toml 0.8.23",
  "toml_edit 0.22.27",
