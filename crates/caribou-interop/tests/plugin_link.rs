@@ -17,7 +17,10 @@ fn every_member_is_exported_under_its_link_symbol() {
     let library = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|e| e == std::env::consts::DLL_EXTENSION))
+        .find(|p| {
+            p.extension()
+                .is_some_and(|e| e == std::env::consts::DLL_EXTENSION)
+        })
         .expect("the math plugin");
     let modules = caribou_plugin::describe(&library).expect("the plugin describes itself");
     let opened = unsafe { libloading::Library::new(&library) }.unwrap();
@@ -50,16 +53,28 @@ fn the_plugins_links_name_what_it_exports() {
     let library = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .find(|p| p.extension().is_some_and(|e| e == std::env::consts::DLL_EXTENSION))
+        .find(|p| {
+            p.extension()
+                .is_some_and(|e| e == std::env::consts::DLL_EXTENSION)
+        })
         .expect("the math plugin");
     let links = caribou_plugin::links(&library).expect("the plugin's links");
     let opened = unsafe { libloading::Library::new(&library) }.unwrap();
     for link in &links {
         let found = unsafe { opened.get::<unsafe extern "C" fn()>(link.symbol.as_bytes()) };
-        assert!(found.is_ok(), "{} for {}.{}", link.symbol, link.class, link.name);
+        assert!(
+            found.is_ok(),
+            "{} for {}.{}",
+            link.symbol,
+            link.class,
+            link.name
+        );
     }
     let hypot = links.iter().find(|l| l.name == "hypot").expect("hypot");
     assert_eq!(hypot.symbol, "caribou_4math_4Math_4Math_t5hypot_2");
-    assert_eq!(hypot.params, [caribou_abi::TypeTag::F64, caribou_abi::TypeTag::F64]);
+    assert_eq!(
+        hypot.params,
+        [caribou_abi::TypeTag::F64, caribou_abi::TypeTag::F64]
+    );
     assert_eq!(hypot.ret, caribou_abi::TypeTag::F64);
 }

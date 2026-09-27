@@ -250,6 +250,7 @@ impl Linker for WrenLinker {
             ret_cast,
             after: Some("caribou_wren_raise_pending".to_owned()),
             init,
+            library: None,
         })
     }
 }

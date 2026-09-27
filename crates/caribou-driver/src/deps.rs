@@ -44,7 +44,12 @@ pub fn unresolved(project: &Project) -> Result<Vec<String>> {
         .collect();
     rockspecs.sort();
     out.extend(rockspecs.iter().map(|r| r.display().to_string()));
-    out.extend(project.python.keys().map(|name| format!("python package `{name}`")));
+    out.extend(
+        project
+            .python
+            .keys()
+            .map(|name| format!("python package `{name}`")),
+    );
     out.extend(project.lua.keys().map(|name| format!("lua rock `{name}`")));
     Ok(out)
 }

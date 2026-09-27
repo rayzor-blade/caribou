@@ -313,7 +313,6 @@ impl Project {
             .map(|library| caribou_plugin::load(library).map_err(|e| anyhow!("{e}")))
             .collect()
     }
-
 }
 
 #[cfg(test)]
@@ -321,7 +320,8 @@ mod tests {
     use super::*;
 
     fn written(name: &str, text: &str) -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("caribou-cbproj-{name}-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("caribou-cbproj-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join(format!("{name}.cbproj"));
         std::fs::write(&file, text).unwrap();

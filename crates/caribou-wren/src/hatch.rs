@@ -14,8 +14,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-pub use wren_lift::hatch::Dependency;
 use wren_lift::hatch as wh;
+pub use wren_lift::hatch::Dependency;
 use wren_lift::runtime::engine::InterpretResult;
 use wren_lift::runtime::vm::VM;
 
@@ -78,7 +78,9 @@ fn resolve(root: &Path, name: &str, dep: &wh::Dependency) -> Result<Vec<u8>, Str
 
 #[cfg(not(feature = "host"))]
 fn resolve(_: &Path, name: &str, _: &wh::Dependency) -> Result<Vec<u8>, String> {
-    Err(format!("`{name}`: hatch dependencies are resolved by a host build"))
+    Err(format!(
+        "`{name}`: hatch dependencies are resolved by a host build"
+    ))
 }
 
 fn resolve_into(

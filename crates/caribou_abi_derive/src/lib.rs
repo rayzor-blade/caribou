@@ -380,19 +380,27 @@ fn bare(mut ty: &syn::Type) -> &syn::Type {
 /// Whether `ty` is `&class` or `&mut class`.
 fn is_receiver(ty: &syn::Type, class: &syn::Ident) -> bool {
     match bare(ty) {
-        syn::Type::Reference(r) => matches!(bare(&r.elem), syn::Type::Path(p) if p.path.is_ident(class)),
+        syn::Type::Reference(r) => {
+            matches!(bare(&r.elem), syn::Type::Path(p) if p.path.is_ident(class))
+        }
         _ => false,
     }
 }
 
 /// Whether `ty` is `Box<class>`.
 fn boxes(ty: &syn::Type, class: &syn::Ident) -> bool {
-    let syn::Type::Path(p) = bare(ty) else { return false };
-    let Some(last) = p.path.segments.last() else { return false };
+    let syn::Type::Path(p) = bare(ty) else {
+        return false;
+    };
+    let Some(last) = p.path.segments.last() else {
+        return false;
+    };
     if last.ident != "Box" {
         return false;
     }
-    let syn::PathArguments::AngleBracketed(args) = &last.arguments else { return false };
+    let syn::PathArguments::AngleBracketed(args) = &last.arguments else {
+        return false;
+    };
     matches!(args.args.first(), Some(syn::GenericArgument::Type(inner)) if matches!(bare(inner), syn::Type::Path(inner) if inner.path.is_ident(class)))
 }
 
@@ -418,7 +426,8 @@ fn link_export(input: proc_macro2::TokenStream) -> syn::Result<proc_macro2::Toke
     };
     let symbol = caribou_mangle::symbol(&plugin, &class, &class, kind, method, arity);
     let path = &m.path;
-    let args: Vec<proc_macro2::Ident> = (0..m.params.len()).map(|i| format_ident!("a{i}")).collect();
+    let args: Vec<proc_macro2::Ident> =
+        (0..m.params.len()).map(|i| format_ident!("a{i}")).collect();
     let params = &m.params;
     let ret = m.ret.as_ref().map(|r| quote!(-> #r));
     Ok(quote! {

@@ -51,11 +51,11 @@ use caribou::{data, native};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::host::Host;
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
+#[cfg(not(target_family = "wasm"))]
+use caribou_abi::{ABI_VERSION, ABI_VERSION_SYMBOL, PLUGIN_ENTRY_SYMBOL};
 use caribou_abi::{
     ClassDesc, ErrorKind, LangId, NO_CLASS, PluginInfo, SymbolDesc, TypeTag, Value, sym,
 };
-#[cfg(not(target_family = "wasm"))]
-use caribou_abi::{ABI_VERSION, ABI_VERSION_SYMBOL, PLUGIN_ENTRY_SYMBOL};
 
 mod host;
 
@@ -96,7 +96,11 @@ static LINKED: std::sync::Mutex<Tables> = std::sync::Mutex::new(Tables(Vec::new(
 /// here reaches the core.
 pub fn register_linked(entry: Entry) {
     let info = unsafe { entry(&host::HOST) };
-    LINKED.lock().unwrap_or_else(|e| e.into_inner()).0.push(info);
+    LINKED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .0
+        .push(info);
 }
 
 /// The plugins linked into the program, taken once.
@@ -193,7 +197,11 @@ pub fn load(path: &Path) -> Result<Plugin, Error> {
 
 /// The plugin a table describes, its enums checked against those already
 /// declared.
-fn from_info(info: *const PluginInfo, path: &Path, library: Option<Library>) -> Result<Plugin, Error> {
+fn from_info(
+    info: *const PluginInfo,
+    path: &Path,
+    library: Option<Library>,
+) -> Result<Plugin, Error> {
     if info.is_null() {
         return Err(Error::NoTable(path.to_owned()));
     }

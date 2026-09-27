@@ -17,7 +17,14 @@ use alloc::string::{String, ToString};
 /// C identifier's is written as `_` and two hex digits, `_` itself
 /// included, so no two names share a symbol and the separators stay
 /// readable.
-pub fn symbol(lang: &str, module: &str, class: &str, kind: char, name: &str, arity: usize) -> String {
+pub fn symbol(
+    lang: &str,
+    module: &str,
+    class: &str,
+    kind: char,
+    name: &str,
+    arity: usize,
+) -> String {
     let mut out = String::from("caribou");
     for part in [lang, module, class] {
         out.push('_');
@@ -66,6 +73,9 @@ mod tests {
             symbol("math", "Math", "Math", 't', "hypot", 2),
             "caribou_4math_4Math_4Math_t5hypot_2"
         );
-        assert_eq!(symbol("wren", "m", "C", 's', "hp", 1), "caribou_4wren_1m_1C_s2hp_1");
+        assert_eq!(
+            symbol("wren", "m", "C", 's', "hp", 1),
+            "caribou_4wren_1m_1C_s2hp_1"
+        );
     }
 }

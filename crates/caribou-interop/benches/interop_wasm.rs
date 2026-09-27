@@ -30,7 +30,10 @@ fn main() {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("interop-wasm");
     std::fs::create_dir_all(dir.join("src/bench")).unwrap();
     for (from, to) in [
-        (crate_dir.join("benches/wasm/WasmBench.hx"), "src/WasmBench.hx"),
+        (
+            crate_dir.join("benches/wasm/WasmBench.hx"),
+            "src/WasmBench.hx",
+        ),
         (fixtures.join("Bench.hx"), "src/Bench.hx"),
         (fixtures.join("bench/tally.wren"), "src/bench/tally.wren"),
     ] {
@@ -53,6 +56,7 @@ fn main() {
         Some(&project.target_dir()),
     )
     .unwrap_or_else(|e| panic!("{e:#}"));
-    let status = caribou_driver::aot::run_module(&module, &[n, runs]).unwrap_or_else(|e| panic!("{e:#}"));
+    let status =
+        caribou_driver::aot::run_module(&module, &[n, runs]).unwrap_or_else(|e| panic!("{e:#}"));
     assert_eq!(status, 0, "the benchmark program exited with {status}");
 }

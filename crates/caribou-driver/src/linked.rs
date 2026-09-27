@@ -39,7 +39,8 @@ fn names(dir: &Path) -> Result<(String, String)> {
     let manifest = dir.join("Cargo.toml");
     let text = std::fs::read_to_string(&manifest)
         .with_context(|| format!("reading {}", manifest.display()))?;
-    let table: toml::Table = toml::from_str(&text).with_context(|| manifest.display().to_string())?;
+    let table: toml::Table =
+        toml::from_str(&text).with_context(|| manifest.display().to_string())?;
     let package = table
         .get("package")
         .and_then(|p| p.get("name"))
@@ -137,7 +138,9 @@ pub fn runtime(plugins: &[(PathBuf, String)], triple: &str, target_dir: &Path) -
             "    #[link_name = {:?}]\n    fn entry_{i}(host: *const Host) -> *const PluginInfo;\n",
             caribou_abi::linked_entry_symbol(name)
         ));
-        calls.push_str(&format!("    caribou_plugin::register_linked(entry_{i});\n"));
+        calls.push_str(&format!(
+            "    caribou_plugin::register_linked(entry_{i});\n"
+        ));
         deps.insert(package, path_dep(&dir).into());
     }
     let lib = format!(
@@ -209,7 +212,8 @@ crate-type = ["staticlib"]
 fn source_tables(root: &Path) -> Result<(Option<toml::Value>, Option<toml::Value>)> {
     let path = root.join("Cargo.toml");
     let text = std::fs::read_to_string(&path)?;
-    let mut table: toml::Table = toml::from_str(&text).with_context(|| path.display().to_string())?;
+    let mut table: toml::Table =
+        toml::from_str(&text).with_context(|| path.display().to_string())?;
     let mut patch = table.remove("patch");
     if let Some(sources) = patch.as_mut().and_then(|p| p.as_table_mut()) {
         for crates in sources.iter_mut().filter_map(|(_, s)| s.as_table_mut()) {

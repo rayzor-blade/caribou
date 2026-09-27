@@ -21,7 +21,10 @@ mod wren;
     any(target_os = "linux", target_os = "android", target_family = "wasm"),
     unsafe(link_section = ".init_array")
 )]
-#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__mod_init_func"))]
+#[cfg_attr(
+    target_vendor = "apple",
+    unsafe(link_section = "__DATA,__mod_init_func")
+)]
 #[cfg_attr(windows, unsafe(link_section = ".CRT$XCU"))]
 static START: extern "C" fn() = start;
 

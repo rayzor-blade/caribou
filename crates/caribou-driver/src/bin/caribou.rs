@@ -62,7 +62,10 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     options.args = args;
-    if let Some(module) = program.as_deref().filter(|p| p.extension().is_some_and(|e| e == "wasm")) {
+    if let Some(module) = program
+        .as_deref()
+        .filter(|p| p.extension().is_some_and(|e| e == "wasm"))
+    {
         process::exit(run_module(module, &options.args)?);
     }
     match project(program.as_deref())? {
@@ -91,7 +94,8 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
             let target_dir = project.target_dir();
             match target {
                 Some(triple) => {
-                    let out = out.unwrap_or_else(|| target_dir.join(format!("{}.wasm", project.name)));
+                    let out =
+                        out.unwrap_or_else(|| target_dir.join(format!("{}.wasm", project.name)));
                     let plugins: Vec<PathBuf> = project.plugins.values().cloned().collect();
                     aot(
                         &hl,
@@ -104,7 +108,8 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                     )?
                 }
                 None => {
-                    let out = out.unwrap_or_else(|| target_dir.join(format!("{}.cb", project.name)));
+                    let out =
+                        out.unwrap_or_else(|| target_dir.join(format!("{}.cb", project.name)));
                     caribou_driver::bundle::write_from(&hl, &project.sources, &out)
                         .map_err(|e| format!("{e:#}"))?
                 }
@@ -141,7 +146,10 @@ fn plugins_beside(program: &Path) -> Vec<PathBuf> {
         .into_iter()
         .flatten()
         .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|e| e == std::env::consts::DLL_EXTENSION))
+        .filter(|p| {
+            p.extension()
+                .is_some_and(|e| e == std::env::consts::DLL_EXTENSION)
+        })
         .collect();
     found.sort();
     found
