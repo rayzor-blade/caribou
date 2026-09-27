@@ -297,17 +297,27 @@ fn plugin_data_crosses_a_wasm_program_linked_and_as_a_side_module() {
         ("caribou-data", ""),
         ("caribou-data-side", ", link = \"side\""),
     ] {
-        let ran = data_program(name, link);
+        let ran = data_program(name, link, "data", "wasm32-wasip1");
         let lines: Vec<&str> = ran.lines().filter(|l| !l.starts_with("[ash]")).collect();
         assert_eq!(lines, ["data ok"], "{name}: {ran}");
     }
 }
 
-/// The interop fixtures' plugin data checks (`UseData.data`: bytes shared
-/// both ways, enums with every payload kind, instances, and values of the
-/// wrong type refused), built for wasm with the math plugin taken by
+/// The plugin settles its futures from threads of its own, which a
+/// program built for threads has.
+#[test]
+fn futures_settle_in_a_threaded_wasm_program() {
+    let ran = data_program("caribou-futures", "", "futures", "wasm32-wasip1-threads");
+    let lines: Vec<&str> = ran.lines().filter(|l| !l.starts_with("[ash]")).collect();
+    assert_eq!(lines, ["futures ok"], "{ran}");
+}
+
+/// One of the interop fixtures' plugin checks, `UseData.<check>` (`data`:
+/// bytes shared both ways, enums with every payload kind, instances, and
+/// values of the wrong type refused; `futures`: a plugin's futures and the
+/// program's own), built for `target` with the math plugin taken by
 /// `link`, and run.
-fn data_program(name: &str, link: &str) -> String {
+fn data_program(name: &str, link: &str, check: &str, target: &str) -> String {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
@@ -321,7 +331,7 @@ fn data_program(name: &str, link: &str) -> String {
     .unwrap();
     std::fs::write(
         dir.join("src/WasmData.hx"),
-        "class WasmData {\n  static function main() {\n    UseData.data();\n    Sys.println(\"data ok\");\n  }\n}\n",
+        format!("class WasmData {{\n  static function main() {{\n    UseData.{check}();\n    Sys.println(\"{check} ok\");\n  }}\n}}\n"),
     )
     .unwrap();
     let math = root.join("crates/caribou-interop/plugins/math");
@@ -343,7 +353,7 @@ fn data_program(name: &str, link: &str) -> String {
         .status()
         .expect("haxelib runs");
     assert!(status.success());
-    let built = caribou(&dir, &haxelib, &["build", "--target", "wasm32-wasip1"]);
+    let built = caribou(&dir, &haxelib, &["build", "--target", target]);
     let module = PathBuf::from(built.lines().last().expect("the module's path").trim());
     caribou(&dir, &haxelib, &["run", module.to_str().unwrap()])
 }

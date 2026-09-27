@@ -93,6 +93,10 @@ enum Kind {
     FutureNew,
     FutureResolve,
     FutureReject,
+    /// `face(namespace, module, class, type)`: a face class naming its
+    /// type when the program starts, which a hosted run reads from the
+    /// program instead.
+    Face,
 }
 
 impl Kind {
@@ -112,6 +116,7 @@ impl Kind {
             "future_new" => Kind::FutureNew,
             "future_resolve" => Kind::FutureResolve,
             "future_reject" => Kind::FutureReject,
+            "face" => Kind::Face,
             _ => return None,
         })
     }
@@ -266,7 +271,8 @@ fn links(s: &Slot) -> bool {
             | Kind::FutureAwait
             | Kind::FutureNew
             | Kind::FutureResolve
-            | Kind::FutureReject => None,
+            | Kind::FutureReject
+            | Kind::Face => None,
             Kind::Static => static_in_chain(&iface, index, s.member).map(|(_, m)| m),
             Kind::StaticGet | Kind::StaticSet => {
                 match static_in_chain(&iface, index, accessor_signature(s)) {
@@ -321,6 +327,9 @@ static FACES: RwLock<Option<Faces>> = RwLock::new(None);
 struct Faces {
     by_class: HashMap<(String, String, String), usize>,
     fallback: usize,
+    /// `caribou.Future`'s type, named by a compiled program before its
+    /// runtime has a language to build the view with.
+    future: usize,
     /// Answers already found for a published type name.
     by_type: HashMap<(LangId, Symbol), &'static TypeDesc, BuildAddressHasher>,
     /// The view per class `hl_type`.
@@ -348,6 +357,31 @@ impl Faces {
         let d = cell::descriptor(unsafe { ptr::read(t) }, lang(), &name);
         self.views.insert(t as usize, d);
         Ok(d)
+    }
+}
+
+/// A face class a compiled program names as it starts, recorded as
+/// `attach_types` records a hosted program's. An empty `namespace` names
+/// one of the library's own classes, `caribou.Ref` or `caribou.Future`.
+pub(crate) fn register_face(namespace: &str, module: &str, class: &str, t: *mut hl_type) {
+    let mut faces = FACES.write().unwrap();
+    let faces = faces.get_or_insert_with(|| Faces {
+        by_class: HashMap::new(),
+        fallback: 0,
+        future: 0,
+        by_type: HashMap::default(),
+        views: AddressMap::default(),
+    });
+    match (namespace, class) {
+        ("", REF_CLASS) => faces.fallback = t as usize,
+        ("", "caribou.Future") => faces.future = t as usize,
+        ("", _) => {}
+        _ => {
+            faces.by_class.insert(
+                (namespace.to_owned(), module.to_owned(), class.to_owned()),
+                t as usize,
+            );
+        }
     }
 }
 
@@ -542,6 +576,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
     let mut faces = Faces {
         by_class,
         fallback,
+        future: 0,
         by_type: HashMap::default(),
         views: AddressMap::default(),
     };
@@ -646,6 +681,11 @@ fn face_type(v: Value) -> Result<&'static TypeDesc, String> {
     }
     let mut faces = FACES.write().unwrap();
     let faces = faces.as_mut().ok_or("no program is loaded")?;
+    if key == (caribou::world::LANG_CORE, intern("caribou.Future")) && faces.future != 0 {
+        let view = faces.view(faces.future)?;
+        faces.by_type.insert(key, view);
+        return Ok(view);
+    }
     let type_name = type_name.name();
     let published = registry::class_for_type(lang, type_name);
     let declared = published.as_ref().and_then(|(iface, index)| {
@@ -880,6 +920,47 @@ fn kind_name(kind: hl_type_kind) -> &'static str {
     }
 }
 
+/// One of the bridge's own operations on `receiver`, as a native's slot
+/// and a linked call (`crate::link`) both run it.
+///
+/// # Safety
+/// `receiver` is a live Haxe value, kept by the caller.
+unsafe fn operation(kind: Kind, receiver: *mut vdynamic, args: &[Value]) -> Result<Value, Value> {
+    let haxe = lang();
+    if kind == Kind::FutureNew {
+        let future = Value::object(caribou::future::new().cast());
+        unsafe { bind_face(receiver, wrenref::wrap_foreign(future)) };
+        return Ok(Value::null());
+    }
+    // A face's object, else the Haxe object itself, wrapped: a Haxe array
+    // is a sequence to the bridge as it is.
+    let target = unsafe { behind_face(receiver) }.unwrap_or_else(|| proto::wrap(receiver));
+    match kind {
+        Kind::Len => bridge::len(target, haxe).map(|n| Value::int(n as i32)),
+        Kind::Index => bridge::index(target, args[0], haxe),
+        Kind::SetIndex => bridge::set_index(target, args[0], args[1], haxe).map(|()| Value::null()),
+        Kind::FutureReady => bridge::invoke(target, intern("ready"), &[], haxe),
+        Kind::FutureAwait => bridge::invoke(target, intern("await"), &[], haxe),
+        Kind::FutureResolve => bridge::invoke(target, intern("resolve"), args, haxe),
+        Kind::FutureReject => bridge::invoke(target, intern("reject"), args, haxe),
+        _ => unreachable!("{kind:?} is not an operation"),
+    }
+}
+
+/// The bridge's operation `name` (`future_await`, `len`) on `receiver`,
+/// or `None` for a name that is not one.
+///
+/// # Safety
+/// As [`operation`].
+pub(crate) unsafe fn library_operation(
+    name: &str,
+    receiver: *mut vdynamic,
+    args: &[Value],
+) -> Option<Result<Value, Value>> {
+    let kind = Kind::operation(name)?;
+    Some(unsafe { operation(kind, receiver, args) })
+}
+
 /// A number or a bool: what a `Dynamic` boxes.
 fn is_scalar(v: Value) -> bool {
     v.is_number() || v.is_int() || v.as_bool().is_some()
@@ -888,6 +969,9 @@ fn is_scalar(v: Value) -> bool {
 /// Run the call for the slot on the record `words`: the result, or what
 /// to throw. Everything owned here is dropped before the throw.
 unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut vdynamic> {
+    if s.kind == Kind::Face {
+        return Ok(Value::null());
+    }
     let haxe = lang();
     let words = unsafe { std::slice::from_raw_parts(words, kinds.args.len()) };
     let (receiver, params, kinds_of) = if s.kind.takes_receiver() {
@@ -911,34 +995,15 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
     let args = unsafe { args[..params.len()].assume_init_ref() };
 
     let result = match s.kind {
-        Kind::FutureNew => {
-            let future = Value::object(caribou::future::new().cast());
-            unsafe { bind_face(receiver, wrenref::wrap_foreign(future)) };
-            Ok(Value::null())
-        }
-        Kind::Len
+        Kind::FutureNew
+        | Kind::Len
         | Kind::Index
         | Kind::SetIndex
         | Kind::FutureReady
         | Kind::FutureAwait
         | Kind::FutureResolve
-        | Kind::FutureReject => {
-            // A face's object, else the Haxe object itself, wrapped: a
-            // Haxe array is a sequence to the bridge as it is.
-            let target = unsafe { behind_face(receiver) }.unwrap_or_else(|| proto::wrap(receiver));
-            match s.kind {
-                Kind::Len => bridge::len(target, haxe).map(|n| Value::int(n as i32)),
-                Kind::Index => bridge::index(target, args[0], haxe),
-                Kind::SetIndex => {
-                    bridge::set_index(target, args[0], args[1], haxe).map(|()| Value::null())
-                }
-                Kind::FutureReady => bridge::invoke(target, intern("ready"), &[], haxe),
-                Kind::FutureAwait => bridge::invoke(target, intern("await"), &[], haxe),
-                Kind::FutureResolve => bridge::invoke(target, intern("resolve"), args, haxe),
-                Kind::FutureReject => bridge::invoke(target, intern("reject"), args, haxe),
-                _ => unreachable!(),
-            }
-        }
+        | Kind::FutureReject
+        | Kind::Face => unsafe { operation(s.kind, receiver, args) },
         Kind::Method => unsafe { behind(receiver) }
             .map_err(|m| proto::error_value(&s.name, &m))
             .and_then(|object| {

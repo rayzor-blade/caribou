@@ -14,6 +14,15 @@ class Ref {
 
 	function new() {}
 
+	// Each face class names its type as the program starts, which is how a
+	// compiled program finds the class a foreign object crosses as. A
+	// hosted run reads the types from the program instead.
+	@:hlNative("caribou", "face") static function __face(namespace:String, module:String, name:String, type:hl.Type):Void {}
+
+	static function __init__() {
+		__face("", "", "caribou.Ref", @:privateAccess (cast Ref : hl.BaseType).__type__);
+	}
+
 	// A sequence's elements and count, through the bridge, for
 	// `caribou.Sequence`: the receiver is a ref, or a Haxe object the
 	// bridge wraps.

@@ -13,6 +13,10 @@ class Future<T> extends Ref {
 		__new(this);
 	}
 
+	static function __init__() {
+		Ref.__face("", "", "caribou.Future", @:privateAccess (cast Future : hl.BaseType).__type__);
+	}
+
 	@:hlNative("caribou", "future_new")
 	static function __new(future:Dynamic):Void {}
 

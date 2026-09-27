@@ -63,7 +63,10 @@ pub fn build_with_languages(
         crates.into_iter().partition(|c| side_modules.contains(c));
     // A library joins a wasm program only as a side module.
     let unlinkable = links(program, &unlinked(&libraries), None)?;
-    if let Some((_, name)) = unlinkable.keys().next() {
+    if let Some((_, name)) = unlinkable
+        .keys()
+        .find(|(_, name)| library_native(name).is_none())
+    {
         bail!(
             "`{name}` is a native plugin member; a wasm program requires its plugin as an Ash \
              side module; see git-bug issue `wasm: plugins load as Ash side modules`"
@@ -194,6 +197,9 @@ fn links(
             continue;
         }
         let Some(m) = caribou_ash::link::member_of(&name) else {
+            if let Some(link) = library_native(&name) {
+                out.insert((lib, name), link);
+            }
             continue;
         };
         let found = members.iter().find(|(l, _)| {
@@ -216,6 +222,39 @@ fn links(
         }
     }
     Ok(out)
+}
+
+/// One of the caribou library's own natives (`caribou.Future`,
+/// `caribou.Sequence`), linked to its entry in `caribou_ash::link`.
+fn library_native(name: &str) -> Option<HostLink> {
+    use Word::{Bool, I32, Ptr};
+    let text = || Some("caribou_haxe_string_to_str".to_owned());
+    let (params, ret): (&[Word], Option<Word>) = match name {
+        "face" => (&[Ptr, Ptr, Ptr, Ptr], None),
+        "future_new" => (&[Ptr], None),
+        "future_ready" => (&[Ptr], Some(Bool)),
+        "future_await" => (&[Ptr], Some(Ptr)),
+        "future_resolve" | "future_reject" => (&[Ptr, Ptr], Some(Bool)),
+        "len" => (&[Ptr], Some(I32)),
+        "index" => (&[Ptr, I32], Some(Ptr)),
+        "set_index" => (&[Ptr, I32, Ptr], None),
+        _ => return None,
+    };
+    Some(HostLink {
+        symbol: format!("caribou_haxe_{name}"),
+        params: params.to_vec(),
+        ret,
+        // The class a face names itself by, as core strings.
+        arg_casts: if name == "face" {
+            vec![text(), text(), text(), None]
+        } else {
+            vec![None; params.len()]
+        },
+        ret_cast: None,
+        after: Some("caribou_haxe_raise_pending".to_owned()),
+        init: None,
+        library: None,
+    })
 }
 
 /// A plugin member as Ash links it, or `None` while one of its types has
@@ -287,6 +326,14 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
         TypeTag::DYN => (
             Word::I64,
             Some(("caribou_haxe_dyn_to_value", "caribou_haxe_value_to_dyn")),
+        ),
+        // A future: the core's, behind a `caribou.Future`.
+        TypeTag::FUTURE => (
+            Word::Ptr,
+            Some((
+                "caribou_haxe_future_from_haxe",
+                "caribou_haxe_future_to_haxe",
+            )),
         ),
         // An instance: its payload to the plugin, its face to Haxe.
         TypeTag::OBJ => (

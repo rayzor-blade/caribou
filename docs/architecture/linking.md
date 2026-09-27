@@ -34,6 +34,8 @@ After the call, a check raises what the callee left pending, such as a plugin's 
 
 Members with `Dyn` or `Fun` types have no static form and stay on the bridge. The run report names each one.
 
+The `caribou` library's own natives, which `caribou.Future` and `caribou.Sequence` declare, link to entry points in `caribou-ash` that run the same bridge operations a hosted run's natives run. A plugin's future crosses as a `caribou.Future`. A foreign object that crosses as a `Dynamic`, such as an awaited result, needs the Haxe class that stands for its type. A hosted run finds that class by reading the program. A compiled program can't, so each face class names its `hl_type` to the runtime as the program starts.
+
 ## Building a Program
 
 `caribou build --target wasm32-wasip1` builds a program in these steps:

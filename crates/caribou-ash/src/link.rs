@@ -194,6 +194,170 @@ pub unsafe extern "C" fn caribou_haxe_value_to_dyn(v: u64, _t: *mut hl_type) -> 
     unsafe { proto::value_to_dyn(v, caribou_abi::hl::HDYN) }.unwrap_or(core::ptr::null_mut())
 }
 
+/// A plugin's future as the Haxe dynamic a native returns it as: a
+/// `caribou.Future` face.
+///
+/// # Safety
+/// `p` is null or a live core future.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_to_haxe(
+    p: *mut u8,
+    _t: *mut hl_type,
+) -> *mut vdynamic {
+    if p.is_null() {
+        return core::ptr::null_mut();
+    }
+    unsafe { caribou_haxe_value_to_dyn(Value::object(p.cast()).to_bits(), _t) }
+}
+
+/// A `caribou.Future` a plugin takes, as the core future behind it.
+///
+/// # Safety
+/// `d` is null or a live Haxe value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_from_haxe(
+    d: *mut vdynamic,
+    _t: *mut hl_type,
+) -> *mut u8 {
+    if d.is_null() {
+        return core::ptr::null_mut();
+    }
+    let v = unsafe { proto::dyn_to_value(d) };
+    match caribou::future::of(v) {
+        Some(future) => future.cast(),
+        None => {
+            raise("the value is not a caribou.Future", proto::lang());
+            core::ptr::null_mut()
+        }
+    }
+}
+
+// The caribou library's own natives, which `caribou.Future` and
+// `caribou.Sequence` declare, as a compiled program links them: the
+// operations a hosted run's natives run, over Haxe's words. What one
+// raises is left pending for the check after the call.
+
+/// Run the operation `name` on `receiver` with `args`, both kept.
+unsafe fn library(name: &str, receiver: *mut vdynamic, args: &[Value]) -> Value {
+    let _receiver_kept = (!receiver.is_null()).then(|| heap::keep(receiver.cast()));
+    let _args_kept: [Option<heap::Kept>; 2] =
+        std::array::from_fn(|i| args.get(i).and_then(|&a| heap::keep_value(a)));
+    match unsafe { crate::import::library_operation(name, receiver, args) } {
+        Some(Ok(v)) => v,
+        Some(Err(e)) => {
+            bridge::set_pending(e);
+            Value::null()
+        }
+        None => unreachable!("`{name}` is one of the library's operations"),
+    }
+}
+
+/// A result as the Haxe dynamic the native returns.
+fn dynamic(v: Value) -> *mut vdynamic {
+    let _kept = heap::keep_value(v);
+    unsafe { proto::value_to_dyn(v, caribou_abi::hl::HDYN) }.unwrap_or(core::ptr::null_mut())
+}
+
+/// A Haxe dynamic argument as a core value, converted while `receiver`
+/// is kept.
+unsafe fn argument(receiver: *mut vdynamic, d: *mut vdynamic) -> Value {
+    let _receiver_kept = (!receiver.is_null()).then(|| heap::keep(receiver.cast()));
+    unsafe { proto::dyn_to_value(d) }
+}
+
+/// A face class naming its type as the program starts: `namespace`,
+/// `module` and `class` as its natives name it, each a core string.
+///
+/// # Safety
+/// The names are live core strings; `t` is the class's type.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_face(
+    namespace: *mut u8,
+    module: *mut u8,
+    class: *mut u8,
+    t: *mut hl_type,
+) {
+    let text = |p: *mut u8| {
+        (!p.is_null())
+            .then(|| unsafe { Str::text(Value::object(p.cast())) })
+            .flatten()
+            .unwrap_or("")
+            .to_owned()
+    };
+    crate::import::register_face(&text(namespace), &text(module), &text(class), t);
+}
+
+/// # Safety
+/// `face` is the fresh `caribou.Future`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_new(face: *mut vdynamic) {
+    unsafe { library("future_new", face, &[]) };
+}
+
+/// # Safety
+/// `future` is a live Haxe value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_ready(future: *mut vdynamic) -> bool {
+    unsafe { library("future_ready", future, &[]) }
+        .as_bool()
+        .unwrap_or(false)
+}
+
+/// # Safety
+/// `future` is a live Haxe value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_await(future: *mut vdynamic) -> *mut vdynamic {
+    dynamic(unsafe { library("future_await", future, &[]) })
+}
+
+/// # Safety
+/// `future` and `value` are live Haxe values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_resolve(
+    future: *mut vdynamic,
+    value: *mut vdynamic,
+) -> bool {
+    let value = unsafe { argument(future, value) };
+    unsafe { library("future_resolve", future, &[value]) }
+        .as_bool()
+        .unwrap_or(false)
+}
+
+/// # Safety
+/// `future` and `error` are live Haxe values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_future_reject(
+    future: *mut vdynamic,
+    error: *mut vdynamic,
+) -> bool {
+    let error = unsafe { argument(future, error) };
+    unsafe { library("future_reject", future, &[error]) }
+        .as_bool()
+        .unwrap_or(false)
+}
+
+/// # Safety
+/// `seq` is a live Haxe value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_len(seq: *mut vdynamic) -> i32 {
+    unsafe { library("len", seq, &[]) }.as_int().unwrap_or(0)
+}
+
+/// # Safety
+/// `seq` is a live Haxe value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_index(seq: *mut vdynamic, i: i32) -> *mut vdynamic {
+    dynamic(unsafe { library("index", seq, &[Value::int(i)]) })
+}
+
+/// # Safety
+/// `seq` and `value` are live Haxe values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_set_index(seq: *mut vdynamic, i: i32, value: *mut vdynamic) {
+    let value = unsafe { argument(seq, value) };
+    unsafe { library("set_index", seq, &[Value::int(i), value]) };
+}
+
 /// A Haxe enum value of the program's enum type `t` as the core's, once
 /// the enum it declares is registered; null when it is not.
 ///

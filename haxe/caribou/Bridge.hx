@@ -736,6 +736,15 @@ class Bridge {
 				kind: FFun({args: [], ret: null, expr: macro super()})
 			});
 		}
+		// The class names its type as the program starts (`caribou.Ref`).
+		var path = pack.concat([c.name]);
+		fields.push({
+			name: "__init__",
+			pos: pos,
+			access: [AStatic],
+			kind: FFun({args: [], ret: null, expr: macro @:privateAccess caribou.Ref.__face($v{f.namespace}, $v{f.module}, $v{c.name},
+				(cast $p{path} : hl.BaseType).__type__)})
+		});
 		Context.defineType({
 			pack: pack,
 			name: c.name,
