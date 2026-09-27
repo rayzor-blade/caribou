@@ -1,0 +1,8 @@
+[project]
+name = "flock"
+entry = "haxe:Main"
+languages = ["haxe", "wren"]
+
+[plugins]
+gpu = { path = "../../plugins/cb_gpu" }
+window = { path = "../../plugins/cb_window" }
