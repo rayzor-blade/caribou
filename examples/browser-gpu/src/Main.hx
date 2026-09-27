@@ -144,7 +144,6 @@ class Main {
 		configure();
 
 		var start = haxe.Timer.stamp(), last = start;
-		var frames = 0;
 		function render() {
 			var now = haxe.Timer.stamp();
 			stepValues.setFloat(Step.PARAMS_dt, Math.min(now - last, 0.05));
@@ -170,7 +169,6 @@ class Main {
 			encoder.renderEnd();
 			encoder.submit(queue);
 			queue.presentSurface(surface);
-			if (++frames % 600 == 0) trace('$frames frames');
 		}
 
 		window.request_redraw();
@@ -183,8 +181,8 @@ class Main {
 					configure();
 					window.request_redraw();
 				case RedrawRequested:
-					if (configured) render();
 					window.request_redraw();
+					if (configured) render();
 				case None:
 					Sys.sleep(0.001);
 				default:
