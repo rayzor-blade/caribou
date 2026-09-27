@@ -17,7 +17,7 @@ A world is one OS thread with one scheduler and one reactor. Every language runs
 The unit of scheduling is krio-core's `Task`, not the fiber. There are two kinds of task:
 
 * **Stackful tasks** own a krio fiber with its own machine stack. They can suspend from any call depth by switching stacks. Ash threads, Wren fibers, and Zyntax `fiber def` functions are stackful.
-* **Stackless tasks** are compiled state machines. Their `step` function runs to the next suspension point and returns. Zyntax `async` functions and resumable effects, and WrenLift's action-loop and AOT-transformed fibers, are stackless. On wasm, where the host cannot switch stacks, every task is either stackless or driven by the host's own suspension mechanism.
+* **Stackless tasks** are compiled state machines. Their `step` function runs to the next suspension point and returns. Zyntax `async` functions and resumable effects, and WrenLift's action-loop and AOT-transformed fibers, are stackless. On wasm, where krio cannot switch stacks, a stackful task runs on a fiber the host lends instead (`sched::host_fiber`). In a linked program that is Ash's fiber: its side stack holds a suspended task's frames, which Ash's link-time transform saves and restores, and the collector scans it as it scans a native fiber's stack. Where no host lends fibers, such a task runs to the end in one step.
 
 The scheduler does not distinguish between the two kinds. It calls `step` and inspects the `Suspension` value that comes back.
 
@@ -113,7 +113,7 @@ A task that sees the epoch change calls `poll`. `poll` performs a heap safepoint
 A process can run several worlds on several OS threads over the single heap. A task is pinned to the world that created it; a krio fiber is `!Send` and never migrates. Ash's worker pool for compiled thread bodies is the first use of multiple worlds. It picks a world at spawn time and never moves the task afterward. Worlds exchange `Wake` and `Spawn` commands through per-world endpoints.
 
 * **Pool size:** `CARIBOU_WORKERS`, else `ASH_WORKERS`, else the machine's core count.
-* **Wasm:** There is no pool and no timer thread. `yield_now` goes through krio's host suspender.
+* **Wasm:** With threads (`wasm32-wasip1-threads`), the pool gives each live task an agent of its own, as many as the host will start. There is no timer thread. `yield_now` goes through krio's suspender, which is the host fiber's suspension on a host fiber and nothing anywhere else.
 * **Collections:** A collection stops every world at its safepoints.
 * **Tracing:** `CARIBOU_SCHED_TRACE` prints every switch and park. It is safe to leave on.
 

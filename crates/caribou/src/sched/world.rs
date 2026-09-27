@@ -412,7 +412,7 @@ pub fn current_stack() -> u64 {
 
 #[cfg(target_family = "wasm")]
 pub fn current_stack() -> u64 {
-    0
+    super::host_fiber::current()
 }
 
 /// Whether the running task has a park recorded for when it yields.
@@ -940,6 +940,10 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
+    // A word the host changed is seen before napping.
+    if watch_changed() {
+        return;
+    }
     // A nap until the reactor gives the host an event source
     // (git-bug a655aa5662aaca7e2898ba349da5cfe4a2b92f45eff6999b1c91c0160760744e).
     let nap = std::time::Duration::from_millis(1);

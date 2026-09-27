@@ -15,6 +15,10 @@ caribou-wren = { path = "../caribou-wren", default-features = false }
 # The entry points and helpers WrenLift's compiled programs call.
 wren_lift = { workspace = true, features = ["aot_runtime"] }
 
+# Ash's fibers, which caribou's scheduler runs its tasks on in a wasm program.
+[target.'cfg(target_family = "wasm")'.dependencies]
+ash_wasm_runtime = { workspace = true, features = ["guest"] }
+
 # A native program has threads, and WrenLift's host build to run them.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 caribou-wren = { path = "../caribou-wren", features = ["host"] }

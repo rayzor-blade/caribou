@@ -24,6 +24,8 @@
 //! are OS threads running the same loop; a task is placed once and never
 //! migrates.
 
+#[cfg(target_family = "wasm")]
+pub mod host_fiber;
 mod pool;
 mod preempt;
 mod quiesce;

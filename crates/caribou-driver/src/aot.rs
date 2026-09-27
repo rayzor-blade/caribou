@@ -146,6 +146,9 @@ pub fn build_with_languages(
         quiet: false,
         links: links(program, &described, Some(&languages))?,
         objects: languages.objects(),
+        // Caribou's tasks run on Ash's fibers in a wasm program, which
+        // suspend only in a module the transform instrumented.
+        wasm_fibers: true,
     })?;
     Ok(exe)
 }

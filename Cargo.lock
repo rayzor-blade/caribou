@@ -1019,6 +1019,7 @@ name = "caribou-runtime"
 version = "0.1.0"
 dependencies = [
  "ash_std",
+ "ash_wasm_runtime",
  "caribou",
  "caribou-ash",
  "caribou-plugin",

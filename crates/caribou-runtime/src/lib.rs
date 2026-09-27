@@ -10,10 +10,13 @@
 //! before `main`. Each seam refuses an install once its heap exists.
 //! It also sets what the program's `main` runs before the entry: the
 //! world that gives each language its id, and the WrenLift modules linked
-//! beside it, in a VM of their own ([`wren`]).
+//! beside it, in a VM of their own ([`wren`]). On wasm it lends caribou's
+//! scheduler Ash's fibers, so a task can suspend there ([`fiber`]).
 
 use std::process;
 
+#[cfg(target_family = "wasm")]
+mod fiber;
 mod plugin;
 mod wren;
 
@@ -42,7 +45,10 @@ extern "C" fn start() {
     }
     caribou_ash::on_program_start(program_start);
     #[cfg(target_family = "wasm")]
-    caribou::heap::set_poll_guard(no_runtime_callouts);
+    {
+        caribou::heap::set_poll_guard(no_runtime_callouts);
+        fiber::install();
+    }
 }
 
 /// Whether no Ash or WrenLift runtime frame on this thread is in a call

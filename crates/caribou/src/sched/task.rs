@@ -5,7 +5,6 @@ use std::any::Any;
 
 use krio_core::{Suspension, Task, TaskId};
 
-#[cfg(not(target_family = "wasm"))]
 use crate::heap;
 
 /// Default stack for a stackful task. wren_lift-proven; 64 KB tripped on
@@ -77,11 +76,9 @@ impl Placed {
     }
 }
 
-/// A task body: a krio fiber with its own stack, or a state machine the
-/// scheduler steps on its own stack. Where the host cannot switch stacks
-/// there is only the second kind.
+/// A task body: a fiber with its own stack, krio's or on wasm the host's
+/// (`host_fiber`), or a state machine the scheduler steps on its own stack.
 pub(super) enum Body {
-    #[cfg(not(target_family = "wasm"))]
     Stackful(StackfulTask),
     Stackless(Box<dyn Task>),
 }
@@ -93,9 +90,20 @@ impl Body {
         {
             Body::Stackful(StackfulTask::new(stack_size, body))
         }
+        // The host sizes its fibers' stacks. A host fiber enters its body
+        // again to continue it, and the instrumentation skips what already
+        // ran, so the closure is taken once.
         #[cfg(target_family = "wasm")]
         {
             let _ = stack_size;
+            if super::host_fiber::installed() {
+                let mut body = Some(body);
+                return Body::Stackful(StackfulTask::new(Box::new(move || {
+                    if let Some(body) = body.take() {
+                        body();
+                    }
+                })));
+            }
             Body::Stackless(Box::new(RunThrough(Some(body))))
         }
     }
@@ -105,7 +113,6 @@ impl Body {
     /// host, or not at all, and either way the call returns.
     pub(super) fn can_suspend(&self) -> bool {
         match self {
-            #[cfg(not(target_family = "wasm"))]
             Body::Stackful(_) => true,
             Body::Stackless(_) => cfg!(target_family = "wasm"),
         }
@@ -115,7 +122,6 @@ impl Body {
     /// scheduler steps on its own stack.
     pub(super) fn stack(&self) -> Option<u64> {
         match self {
-            #[cfg(not(target_family = "wasm"))]
             Body::Stackful(task) => Some(task.gc_id),
             Body::Stackless(_) => None,
         }
@@ -123,7 +129,6 @@ impl Body {
 
     pub(super) fn step(&mut self, id: TaskId) -> Suspension {
         match self {
-            #[cfg(not(target_family = "wasm"))]
             Body::Stackful(task) => task.step(),
             Body::Stackless(task) => {
                 // A panic must not unwind through the scheduler's frames
@@ -144,7 +149,6 @@ impl Body {
     /// switch hook and before the host state is swapped back, so nothing
     /// that may collect sees a fiber stack without its live window.
     pub(super) fn publish_sp(&mut self) {
-        #[cfg(not(target_family = "wasm"))]
         if let Body::Stackful(task) = self {
             task.publish_sp();
         }
@@ -152,7 +156,6 @@ impl Body {
 
     pub(super) fn suspended_sp(&self) -> Option<usize> {
         match self {
-            #[cfg(not(target_family = "wasm"))]
             Body::Stackful(task) => (task.published_sp != 0).then_some(task.published_sp),
             Body::Stackless(_) => None,
         }
@@ -275,5 +278,67 @@ impl TaskRecord {
             fresh: true,
             suspend: None,
         }
+    }
+}
+
+/// A host fiber whose stack the heap scans, as [`StackfulTask`] is natively.
+#[cfg(target_family = "wasm")]
+pub(super) struct StackfulTask {
+    fiber: Box<dyn super::host_fiber::HostFiber>,
+    gc_id: u64,
+    published_sp: usize,
+}
+
+#[cfg(target_family = "wasm")]
+impl StackfulTask {
+    fn new(body: super::host_fiber::FiberBody) -> Self {
+        let fiber = super::host_fiber::make(body).expect("host fibers are installed");
+        let (base, len) = fiber.stack_range();
+        let gc_id = super::host_fiber::next_id();
+        heap::init();
+        // SAFETY: the range is the fiber's own memory, address-stable until
+        // the fiber drops, and `Drop` unregisters it first.
+        unsafe { heap::gc_register_fiber_stack(gc_id, base, len) };
+        heap::track_external(len as u64);
+        Self {
+            fiber,
+            gc_id,
+            published_sp: 0,
+        }
+    }
+
+    fn publish_sp(&mut self) {
+        let sp = self.fiber.saved_sp();
+        // SAFETY: `gc_id` was registered in `new` and is not yet unregistered.
+        unsafe { heap::gc_update_fiber_sp(self.gc_id, sp) };
+        self.published_sp = sp;
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl Task for StackfulTask {
+    fn step(&mut self) -> Suspension {
+        // Where the main stack is suspended while the fiber runs, as
+        // natively.
+        let probe = 0usize;
+        // SAFETY: id 0 is this thread's main-stack descriptor.
+        unsafe { heap::gc_update_fiber_sp(0, &probe as *const usize as usize) };
+        match super::host_fiber::running(self.gc_id, || self.fiber.resume()) {
+            super::host_fiber::HostStep::Yielded => Suspension::Yielded,
+            super::host_fiber::HostStep::Done => Suspension::Completed,
+            super::host_fiber::HostStep::Errored => {
+                eprintln!("[caribou] task {} terminated with a panic", self.gc_id);
+                Suspension::Completed
+            }
+        }
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl Drop for StackfulTask {
+    fn drop(&mut self) {
+        // SAFETY: registered in `new`; nothing publishes it after this.
+        unsafe { heap::gc_unregister_fiber_stack(self.gc_id) };
+        super::stack::forget_stack(self.gc_id);
     }
 }
