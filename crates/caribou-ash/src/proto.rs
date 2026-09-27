@@ -1004,6 +1004,7 @@ pub(crate) unsafe extern "C-unwind" fn dispatch(
         t: sig as *mut hl_type,
         fun: func as *mut c_void,
         hasValue: 0,
+        #[cfg(target_pointer_width = "64")]
         stackCount: 0,
         value: ptr::null_mut(),
     };

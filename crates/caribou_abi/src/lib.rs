@@ -339,11 +339,13 @@ pub mod hl {
         unsafe { a.add(1) as *mut T }
     }
 
+    /// `stackCount` is there on a 64-bit target only, as `hl.h` has it.
     #[repr(C)]
     pub struct vclosure {
         pub t: *mut hl_type,
         pub fun: *mut c_void,
         pub hasValue: c_int,
+        #[cfg(target_pointer_width = "64")]
         pub stackCount: c_int,
         pub value: *mut c_void,
     }
