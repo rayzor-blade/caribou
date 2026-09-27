@@ -2,6 +2,7 @@
 //! ahead-of-time build. Ash owns the final link; each frontend owns how its
 //! source becomes an object and how its exported modules are described.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
@@ -162,15 +163,9 @@ fn build_wren(sources: &[PathBuf], triple: &str, out: &Path) -> Result<Option<Ar
     let mut described = Vec::new();
     for (name, path) in &found {
         let walk = walk_imports(path).map_err(|error| anyhow!("{}: {error:?}", path.display()))?;
-        let last = walk.modules.len().saturating_sub(1);
-        for (index, mut module) in walk.modules.into_iter().enumerate() {
-            if index == last {
-                module.request_name = name.clone();
-            }
-            match modules.iter_mut().find(|seen| seen.name == module.name) {
-                Some(seen) if index == last => seen.request_name = name.clone(),
-                Some(_) => {}
-                None => modules.push(module),
+        for module in walk.modules {
+            if !modules.iter().any(|seen| seen.name == module.name) {
+                modules.push(module);
             }
         }
         bundle
@@ -186,6 +181,8 @@ fn build_wren(sources: &[PathBuf], triple: &str, out: &Path) -> Result<Option<Ar
             .map_err(|error| anyhow!("{}: {error}", path.display()))?;
         described.push((name.clone(), desc));
     }
+    name_imports(&mut modules, &found);
+    let modules = dependencies_first(modules);
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -203,6 +200,78 @@ fn build_wren(sources: &[PathBuf], triple: &str, out: &Path) -> Result<Option<Ar
         described,
         Box::new(WrenLinker),
     )))
+}
+
+/// Give each module under the roots its name there, and each of its
+/// imports the module it names by the program's rules
+/// (`caribou_wren::project::imported`), so every spelling of one file
+/// binds to that one module. An import of another language's module, or
+/// of a file outside the roots, keeps its spelling.
+fn name_imports(modules: &mut [AotModule], found: &[(String, PathBuf)]) {
+    let names: HashSet<&str> = found.iter().map(|(name, _)| name.as_str()).collect();
+    let by_path: HashMap<PathBuf, &str> = found
+        .iter()
+        .filter_map(|(name, path)| Some((std::fs::canonicalize(path).ok()?, name.as_str())))
+        .collect();
+    for module in modules.iter_mut() {
+        let Some(&own) = by_path.get(Path::new(&module.name)) else {
+            continue;
+        };
+        module.request_name = own.to_owned();
+        module.aliases.clear();
+        for source in module.module_var_sources.iter_mut().flatten() {
+            let name =
+                caribou_wren::project::imported(&source.module, own, |name| names.contains(name));
+            if names.contains(name.as_str()) {
+                source.module = name;
+            }
+        }
+    }
+}
+
+/// `modules` with each after the modules it imports: WrenLift binds an
+/// import only to a module before its importer. A cycle keeps the order
+/// its modules were found in.
+fn dependencies_first(modules: Vec<AotModule>) -> Vec<AotModule> {
+    let index: HashMap<&str, usize> = modules
+        .iter()
+        .enumerate()
+        .flat_map(|(at, module)| {
+            std::iter::once(module.request_name.as_str())
+                .chain(module.aliases.iter().map(String::as_str))
+                .map(move |name| (name, at))
+        })
+        .collect();
+    let imports: Vec<Vec<usize>> = modules
+        .iter()
+        .map(|module| {
+            module
+                .module_var_sources
+                .iter()
+                .flatten()
+                .filter_map(|source| index.get(source.module.as_str()).copied())
+                .collect()
+        })
+        .collect();
+    fn visit(at: usize, imports: &[Vec<usize>], seen: &mut [bool], order: &mut Vec<usize>) {
+        if std::mem::replace(&mut seen[at], true) {
+            return;
+        }
+        for &import in &imports[at] {
+            visit(import, imports, seen, order);
+        }
+        order.push(at);
+    }
+    let mut seen = vec![false; modules.len()];
+    let mut order = Vec::with_capacity(modules.len());
+    for at in 0..modules.len() {
+        visit(at, &imports, &mut seen, &mut order);
+    }
+    let mut slots: Vec<Option<AotModule>> = modules.into_iter().map(Some).collect();
+    order
+        .into_iter()
+        .filter_map(|at| slots[at].take())
+        .collect()
 }
 
 struct WrenLinker;

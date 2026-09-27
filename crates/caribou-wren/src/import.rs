@@ -346,7 +346,7 @@ pub fn configure(config: &mut VMConfig) {
         }
         match previous_resolve.as_ref().and_then(|f| f(name, from)) {
             Some(resolved) => Some(resolved),
-            None => Some(crate::project::relative(name, from)),
+            None => Some(crate::project::resolve(name, from, crate::project::exists)),
         }
     }));
     let previous_load = config.load_module_fn.take();

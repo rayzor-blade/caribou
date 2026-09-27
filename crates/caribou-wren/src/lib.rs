@@ -64,7 +64,7 @@ impl Runtime {
 
 impl Adapter for Runtime {
     fn languages(&self) -> Vec<String> {
-        vec!["wren".to_owned()]
+        vec![LANGUAGE.to_owned()]
     }
 
     fn assign_languages(&mut self, ids: &[LangId]) {
@@ -124,6 +124,9 @@ impl Adapter for Runtime {
         project::reload(unsafe { &mut *vm }, module)
     }
 }
+
+/// Wren's language name, and its own namespace.
+pub const LANGUAGE: &str = "wren";
 
 /// The language id Wren objects carry: what the world assigned through
 /// [`Runtime`], or the core's id before any registration.

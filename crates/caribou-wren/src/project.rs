@@ -11,7 +11,9 @@
 //! module. Loading runs the module's top level, so it happens on first
 //! use, once the program that uses it is running. A module's own plain
 //! imports are served the same way: `import "helper"` from `game/hud` is
-//! `game/helper` when there is one, else `helper` at a root.
+//! `game/helper` when there is one, else `helper` at a root, and
+//! `import "./helper"` and `import "../game/helper"` are `game/helper`
+//! (`resolve`).
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -83,25 +85,17 @@ pub fn compile(sources: &[(String, String)]) -> Result<Vec<(String, Vec<u8>)>, S
 }
 
 /// `names` ordered so a module comes after the modules of the set it
-/// imports by a plain import, `relative` to it; ties in the order
-/// given. A cycle leaves the modules in it in that order.
+/// imports (`imported`); ties in the order given. A cycle leaves the
+/// modules in it in that order.
 pub fn import_order(sources: &[(String, String)]) -> Vec<String> {
     let names: Vec<&str> = sources.iter().map(|(n, _)| n.as_str()).collect();
     let present = |name: &str| names.contains(&name);
     let deps: Vec<Vec<String>> = sources
         .iter()
         .map(|(name, source)| {
-            plain_imports(source)
+            imports(source)
                 .into_iter()
-                .map(|import| {
-                    let beside = name
-                        .rsplit_once('/')
-                        .map(|(dir, _)| format!("{dir}/{import}"));
-                    match beside {
-                        Some(beside) if present(&beside) => beside,
-                        _ => import,
-                    }
-                })
+                .map(|import| imported(&import, name, present))
                 .filter(|dep| present(dep) && dep != name)
                 .collect()
         })
@@ -118,15 +112,15 @@ pub fn import_order(sources: &[(String, String)]) -> Vec<String> {
     done
 }
 
-/// The plain imports of `source`, as written.
-fn plain_imports(source: &str) -> Vec<String> {
+/// The imports of `source`, as written.
+fn imports(source: &str) -> Vec<String> {
     use wren_lift::ast::Stmt;
     let parsed = wren_lift::parse::parser::parse(source);
     parsed
         .module
         .iter()
         .filter_map(|(stmt, _)| match stmt {
-            Stmt::Import { module, .. } if !module.0.contains(':') => Some(module.0.clone()),
+            Stmt::Import { module, .. } => Some(module.0.clone()),
             _ => None,
         })
         .collect()
@@ -175,13 +169,7 @@ pub fn exists(name: &str) -> bool {
 /// The registry's loader for Wren: load and publish `namespace:module`
 /// from the project when it is there.
 pub fn load(namespace: &str, module: &str) -> Result<bool, String> {
-    // Wren's own namespace names a root's module by itself: `wren:scale` is
-    // `scale.wren`, the module `import "scale"` names.
-    let name = if namespace == caribou::world::language_name(crate::lang()) {
-        module.to_owned()
-    } else {
-        format!("{namespace}/{module}")
-    };
+    let name = in_namespace(namespace, module);
     let Some(found) = locate(&name) else {
         return Ok(false);
     };
@@ -234,10 +222,51 @@ pub fn reload(vm: &mut VM, name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// A plain import's module name: `name` beside the importer when a
-/// source is there, else `name` itself.
-pub fn relative(name: &str, from: &str) -> String {
-    if let Some((dir, _)) = from.rsplit_once('/') {
+/// The module `namespace:module` names: under Wren's own namespace a
+/// root's module by itself (`wren:scale` is `scale`, the module
+/// `import "scale"` names), under any other its path in the namespace
+/// (`game:hud` is `game/hud`).
+pub fn in_namespace(namespace: &str, module: &str) -> String {
+    if namespace == crate::LANGUAGE {
+        module.to_owned()
+    } else {
+        format!("{namespace}/{module}")
+    }
+}
+
+/// The Wren module `import` names from the module `from`, when it is one
+/// of the project's: `ns:module` by `in_namespace`, anything else by
+/// `resolve`. A scoped name (`@hatch:fmt`) keeps its spelling.
+pub fn imported(import: &str, from: &str, exists: impl Fn(&str) -> bool) -> String {
+    match import.split_once(':') {
+        Some((ns, module)) if !ns.is_empty() && !ns.starts_with('@') => in_namespace(ns, module),
+        _ => resolve(import, from, exists),
+    }
+}
+
+/// The module a plain import names from the module `from`, by Wren's
+/// rules: a path (`./x`, `../x`) from the importer's directory, a bare
+/// name beside the importer when `exists` has a module there, else from
+/// the roots. One file is one module, whichever of these reaches it. A
+/// path that climbs above the roots keeps its spelling.
+pub fn resolve(name: &str, from: &str, exists: impl Fn(&str) -> bool) -> String {
+    let dir = from.rsplit_once('/').map_or("", |(dir, _)| dir);
+    if name.starts_with("./") || name.starts_with("../") {
+        let mut parts: Vec<&str> = dir.split('/').filter(|part| !part.is_empty()).collect();
+        for part in name.strip_suffix(".wren").unwrap_or(name).split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    if parts.pop().is_none() {
+                        return name.to_owned();
+                    }
+                }
+                part => parts.push(part),
+            }
+        }
+        return parts.join("/");
+    }
+    if !dir.is_empty() {
         let beside = format!("{dir}/{name}");
         if exists(&beside) {
             return beside;
@@ -253,5 +282,33 @@ pub fn source(name: &str) -> Option<String> {
         Found::Staged(Staged::Source(source)) => Some(source),
         Found::Staged(Staged::Wlbc(_)) => None,
         Found::File(path) => std::fs::read_to_string(path).ok(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_spelling_of_a_file_names_one_module() {
+        let exists = |name: &str| name == "game/b";
+        assert_eq!(resolve("./b", "game/a", exists), "game/b");
+        assert_eq!(resolve("./b.wren", "game/a", exists), "game/b");
+        assert_eq!(resolve("../game/b", "game/a", exists), "game/b");
+        assert_eq!(resolve("b", "game/a", exists), "game/b");
+        assert_eq!(resolve("game/b", "game/a", exists), "game/b");
+        assert_eq!(resolve("./scale", "main", exists), "scale");
+        assert_eq!(resolve("c", "game/a", exists), "c");
+        assert_eq!(resolve("../../c", "game/a", exists), "../../c");
+        assert_eq!(in_namespace("game", "b"), "game/b");
+        assert_eq!(in_namespace(crate::LANGUAGE, "scale"), "scale");
+        assert_eq!(imported("game:b", "game/a", exists), "game/b");
+        assert_eq!(imported("@hatch:fmt", "game/a", exists), "@hatch:fmt");
+        let sources = [
+            ("game/a".to_owned(), "import \"../game/b\" for B".to_owned()),
+            ("game/b".to_owned(), "import \"game:c\" for C".to_owned()),
+            ("game/c".to_owned(), String::new()),
+        ];
+        assert_eq!(import_order(&sources), ["game/c", "game/b", "game/a"]);
     }
 }
