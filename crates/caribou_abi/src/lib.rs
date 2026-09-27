@@ -70,7 +70,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";

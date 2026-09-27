@@ -40,6 +40,7 @@ pub static HOST: Host = Host {
     raise,
     raise_value,
     agent,
+    watch,
 };
 
 unsafe extern "C" fn future_new() -> caribou_abi::Future {
@@ -184,6 +185,21 @@ unsafe extern "C" fn agent(name: *const u8, len: usize, address: usize) -> bool 
         let _ = (name, len, address);
         false
     }
+}
+
+unsafe extern "C" fn watch(
+    word: *const u32,
+    handler: unsafe extern "C" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> *const u32 {
+    if word.is_null() || !caribou::sched::has_world() {
+        return std::ptr::null();
+    }
+    // The plugin keeps the word for as long as the world runs.
+    let word = unsafe { &*word.cast::<std::sync::atomic::AtomicU32>() };
+    let ctx = ctx as usize;
+    let (_, wake) = caribou::sched::watch(word, move || unsafe { handler(ctx as *mut c_void) });
+    wake.as_ptr().cast_const()
 }
 
 unsafe extern "C" fn buffer_new(p: *const u8, len: usize) -> caribou_abi::Buffer {

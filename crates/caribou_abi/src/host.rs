@@ -62,6 +62,16 @@ pub struct Host {
     /// program's memory and `address` in it. False when the host starts
     /// none.
     pub agent: unsafe extern "C" fn(*const u8, usize, usize) -> bool,
+    /// Watch the 32-bit word at `word` on the calling thread's world:
+    /// `handler(ctx)` runs on the world's main context, between turns,
+    /// each time the word changes. Returns the world's wake word, which
+    /// whatever changes `word` from outside the world, such as the
+    /// plugin's agent, adds one to and notifies; null off a world.
+    pub watch: unsafe extern "C" fn(
+        *const u32,
+        unsafe extern "C" fn(*mut c_void),
+        *mut c_void,
+    ) -> *const u32,
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(core::ptr::null_mut());
@@ -119,6 +129,15 @@ pub fn raise_value(err: Value) {
 /// A page starts one as a worker from the module the plugin ships.
 pub fn agent(name: &str, address: usize) -> bool {
     unsafe { (host().agent)(name.as_ptr(), name.len(), address) }
+}
+
+/// Watch `word` on the calling thread's world; see [`Host::watch`].
+pub fn watch(
+    word: *const u32,
+    handler: unsafe extern "C" fn(*mut c_void),
+    ctx: *mut c_void,
+) -> *const u32 {
+    unsafe { (host().watch)(word, handler, ctx) }
 }
 
 /// The header of a core string as a plugin sees it: the core's own word,
