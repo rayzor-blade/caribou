@@ -97,12 +97,16 @@ unsafe fn learn_into(found: &mut Types, t: *mut hl_type) -> Result<(), String> {
             };
             let schema = data::enum_schema(desc);
             if e.nconstructs as usize != schema.variants.len() {
-                return Err(format!("enum {enum_name} constructors changed; rebuild Haxe bytecode"));
+                return Err(format!(
+                    "enum {enum_name} constructors changed; rebuild Haxe bytecode"
+                ));
             }
             for (i, variant) in schema.variants.iter().enumerate() {
                 let c = &*e.constructs.add(i);
                 if name(c.name) != variant.name || c.nparams as usize != variant.fields.len() {
-                    return Err(format!("enum {enum_name} constructor changed; rebuild Haxe bytecode"));
+                    return Err(format!(
+                        "enum {enum_name} constructor changed; rebuild Haxe bytecode"
+                    ));
                 }
                 for (j, field) in variant.fields.iter().enumerate() {
                     if !matches_type(*c.params.add(j), &field.ty) {

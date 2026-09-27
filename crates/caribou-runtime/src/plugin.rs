@@ -43,9 +43,10 @@ fn load(name: &str) -> bool {
             }
         };
         WORLD.with(|w| {
-            w.borrow()
-                .as_ref()
-                .is_some_and(|w| w.register(Box::new(caribou_plugin::Runtime::new(vec![plugin]))).is_ok())
+            w.borrow().as_ref().is_some_and(|w| {
+                w.register(Box::new(caribou_plugin::Runtime::new(vec![plugin])))
+                    .is_ok()
+            })
         })
     }
     #[cfg(not(target_family = "wasm"))]
@@ -62,7 +63,10 @@ fn load(name: &str) -> bool {
 /// # Safety
 /// `face` is null or a live Haxe object.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_plugin_from_haxe_face(face: *mut vdynamic, _t: *mut hl_type) -> *mut c_void {
+pub unsafe extern "C" fn caribou_plugin_from_haxe_face(
+    face: *mut vdynamic,
+    _t: *mut hl_type,
+) -> *mut c_void {
     let payload = {
         let _kept = (!face.is_null()).then(|| caribou::heap::keep(face.cast()));
         unsafe { caribou_ash::link::behind(face) }.and_then(caribou_plugin::payload)
@@ -79,7 +83,11 @@ pub unsafe extern "C" fn caribou_plugin_from_haxe_face(face: *mut vdynamic, _t: 
 /// # Safety
 /// `face` is a live instance of a face class, of the program's type `t`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_plugin_bind_face(face: *mut vdynamic, payload: *mut c_void, t: *mut hl_type) {
+pub unsafe extern "C" fn caribou_plugin_bind_face(
+    face: *mut vdynamic,
+    payload: *mut c_void,
+    t: *mut hl_type,
+) {
     let bound = {
         let _kept = caribou::heap::keep(face.cast());
         unsafe { object(payload, t) }.map(|object| unsafe { caribou_ash::link::bind(face, object) })
@@ -95,7 +103,10 @@ pub unsafe extern "C" fn caribou_plugin_bind_face(face: *mut vdynamic, payload: 
 /// # Safety
 /// `t` is the program's type of a face class.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_plugin_to_haxe_face(payload: *mut c_void, t: *mut hl_type) -> *mut vdynamic {
+pub unsafe extern "C" fn caribou_plugin_to_haxe_face(
+    payload: *mut c_void,
+    t: *mut hl_type,
+) -> *mut vdynamic {
     if payload.is_null() {
         return std::ptr::null_mut();
     }
@@ -125,7 +136,10 @@ unsafe fn object(payload: *mut c_void, t: *mut hl_type) -> Option<caribou_abi::V
 /// # Safety
 /// `e` is null or a live value of the program's enum type `t`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_plugin_enum_from_haxe(e: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
+pub unsafe extern "C" fn caribou_plugin_enum_from_haxe(
+    e: *mut vdynamic,
+    t: *mut hl_type,
+) -> *mut u8 {
     unsafe { ensure_enum(t) };
     // No guard across this: it raises for a value not of the enum, and the
     // translation roots `e` itself.

@@ -837,9 +837,10 @@ pub fn yield_now() {
 
 /// The scheduler's safepoint: rendezvous with the collector, then let the
 /// others run. A safepoint on a task yields it; one on the main context
-/// advances each ready task once.
+/// advances each ready task once. Runtime code polls here too, so a
+/// pending collection waits for a compiled caller's poll.
 pub fn poll() {
-    heap::poll_safepoint();
+    heap::gc_safepoint();
     if !preempt::any_live_tasks() {
         return;
     }

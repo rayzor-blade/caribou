@@ -670,24 +670,41 @@ fn current_mutator_deferred() -> bool {
     TLAB.with(|t| t.deferred.get())
 }
 
-/// Park a registered mutator at a safepoint. The spill buffer stays in this
-/// frame for the whole wait, so `stopped_sp` describes live memory until the
-/// collector releases the world. A hosted collector's stop is answered here
-/// too, through its safepoint hook.
-#[inline(never)]
-/// A compiled caller's poll: [`gc_safepoint`], and a true safepoint as an
-/// allocation's refill is, so a collection a deferring mutator left
-/// pending runs here. Compiled code reaches one only when its poll epoch
-/// moves, which each deferred trigger asks for.
+/// Whether a collection may run at a compiled caller's poll: set by the
+/// runtime whose code polls, which knows whether its own frames below the
+/// poll hold objects only in places no scan reaches. Unset, it may.
+static POLL_GUARD: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+pub fn set_poll_guard(guard: fn() -> bool) {
+    POLL_GUARD.store(guard as usize, Ordering::Release);
+}
+
+fn poll_may_collect() -> bool {
+    let raw = POLL_GUARD.load(Ordering::Acquire);
+    // SAFETY: only `set_poll_guard` writes a non-zero value, a `fn() -> bool`.
+    raw == 0 || unsafe { mem::transmute::<usize, fn() -> bool>(raw) }()
+}
+
+/// A compiled caller's poll: [`gc_safepoint`], and where a collection a
+/// deferring mutator left pending runs, when the poll guard allows. Only
+/// compiled frames, whose values are in scanned memory, are below it.
+/// Compiled code reaches one only when its poll epoch moves, which each
+/// deferred trigger asks for.
 pub fn poll_safepoint() {
     gc_safepoint();
-    if COLLECT_PENDING.load(Ordering::Relaxed) && current_mutator_registered() {
+    if COLLECT_PENDING.load(Ordering::Relaxed) && current_mutator_registered() && poll_may_collect()
+    {
         let mut gc = gc_locked();
         set_collect_origin(7);
         gc.maybe_collect_at_safepoint();
     }
 }
 
+/// Park a registered mutator at a safepoint. The spill buffer stays in this
+/// frame for the whole wait, so `stopped_sp` describes live memory until the
+/// collector releases the world. A hosted collector's stop is answered here
+/// too, through its safepoint hook.
+#[inline(never)]
 pub fn gc_safepoint() {
     if HOSTED_STOPS.load(Ordering::Acquire) != 0 {
         safepoint_hook();
@@ -1446,11 +1463,18 @@ fn release_tlab_region(gc: &mut ImmixAllocator) {
 fn tlab_refill_then_alloc(aligned: usize, hooked: bool) -> Option<NonNull<u8>> {
     mark_site(SITE_TLAB_REFILL);
     let mut gc = gc_locked();
-    // A refill is a true safepoint, so a due trigger collects here instead of
-    // deferring to the interpreter's next snapshot: same thread, conservative
-    // stack scan, and the registered ranges are complete as of their last sync.
-    set_collect_origin(2);
-    gc.maybe_collect_at_safepoint();
+    // Natively a refill is a true safepoint, so a due trigger collects here
+    // instead of deferring to the interpreter's next snapshot: same thread,
+    // conservative stack scan, and the registered ranges are complete as of
+    // their last sync. On wasm it is not: the runtime frame that asked for
+    // memory holds objects in engine locals no scan reaches, so the trigger
+    // defers to a compiled caller's poll.
+    if cfg!(target_family = "wasm") {
+        gc.maybe_collect();
+    } else {
+        set_collect_origin(2);
+        gc.maybe_collect_at_safepoint();
+    }
     // Recycled lines first. Spans too small for the pending object are dropped
     // rather than re-queued; the list is rebuilt each sweep.
     let want_lines = aligned.div_ceil(LINE_SIZE).max(1);
@@ -3167,7 +3191,8 @@ impl ImmixAllocator {
         if !triggered_collection_allowed(pressure) {
             return;
         }
-        if self.heap.safepoint_mode || current_mutator_deferred() {
+        // On wasm an allocation is never a safepoint; see tlab_refill_then_alloc.
+        if cfg!(target_family = "wasm") || self.heap.safepoint_mode || current_mutator_deferred() {
             let hard = self
                 .heap
                 .trigger_threshold

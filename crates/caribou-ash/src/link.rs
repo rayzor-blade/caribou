@@ -144,7 +144,10 @@ pub unsafe extern "C" fn caribou_haxe_raise_pending() {
 /// # Safety
 /// `b` is null or a live `Bytes` of type `t`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_haxe_bytes_to_buffer(b: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
+pub unsafe extern "C" fn caribou_haxe_bytes_to_buffer(
+    b: *mut vdynamic,
+    t: *mut hl_type,
+) -> *mut u8 {
     if b.is_null() {
         return core::ptr::null_mut();
     }
@@ -163,7 +166,10 @@ pub unsafe extern "C" fn caribou_haxe_bytes_to_buffer(b: *mut vdynamic, t: *mut 
 /// # Safety
 /// `p` is null or a live core buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_haxe_buffer_to_bytes(p: *mut BufferData, t: *mut hl_type) -> *mut vdynamic {
+pub unsafe extern "C" fn caribou_haxe_buffer_to_bytes(
+    p: *mut BufferData,
+    t: *mut hl_type,
+) -> *mut vdynamic {
     if p.is_null() || unsafe { crate::data::learn(t) }.is_err() {
         return core::ptr::null_mut();
     }
@@ -201,7 +207,10 @@ pub unsafe fn enum_to_core(e: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
         || unsafe { crate::data::learn(t) }.is_err()
         || !crate::data::is_enum(t)
     {
-        raise("the value is not a value of the declared enum", proto::lang());
+        raise(
+            "the value is not a value of the declared enum",
+            proto::lang(),
+        );
     }
     unsafe { crate::data::enum_from_haxe(e) }
         .as_object()

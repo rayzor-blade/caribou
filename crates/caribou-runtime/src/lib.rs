@@ -41,6 +41,16 @@ extern "C" fn start() {
         process::abort();
     }
     caribou_ash::on_program_start(program_start);
+    #[cfg(target_family = "wasm")]
+    caribou::heap::set_poll_guard(no_runtime_callouts);
+}
+
+/// Whether no Ash or WrenLift runtime frame on this thread is in a call
+/// out to compiled code: such a frame holds objects in wasm locals, which
+/// no scan reaches, so a compiled poll below it must not collect.
+#[cfg(target_family = "wasm")]
+fn no_runtime_callouts() -> bool {
+    ash_std::gc::hlp_runtime_callout_depth() + wren_lift::capi::wlift_runtime_callout_depth() <= 0
 }
 
 /// The host table, for a plugin loaded as a side module: it imports this

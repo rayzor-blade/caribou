@@ -85,6 +85,11 @@ pub unsafe extern "C" fn gc_safepoint() {
     heap::gc_safepoint();
 }
 
+/// Compiled code's poll, where a collection an allocation deferred runs.
+pub unsafe extern "C" fn gc_compiled_poll() {
+    heap::poll_safepoint();
+}
+
 pub unsafe extern "C" fn gc_set_blocking(blocking: bool) -> bool {
     heap::gc_set_blocking(blocking)
 }
