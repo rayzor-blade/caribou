@@ -1133,6 +1133,13 @@ export function execute(wire, at, len) {
   }
 }
 
+/// Serve, from this worker, the program the page started it for: the page
+/// posts the program's memory and its mailbox's address, and `roots` makes
+/// the objects the plugin names by the first handles.
+export function start(roots) {
+  self.onmessage = ({ data: { memory, address } }) => serve(new Wire(memory, roots()), address);
+}
+
 /// Serve the program's mailbox at `address`: run each batch it hands
 /// over, then tell it the batch is done. The wait does not block, so the
 /// API's promises settle between batches.

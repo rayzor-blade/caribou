@@ -12,11 +12,15 @@ fn main() {
     // agent's decoder, which a web build carries for the program to ship.
     let wire = caribou_bindgen::wire::wire(&idl).expect("the WebGPU IDL generates its wire");
     std::fs::write(path.join("gpu_wire.rs"), wire.rust).unwrap();
-    std::fs::write(path.join("gpu_agent.mjs"), wire.js).unwrap();
-    // With the web feature, the backend the members call: what src/web.rs
+    // A page starts the module as the GPU agent, holding the browser's GPU
+    // under handle 1.
+    let agent = wire.js
+        + "\nif (typeof WorkerGlobalScope !== \"undefined\") start(() => new Map([[1, navigator.gpu]]));\n";
+    std::fs::write(path.join("gpu_agent.mjs"), agent).unwrap();
+    // For a WASI program, the backend the members call: what src/web.rs
     // defines, and a refusal for the rest.
     println!("cargo:rerun-if-changed=src/web.rs");
-    if std::env::var_os("CARGO_FEATURE_WEB").is_some() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
         let web = std::fs::read_to_string("src/web.rs").unwrap();
         let backend = caribou_bindgen::web_backend("gpu", &api, &idl, &web)
             .expect("the web backend generates");
