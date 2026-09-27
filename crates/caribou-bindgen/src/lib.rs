@@ -1336,7 +1336,8 @@ fn generate_parts(
                         let ret = match &f.sig.output {
                             ReturnType::Default => quote!(),
                             ReturnType::Type(_, ty)
-                                if generic(ty, "Box").is_some() || generic(ty, "Enum").is_some() =>
+                                if generic(ty, "Box").is_some()
+                                    || generic(ty, "Enum").is_some() =>
                             {
                                 quote!(-> i32)
                             }
@@ -1413,14 +1414,23 @@ pub fn web_backend(
         .items
         .iter()
         .filter_map(|i| match i {
-            Item::Fn(f) if matches!(f.vis, syn::Visibility::Public(_)) => Some(f.sig.ident.to_string()),
+            Item::Fn(f) if matches!(f.vis, syn::Visibility::Public(_)) => {
+                Some(f.sig.ident.to_string())
+            }
             _ => None,
         })
         .collect();
     let mut out = TokenStream::new();
     for b in &backend_fns {
-        let BackendFn { name, params, ret, fallback } = b;
-        let args: Vec<syn::Ident> = (0..params.len()).map(|i| quote::format_ident!("a{i}")).collect();
+        let BackendFn {
+            name,
+            params,
+            ret,
+            fallback,
+        } = b;
+        let args: Vec<syn::Ident> = (0..params.len())
+            .map(|i| quote::format_ident!("a{i}"))
+            .collect();
         if defined.contains(&name.to_string()) {
             out.extend(quote! {
                 pub unsafe fn #name(#(#args: #params),*) #ret { unsafe { crate::web::#name(#(#args),*) } }

@@ -174,7 +174,10 @@ pub fn parse(text: &str) -> Result<Model, String> {
             _ => {}
         }
     }
-    let r = Resolver { kinds: &kinds, typedefs: &typedefs };
+    let r = Resolver {
+        kinds: &kinds,
+        typedefs: &typedefs,
+    };
 
     let mut model = Model::default();
     let mut mixins: BTreeMap<String, Interface> = BTreeMap::new();
@@ -182,7 +185,13 @@ pub fn parse(text: &str) -> Result<Model, String> {
     for d in &definitions {
         match d {
             Definition::Enum(e) => {
-                let values = e.values.body.list.iter().map(|v| v.value.0.to_owned()).collect();
+                let values = e
+                    .values
+                    .body
+                    .list
+                    .iter()
+                    .map(|v| v.value.0.to_owned())
+                    .collect();
                 model.enums.insert(e.identifier.0.to_owned(), values);
             }
             Definition::Dictionary(x) => model.dictionaries.push(Dictionary {
@@ -205,9 +214,18 @@ pub fn parse(text: &str) -> Result<Model, String> {
                     ty: r.ty(&m.type_),
                     required: m.required.is_some(),
                 });
-                match model.dictionaries.iter_mut().find(|d| d.name == x.identifier.0) {
+                match model
+                    .dictionaries
+                    .iter_mut()
+                    .find(|d| d.name == x.identifier.0)
+                {
                     Some(d) => d.members.extend(members),
-                    None => return Err(format!("partial dictionary {} before its dictionary", x.identifier.0)),
+                    None => {
+                        return Err(format!(
+                            "partial dictionary {} before its dictionary",
+                            x.identifier.0
+                        ));
+                    }
                 }
             }
             Definition::Interface(x) => {
@@ -227,14 +245,20 @@ pub fn parse(text: &str) -> Result<Model, String> {
                 r.interface_members(i, &x.members.body);
             }
             Definition::InterfaceMixin(x) => {
-                let mut i = Interface { name: x.identifier.0.to_owned(), ..Interface::default() };
+                let mut i = Interface {
+                    name: x.identifier.0.to_owned(),
+                    ..Interface::default()
+                };
                 r.mixin_members(&mut i, &x.members.body);
                 mixins.insert(i.name.clone(), i);
             }
             Definition::PartialInterfaceMixin(x) => {
                 let i = mixins
                     .entry(x.identifier.0.to_owned())
-                    .or_insert_with(|| Interface { name: x.identifier.0.to_owned(), ..Interface::default() });
+                    .or_insert_with(|| Interface {
+                        name: x.identifier.0.to_owned(),
+                        ..Interface::default()
+                    });
                 r.mixin_members(i, &x.members.body);
             }
             Definition::IncludesStatement(x) => {
@@ -389,10 +413,14 @@ impl<'a> Resolver<'_, 'a> {
             N::ByteString(s) => nullable(Ty::String, s.q_mark.is_some()),
             N::DOMString(s) => nullable(Ty::String, s.q_mark.is_some()),
             N::USVString(s) => nullable(Ty::String, s.q_mark.is_some()),
-            N::Sequence(s) => nullable(Ty::Sequence(Box::new(self.ty(&s.type_.generics.body))), s.q_mark.is_some()),
-            N::FrozenArrayType(s) => {
-                nullable(Ty::Sequence(Box::new(self.ty(&s.type_.generics.body))), s.q_mark.is_some())
-            }
+            N::Sequence(s) => nullable(
+                Ty::Sequence(Box::new(self.ty(&s.type_.generics.body))),
+                s.q_mark.is_some(),
+            ),
+            N::FrozenArrayType(s) => nullable(
+                Ty::Sequence(Box::new(self.ty(&s.type_.generics.body))),
+                s.q_mark.is_some(),
+            ),
             N::RecordType(r) => {
                 let (key, _, value) = &r.type_.generics.body;
                 match **key {
@@ -445,7 +473,11 @@ impl<'a> Resolver<'_, 'a> {
 }
 
 fn nullable(ty: Ty, q_mark: bool) -> Ty {
-    if q_mark { Ty::Nullable(Box::new(ty)) } else { ty }
+    if q_mark {
+        Ty::Nullable(Box::new(ty))
+    } else {
+        ty
+    }
 }
 
 fn int(i: IntegerType) -> Int {
@@ -472,8 +504,15 @@ mod tests {
         let model = gpu();
         assert!(model.enums["GPUPowerPreference"].contains(&"high-performance".to_owned()));
         let device = model.interface("GPUDevice").unwrap();
-        let create = device.operations.iter().find(|o| o.name == "createBuffer").unwrap();
-        assert_eq!(create.args[0].ty, Ty::Dictionary("GPUBufferDescriptor".into()));
+        let create = device
+            .operations
+            .iter()
+            .find(|o| o.name == "createBuffer")
+            .unwrap();
+        assert_eq!(
+            create.args[0].ty,
+            Ty::Dictionary("GPUBufferDescriptor".into())
+        );
         assert_eq!(create.ret, Ty::Interface("GPUBuffer".into()));
         // Typedefs resolve: GPUSize64 is an unsigned long long.
         let size = model

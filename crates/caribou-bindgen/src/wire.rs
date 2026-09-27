@@ -23,6 +23,10 @@
 //! capacity of the caller's buffer, which takes the result encoded as
 //! above, or a rejection's message. The agent stores the state last and
 //! notifies it.
+//!
+//! The program hands batches of commands to the agent through a mailbox in
+//! its memory, which the agent serves; the plugin's `Mailbox` gives the
+//! layout. After the IDL's operations comes one that forgets a handle.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -42,7 +46,12 @@ pub struct Wire {
 pub fn wire(webidl: &str) -> Result<Wire, String> {
     let model = crate::idl::parse(webidl)?;
     let ops = operations(&model);
-    let mut g = Gen { model: &model, rust: String::new(), js: String::new(), named: BTreeSet::new() };
+    let mut g = Gen {
+        model: &model,
+        rust: String::new(),
+        js: String::new(),
+        named: BTreeSet::new(),
+    };
     g.prelude();
     for op in &ops {
         for a in &op.args {
@@ -51,7 +60,10 @@ pub fn wire(webidl: &str) -> Result<Wire, String> {
         g.need(&op.reply_ty);
     }
     g.ops(&ops);
-    Ok(Wire { rust: g.rust, js: g.js })
+    Ok(Wire {
+        rust: g.rust,
+        js: g.js,
+    })
 }
 
 /// What a command does, as both halves name it.
@@ -92,7 +104,11 @@ fn operations(model: &Model) -> Vec<Op> {
         for o in &i.operations {
             let n = seen.entry(&o.name).or_default();
             *n += 1;
-            let suffix = if *n > 1 { format!("_{n}") } else { String::new() };
+            let suffix = if *n > 1 {
+                format!("_{n}")
+            } else {
+                String::new()
+            };
             if let Some(op) = operation(model, i.name.as_str(), o, &suffix) {
                 out.push(op);
             }
@@ -114,7 +130,11 @@ fn operations(model: &Model) -> Vec<Op> {
                     idl: format!("{}.{} =", i.name, a.name),
                     method: format!("{}_set_{}", snake(&i.name), snake(&a.name)),
                     call: Call::Set(a.name.clone()),
-                    args: vec![ArgOp { name: "value".into(), ty: a.ty.clone(), optional: false }],
+                    args: vec![ArgOp {
+                        name: "value".into(),
+                        ty: a.ty.clone(),
+                        optional: false,
+                    }],
                     makes: false,
                     replies: false,
                     promise: false,
@@ -145,7 +165,11 @@ fn operation(model: &Model, interface: &str, o: &Operation, suffix: &str) -> Opt
         .iter()
         .map(|a| ArgOp {
             name: a.name.clone(),
-            ty: if a.variadic { Ty::Sequence(Box::new(a.ty.clone())) } else { a.ty.clone() },
+            ty: if a.variadic {
+                Ty::Sequence(Box::new(a.ty.clone()))
+            } else {
+                a.ty.clone()
+            },
             optional: a.optional && !a.variadic,
         })
         .collect();
@@ -198,7 +222,9 @@ fn carried(model: &Model, ty: &Ty) -> bool {
 fn carried_in(model: &Model, ty: &Ty, seen: &mut BTreeSet<String>) -> bool {
     match ty {
         Ty::Opaque(_) => false,
-        Ty::Sequence(t) | Ty::Record(t) | Ty::Nullable(t) | Ty::Promise(t) => carried_in(model, t, seen),
+        Ty::Sequence(t) | Ty::Record(t) | Ty::Nullable(t) | Ty::Promise(t) => {
+            carried_in(model, t, seen)
+        }
         Ty::Union(_, alternatives) => alternatives.iter().all(|a| carried_in(model, a, seen)),
         Ty::Dictionary(name) => {
             if !seen.insert(name.clone()) {
@@ -267,29 +293,55 @@ impl Gen<'_> {
     fn enumeration(&mut self, name: &str) {
         let values = &self.model.enums[name];
         let r = &mut self.rust;
-        let _ = writeln!(r, "\n/// `{name}`.\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum {name} {{");
+        let _ = writeln!(
+            r,
+            "\n/// `{name}`.\n#[derive(Clone, Copy, Debug, PartialEq, Eq)]\npub enum {name} {{"
+        );
         for v in values {
             let _ = writeln!(r, "    /// `\"{v}\"`.\n    {},", variant(v));
         }
-        let _ = writeln!(r, "}}\n\nimpl Encode for {name} {{\n    fn encode(&self, e: &mut Encoder) {{\n        e.u32(*self as u32);\n    }}\n}}");
-        let _ = writeln!(r, "\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Some(match d.u32()? {{");
+        let _ = writeln!(
+            r,
+            "}}\n\nimpl Encode for {name} {{\n    fn encode(&self, e: &mut Encoder) {{\n        e.u32(*self as u32);\n    }}\n}}"
+        );
+        let _ = writeln!(
+            r,
+            "\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Some(match d.u32()? {{"
+        );
         for (i, v) in values.iter().enumerate() {
             let _ = writeln!(r, "            {i} => Self::{},", variant(v));
         }
         let _ = writeln!(r, "            _ => return None,\n        }})\n    }}\n}}");
-        let list = values.iter().map(|v| format!("{v:?}")).collect::<Vec<_>>().join(", ");
+        let list = values
+            .iter()
+            .map(|v| format!("{v:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
         let _ = writeln!(self.js, "\nconst {name} = [{list}];");
     }
 
     fn dictionary(&mut self, name: &str, members: &[crate::idl::Member]) {
-        let mut def = format!("\n/// `{name}`.\n#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n");
-        let mut enc = format!("\nimpl Encode for {name} {{\n    fn encode(&self, e: &mut Encoder) {{\n");
-        let mut dec = format!("\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Some(Self {{\n");
+        let mut def =
+            format!("\n/// `{name}`.\n#[derive(Clone, Debug, PartialEq)]\npub struct {name} {{\n");
+        let (e, d) = if members.is_empty() {
+            ("_", "_")
+        } else {
+            ("e", "d")
+        };
+        let mut enc =
+            format!("\nimpl Encode for {name} {{\n    fn encode(&self, {e}: &mut Encoder) {{\n");
+        let mut dec = format!(
+            "\nimpl Decode for {name} {{\n    fn decode({d}: &mut Decoder) -> Option<Self> {{\n        Some(Self {{\n"
+        );
         let mut read = format!("\nfunction read_{name}(r) {{\n  const o = {{}};\n");
         let mut write = format!("\nfunction write_{name}(w, o) {{\n");
         for m in members {
             let field = field(&m.name);
-            let ty = if m.required { rust_ty(&m.ty) } else { format!("Option<{}>", rust_ty(&m.ty)) };
+            let ty = if m.required {
+                rust_ty(&m.ty)
+            } else {
+                format!("Option<{}>", rust_ty(&m.ty))
+            };
             let _ = writeln!(def, "    pub {field}: {ty},");
             let _ = writeln!(enc, "        self.{field}.encode(e);");
             let _ = writeln!(dec, "            {field}: Decode::decode(d)?,");
@@ -319,9 +371,15 @@ impl Gen<'_> {
     }
 
     fn union(&mut self, name: &str, alternatives: &[Ty]) {
-        let mut def = format!("\n/// A union: `{name}`.\n#[derive(Clone, Debug, PartialEq)]\npub enum {name} {{\n");
-        let mut enc = format!("\nimpl Encode for {name} {{\n    fn encode(&self, e: &mut Encoder) {{\n        match self {{\n");
-        let mut dec = format!("\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Some(match d.u8()? {{\n");
+        let mut def = format!(
+            "\n/// A union: `{name}`.\n#[derive(Clone, Debug, PartialEq)]\npub enum {name} {{\n"
+        );
+        let mut enc = format!(
+            "\nimpl Encode for {name} {{\n    fn encode(&self, e: &mut Encoder) {{\n        match self {{\n"
+        );
+        let mut dec = format!(
+            "\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Some(match d.u8()? {{\n"
+        );
         let mut read = format!("\nfunction read_{name}(r) {{\n  switch (r.u8()) {{\n");
         // A value names its alternative by what it is: an object by its
         // interface or its fields, an array by being one.
@@ -329,16 +387,30 @@ impl Gen<'_> {
         for (i, a) in alternatives.iter().enumerate() {
             let variant = alternative_name(a);
             let _ = writeln!(def, "    {variant}({}),", rust_ty(a));
-            let _ = writeln!(enc, "            Self::{variant}(v) => {{\n                e.u8({i});\n                v.encode(e);\n            }}");
-            let _ = writeln!(dec, "            {i} => Self::{variant}(Decode::decode(d)?),");
+            let _ = writeln!(
+                enc,
+                "            Self::{variant}(v) => {{\n                e.u8({i});\n                v.encode(e);\n            }}"
+            );
+            let _ = writeln!(
+                dec,
+                "            {i} => Self::{variant}(Decode::decode(d)?),"
+            );
             let _ = writeln!(read, "    case {i}: return {};", js_read(a));
-            let _ = writeln!(write, "  if ({}) {{ w.u8({i}); {} return; }}", js_is(a, "v"), js_write(a, "v"));
+            let _ = writeln!(
+                write,
+                "  if ({}) {{ w.u8({i}); {} return; }}",
+                js_is(a, "v"),
+                js_write(a, "v")
+            );
         }
         def.push_str("}\n");
         enc.push_str("        }\n    }\n}\n");
         dec.push_str("            _ => return None,\n        })\n    }\n}\n");
         read.push_str("  }\n  throw new Error(\"bad union alternative\");\n}\n");
-        let _ = writeln!(write, "  throw new Error(\"no alternative of {name} fits\");\n}}");
+        let _ = writeln!(
+            write,
+            "  throw new Error(\"no alternative of {name} fits\");\n}}"
+        );
         self.rust.push_str(&def);
         self.rust.push_str(&enc);
         self.rust.push_str(&dec);
@@ -352,7 +424,8 @@ impl Gen<'_> {
         for (n, op) in ops.iter().enumerate() {
             // Rust: one method per op.
             let mut params = String::from("&mut self, this: Handle");
-            let mut body = format!("        let at = self.begin({n});\n        this.encode(self);\n");
+            let mut body =
+                format!("        let at = self.begin({n});\n        this.encode(self);\n");
             if op.makes {
                 params.push_str(", result: Handle");
                 body.push_str("        result.encode(self);\n");
@@ -362,15 +435,26 @@ impl Gen<'_> {
                 body.push_str("        self.u32(reply);\n");
             }
             for a in &op.args {
-                let ty = if a.optional { format!("Option<{}>", rust_ty(&a.ty)) } else { rust_ty(&a.ty) };
+                let ty = if a.optional {
+                    format!("Option<{}>", rust_ty(&a.ty))
+                } else {
+                    rust_ty(&a.ty)
+                };
                 let _ = write!(params, ", {}: &{ty}", field(&a.name));
                 let _ = writeln!(body, "        {}.encode(self);", field(&a.name));
             }
             body.push_str("        self.end(at);\n");
-            let _ = writeln!(methods, "    /// `{}`.\n    pub fn {}({params}) {{\n{body}    }}", op.idl, op.method);
+            let _ = writeln!(
+                methods,
+                "    /// `{}`.\n    pub fn {}({params}) {{\n{body}    }}",
+                op.idl, op.method
+            );
 
             // JavaScript: the op's decoder, at its number.
-            let mut js = format!("  // {n}: {}\n  (wire, r) => {{\n    const self = wire.get(r.u32());\n", op.idl);
+            let mut js = format!(
+                "  // {n}: {}\n  (wire, r) => {{\n    const self = wire.get(r.u32());\n",
+                op.idl
+            );
             if op.makes {
                 js.push_str("    const result = r.u32();\n");
             }
@@ -394,7 +478,11 @@ impl Gen<'_> {
                 Call::Set(a) => format!("(self{} = {args})", js_key(a)),
                 Call::Values => "Array.from(self.values())".to_owned(),
             };
-            let keep = if op.makes { "if (v) wire.set(result, v); " } else { "" };
+            let keep = if op.makes {
+                "if (v) wire.set(result, v); "
+            } else {
+                ""
+            };
             let answer = match &op.reply_ty {
                 Ty::Undefined => "null".to_owned(),
                 Ty::Boolean if op.makes => "encode((w) => w.u8(v ? 1 : 0))".to_owned(),
@@ -406,7 +494,10 @@ impl Gen<'_> {
                     "    {call}.then((v) => {{ {keep}wire.reply(reply, 1, {answer}); }}, (e) => wire.reply(reply, 2, message(e)));"
                 );
             } else if op.replies {
-                let _ = writeln!(js, "    const v = {call};\n    {keep}wire.reply(reply, 1, {answer});");
+                let _ = writeln!(
+                    js,
+                    "    let v;\n    try {{ v = {call}; }} catch (e) {{ wire.reply(reply, 2, message(e)); return; }}\n    {keep}wire.reply(reply, 1, {answer});"
+                );
             } else if op.makes {
                 let _ = writeln!(js, "    const v = {call};\n    {keep}");
             } else {
@@ -415,11 +506,24 @@ impl Gen<'_> {
             js.push_str("  },\n");
             table.push_str(&js);
         }
+        let n = ops.len();
+        let _ = writeln!(
+            methods,
+            "    /// Forget the object kept under `this`.\n    pub fn release(&mut self, this: Handle) {{\n        let at = self.begin({n});\n        this.encode(self);\n        self.end(at);\n    }}"
+        );
+        let _ = writeln!(
+            table,
+            "  // {n}: release\n  (wire, r) => {{\n    wire.objects.delete(r.u32());\n  }},"
+        );
         methods.push_str("}\n");
         table.push_str("];\n");
         self.rust.push_str(&methods);
         self.js.push_str(&table);
-        let _ = writeln!(self.rust, "\n/// The number of operations the wire carries.\npub const OPS: u32 = {};", ops.len());
+        let _ = writeln!(
+            self.rust,
+            "\n/// The number of operations the wire carries.\npub const OPS: u32 = {};",
+            ops.len() + 1
+        );
     }
 }
 
@@ -461,9 +565,11 @@ fn int_name(i: Int) -> &'static str {
 fn union_name(ty: &Ty) -> String {
     match ty {
         Ty::Union(Some(name), _) => name.clone(),
-        Ty::Union(None, alternatives) => {
-            alternatives.iter().map(alternative_name).collect::<Vec<_>>().join("Or")
-        }
+        Ty::Union(None, alternatives) => alternatives
+            .iter()
+            .map(alternative_name)
+            .collect::<Vec<_>>()
+            .join("Or"),
         other => alternative_name(other),
     }
 }
@@ -525,7 +631,10 @@ fn js_write(ty: &Ty, v: &str) -> String {
         Ty::Interface(_) => "throw new Error(\"objects come back under handles\");".into(),
         Ty::Sequence(t) => format!("w.seq({v}, (x) => {{ {} }});", js_write(t, "x")),
         Ty::Record(t) => format!("w.record({v}, (x) => {{ {} }});", js_write(t, "x")),
-        Ty::Nullable(t) => format!("if ({v} == null) w.u8(0); else {{ w.u8(1); {} }}", js_write(t, v)),
+        Ty::Nullable(t) => format!(
+            "if ({v} == null) w.u8(0); else {{ w.u8(1); {} }}",
+            js_write(t, v)
+        ),
         Ty::Union(..) => format!("write_{}(w, {v});", union_name(ty)),
         Ty::Promise(t) => js_write(t, v),
         Ty::Opaque(n) => unreachable!("{n} is not carried"),
@@ -549,8 +658,16 @@ fn js_is(ty: &Ty, v: &str) -> String {
 /// A Rust field or argument name for an IDL member.
 fn field(name: &str) -> String {
     let s = snake(name);
-    const KEYWORDS: &[&str] = &["type", "loop", "match", "ref", "move", "use", "in", "self", "fn", "mod", "struct", "enum", "const", "static", "where", "impl", "trait", "box", "yield", "async", "await", "dyn", "abstract", "final", "override"];
-    if KEYWORDS.contains(&s.as_str()) { format!("r#{s}") } else { s }
+    const KEYWORDS: &[&str] = &[
+        "type", "loop", "match", "ref", "move", "use", "in", "self", "fn", "mod", "struct", "enum",
+        "const", "static", "where", "impl", "trait", "box", "yield", "async", "await", "dyn",
+        "abstract", "final", "override",
+    ];
+    if KEYWORDS.contains(&s.as_str()) {
+        format!("r#{s}")
+    } else {
+        s
+    }
 }
 
 /// A JavaScript property access for an IDL member.
@@ -585,7 +702,9 @@ pub(crate) fn snake(name: &str) -> String {
 
 fn pascal(s: &str) -> String {
     let mut c = s.chars();
-    c.next().map(|f| f.to_ascii_uppercase().to_string() + c.as_str()).unwrap_or_default()
+    c.next()
+        .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+        .unwrap_or_default()
 }
 
 /// An enum value as a variant: `"high-performance"` as `HighPerformance`,
@@ -648,6 +767,88 @@ impl Encoder {
         self.bytes.extend_from_slice(&v.to_le_bytes());
     }
 }
+
+/// Where the program hands the agent its commands: five words in the
+/// program's memory, which the agent serves. `sent` counts the batches
+/// handed over and `done` those the agent has run, one in flight at a
+/// time, at `address` for `len` bytes; `settled` counts the replies the
+/// agent has settled.
+#[repr(C)]
+#[derive(Default)]
+pub struct Mailbox {
+    pub sent: core::sync::atomic::AtomicI32,
+    pub done: core::sync::atomic::AtomicI32,
+    pub address: core::sync::atomic::AtomicU32,
+    pub len: core::sync::atomic::AtomicU32,
+    pub settled: core::sync::atomic::AtomicI32,
+}
+
+impl Mailbox {
+    pub const fn new() -> Self {
+        use core::sync::atomic::{AtomicI32, AtomicU32};
+        Self {
+            sent: AtomicI32::new(0),
+            done: AtomicI32::new(0),
+            address: AtomicU32::new(0),
+            len: AtomicU32::new(0),
+            settled: AtomicI32::new(0),
+        }
+    }
+
+    /// Hand `batch` to the agent and wait until it has run it. Its bytes,
+    /// and any its commands point at, are the program's again after.
+    pub fn send(&self, batch: &[u8]) {
+        use core::sync::atomic::Ordering::SeqCst;
+        if batch.is_empty() {
+            return;
+        }
+        self.address.store(batch.as_ptr() as usize as u32, SeqCst);
+        self.len.store(batch.len() as u32, SeqCst);
+        let sent = self.sent.fetch_add(1, SeqCst).wrapping_add(1);
+        notify(&self.sent);
+        loop {
+            let done = self.done.load(SeqCst);
+            if done == sent {
+                return;
+            }
+            wait(&self.done, done);
+        }
+    }
+
+    /// Wait until the agent has settled a reply beyond the `seen`th, and
+    /// return how many it has settled.
+    pub fn wait_settled(&self, seen: i32) -> i32 {
+        use core::sync::atomic::Ordering::SeqCst;
+        loop {
+            let settled = self.settled.load(SeqCst);
+            if settled != seen {
+                return settled;
+            }
+            wait(&self.settled, seen);
+        }
+    }
+}
+
+/// Sleep while `word` holds `value`: the agent notifies it. On wasm with
+/// atomics the including crate enables `stdarch_wasm_atomic_wait`.
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+fn wait(word: &core::sync::atomic::AtomicI32, value: i32) {
+    unsafe { core::arch::wasm32::memory_atomic_wait32(word.as_ptr(), value, -1) };
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "atomics"))]
+fn notify(word: &core::sync::atomic::AtomicI32) {
+    unsafe { core::arch::wasm32::memory_atomic_notify(word.as_ptr(), u32::MAX) };
+}
+
+// Without shared wasm memory no agent can serve the mailbox.
+#[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
+fn wait(_: &core::sync::atomic::AtomicI32, _: i32) {
+    core::hint::spin_loop();
+}
+
+#[cfg(not(all(target_arch = "wasm32", target_feature = "atomics")))]
+fn notify(_: &core::sync::atomic::AtomicI32) {}
 
 /// A value as the wire encodes it.
 pub trait Encode {
@@ -827,6 +1028,14 @@ export class Wire {
     const words = new Int32Array(buffer, 0, buffer.byteLength >> 2);
     Atomics.store(words, at >> 2, state);
     Atomics.notify(words, at >> 2);
+    if (this.mailbox !== undefined) {
+      Atomics.add(words, (this.mailbox >> 2) + 4, 1);
+      Atomics.notify(words, (this.mailbox >> 2) + 4);
+    }
+  }
+  /// A command that threw, which has no reply to carry it.
+  error(e) {
+    console.error(e);
   }
 }
 
@@ -902,8 +1111,31 @@ export function execute(wire, at, len) {
     const op = view.getUint32(at, true);
     const n = view.getUint32(at + 4, true);
     const r = new Reader(wire, at + 8, at + 8 + n);
-    OPS[op](wire, r);
+    try {
+      OPS[op](wire, r);
+    } catch (e) {
+      wire.error(e);
+    }
     at += 8 + n;
+  }
+}
+
+/// Serve the program's mailbox at `address`: run each batch it hands
+/// over, then tell it the batch is done. The wait does not block, so the
+/// API's promises settle between batches.
+export async function serve(wire, address) {
+  wire.mailbox = address;
+  let seen = 0;
+  for (;;) {
+    const words = new Int32Array(wire.memory.buffer, address, 5);
+    const waited = Atomics.waitAsync(words, 0, seen);
+    if (waited.async) await waited.value;
+    const sent = Atomics.load(words, 0);
+    if (sent === seen) continue;
+    execute(wire, words[2] >>> 0, words[3] >>> 0);
+    seen = sent;
+    Atomics.store(words, 1, seen);
+    Atomics.notify(words, 1);
   }
 }
 "#;

@@ -103,7 +103,10 @@ fn rust_encodes_and_javascript_decodes_the_webgpu_wire() {
     std::fs::write(dir.join("main.rs"), PROGRAM).unwrap();
     std::fs::write(dir.join("harness.mjs"), HARNESS).unwrap();
 
-    run(&dir, Command::new("rustc").args(["--edition", "2024", "-O", "main.rs", "-o", "encode"]));
+    run(
+        &dir,
+        Command::new("rustc").args(["--edition", "2024", "-O", "main.rs", "-o", "encode"]),
+    );
     let layout = run(&dir, &mut Command::new(dir.join("encode")));
     let mut command = Command::new("node");
     command.arg("harness.mjs").args(layout.split_whitespace());
