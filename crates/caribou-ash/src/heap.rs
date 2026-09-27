@@ -202,6 +202,13 @@ pub unsafe extern "C" fn gc_add_scan_root(ptr: *const c_void, size: usize) {
     unsafe { heap::add_scan_root(ptr, size) };
 }
 
+/// A process-wide range outside the heap, a compiled program's constants,
+/// scanned at every collection from now on. It does not change when
+/// collections run.
+pub unsafe extern "C" fn gc_add_static_range(ptr: *const c_void, size: usize) {
+    unsafe { heap::register_root_range(ptr.cast(), size) };
+}
+
 pub unsafe extern "C" fn gc_set_scan_roots_live(ranges: *const (usize, usize), len: *const usize) {
     unsafe { heap::set_scan_roots_live(ranges, len) };
 }

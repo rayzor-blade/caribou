@@ -271,6 +271,7 @@ fn table() -> RuntimeVTable {
         gc_scan_roots_done: Some(heap::gc_scan_roots_done),
         gc_clear_scan_roots: Some(heap::gc_clear_scan_roots),
         gc_add_scan_root: Some(heap::gc_add_scan_root),
+        gc_add_static_range: Some(heap::gc_add_static_range),
         gc_set_scan_roots_live: Some(heap::gc_set_scan_roots_live),
         gc_set_scan_roots: Some(heap::gc_set_scan_roots),
         gc_track_external: Some(heap::gc_track_external),
