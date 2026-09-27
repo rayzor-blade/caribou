@@ -35,24 +35,19 @@ const RELOAD: &str =
     "<script>new EventSource(\"/__caribou/events\").onmessage = () => location.reload();</script>";
 
 /// Build the project for the browser: the module in its `target/`, with
-/// the page that runs it beside it (`aot::build_with_languages` writes it).
-/// Returns the module.
-pub fn build(project: &Project) -> Result<PathBuf> {
-    let hl = project.compile_haxe()?;
-    let target_dir = project.target_dir();
-    let out = target_dir.join(format!("{}.wasm", project.name));
-    let plugins: Vec<PathBuf> = project.plugins.values().cloned().collect();
-    let module = crate::aot::build_with_languages(
-        &hl,
-        TARGET,
-        Some(&out),
-        &plugins,
-        &project.side_modules,
-        &project.sources,
-        &project.languages,
-        Some(&target_dir),
-    )?;
-    Ok(module)
+/// the page that runs it beside it, by `caribou build` in a process of its
+/// own, so no state of one build's compilers reaches the next.
+pub fn build(project: &Project) -> Result<()> {
+    let caribou = std::env::current_exe().context("finding the caribou binary")?;
+    let status = std::process::Command::new(caribou)
+        .args(["build", "--target", TARGET])
+        .arg(&project.path)
+        .status()
+        .context("running caribou build")?;
+    if !status.success() {
+        anyhow::bail!("the build failed: {status}");
+    }
+    Ok(())
 }
 
 /// Build the project and serve it on `port`, on every interface when
