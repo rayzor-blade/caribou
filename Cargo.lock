@@ -7023,7 +7023,7 @@ dependencies = [
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+file:///Users/amaterasu/Vibranium/wren_lift?rev=17edace259f84ed0b7c730b024469e44190daaed#17edace259f84ed0b7c730b024469e44190daaed"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=c332c12b17103255875192a8299767130bd57edb#c332c12b17103255875192a8299767130bd57edb"
 dependencies = [
  "libc",
 ]
@@ -7031,12 +7031,13 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.22"
-source = "git+file:///Users/amaterasu/Vibranium/wren_lift?rev=17edace259f84ed0b7c730b024469e44190daaed#17edace259f84ed0b7c730b024469e44190daaed"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=c332c12b17103255875192a8299767130bd57edb#c332c12b17103255875192a8299767130bd57edb"
 dependencies = [
  "aes-gcm",
  "argon2",
  "ariadne",
  "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash?rev=312b4a4f0da6cf3f26807aa3d3d6b2dd01da3f56)",
+ "ash_wasm_runtime",
  "base64",
  "beadie",
  "bincode 2.0.1",
@@ -7072,6 +7073,7 @@ dependencies = [
  "smallvec",
  "target-lexicon",
  "tempfile",
+ "tokio",
  "toml 0.8.23",
  "toml_edit 0.22.27",
  "ureq",

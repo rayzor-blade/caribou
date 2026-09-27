@@ -10,7 +10,9 @@ use ash_core::native_lib::{HostLink, Word};
 use caribou::describe::ModuleDesc;
 use caribou::registry::TypeRef;
 use wren_lift::codegen::aot::{AotBundleMeta, AotModule, walk_imports};
-use wren_lift::codegen::llvm_aot::{AotEntry, LlvmTarget, compile_modules_to_llvm_object_with};
+use wren_lift::codegen::llvm_aot::{
+    AotBuild, AotEntry, LlvmTarget, compile_modules_to_llvm_object_with,
+};
 
 /// A frontend that can contribute relocatable objects to an AOT build.
 pub trait Emitter {
@@ -219,13 +221,19 @@ fn build_wren(
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
     }
+    let target = LlvmTarget::new(triple, None, None);
     compile_modules_to_llvm_object_with(
         &modules,
         &bundle,
-        &LlvmTarget::new(triple, None, None),
-        AotEntry::Library,
-        false,
-        &foreign,
+        &target,
+        // On wasm a compiled fiber gets a stack of its own, as the driver
+        // links every wasm program with Ash's fiber transform.
+        &AotBuild {
+            entry: AotEntry::Library,
+            fibers: target.is_wasm(),
+            foreign: &foreign,
+            ..AotBuild::default()
+        },
         out,
     )
     .map_err(|error| anyhow!("compiling the Wren modules: {error:?}"))?;
