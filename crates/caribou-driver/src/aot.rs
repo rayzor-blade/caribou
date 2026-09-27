@@ -74,7 +74,7 @@ pub fn build_with_languages(
         .map(|c| linked::host_library(c, &target_dir))
         .collect::<Result<Vec<_>>>()?;
     let runtime = if crates.is_empty() {
-        wasm_runtime(triple)?
+        wasm_runtime(triple, &target_dir)?
     } else {
         let mut named = Vec::with_capacity(crates.len());
         for (dir, library) in crates.iter().zip(&described) {
@@ -127,23 +127,27 @@ pub fn build_with_languages(
 }
 
 /// Caribou's runtime object for `triple`: beside the binary, where a
-/// release puts it, else the one this build of the driver made.
-fn wasm_runtime(triple: &str) -> Result<PathBuf> {
+/// release puts it; the one this build of the driver made, which is for
+/// `wasm32-wasip1`; else built for the program under `target_dir`, from the
+/// source this driver was built from.
+fn wasm_runtime(triple: &str, target_dir: &Path) -> Result<PathBuf> {
     const NAME: &str = "caribou_runtime.o";
     let beside = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(triple).join(NAME)));
-    let built = option_env!("CARIBOU_WASM_RUNTIME").map(PathBuf::from);
-    beside
-        .into_iter()
-        .chain(built)
-        .find(|p| p.is_file())
-        .ok_or_else(|| {
-            anyhow!(
-                "no {NAME} for {triple}: this caribou was built without a WASI sysroot. \
-                 Install wasi-libc or the WASI SDK (or set WASI_SYSROOT) and rebuild it"
-            )
-        })
+    let built = option_env!("CARIBOU_WASM_RUNTIME")
+        .filter(|_| triple == "wasm32-wasip1")
+        .map(PathBuf::from);
+    if let Some(found) = beside.into_iter().chain(built).find(|p| p.is_file()) {
+        return Ok(found);
+    }
+    if triple != "wasm32-wasip1" {
+        return linked::runtime(&[], triple, target_dir);
+    }
+    Err(anyhow!(
+        "no {NAME} for {triple}: this caribou was built without a WASI sysroot. \
+         Install wasi-libc or the WASI SDK (or set WASI_SYSROOT) and rebuild it"
+    ))
 }
 
 /// Plugin libraries whose members are linked into the program.
