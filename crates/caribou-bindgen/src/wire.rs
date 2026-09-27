@@ -44,10 +44,15 @@ pub struct Wire {
 /// Generate the wire for every operation and attribute of `webidl` that
 /// carries only values the wire has encodings for.
 pub fn wire(webidl: &str) -> Result<Wire, String> {
-    let model = crate::idl::parse(webidl)?;
-    let ops = operations(&model);
+    Ok(generate(&crate::idl::parse(webidl)?).0)
+}
+
+/// The wire for `model`, and the names of the dictionaries, enums and
+/// unions it has types for.
+pub(crate) fn generate(model: &Model) -> (Wire, BTreeSet<String>) {
+    let ops = operations(model);
     let mut g = Gen {
-        model: &model,
+        model,
         rust: String::new(),
         js: String::new(),
         named: BTreeSet::new(),
@@ -60,10 +65,13 @@ pub fn wire(webidl: &str) -> Result<Wire, String> {
         g.need(&op.reply_ty);
     }
     g.ops(&ops);
-    Ok(Wire {
-        rust: g.rust,
-        js: g.js,
-    })
+    (
+        Wire {
+            rust: g.rust,
+            js: g.js,
+        },
+        g.named,
+    )
 }
 
 /// What a command does, as both halves name it.
@@ -215,7 +223,7 @@ fn result_op(interface: &str, name: &str, idl: &str, call: Call, args: Vec<ArgOp
 /// Whether the wire has an encoding for every value of `ty`: a dictionary
 /// is carried when its required members are, and an optional member that
 /// is not stays off the wire.
-fn carried(model: &Model, ty: &Ty) -> bool {
+pub(crate) fn carried(model: &Model, ty: &Ty) -> bool {
     carried_in(model, ty, &mut BTreeSet::new())
 }
 
@@ -306,12 +314,16 @@ impl Gen<'_> {
         );
         let _ = writeln!(
             r,
-            "\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Some(match d.u32()? {{"
+            "\nimpl {name} {{\n    /// The value at `index` in the IDL's order.\n    pub fn from_index(index: u32) -> Option<Self> {{\n        Some(match index {{"
         );
         for (i, v) in values.iter().enumerate() {
             let _ = writeln!(r, "            {i} => Self::{},", variant(v));
         }
         let _ = writeln!(r, "            _ => return None,\n        }})\n    }}\n}}");
+        let _ = writeln!(
+            r,
+            "\nimpl Decode for {name} {{\n    fn decode(d: &mut Decoder) -> Option<Self> {{\n        Self::from_index(d.u32()?)\n    }}\n}}"
+        );
         let list = values
             .iter()
             .map(|v| format!("{v:?}"))
@@ -549,7 +561,7 @@ fn rust_ty(ty: &Ty) -> String {
     }
 }
 
-fn int_name(i: Int) -> &'static str {
+pub(crate) fn int_name(i: Int) -> &'static str {
     match i {
         Int::I8 => "i8",
         Int::U8 => "u8",
@@ -563,7 +575,7 @@ fn int_name(i: Int) -> &'static str {
 }
 
 /// A union's Rust name: the typedef that names it, else its alternatives'.
-fn union_name(ty: &Ty) -> String {
+pub(crate) fn union_name(ty: &Ty) -> String {
     match ty {
         Ty::Union(Some(name), _) => name.clone(),
         Ty::Union(None, alternatives) => alternatives
@@ -576,7 +588,7 @@ fn union_name(ty: &Ty) -> String {
 }
 
 /// The variant a union names an alternative by.
-fn alternative_name(ty: &Ty) -> String {
+pub(crate) fn alternative_name(ty: &Ty) -> String {
     match ty {
         Ty::Boolean => "Boolean".into(),
         Ty::Integer(i) => pascal(int_name(*i)),
@@ -657,7 +669,7 @@ fn js_is(ty: &Ty, v: &str) -> String {
 }
 
 /// A Rust field or argument name for an IDL member.
-fn field(name: &str) -> String {
+pub(crate) fn field(name: &str) -> String {
     let s = snake(name);
     const KEYWORDS: &[&str] = &[
         "type", "loop", "match", "ref", "move", "use", "in", "self", "fn", "mod", "struct", "enum",

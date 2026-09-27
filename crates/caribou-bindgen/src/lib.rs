@@ -6,6 +6,7 @@
 //! dictionary members or union alternatives from a vendored WebIDL source. This
 //! does not infer native GPU semantics from WebIDL interfaces or generate a
 //! language-specific heap layout.
+mod convert;
 pub mod idl;
 pub mod wire;
 
@@ -626,7 +627,7 @@ fn stored_value(
 /// table. Backends implement the selected functions with integer handles;
 /// the generated ABI uses typed native objects, enums, Text and Buffer.
 pub fn generate(namespace: &str, declaration: &str, webidl: &str) -> Result<String, String> {
-    generate_parts(namespace, declaration, webidl).map(|(code, _)| code)
+    generate_parts(namespace, declaration, webidl).map(|(code, _, _)| code)
 }
 
 /// A backend function the generated members call: its argument and
@@ -643,9 +644,10 @@ fn generate_parts(
     namespace: &str,
     declaration: &str,
     webidl: &str,
-) -> Result<(String, Vec<BackendFn>), String> {
+) -> Result<(String, Vec<BackendFn>, convert::Plugin), String> {
     ident(namespace)?;
     let mut backend_fns: Vec<BackendFn> = Vec::new();
+    let mut described = Vec::new();
     let file = syn::parse_file(declaration).map_err(error)?;
     let idl = tokens(webidl)?;
     let aliases = typedefs(&idl);
@@ -967,6 +969,8 @@ fn generate_parts(
                     return Err("records need named fields".into());
                 };
                 let imported = idl_name(&s.attrs)?;
+                let source = imported.clone();
+                let mut overridden = HashSet::new();
                 let mut explicit_fields = Vec::new();
                 let mut extension_fields = Vec::new();
                 for field in &fields.named {
@@ -982,6 +986,7 @@ fn generate_parts(
                         .iter()
                         .map(|(name, ty)| (name.to_string(), ty.clone()))
                         .collect();
+                    overridden = overrides.keys().cloned().collect();
                     let imported =
                         dictionary_fields(&idl, &source, &aliases, &idl_types, &overrides)?;
                     for name in overrides.keys() {
@@ -995,8 +1000,30 @@ fn generate_parts(
                 } else {
                     explicit_fields
                 };
+                let extended: HashSet<String> = extension_fields
+                    .iter()
+                    .map(|(name, _)| name.to_string())
+                    .collect();
                 // Members the backend has beyond the WebIDL dictionary.
                 declared_fields.extend(extension_fields);
+                described.push(convert::Record {
+                    class: class.clone(),
+                    source,
+                    fields: declared_fields
+                        .iter()
+                        .map(|(name, ty)| {
+                            let key = name.to_string();
+                            let origin = if extended.contains(&key) {
+                                convert::Origin::Extension
+                            } else if overridden.contains(&key) {
+                                convert::Origin::Override
+                            } else {
+                                convert::Origin::Imported
+                            };
+                            (name.clone(), ty.clone(), origin)
+                        })
+                        .collect(),
+                });
                 let mut stored_fields = TokenStream::new();
                 let mut required_params = Vec::new();
                 let mut required_types = Vec::new();
@@ -1392,9 +1419,28 @@ fn generate_parts(
             _ => unreachable!(),
         }
     }
+    let plugin = convert::Plugin {
+        records: described,
+        unions: unions
+            .into_iter()
+            .map(|(name, alternatives)| {
+                let alternatives = alternatives
+                    .into_iter()
+                    .map(|(variant, ty)| {
+                        let extra = union_extensions.contains(&(name.clone(), variant.to_string()));
+                        (variant, ty, extra)
+                    })
+                    .collect();
+                (name, alternatives)
+            })
+            .collect(),
+        idl_types,
+        resources,
+    };
     Ok((
         quote!(#output caribou_abi::plugin! { name: #namespace; #exports }).to_string(),
         backend_fns,
+        plugin,
     ))
 }
 
@@ -1408,7 +1454,7 @@ pub fn web_backend(
     webidl: &str,
     implemented: &str,
 ) -> Result<String, String> {
-    let (_, backend_fns) = generate_parts(namespace, declaration, webidl)?;
+    let (_, backend_fns, plugin) = generate_parts(namespace, declaration, webidl)?;
     let file = syn::parse_file(implemented).map_err(error)?;
     let defined: HashSet<String> = file
         .items
@@ -1420,7 +1466,9 @@ pub fn web_backend(
             _ => None,
         })
         .collect();
-    let mut out = TokenStream::new();
+    let model = idl::parse(webidl)?;
+    let (_, emitted) = wire::generate(&model);
+    let mut out = convert::conversions(&plugin, &model, &emitted, &defined)?;
     for b in &backend_fns {
         let BackendFn {
             name,
@@ -1678,6 +1726,59 @@ mod tests {
             idl,
         );
         assert!(not_an_alternative.is_err());
+    }
+    #[test]
+    fn a_web_backend_converts_records_to_the_wires_dictionaries() {
+        let idl = r#"
+          enum GPUFilterMode { "nearest", "linear" };
+          enum GPUAutoLayoutMode { "auto" };
+          interface GPUBuffer {};
+          interface GPUSampler {};
+          interface GPUPipelineLayout {};
+          interface GPUDevice {
+            undefined make(GPUThing descriptor);
+            undefined lay(GPULaid descriptor);
+          };
+          typedef (GPUSampler or GPUBuffer or GPUBinding) GPUResource;
+          dictionary GPUBinding { required GPUBuffer buffer; GPUSize64 size; };
+          typedef [EnforceRange] unsigned long long GPUSize64;
+          dictionary GPUThing {
+            USVString label = "";
+            required GPUSize64 size;
+            GPUFilterMode filter = "nearest";
+            sequence<GPUResource> resources = [];
+          };
+          dictionary GPULaid { required (GPUPipelineLayout or GPUAutoLayoutMode) layout; };
+        "#;
+        let declaration = r#"
+          #[idl("GPUFilterMode")] enum Filter { #[extension] Cubic }
+          #[idl("GPUBuffer")] trait Buffer {}
+          #[idl("GPUSampler")] trait Sampler {}
+          #[idl("GPUPipelineLayout")] trait Layout {}
+          #[idl("GPUDevice")] trait Device {}
+          #[idl("GPUBinding")] struct Binding {}
+          #[idl("GPUResource")]
+          enum Resource { Sampler(Sampler), Buffer(Buffer), Binding(Binding) }
+          #[idl("GPUThing")] struct Thing { #[extension] native: Option<i32> }
+          #[idl("GPULaid")] struct Laid { layout: Option<Layout> }
+        "#;
+        let web = "pub fn laid_layout() {}";
+        let generated = web_backend("gpu", declaration, idl, web).unwrap();
+        syn::parse_file(&generated).unwrap();
+        let flat = generated.replace(' ', "");
+        for expected in [
+            "implcrate::Thing{",
+            "fnwire(&self)->Result<crate::wire::GPUThing,String>",
+            "ifself.native.is_some(){returnErr(\"`Thing.native`isnotavailableontheweb\".to_owned());}",
+            "label:match&self.label{Some(x)=>Some(x.get().as_str().to_owned()),None=>None}",
+            "size:*(&self.size)asu64",
+            "filter:match&self.filter{Some(x)=>Some(crate::wire::GPUFilterMode::from_index(*xasu32)",
+            "crate::Resource::Buffer(x)=>crate::wire::GPUResource::GPUBuffer(crate::wire::Handle(*xasu32))",
+            "crate::Resource::Binding(x)=>crate::wire::GPUResource::GPUBinding(x.wire()?)",
+            "layout:crate::web::laid_layout(&self.layout)?",
+        ] {
+            assert!(flat.contains(expected), "{expected} in {generated}");
+        }
     }
     #[test]
     fn extensions_add_members_the_webidl_lacks() {
