@@ -11,7 +11,7 @@ description = "Runs a Caribou program: one world with every resident language, f
 # Both runtimes' LLVM tiers, as their own releases ship them, and programs
 # built and run ahead of time: the nightly archives are built with it. Needs
 # LLVM 21 on the build machine.
-llvm = ["caribou-wren/llvm", "caribou-ash/llvm", "dep:ash_core", "dep:ash_wasm_runtime", "dep:tokio", "wren_lift/aot"]
+llvm = ["caribou-wren/llvm", "caribou-ash/llvm", "dep:ash_core", "dep:ash_wasm_runtime", "dep:ash_page", "dep:tokio", "wren_lift/aot"]
 
 [dependencies]
 anyhow = "1"
@@ -19,6 +19,8 @@ anyhow = "1"
 ash_core = { workspace = true, optional = true }
 # Running a wasm module, as `ash run` does: wasmtime and Ash's host.
 ash_wasm_runtime = { workspace = true, features = ["native"], optional = true }
+# The page that runs a wasm program in a browser, with Ash's browser host.
+ash_page = { workspace = true, optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 caribou = { path = "../caribou", features = ["serde"] }
 caribou_abi = { workspace = true }

@@ -115,6 +115,10 @@ pub fn build_with_languages(
         )?);
         described.push((library, Some(name)));
     }
+    // The page that runs the program in a browser, as `ash --build` writes
+    // it; an index.html of the project's own is kept.
+    ash_page::write_page(&exe)
+        .with_context(|| format!("writing the page beside {}", exe.display()))?;
     // What the plugins run in a page, beside the program.
     for file in &page {
         let beside = exe.with_file_name(file.file_name().unwrap_or_default());

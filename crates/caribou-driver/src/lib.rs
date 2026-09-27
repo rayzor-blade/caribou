@@ -23,6 +23,8 @@ pub mod cbproj;
 pub mod deps;
 pub mod linked;
 pub mod project;
+#[cfg(feature = "llvm")]
+pub mod serve;
 pub mod session;
 mod wasm_toolchain;
 pub use session::{Options, Session, run, run_project};

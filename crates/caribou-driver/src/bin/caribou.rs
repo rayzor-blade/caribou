@@ -2,6 +2,7 @@
 //!
 //!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]
 //!     caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]
+//!     caribou serve [--port <port>] [--lan] [<project.cbproj>]
 //!     caribou describe <module.wren | plugin library | root directory>...
 //!
 //! With no program named, both act on the project file in the current
@@ -17,7 +18,9 @@
 //! and how each send across the bridge went. `build --target
 //! wasm32-wasip1` builds the program ahead of time instead: a wasm module
 //! on caribou's runtime, with nothing interpreted, which `run` runs under
-//! wasmtime as `ash run` does. `describe` prints the
+//! wasmtime as `ash run` does. `serve` builds the project for a browser
+//! and serves it on localhost, building it again and reloading the page
+//! whenever a source changes. `describe` prints the
 //! modules' interfaces as JSON, for a build step; a plugin library's
 //! classes come one module each.
 
@@ -28,7 +31,7 @@ use caribou_ash::Mode;
 use caribou_driver::cbproj::{self, Project};
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou describe <module.wren | plugin library | root directory>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -214,6 +217,44 @@ fn aot(
     ))
 }
 
+fn serve(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
+    let mut program = None;
+    let mut port = 8080;
+    let mut lan = false;
+    while let Some(arg) = argv.next() {
+        match arg.as_str() {
+            "--port" => {
+                port = argv
+                    .next()
+                    .and_then(|p| p.parse().ok())
+                    .ok_or("--port takes a port number")?
+            }
+            "--lan" => lan = true,
+            _ if arg.starts_with('-') => return Err(format!("unknown flag {arg}")),
+            _ if program.is_some() => return Err(USAGE.to_owned()),
+            _ => program = Some(PathBuf::from(arg)),
+        }
+    }
+    let Some(project) = project(program.as_deref())? else {
+        return Err("`serve` serves a project: name its .cbproj, or run it beside one".to_owned());
+    };
+    serve_project(&project, port, lan)
+}
+
+#[cfg(feature = "llvm")]
+fn serve_project(project: &Project, port: u16, lan: bool) -> Result<(), String> {
+    caribou_driver::serve::serve(project, port, lan).map_err(|e| format!("{e:#}"))
+}
+
+#[cfg(not(feature = "llvm"))]
+fn serve_project(_: &Project, _: u16, _: bool) -> Result<(), String> {
+    Err(
+        "`serve` builds the program ahead of time, which this caribou was built without: \
+         its `llvm` feature"
+            .to_owned(),
+    )
+}
+
 fn describe(files: &[String]) -> Result<(), String> {
     if files.is_empty() {
         return Err(USAGE.to_owned());
@@ -282,6 +323,7 @@ fn main() {
     let result = match argv.next().as_deref() {
         Some("run") => run(&mut argv),
         Some("build") => build(&mut argv),
+        Some("serve") => serve(&mut argv),
         Some("describe") => describe(&argv.collect::<Vec<_>>()),
         _ => Err(USAGE.to_owned()),
     };
