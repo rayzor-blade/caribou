@@ -42,6 +42,13 @@ extern "C" fn start() {
     caribou_ash::on_program_start(program_start);
 }
 
+/// The host table, for a plugin loaded as a side module: it imports this
+/// rather than being handed the table by an entry nothing calls.
+#[unsafe(no_mangle)]
+pub extern "C" fn caribou_host_table() -> *const caribou_abi::host::Host {
+    caribou_plugin::host_table()
+}
+
 /// Once the heap is up and before the program's entry: the world that
 /// gives each language its id, as a hosted run's does, then the linked
 /// Wren modules. The world lives as long as the program.

@@ -31,16 +31,20 @@ pub fn build(
     sources: &[PathBuf],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
-    build_with_languages(program, triple, out, plugins, sources, &[], target_dir)
+    build_with_languages(program, triple, out, plugins, &[], sources, &[], target_dir)
 }
 
 /// Build with the languages declared by a project. A frontend without a
-/// relocatable-object emitter is reported before the final link.
+/// relocatable-object emitter is reported before the final link. The
+/// plugin crates among `side_modules` are built as side modules beside the
+/// output, where the program finds their members when it starts; the rest
+/// are linked in.
 pub fn build_with_languages(
     program: &Path,
     triple: &str,
     out: Option<&Path>,
     plugins: &[PathBuf],
+    side_modules: &[PathBuf],
     sources: &[PathBuf],
     languages: &[String],
     target_dir: Option<&Path>,
@@ -55,8 +59,10 @@ pub fn build_with_languages(
     );
     let (crates, libraries): (Vec<PathBuf>, Vec<PathBuf>) =
         plugins.iter().cloned().partition(|p| linked::is_crate(p));
+    let (side, crates): (Vec<PathBuf>, Vec<PathBuf>) =
+        crates.into_iter().partition(|c| side_modules.contains(c));
     // A library joins a wasm program only as a side module.
-    let unlinkable = links(program, &libraries, None)?;
+    let unlinkable = links(program, &unlinked(&libraries), None)?;
     if let Some((_, name)) = unlinkable.keys().next() {
         bail!(
             "`{name}` is a native plugin member; a wasm program requires its plugin as an Ash \
@@ -77,6 +83,22 @@ pub fn build_with_languages(
         }
         linked::runtime(&named, triple, &target_dir)?
     };
+    // Each side module beside the output, under its plugin's name, which is
+    // the library its members are found in.
+    let mut described = unlinked(&described);
+    for dir in &side {
+        let library = linked::host_library(dir, &target_dir)?;
+        let plugin = caribou_plugin::load(&library).map_err(|e| anyhow!("{e}"))?;
+        let name = plugin.name().to_owned();
+        let exports: Vec<String> = caribou_plugin::links(&library)
+            .map_err(|e| anyhow!("{e}"))?
+            .into_iter()
+            .map(|l| l.symbol)
+            .collect();
+        let module = exe.with_file_name(format!("{name}.wasm"));
+        linked::side_module(dir, triple, &exports, &target_dir, &module)?;
+        described.push((library, Some(name)));
+    }
     let languages = aot_languages::Artifacts::build(
         languages,
         sources,
@@ -123,18 +145,25 @@ fn wasm_runtime(triple: &str) -> Result<PathBuf> {
         })
 }
 
+/// Plugin libraries whose members are linked into the program.
+fn unlinked(libraries: &[PathBuf]) -> Vec<(PathBuf, Option<String>)> {
+    libraries.iter().map(|l| (l.clone(), None)).collect()
+}
+
 /// The program's `caribou` natives that a plugin or a linked Wren module
 /// defines, each linked to the member by its symbol: the callee's own
 /// machine types, and the casts between them and Haxe's. A member whose
 /// types have no cast yet is left to the program's run-time path.
 fn links(
     program: &Path,
-    plugins: &[PathBuf],
+    plugins: &[(PathBuf, Option<String>)],
     languages: Option<&aot_languages::Artifacts>,
 ) -> Result<HashMap<(String, String), HostLink>> {
+    // Each member with the side module it is in, if it is in one.
     let mut members = Vec::new();
-    for plugin in plugins {
-        members.extend(caribou_plugin::links(plugin).map_err(|e| anyhow!("{e}"))?);
+    for (plugin, library) in plugins {
+        let links = caribou_plugin::links(plugin).map_err(|e| anyhow!("{e}"))?;
+        members.extend(links.into_iter().map(|l| (l, library.clone())));
     }
     let mut out = HashMap::new();
     for (lib, name) in caribou_ash::program::natives_in(program)? {
@@ -144,7 +173,7 @@ fn links(
         let Some(m) = caribou_ash::link::member_of(&name) else {
             continue;
         };
-        let found = members.iter().find(|l| {
+        let found = members.iter().find(|(l, _)| {
             l.lang == m.namespace
                 && l.module == m.module
                 && l.class == m.class
@@ -153,7 +182,10 @@ fn links(
                 && l.arity == m.arity
         });
         let link = match found {
-            Some(found) => host_link(found),
+            Some((found, library)) => host_link(found).map(|link| HostLink {
+                library: library.clone(),
+                ..link
+            }),
             None => languages.and_then(|languages| languages.host_link(&m)),
         };
         if let Some(link) = link {

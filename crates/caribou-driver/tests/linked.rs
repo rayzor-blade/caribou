@@ -54,12 +54,24 @@ fn caribou_with_env(dir: &Path, haxelib: &Path, args: &[&str], env: &[(&str, &st
 
 #[test]
 fn a_plugin_crate_links_into_a_wasm_program() {
+    plugin_program("caribou-linked", "");
+}
+
+#[test]
+fn a_plugin_crate_loads_beside_a_wasm_program_as_a_side_module() {
+    let dir = plugin_program("caribou-side-module", ", link = \"side\"");
+    assert!(dir.join("target/math.wasm").is_file(), "the side module beside the program");
+}
+
+/// Build and run the math plugin's program with the plugin taken by `link`,
+/// a project file's plugin options, in `name` under the test target.
+fn plugin_program(name: &str, link: &str) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .canonicalize()
         .unwrap();
     // Kept between runs: the program's runtime builds from caribou's source.
-    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("caribou-linked");
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::write(dir.join("src/Main.hx"), MAIN).unwrap();
     let math = root.join("crates/caribou-interop/plugins/math");
@@ -67,7 +79,7 @@ fn a_plugin_crate_links_into_a_wasm_program() {
         dir.join("plug.cbproj"),
         format!(
             "[project]\nname = \"plug\"\nentry = \"haxe:Main\"\nlanguages = [\"haxe\"]\n\n\
-             [plugins]\nmath = {{ path = {:?} }}\n",
+             [plugins]\nmath = {{ path = {:?}{link} }}\n",
             math.display().to_string()
         ),
     )
@@ -85,7 +97,8 @@ fn a_plugin_crate_links_into_a_wasm_program() {
     let built = caribou(&dir, &haxelib, &["build", "--target", "wasm32-wasip1"]);
     let module = PathBuf::from(built.lines().last().expect("the module's path").trim());
     let ran = caribou(&dir, &haxelib, &["run", module.to_str().unwrap()]);
-    let lines: Vec<&str> = ran.lines().collect();
+    // Without what the host says about loading libraries.
+    let lines: Vec<&str> = ran.lines().filter(|l| !l.starts_with("[ash]")).collect();
     assert_eq!(
         lines,
         [
@@ -99,6 +112,7 @@ fn a_plugin_crate_links_into_a_wasm_program() {
         ],
         "{ran}"
     );
+    dir
 }
 
 const TALLY: &str = r#"

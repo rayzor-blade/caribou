@@ -12,6 +12,58 @@ extern crate std;
 // allocated here.
 extern crate alloc;
 
+/// A side module allocates with the program's `malloc`: two allocators
+/// over one linear memory would each hand out pages the other believes
+/// free.
+#[cfg(feature = "side_module")]
+mod program_allocator {
+    use core::alloc::{GlobalAlloc, Layout};
+
+    unsafe extern "C" {
+        fn malloc(size: usize) -> *mut u8;
+        fn aligned_alloc(align: usize, size: usize) -> *mut u8;
+        fn realloc(p: *mut u8, size: usize) -> *mut u8;
+        fn free(p: *mut u8);
+    }
+
+    /// What `malloc` aligns to on wasm32.
+    const MALLOC_ALIGN: usize = 16;
+
+    struct ProgramAllocator;
+
+    unsafe impl GlobalAlloc for ProgramAllocator {
+        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+            if layout.align() <= MALLOC_ALIGN {
+                unsafe { malloc(layout.size()) }
+            } else {
+                // aligned_alloc takes a size that is a multiple of the
+                // alignment.
+                let size = layout.size().next_multiple_of(layout.align());
+                unsafe { aligned_alloc(layout.align(), size) }
+            }
+        }
+
+        unsafe fn dealloc(&self, p: *mut u8, _layout: Layout) {
+            unsafe { free(p) }
+        }
+
+        unsafe fn realloc(&self, p: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+            if layout.align() <= MALLOC_ALIGN {
+                return unsafe { realloc(p, size) };
+            }
+            let new = unsafe { self.alloc(Layout::from_size_align_unchecked(size, layout.align())) };
+            if !new.is_null() {
+                unsafe { core::ptr::copy_nonoverlapping(p, new, layout.size().min(size)) };
+                unsafe { free(p) };
+            }
+            new
+        }
+    }
+
+    #[global_allocator]
+    static ALLOCATOR: ProgramAllocator = ProgramAllocator;
+}
+
 use core::ffi::{c_char, c_int, c_uint, c_void};
 
 /// Bumped on any change to a layout, a discriminant, a signature or the

@@ -114,3 +114,45 @@ pub fn join(rustc: &OsStr, root: &Path, objects: &[&Path], out: &Path) -> Result
     }
     Ok(())
 }
+
+/// Link the PIC staticlib `archive` as a `dylink.0` side module at `out`,
+/// exporting `exports` and nothing else; what it leaves undefined it
+/// imports from the program it loads into.
+pub fn side_module(
+    rustc: &OsStr,
+    root: &Path,
+    archive: &Path,
+    exports: &[String],
+    out: &Path,
+) -> Result<(), String> {
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let lld = lld(rustc, root)?;
+    let mut link = Command::new(&lld);
+    link.args([
+        "-flavor",
+        "wasm",
+        "--experimental-pic",
+        "-shared",
+        "--unresolved-symbols=import-dynamic",
+        "--no-entry",
+        "--gc-sections",
+        "--no-export-dynamic",
+    ]);
+    for symbol in exports {
+        link.arg(format!("--export={symbol}"));
+    }
+    let status = link
+        .arg("--whole-archive")
+        .arg(archive)
+        .arg("--no-whole-archive")
+        .arg("-o")
+        .arg(out)
+        .status()
+        .map_err(|e| format!("running {}: {e}", lld.display()))?;
+    if !status.success() {
+        return Err(format!("linking the side module {}: {status}", out.display()));
+    }
+    Ok(())
+}

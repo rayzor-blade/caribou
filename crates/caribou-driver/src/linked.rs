@@ -1,11 +1,16 @@
-//! The runtime of a program that links plugins in. Two Rust staticlibs
-//! built apart would each carry std and an allocator, so the program's
-//! plugins and `caribou-runtime` build as one crate graph: a crate of the
-//! program's own in its target directory, depending on both, with
-//! `caribou_abi`'s `linked` feature, under which each plugin exports its
-//! entry under a name of its own, and a constructor of the crate registers
-//! them. It is built from the caribou source this driver was built from,
-//! with that source's lockfile, patches and profiles.
+//! A program's plugin crates, built for the ways a program can take a
+//! plugin: for this machine, to load in a hosted run; linked into a wasm
+//! program's runtime; or as a wasm side module beside the program
+//! ([`side_module`]).
+//!
+//! A program that links plugins in builds its runtime with them. Two Rust
+//! staticlibs built apart would each carry std and an allocator, so the
+//! program's plugins and `caribou-runtime` build as one crate graph: a
+//! crate of the program's own in its target directory, depending on both,
+//! with `caribou_abi`'s `linked` feature, under which each plugin exports
+//! its entry under a name of its own, and a constructor of the crate
+//! registers them. Every build here is from the caribou source this driver
+//! was built from, with that source's lockfile, patches and profiles.
 
 use std::path::{Path, PathBuf};
 
@@ -90,6 +95,44 @@ pub fn host_library(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
         );
     }
     Ok(library)
+}
+
+/// The plugin crate at `dir` built as a wasm side module for `triple`,
+/// written to `out`: position-independent, over its own copy of std built
+/// that way, with `caribou_abi`'s `side_module` feature, so it allocates
+/// with the program's `malloc` and takes the host table from the program.
+/// It exports `exports`, its members' link symbols, which the program
+/// finds in it when it starts. Built under `target_dir`.
+pub fn side_module(dir: &Path, triple: &str, exports: &[String], target_dir: &Path, out: &Path) -> Result<()> {
+    let root = source_root()?;
+    let (dir, target_dir) = (std::path::absolute(dir)?, std::path::absolute(target_dir)?);
+    let (_, lib) = names(&dir)?;
+    let build_dir = target_dir.join("side-modules");
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let status = std::process::Command::new(cargo)
+        .args(["rustc", "--release", "--lib", "--crate-type", "staticlib", "--target", triple])
+        .args(["-Z", "build-std=std,panic_abort", "--features", "caribou_abi/side_module"])
+        .arg("--manifest-path")
+        .arg(dir.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(&build_dir)
+        .current_dir(&root)
+        // In place of the config's flags for the target: a side module is
+        // position-independent, and its globals are the program's to move.
+        .env(
+            format!("CARGO_TARGET_{}_RUSTFLAGS", triple.replace('-', "_").to_uppercase()),
+            "-Crelocation-model=pic -Ctarget-feature=+mutable-globals",
+        )
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
+        .status()
+        .context("running cargo")?;
+    if !status.success() {
+        bail!("building the plugin crate {} as a side module: {status}", dir.display());
+    }
+    let archive = build_dir.join(triple).join("release").join(format!("lib{lib}.a"));
+    let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+    wasm_toolchain::side_module(&rustc, &root, &archive, exports, out).map_err(|e| anyhow!(e))
 }
 
 /// Build the runtime object for `triple` with `plugins` linked in, each

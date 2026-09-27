@@ -10,6 +10,10 @@ description = "Layouts and constants every Caribou runtime, plugin and the core 
 # each registers from a constructor instead of exporting the entry the
 # loader looks for.
 linked = []
+# A plugin built as a wasm side module (a `dylink.0` library beside the
+# program): it allocates with the program's `malloc`, and takes the host
+# table from the program by import rather than through its entry.
+side_module = []
 
 # Never depend on the core: that would duplicate its exported symbols in
 # every plugin archive. The derive runs only at compile time.

@@ -102,6 +102,7 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                         &triple,
                         Some(&out),
                         &plugins,
+                        &project.side_modules,
                         &project.sources,
                         &project.languages,
                         Some(&target_dir),
@@ -123,6 +124,7 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                     &triple,
                     out.as_deref(),
                     &plugins_beside(&program),
+                    &[],
                     &caribou_driver::project::roots(&program),
                     &[],
                     None,
@@ -177,12 +179,20 @@ fn aot(
     triple: &str,
     out: Option<&Path>,
     plugins: &[PathBuf],
+    side_modules: &[PathBuf],
     sources: &[PathBuf],
     languages: &[String],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
     caribou_driver::aot::build_with_languages(
-        program, triple, out, plugins, sources, languages, target_dir,
+        program,
+        triple,
+        out,
+        plugins,
+        side_modules,
+        sources,
+        languages,
+        target_dir,
     )
     .map_err(|e| format!("{e:#}"))
 }
@@ -192,6 +202,7 @@ fn aot(
     _: &Path,
     triple: &str,
     _: Option<&Path>,
+    _: &[PathBuf],
     _: &[PathBuf],
     _: &[PathBuf],
     _: &[String],

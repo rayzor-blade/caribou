@@ -78,6 +78,11 @@ type Library = libloading::Library;
 #[cfg(target_family = "wasm")]
 type Library = ();
 
+/// The host table a plugin calls the core through.
+pub fn host_table() -> *const Host {
+    &host::HOST
+}
+
 /// A plugin's entry, which installs the host table and answers the
 /// plugin's own.
 pub type Entry = unsafe extern "C" fn(*const Host) -> *const PluginInfo;

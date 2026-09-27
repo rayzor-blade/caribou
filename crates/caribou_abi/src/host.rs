@@ -69,7 +69,18 @@ pub fn install(host: *const Host) {
 }
 
 pub(crate) fn host() -> &'static Host {
-    let p = HOST.load(Ordering::Acquire);
+    #[allow(unused_mut)]
+    let mut p = HOST.load(Ordering::Acquire);
+    // A side module is never handed the table: it asks the program it
+    // loaded into, on first need.
+    #[cfg(feature = "side_module")]
+    if p.is_null() {
+        unsafe extern "C" {
+            fn caribou_host_table() -> *const Host;
+        }
+        p = unsafe { caribou_host_table() } as *mut Host;
+        HOST.store(p, Ordering::Release);
+    }
     assert!(!p.is_null(), "no core has loaded this plugin");
     unsafe { &*p }
 }

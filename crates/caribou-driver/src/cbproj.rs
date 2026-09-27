@@ -22,7 +22,7 @@
 //!
 //! [plugins]
 //! gpu = { path = "../plugins/cb_gpu" }
-//! window = { path = "plugins/libcaribou_window.dylib" }
+//! window = { path = "../plugins/cb_window", link = "side" }
 //! ```
 //!
 //! The entry is a module of one of the languages, `language:module`.
@@ -35,8 +35,9 @@
 //! root, a `requirements.txt` and `*.rockspec` files beside the project
 //! file ([`crate::deps`]); Python's and Lua's are found but not yet
 //! installed. A plugin is its crate or its built library: a crate is
-//! built for this machine for a hosted run, and linked into a program
-//! built ahead of time ([`crate::linked`]); a library is loaded as it is.
+//! built for this machine for a hosted run, and for a program built ahead
+//! of time it is linked in, or with `link = "side"` built as a side module
+//! beside the program ([`crate::linked`]); a library is loaded as it is.
 //! Paths are relative to the file. What the project builds goes to
 //! `target/` beside it.
 
@@ -94,6 +95,19 @@ struct Dependencies {
 #[serde(deny_unknown_fields)]
 struct PluginEntry {
     path: PathBuf,
+    #[serde(default)]
+    link: Link,
+}
+
+/// How a program built ahead of time takes a plugin crate.
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum Link {
+    /// Into the program's runtime.
+    #[default]
+    Static,
+    /// As a side module beside the program, found when it starts.
+    Side,
 }
 
 /// The module a project starts with.
@@ -123,6 +137,8 @@ pub struct Project {
     pub lua: BTreeMap<String, String>,
     /// Each native plugin, by name, at its crate's or its library's path.
     pub plugins: BTreeMap<String, PathBuf>,
+    /// The plugins built as side modules for a program built ahead of time.
+    pub side_modules: Vec<PathBuf>,
 }
 
 impl Project {
@@ -168,6 +184,12 @@ impl Project {
             packages: file.dependencies.wren,
             python: file.dependencies.python,
             lua: file.dependencies.lua,
+            side_modules: file
+                .plugins
+                .values()
+                .filter(|p| p.link == Link::Side)
+                .map(|p| dir.join(&p.path))
+                .collect(),
             plugins: file
                 .plugins
                 .into_iter()
@@ -345,6 +367,7 @@ heaps = "*"
 
 [plugins]
 gpu = { path = "plugins/libcaribou_gpu.dylib" }
+window = { path = "plugins/cb_window", link = "side" }
 "#,
         );
         let project = Project::find(&dir).unwrap().expect("found");
@@ -366,6 +389,8 @@ gpu = { path = "plugins/libcaribou_gpu.dylib" }
             project.plugins["gpu"],
             dir.join("plugins/libcaribou_gpu.dylib")
         );
+        // Only the plugin declared so is a side module.
+        assert_eq!(project.side_modules, [dir.join("plugins/cb_window")]);
     }
 
     #[test]

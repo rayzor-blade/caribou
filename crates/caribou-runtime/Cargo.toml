@@ -10,6 +10,7 @@ ash_std = { workspace = true }
 caribou = { path = "../caribou" }
 caribou_abi = { workspace = true }
 caribou-ash = { path = "../caribou-ash" }
+caribou-plugin = { path = "../caribou-plugin" }
 caribou-wren = { path = "../caribou-wren", default-features = false }
 # The entry points and helpers WrenLift's compiled programs call.
 wren_lift = { workspace = true, features = ["aot_runtime"] }
