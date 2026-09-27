@@ -6,7 +6,7 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
 use std::time::Instant;
 
@@ -42,6 +42,11 @@ pub(super) enum WorldCommand {
 pub(super) struct WorldEndpoint {
     pub(super) commands: Mutex<VecDeque<WorldCommand>>,
     pub(super) changed: Condvar,
+    /// Bumped by whatever wants the world to look again: a command pushed,
+    /// or a word it watches changed by something outside, such as an agent
+    /// sharing the program's memory, which adds one and notifies it. On
+    /// wasm with atomics the idle wait is on this word.
+    pub(super) wake: AtomicU32,
     /// Tasks assigned to this world, parked ones included. A krio stack is
     /// `!Send`, so this is read before a task is placed and never after.
     pub(super) assigned: AtomicUsize,
@@ -52,6 +57,7 @@ impl WorldEndpoint {
         Self {
             commands: Mutex::new(VecDeque::new()),
             changed: Condvar::new(),
+            wake: AtomicU32::new(0),
             assigned: AtomicUsize::new(0),
         }
     }
@@ -60,12 +66,31 @@ impl WorldEndpoint {
         self.commands.lock().unwrap().push_back(command);
         preempt::request_poll();
         self.changed.notify_one();
+        self.wake.fetch_add(1, Ordering::SeqCst);
+        notify_word(&self.wake);
     }
 }
 
 static NEXT_WORLD_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_SOURCE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// Wake whatever waits on `word`.
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+fn notify_word(word: &AtomicU32) {
+    unsafe { core::arch::wasm32::memory_atomic_notify(word.as_ptr().cast(), u32::MAX) };
+}
+
+#[cfg(not(all(target_family = "wasm", target_feature = "atomics")))]
+fn notify_word(_: &AtomicU32) {}
+
+/// A word the world watches: the value it last saw, and the handler run
+/// on its main context when the word no longer holds it.
+struct Watch {
+    word: &'static AtomicU32,
+    seen: u32,
+    handler: Option<Box<dyn FnMut()>>,
+}
 static WORLD_ENDPOINTS: LazyLock<Mutex<HashMap<u64, Weak<WorldEndpoint>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -94,6 +119,8 @@ pub(super) struct World {
     sources: HashMap<u64, Option<Box<dyn FnMut()>>>,
     /// Sources raised since the last turn, in order, each once.
     ready_sources: VecDeque<u64>,
+    /// Words watched by id; a handler is out of its slot while it runs.
+    watches: HashMap<u64, Watch>,
 }
 
 /// Runs on a task's world before its first turn, whichever language spawned
@@ -120,6 +147,7 @@ impl World {
             switch_hook: None,
             sources: HashMap::new(),
             ready_sources: VecDeque::new(),
+            watches: HashMap::new(),
         }
     }
 
@@ -536,6 +564,77 @@ pub(super) fn remove_source(id: u64) {
     });
 }
 
+/// Watch `word` on this thread's world: its id, and the world's wake word,
+/// which whoever changes `word` from outside the world bumps.
+pub(super) fn add_watch(
+    word: &'static AtomicU32,
+    handler: Box<dyn FnMut()>,
+) -> (u64, &'static AtomicU32) {
+    let id = NEXT_SOURCE_ID.fetch_add(1, Ordering::Relaxed);
+    with_world(|world| {
+        let seen = word.load(Ordering::SeqCst);
+        world.watches.insert(
+            id,
+            Watch {
+                word,
+                seen,
+                handler: Some(handler),
+            },
+        );
+        // The endpoint lives as long as the world, which outlives its
+        // watchers' interest; the address is what the outside needs.
+        let wake: *const AtomicU32 = &world.endpoint.wake;
+        (id, unsafe { &*wake })
+    })
+}
+
+pub(super) fn remove_watch(id: u64) {
+    try_with_world(|world| {
+        world.watches.remove(&id);
+    });
+}
+
+/// Whether a watched word changed since its handler last ran.
+fn watch_changed() -> bool {
+    try_with_world(|world| {
+        world
+            .watches
+            .values()
+            .any(|w| w.word.load(Ordering::SeqCst) != w.seen)
+    })
+    .unwrap_or(false)
+}
+
+/// Run the handler of each watched word that changed, with the world
+/// unborrowed.
+fn run_watches() {
+    let changed: Vec<u64> = with_world(|world| {
+        world
+            .watches
+            .iter_mut()
+            .filter_map(|(&id, w)| {
+                let now = w.word.load(Ordering::SeqCst);
+                (now != w.seen).then(|| {
+                    w.seen = now;
+                    id
+                })
+            })
+            .collect()
+    });
+    for id in changed {
+        let Some(mut handler) = with_world(|world| world.watches.get_mut(&id)?.handler.take())
+        else {
+            continue;
+        };
+        handler();
+        with_world(|world| {
+            if let Some(w) = world.watches.get_mut(&id) {
+                w.handler = Some(handler);
+            }
+        });
+    }
+}
+
 /// Run the handler of every source raised since the last turn, each with
 /// the world unborrowed, and skipped if it was removed meanwhile or is
 /// already running further up this stack.
@@ -720,6 +819,7 @@ pub fn schedule_step() -> bool {
     drain_commands();
     with_world(|world| world.wake_due_timers());
     run_sources();
+    run_watches();
     let mut resumed = false;
     let turns = with_world(|world| world.ready.len());
     for _ in 0..turns {
@@ -757,7 +857,7 @@ pub fn tick(deadline: Option<Instant>) -> bool {
 /// Block until a command arrives, the next timer is due or `deadline`
 /// passes. The main context's wait when nothing is ready; the reactor's
 /// seam.
-#[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]
+#[cfg(not(target_family = "wasm"))]
 pub fn scheduler_idle(deadline: Option<Instant>) {
     // Still a registered mutator: rendezvous with a collection another
     // world asked for before sleeping.
@@ -772,11 +872,11 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
     // round trip each way; and never announced while holding the queue,
     // since the announcement can park this thread until a collection ends
     // and a waker would then block on the lock without reaching a safepoint.
-    if !endpoint.commands.lock().unwrap().is_empty() {
+    if !endpoint.commands.lock().unwrap().is_empty() || watch_changed() {
         return;
     }
-    // Only commands and timers wake `changed` until the reactor exists
-    // (git-bug a655aa5662aaca7e2898ba349da5cfe4a2b92f45eff6999b1c91c0160760744e).
+    // Commands and timers wake `changed`; a watched word changed from
+    // outside the world is seen at the next of either.
     heap::mark_site(heap::SITE_SCHEDULER_IDLE);
     heap::gc_set_blocking(true);
     {
@@ -792,6 +892,40 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
             }
         }
     }
+    heap::gc_set_blocking(false);
+    heap::mark_site(heap::SITE_RUNNING);
+}
+
+/// As the native wait, on the endpoint's wake word, which a command pushed
+/// bumps and so does anything outside the world that changes a word it
+/// watches: an agent sharing the program's memory wakes the world with no
+/// call into it.
+#[cfg(all(target_family = "wasm", target_feature = "atomics"))]
+pub fn scheduler_idle(deadline: Option<Instant>) {
+    heap::gc_safepoint();
+    let (endpoint, next_timer) =
+        with_world(|world| (Arc::clone(&world.endpoint), world.next_timer()));
+    let wake_at = match (deadline, next_timer) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    // Read before the checks: a bump after them makes the wait return.
+    let seen = endpoint.wake.load(Ordering::SeqCst);
+    if !endpoint.commands.lock().unwrap().is_empty() || watch_changed() {
+        return;
+    }
+    let timeout = wake_at.map_or(-1, |at| {
+        i64::try_from(at.saturating_duration_since(Instant::now()).as_nanos()).unwrap_or(i64::MAX)
+    });
+    heap::mark_site(heap::SITE_SCHEDULER_IDLE);
+    heap::gc_set_blocking(true);
+    unsafe {
+        core::arch::wasm32::memory_atomic_wait32(
+            endpoint.wake.as_ptr().cast(),
+            seen as i32,
+            timeout,
+        )
+    };
     heap::gc_set_blocking(false);
     heap::mark_site(heap::SITE_RUNNING);
 }

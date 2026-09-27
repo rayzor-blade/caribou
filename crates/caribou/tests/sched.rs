@@ -5,7 +5,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,7 +13,8 @@ use caribou::sched::{
     DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter,
     attach_host_state, current_task, has_worker_pool, is_pool_worker, live_tasks, new_waiter, park,
     quiesce, request_park, resume_cause, scheduler_idle, set_switch_hook, sleep_until, spawn,
-    spawn_fiber, spawn_fiber_on_pool, suspended_sp, tick, wake, world_id, yield_now,
+    spawn_fiber, spawn_fiber_on_pool, suspended_sp, tick, unwatch, wake, wake as wake_waiter,
+    watch, world_id, yield_now,
 };
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
@@ -287,6 +288,44 @@ fn wake_from_another_thread_reaches_an_idle_world() {
     run_to_completion();
     assert!(waker.join().unwrap());
     assert_eq!(notified.get(), Some(true));
+}
+
+/// A word changed by another thread runs its handler at the world's next
+/// turn, once per change; a command pushed bumps the wake word the watch
+/// hands out, which is what an agent outside the world bumps on wasm.
+#[test]
+fn a_watched_word_runs_its_handler_when_it_changes() {
+    static WORD: AtomicU32 = AtomicU32::new(0);
+    let seen = Rc::new(RefCell::new(Vec::new()));
+    let (watching, wake) = {
+        let seen = Rc::clone(&seen);
+        watch(&WORD, move || {
+            seen.borrow_mut().push(WORD.load(Ordering::SeqCst))
+        })
+    };
+    tick(None);
+    assert!(seen.borrow().is_empty(), "nothing changed");
+    std::thread::spawn(|| WORD.store(7, Ordering::SeqCst))
+        .join()
+        .unwrap();
+    tick(None);
+    tick(None);
+    assert_eq!(*seen.borrow(), [7]);
+
+    let before = wake.load(Ordering::SeqCst);
+    let waiter = new_waiter();
+    std::thread::spawn(move || wake_waiter(waiter))
+        .join()
+        .unwrap();
+    assert!(
+        wake.load(Ordering::SeqCst) > before,
+        "a command bumps the wake word"
+    );
+
+    unwatch(&watching);
+    WORD.store(8, Ordering::SeqCst);
+    tick(None);
+    assert_eq!(*seen.borrow(), [7], "an unwatched word runs nothing");
 }
 
 #[test]

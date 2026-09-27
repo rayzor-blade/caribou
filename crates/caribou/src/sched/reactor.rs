@@ -7,6 +7,8 @@
 //! by `wake`; a source is for work the world itself must do when
 //! something outside happens.
 
+use std::sync::atomic::AtomicU32;
+
 use super::world::{self, WorldCommand};
 
 /// A source's handle, raised from any thread. A raise after the source is
@@ -43,4 +45,27 @@ pub fn add_source(handler: impl FnMut() + 'static) -> Signal {
 /// it is not running.
 pub fn remove_source(signal: &Signal) {
     world::remove_source(signal.id);
+}
+
+/// A watched word's handle.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Watch(u64);
+
+/// Watch `word` on this thread's world: `handler` runs on the world's main
+/// context, between turns, each time the word no longer holds the value it
+/// held when last looked at. Something outside the world that changes it,
+/// such as an agent sharing a wasm program's memory, then adds one to the
+/// wake word this returns and notifies it, which ends the world's idle
+/// wait on wasm; elsewhere the change is seen at the world's next turn.
+pub fn watch(
+    word: &'static AtomicU32,
+    handler: impl FnMut() + 'static,
+) -> (Watch, &'static AtomicU32) {
+    let (id, wake) = world::add_watch(word, Box::new(handler));
+    (Watch(id), wake)
+}
+
+/// Stop watching; the handler is dropped once it is not running.
+pub fn unwatch(watch: &Watch) {
+    world::remove_watch(watch.0);
 }

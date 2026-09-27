@@ -4,6 +4,12 @@
 //! Layouts and constants that cross the boundary live in [`caribou_abi`];
 //! this crate defines behaviour.
 
+// The scheduler's idle wait on wasm uses wasm's atomic wait.
+#![cfg_attr(
+    all(target_family = "wasm", target_feature = "atomics"),
+    feature(stdarch_wasm_atomic_wait)
+)]
+
 pub use caribou_abi as abi;
 
 pub mod bridge;
