@@ -4,8 +4,6 @@
 //! value is NaN-boxed, a `Num` its own `f64` bits; each cast goes directly
 //! between Haxe's form and Wren's.
 
-use std::collections::HashSet;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, Ordering};
 
 use caribou_abi::hl::{hl_type, vdynamic};
@@ -34,11 +32,6 @@ fn vm() -> Option<&'static mut VM> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn caribou_wren_from_float(x: f64, _t: *mut hl_type) -> u64 {
-    Value::num(x).to_bits()
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn caribou_wren_from_int(x: i32, _t: *mut hl_type) -> u64 {
     Value::num(f64::from(x)).to_bits()
 }
@@ -61,13 +54,6 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_string(s: *mut vdynamic, _t: *mu
             .to_bits(),
         _ => Value::null().to_bits(),
     }
-}
-
-/// A Wren `Num` as a Haxe `Float`; anything else, which a declared `Num`
-/// never returns, as NaN.
-#[unsafe(no_mangle)]
-pub extern "C" fn caribou_wren_to_float(v: u64, _t: *mut hl_type) -> f64 {
-    Value::from_bits(v).as_num().unwrap_or(f64::NAN)
 }
 
 #[unsafe(no_mangle)]
@@ -239,12 +225,14 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_bytes(b: *mut vdynamic, t: *mut 
 /// `obj` is null or a live Haxe object of the program's type `t` or a
 /// subtype.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn caribou_wren_from_haxe_object(obj: *mut vdynamic, t: *mut hl_type) -> u64 {
+pub unsafe extern "C" fn caribou_wren_from_haxe_object(
+    obj: *mut vdynamic,
+    _t: *mut hl_type,
+) -> u64 {
     let Some(vm) = vm().filter(|_| !obj.is_null()) else {
         return Value::null().to_bits();
     };
     let _kept = caribou::heap::keep(obj.cast());
-    unsafe { adopt(vm, (*obj).t, t) };
     let value = unsafe { caribou_ash::link::value(obj) };
     caribou_wren::to_wren(vm, value)
         .unwrap_or(Value::null())
@@ -275,28 +263,5 @@ pub unsafe extern "C" fn caribou_wren_raise_haxe(exc: *mut vdynamic) {
     let message = unsafe { caribou_ash::link::exception_text(exc) };
     if let Some(vm) = vm() {
         vm.runtime_error(message);
-    }
-}
-
-/// Make the class the program compiled for a Haxe type the one its
-/// objects cross into Wren as, once per type: the object's own type's
-/// class, else the declared type's.
-unsafe fn adopt(vm: &mut VM, actual: *mut hl_type, declared: *mut hl_type) {
-    static ADOPTED: Mutex<Option<HashSet<usize>>> = Mutex::new(None);
-    let mut adopted = ADOPTED.lock().unwrap_or_else(|e| e.into_inner());
-    if !adopted.get_or_insert_default().insert(actual as usize) {
-        return;
-    }
-    let Some(type_name) = (unsafe { caribou_ash::link::type_name(actual) }) else {
-        return;
-    };
-    let class = [actual, declared].into_iter().find_map(|t| {
-        let name = unsafe { caribou_ash::link::type_name(t) }?;
-        let short = name.rsplit('.').next().unwrap_or(&name).to_owned();
-        vm.find_imported_var_from(&short, &format!("haxe:{name}"))
-            .and_then(|class| class.as_object())
-    });
-    if let Some(class) = class {
-        caribou_wren::import::adopt_class(vm, caribou_ash::lang(), &type_name, class.cast());
     }
 }

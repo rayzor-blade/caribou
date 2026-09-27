@@ -372,7 +372,8 @@ fn wren_casts(
     desc: &caribou::describe::ModuleDesc,
 ) -> Option<(&'static str, &'static str)> {
     Some(match ty {
-        TypeRef::Float => ("caribou_wren_from_float", "caribou_wren_to_float"),
+        // Ash converts a NaN-boxed number inline.
+        TypeRef::Float => ("ash:box_f64", "ash:unbox_f64"),
         TypeRef::Int => ("caribou_wren_from_int", "caribou_wren_to_int"),
         TypeRef::Bool => ("caribou_wren_from_bool", "caribou_wren_to_bool"),
         TypeRef::Str => (

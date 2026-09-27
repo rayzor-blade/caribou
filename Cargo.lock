@@ -7023,7 +7023,7 @@ dependencies = [
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=c332c12b17103255875192a8299767130bd57edb#c332c12b17103255875192a8299767130bd57edb"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=c826e81266f5ece30f22c6d7ba8c7a76fc3a5235#c826e81266f5ece30f22c6d7ba8c7a76fc3a5235"
 dependencies = [
  "libc",
 ]
@@ -7031,7 +7031,7 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.22"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=c332c12b17103255875192a8299767130bd57edb#c332c12b17103255875192a8299767130bd57edb"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=c826e81266f5ece30f22c6d7ba8c7a76fc3a5235#c826e81266f5ece30f22c6d7ba8c7a76fc3a5235"
 dependencies = [
  "aes-gcm",
  "argon2",

@@ -372,17 +372,6 @@ pub fn configure(config: &mut VMConfig) {
     }));
 }
 
-/// Take `class`, which a compiled program made for another language's type
-/// `type_name`, as the class that type's objects cross into Wren as: what
-/// `install` records for a class it made.
-pub fn adopt_class(vm: &mut VM, lang: LangId, type_name: &str, class: *mut ObjClass) {
-    let rec = record_for(vm.object_class as *mut u8);
-    rec.imports()
-        .borrow_mut()
-        .by_type
-        .insert((lang, symbol::intern(type_name)), class);
-}
-
 /// Install the published module `module` of `lang` into `vm`, if it is not
 /// already, and return its Wren module name.
 pub fn install(vm: &mut VM, lang: LangId, module: &str) -> Result<String, ImportError> {
@@ -943,15 +932,17 @@ fn class_for(vm: &mut VM, rec: &WrenHeap, v: Value) -> Option<(*mut ObjClass, bo
             .by_type
             .get(&(lang, type_name))
             .copied();
-        known.or_else(|| {
-            let (iface, _) = registry::class_for_type(lang, type_name.name())?;
-            install(vm, lang, &iface.module).ok()?;
-            rec.imports()
-                .borrow()
-                .by_type
-                .get(&(lang, type_name))
-                .copied()
-        })
+        known
+            .or_else(|| {
+                let (iface, _) = registry::class_for_type(lang, type_name.name())?;
+                install(vm, lang, &iface.module).ok()?;
+                rec.imports()
+                    .borrow()
+                    .by_type
+                    .get(&(lang, type_name))
+                    .copied()
+            })
+            .or_else(|| compiled_class(vm, lang, type_name.name()))
     });
     if let Some(class) = published {
         return Some((class, true));
@@ -961,6 +952,24 @@ fn class_for(vm: &mut VM, rec: &WrenHeap, v: Value) -> Option<(*mut ObjClass, bo
         .flatten()
         .or_else(|| Int64::is(v).then(|| int64_class(vm).ok()).flatten())
         .map(|class| (class, false))
+}
+
+/// The class a compiled program made for another language's type, in the
+/// module `<lang>:<type>` (docs/architecture/linking.md), recorded as the
+/// class that type's objects cross as.
+fn compiled_class(vm: &mut VM, lang: LangId, type_name: &str) -> Option<*mut ObjClass> {
+    let short = type_name.rsplit('.').next().unwrap_or(type_name);
+    let module = format!("{}:{type_name}", language_name(lang));
+    let class = vm.find_imported_var_from(short, &module)?.as_object()? as *mut ObjClass;
+    if unsafe { (*(class as *const ObjHeader)).obj_type } != ObjType::Class {
+        return None;
+    }
+    let rec = record_for(vm.object_class as *mut u8);
+    rec.imports()
+        .borrow_mut()
+        .by_type
+        .insert((lang, symbol::intern(type_name)), class);
+    Some(class)
 }
 
 // ---------------------------------------------------------------------------

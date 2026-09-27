@@ -159,7 +159,8 @@ pub fn plan(
 /// which stays on the bridge.
 fn casts(ty: &TypeRef, haxe: &[ModuleDesc]) -> Option<(&'static str, &'static str)> {
     Some(match ty {
-        TypeRef::Float => ("caribou_wren_from_float", "caribou_wren_to_float"),
+        // Ash converts a NaN-boxed number inline.
+        TypeRef::Float => ("ash:box_f64", "ash:unbox_f64"),
         TypeRef::Int => ("caribou_wren_from_int", "caribou_wren_to_int"),
         TypeRef::Bool => ("caribou_wren_from_bool", "caribou_wren_to_bool"),
         TypeRef::Str => (
@@ -273,15 +274,12 @@ mod tests {
         );
         let add = exports.iter().find(|e| e.member == "add").unwrap();
         assert_eq!(add.symbol, "caribou_4haxe_5Bench_5Bench_t3add_1");
-        assert_eq!(add.arg_casts, [Some("caribou_wren_to_float".to_owned())]);
-        assert_eq!(add.ret_cast.as_deref(), Some("caribou_wren_from_float"));
+        assert_eq!(add.arg_casts, [Some("ash:unbox_f64".to_owned())]);
+        assert_eq!(add.ret_cast.as_deref(), Some("ash:box_f64"));
         let bump = exports.iter().find(|e| e.member == "bump").unwrap();
         assert_eq!(
             bump.arg_casts,
-            [
-                Some(OBJECT.1.to_owned()),
-                Some("caribou_wren_to_float".to_owned())
-            ]
+            [Some(OBJECT.1.to_owned()), Some("ash:unbox_f64".to_owned())]
         );
         assert_eq!(bump.ret_cast, None);
         let new = exports.iter().find(|e| e.member == "new").unwrap();
