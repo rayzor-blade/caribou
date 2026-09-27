@@ -177,3 +177,27 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
     })
 }
 
+
+/// Run the wasm module at `module` with `args`, as `ash run` does: under
+/// wasmtime, with Ash's host supplying what WASI does not. Returns its
+/// exit status.
+pub fn run_module(module: &Path, args: &[String]) -> Result<i32> {
+    use ash_wasm_runtime::native::{Outcome, Program};
+
+    let program = Program::load(module)?;
+    let name = module
+        .file_name()
+        .map_or_else(|| "program".to_owned(), |n| n.to_string_lossy().into_owned());
+    let argv: Vec<String> = std::iter::once(name).chain(args.iter().cloned()).collect();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    // Threads are started only for a module built for them.
+    Ok(match runtime.block_on(program.run(&argv, &[], true))? {
+        Outcome::Exited(code) => code,
+        Outcome::Trapped(trap) => {
+            eprintln!("{trap}");
+            70
+        }
+    })
+}

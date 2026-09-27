@@ -1,6 +1,6 @@
 //! The caribou command.
 //!
-//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program>] [args...]
+//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]
 //!     caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]
 //!     caribou describe <module.wren | plugin library | root directory>...
 //!
@@ -16,7 +16,8 @@
 //! the program ends, what the run did: the tier each function reached
 //! and how each send across the bridge went. `build --target
 //! wasm32-wasip1` builds the program ahead of time instead: a wasm module
-//! on caribou's runtime, with nothing interpreted. `describe` prints the
+//! on caribou's runtime, with nothing interpreted, which `run` runs under
+//! wasmtime as `ash run` does. `describe` prints the
 //! modules' interfaces as JSON, for a build step; a plugin library's
 //! classes come one module each.
 
@@ -27,7 +28,7 @@ use caribou_ash::Mode;
 use caribou_driver::cbproj::{self, Project};
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou describe <module.wren | plugin library | root directory>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou describe <module.wren | plugin library | root directory>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -61,6 +62,9 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     options.args = args;
+    if let Some(module) = program.as_deref().filter(|p| p.extension().is_some_and(|e| e == "wasm")) {
+        process::exit(run_module(module, &options.args)?);
+    }
     match project(program.as_deref())? {
         Some(project) => caribou_driver::run_project(&project, options),
         None => caribou_driver::run(&program.expect("named"), options),
@@ -243,4 +247,17 @@ fn main() {
         eprintln!("caribou: {e}");
         process::exit(2);
     }
+}
+
+#[cfg(feature = "llvm")]
+fn run_module(module: &Path, args: &[String]) -> Result<i32, String> {
+    caribou_driver::aot::run_module(module, args).map_err(|e| format!("{e:#}"))
+}
+
+#[cfg(not(feature = "llvm"))]
+fn run_module(module: &Path, _: &[String]) -> Result<i32, String> {
+    Err(format!(
+        "{} is a wasm module, which this caribou runs only with its `llvm` feature",
+        module.display()
+    ))
 }
