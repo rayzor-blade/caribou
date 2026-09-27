@@ -21,7 +21,7 @@
 //! A reply record is four words: its state (0 pending, 1 done, 2
 //! rejected, 3 too small), the length written, and the address and
 //! capacity of the caller's buffer, which takes the result encoded as
-//! above, or a rejection's message. The agent stores the state last and
+//! above (bytes as they are), or a rejection's message. The agent stores the state last and
 //! notifies it.
 //!
 //! The program hands batches of commands to the agent through a mailbox in
@@ -485,6 +485,7 @@ impl Gen<'_> {
             };
             let answer = match &op.reply_ty {
                 Ty::Undefined => "null".to_owned(),
+                Ty::Bytes => "new Uint8Array(v)".to_owned(),
                 Ty::Boolean if op.makes => "encode((w) => w.u8(v ? 1 : 0))".to_owned(),
                 ty => format!("encode((w) => {{ {} }})", js_write(ty, "v")),
             };

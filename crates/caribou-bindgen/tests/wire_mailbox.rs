@@ -48,13 +48,15 @@ pub extern "C" fn mailbox() -> u32 {
     &MAILBOX as *const Mailbox as u32
 }
 
-/// The replies' states and the buffer's size, as decimal digits.
+/// The replies' states and the buffer's size, as decimal digits; zero
+/// when the mapped range did not come back.
 #[unsafe(no_mangle)]
 pub extern "C" fn session() -> u64 {
     let mut seen = 0;
     let mut e = Encoder::new();
-    let (mut a, mut b, mut c, mut d) = ([0u8; 16], [0u8; 16], [0u8; 16], [0u8; 64]);
-    let (adapter, device, size, range) = (Reply::new(&mut a), Reply::new(&mut b), Reply::new(&mut c), Reply::new(&mut d));
+    let (mut a, mut b, mut c, mut d, mut f) = ([0u8; 16], [0u8; 16], [0u8; 16], [0u8; 4], [0u8; 64]);
+    let (adapter, device, size) = (Reply::new(&mut a), Reply::new(&mut b), Reply::new(&mut c));
+    let (range, unmapped) = (Reply::new(&mut d), Reply::new(&mut f));
 
     e.gpu_request_adapter(Handle(1), Handle(2), adapter.at(), &None);
     MAILBOX.send(&e.bytes);
@@ -76,18 +78,23 @@ pub extern "C" fn session() -> u64 {
     e.gpu_queue_write_buffer(Handle(4), &Handle(5), &0, &Bytes { address: upload.as_ptr() as u32, len: 4 }, &None, &None);
     // Answered as they run, so settled once the batch is done.
     e.gpu_buffer_get_size(Handle(5), size.at());
-    e.gpu_buffer_get_mapped_range(Handle(5), range.at(), &None, &None);
+    e.gpu_buffer_get_mapped_range(Handle(5), range.at(), &None, &Some(4));
+    e.gpu_buffer_get_mapped_range(Handle(5), unmapped.at(), &Some(99), &None);
     e.release(Handle(2));
     MAILBOX.send(&e.bytes);
     let bytes = c;
     let size_value = u64::from_le_bytes(bytes[..8].try_into().unwrap());
-    let states = [adapter, device, size.state.load(SeqCst), range.state.load(SeqCst)];
+    let states = [adapter, device, size.state.load(SeqCst), range.state.load(SeqCst), unmapped.state.load(SeqCst)];
+    if d != [9, 8, 7, 6] {
+        return 0;
+    }
     states.iter().fold(0u64, |n, &s| n * 10 + s as u64) * 10_000 + size_value
 }
 "#;
 
 /// The page's side: the program's thread, and a worker holding a GPU that
-/// records its calls. `size` answers, `getMappedRange` throws, and the rest
+/// records its calls. `size` answers, `getMappedRange` gives four bytes, or
+/// throws past the end, and the rest
 /// make objects that record in turn.
 const HARNESS: &str = r#"
 import { readFileSync } from "node:fs";
@@ -128,7 +135,10 @@ function object(name) {
       if (key === "then") return undefined;
       if (key === "queue") return object(`${name}.queue`);
       if (key === "size") return 1024;
-      if (key === "getMappedRange") return () => { throw new Error("not mapped"); };
+      if (key === "getMappedRange") return (offset) => {
+        if (offset) throw new Error("not mapped");
+        return new Uint8Array([9, 8, 7, 6]).buffer;
+      };
       return (...args) => {
         log.push([name, key, args.map((v) => (v instanceof Uint8Array ? Array.from(v) : v && v.name ? `@${v.name}` : v))]);
         const made = object(`${name}.${key}`);
@@ -180,11 +190,11 @@ fn a_program_hands_batches_to_its_agent_and_waits_for_replies() {
     let out = run(&dir, Command::new("node").arg("harness.mjs"));
     std::fs::remove_dir_all(&dir).ok();
 
-    // Both promises resolved (1), the size answered (1) and the mapped
-    // range rejected (2); the size is 1024.
+    // Both promises resolved (1), the size and the mapped range answered
+    // (1) and the range past the end rejected (2); the size is 1024.
     assert_eq!(
         out.trim(),
-        r#"{"result":"11121024","log":[["gpu","requestAdapter",[null]],["gpu.requestAdapter","requestDevice",[null]],["gpu.requestAdapter.requestDevice","createBuffer",[{"size":1024,"usage":72}]],["gpu.requestAdapter.requestDevice.queue","writeBuffer",["@gpu.requestAdapter.requestDevice.createBuffer",0,[1,2,3,4],null,null]]],"handles":[1,3,4,5]}"#
+        r#"{"result":"111121024","log":[["gpu","requestAdapter",[null]],["gpu.requestAdapter","requestDevice",[null]],["gpu.requestAdapter.requestDevice","createBuffer",[{"size":1024,"usage":72}]],["gpu.requestAdapter.requestDevice.queue","writeBuffer",["@gpu.requestAdapter.requestDevice.createBuffer",0,[1,2,3,4],null,null]]],"handles":[1,3,4,5]}"#
     );
 }
 
