@@ -87,6 +87,10 @@ pub struct MemberDesc {
     pub params: Vec<ParamDesc>,
     #[cfg_attr(feature = "serde", serde(default = "TypeRef::dyn_"))]
     pub ret: TypeRef,
+    /// Declared for export, as Wren's `#export`: a module compiled ahead of
+    /// time gives such a member a link symbol, and only such a member.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub exported: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,6 +140,7 @@ impl ModuleDesc {
                         })
                         .collect(),
                     ret: m.ret.clone(),
+                    exported: false,
                 });
             }
             out
@@ -154,6 +159,7 @@ impl ModuleDesc {
                 })
                 .collect(),
             ret: m.ret.clone(),
+            exported: false,
         };
         ModuleDesc {
             lang: lang.to_owned(),

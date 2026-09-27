@@ -416,7 +416,7 @@ pub unsafe fn enum_name(t: *const hl_type) -> Option<String> {
 /// A `caribou` native's member as the link rule names it: the native
 /// `game:hud.Hud.add(_)` is the method `add` of arity 1 of class `Hud` in
 /// module `hud` of namespace `game`. `None` for a sequence operation or a
-/// static field, which do not link.
+/// static setter, which do not link.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Member {
     pub namespace: String,
@@ -430,8 +430,10 @@ pub struct Member {
 pub fn member_of(native: &str) -> Option<Member> {
     use caribou::link::Kind;
     let (namespace, module, class, member) = crate::import::parse(native)?;
+    // A static getter is a static of no arguments, as a compiled module
+    // exports it; a static setter does not link.
     let (kind, sig) = if let Some(sig) = member.strip_prefix("static:") {
-        if sig.ends_with("=(_)") || !sig.contains('(') {
+        if sig.ends_with("=(_)") {
             return None;
         }
         (Kind::Static, sig)
@@ -502,6 +504,8 @@ mod tests {
         );
         let m = member_of("game:hud.Hud.score").unwrap();
         assert_eq!((m.kind, m.arity), (Kind::Getter, 0));
-        assert!(member_of("game:hud.Hud.static:count").is_none());
+        let m = member_of("game:hud.Hud.static:count").unwrap();
+        assert_eq!((m.kind, m.name.as_str(), m.arity), (Kind::Static, "count", 0));
+        assert!(member_of("game:hud.Hud.static:count=(_)").is_none());
     }
 }

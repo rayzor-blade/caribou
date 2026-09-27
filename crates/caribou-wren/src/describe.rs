@@ -194,6 +194,7 @@ fn describe_class(
                 })
                 .collect(),
             ret,
+            exported: export.is_some(),
         });
     }
     Ok(ClassDesc {

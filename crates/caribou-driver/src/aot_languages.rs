@@ -218,7 +218,8 @@ impl Linker for WrenLinker {
             .members
             .iter()
             .find(|described| {
-                Kind::from(described.kind) == member.kind
+                described.exported
+                    && Kind::from(described.kind) == member.kind
                     && described.name == member.name
                     && described.params.len() == member.arity
             })?;
