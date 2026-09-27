@@ -1008,6 +1008,7 @@ dependencies = [
  "ash_std",
  "caribou",
  "caribou-ash",
+ "caribou-plugin",
  "caribou-wren",
  "caribou_abi",
  "wren_lift",
@@ -5231,7 +5232,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
@@ -6929,7 +6930,7 @@ dependencies = [
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=f95e672cc1b30f27c61c90206eb5784b55f45075#f95e672cc1b30f27c61c90206eb5784b55f45075"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=2bd8f3f7015e55adba5964a4030a288f836ce350#2bd8f3f7015e55adba5964a4030a288f836ce350"
 dependencies = [
  "libc",
 ]
@@ -6937,7 +6938,7 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.22"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=f95e672cc1b30f27c61c90206eb5784b55f45075#f95e672cc1b30f27c61c90206eb5784b55f45075"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=2bd8f3f7015e55adba5964a4030a288f836ce350#2bd8f3f7015e55adba5964a4030a288f836ce350"
 dependencies = [
  "aes-gcm",
  "argon2",
