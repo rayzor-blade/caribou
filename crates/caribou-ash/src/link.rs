@@ -177,6 +177,18 @@ pub unsafe extern "C" fn caribou_haxe_buffer_to_bytes(
     unsafe { crate::data::buffer_to_haxe(p) }.unwrap_or(core::ptr::null_mut())
 }
 
+/// A Haxe `Float` as a plugin's `f32`.
+#[unsafe(no_mangle)]
+pub extern "C" fn caribou_haxe_f64_to_f32(v: f64, _t: *mut hl_type) -> f32 {
+    v as f32
+}
+
+/// A plugin's `f32` as a Haxe `Float`.
+#[unsafe(no_mangle)]
+pub extern "C" fn caribou_haxe_f32_to_f64(v: f32, _t: *mut hl_type) -> f64 {
+    f64::from(v)
+}
+
 /// A Haxe dynamic as a core value: what a plugin's `Value` is.
 ///
 /// # Safety

@@ -300,7 +300,11 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
     Some(match tag {
         TypeTag::UI8 | TypeTag::UI16 | TypeTag::I32 => (Word::I32, None),
         TypeTag::I64 => (Word::I64, None),
-        TypeTag::F32 => (Word::F32, None),
+        // Haxe has only a double.
+        TypeTag::F32 => (
+            Word::F32,
+            Some(("caribou_haxe_f64_to_f32", "caribou_haxe_f32_to_f64")),
+        ),
         TypeTag::F64 => (Word::F64, None),
         TypeTag::BOOL => (Word::Bool, None),
         TypeTag::BYTES => (
