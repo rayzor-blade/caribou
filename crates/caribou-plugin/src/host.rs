@@ -39,6 +39,7 @@ pub static HOST: Host = Host {
     call,
     raise,
     raise_value,
+    agent,
 };
 
 unsafe extern "C" fn future_new() -> caribou_abi::Future {
@@ -165,6 +166,12 @@ unsafe extern "C" fn raise(kind: ErrorKind, ptr: *const u8, len: usize) {
 
 unsafe extern "C" fn raise_value(err: Value) {
     bridge::set_pending(err);
+}
+
+// Agents run beside a program in a page, whose host starts them; no host
+// here does yet.
+unsafe extern "C" fn agent(_name: *const u8, _len: usize, _address: usize) -> bool {
+    false
 }
 
 unsafe extern "C" fn buffer_new(p: *const u8, len: usize) -> caribou_abi::Buffer {

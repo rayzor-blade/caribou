@@ -58,6 +58,10 @@ pub struct Host {
     pub raise: unsafe extern "C" fn(ErrorKind, *const u8, usize),
     /// Make an error value pending, as `call` handed it back.
     pub raise_value: unsafe extern "C" fn(Value),
+    /// Start the agent named `name` beside the program, handing it the
+    /// program's memory and `address` in it. False when the host starts
+    /// none.
+    pub agent: unsafe extern "C" fn(*const u8, usize, usize) -> bool,
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(core::ptr::null_mut());
@@ -108,6 +112,13 @@ pub fn raise(kind: ErrorKind, message: &str) {
 /// Raise `err`, an error value a call handed back, on to the caller.
 pub fn raise_value(err: Value) {
     unsafe { (host().raise_value)(err) }
+}
+
+/// Start the agent named `name` beside the program, handing it the
+/// program's memory and `address` in it; false when the host starts none.
+/// A page starts one as a worker from the module the plugin ships.
+pub fn agent(name: &str, address: usize) -> bool {
+    unsafe { (host().agent)(name.as_ptr(), name.len(), address) }
 }
 
 /// The header of a core string as a plugin sees it: the core's own word,

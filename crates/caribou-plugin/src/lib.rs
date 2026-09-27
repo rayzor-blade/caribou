@@ -684,11 +684,19 @@ pub fn load_side_module(name: &str) -> Result<Plugin, Error> {
     }
     let path = PathBuf::from(format!("{name}.wasm"));
     if unsafe { ash_host_dlopen(name.as_ptr(), name.len() as i32) } == 0 {
-        return Err(Error::NotAPlugin(path, "no side module of that name is loaded".into()));
+        return Err(Error::NotAPlugin(
+            path,
+            "no side module of that name is loaded".into(),
+        ));
     }
     let symbol = PLUGIN_ENTRY_SYMBOL_NAME;
     let index = unsafe {
-        ash_host_dlsym(name.as_ptr(), name.len() as i32, symbol.as_ptr(), symbol.len() as i32)
+        ash_host_dlsym(
+            name.as_ptr(),
+            name.len() as i32,
+            symbol.as_ptr(),
+            symbol.len() as i32,
+        )
     };
     if index == 0 {
         return Err(Error::NotAPlugin(path, format!("it exports no {symbol}")));

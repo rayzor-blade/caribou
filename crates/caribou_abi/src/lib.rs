@@ -51,7 +51,8 @@ mod program_allocator {
             if layout.align() <= MALLOC_ALIGN {
                 return unsafe { realloc(p, size) };
             }
-            let new = unsafe { self.alloc(Layout::from_size_align_unchecked(size, layout.align())) };
+            let new =
+                unsafe { self.alloc(Layout::from_size_align_unchecked(size, layout.align())) };
             if !new.is_null() {
                 unsafe { core::ptr::copy_nonoverlapping(p, new, layout.size().min(size)) };
                 unsafe { free(p) };
@@ -69,7 +70,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
