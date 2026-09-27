@@ -27,7 +27,7 @@ ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "7129d0dfa
 ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "7129d0dfaad598eca2867b92ec7d87f163e96a72", default-features = false }
 ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "7129d0dfaad598eca2867b92ec7d87f163e96a72" }
 ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "7129d0dfaad598eca2867b92ec7d87f163e96a72" }
-wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "25856cc78b3552adcb28dcf20cca72a58f3fd873", default-features = false }
+wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "c85602790b32311373531d561a08417dfa5aa627", default-features = false }
 zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
 zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
