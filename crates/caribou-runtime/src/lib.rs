@@ -14,6 +14,7 @@
 
 use std::process;
 
+mod plugin;
 mod wren;
 
 #[used]
@@ -50,8 +51,9 @@ pub extern "C" fn caribou_host_table() -> *const caribou_abi::host::Host {
 }
 
 /// Once the heap is up and before the program's entry: the world that
-/// gives each language its id, as a hosted run's does, then the linked
-/// Wren modules. The world lives as long as the program.
+/// gives each language its id, as a hosted run's does, with the linked
+/// plugins, then the linked Wren modules. The world lives as long as the
+/// program.
 fn program_start() -> i32 {
     let world = caribou::world::World::new(caribou::world::Config::default());
     for adapter in [
@@ -63,7 +65,10 @@ fn program_start() -> i32 {
             return 70;
         }
     }
-    std::mem::forget(world);
+    if let Err(e) = plugin::start(world) {
+        eprintln!("caribou: registering the linked plugins: {e}");
+        return 70;
+    }
     wren::start()
 }
 

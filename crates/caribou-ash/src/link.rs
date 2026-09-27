@@ -35,6 +35,15 @@ pub unsafe fn string_text(s: *mut vdynamic) -> String {
     unsafe { proto::string_text(s) }
 }
 
+/// The name of the program's class type `t`, `math.Vec2`: what a cast
+/// that makes another language's object for a face knows its class by.
+///
+/// # Safety
+/// `t` is null or one of the program's types.
+pub unsafe fn type_name(t: *const hl_type) -> Option<String> {
+    unsafe { proto::obj_name(t) }
+}
+
 /// A Haxe `String` of the program's type `t` holding `text`, for another
 /// language's cast. Unrooted, like every fresh Haxe object.
 ///
@@ -87,9 +96,12 @@ pub unsafe fn face(v: Value, t: *mut hl_type) -> *mut vdynamic {
 /// Raise `message` into the Haxe code that made a linked call, as the
 /// error of the callee's language `origin`.
 pub fn raise(message: &str, origin: caribou_abi::LangId) {
-    let e = caribou::error::Error::new(caribou_abi::ErrorKind::Runtime, message, origin);
-    let _kept = heap::keep(e.cast());
-    bridge::set_pending(caribou::error::Error::value(e));
+    {
+        let e = caribou::error::Error::new(caribou_abi::ErrorKind::Runtime, message, origin);
+        let _kept = heap::keep(e.cast());
+        // Rooted by the pending slot from here.
+        bridge::set_pending(caribou::error::Error::value(e));
+    }
     unsafe { caribou_haxe_raise_pending() };
 }
 
@@ -115,8 +127,12 @@ pub unsafe extern "C" fn caribou_haxe_raise_pending() {
     let Some(e) = bridge::take_pending() else {
         return;
     };
-    let _kept = e.as_object().map(|p| heap::keep(p as *const u8));
-    let thrown = proto::throwable(e);
+    // The guard ends before the throw, which leaves this frame without
+    // running its drops; nothing allocates between the two.
+    let thrown = {
+        let _kept = e.as_object().map(|p| heap::keep(p as *const u8));
+        proto::throwable(e)
+    };
     unsafe { hlp_throw(thrown.cast()) };
 }
 

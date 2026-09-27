@@ -94,6 +94,7 @@ pub fn build_with_languages(
             .map_err(|e| anyhow!("{e}"))?
             .into_iter()
             .map(|l| l.symbol)
+            .chain([caribou_abi::PLUGIN_ENTRY_SYMBOL, caribou_abi::ABI_VERSION_SYMBOL].map(String::from))
             .collect();
         let module = exe.with_file_name(format!("{name}.wasm"));
         linked::side_module(dir, triple, &exports, &target_dir, &module)?;
@@ -197,7 +198,9 @@ fn links(
 
 /// A plugin member as Ash links it, or `None` while one of its types has
 /// no cast: a number or a bool passes as it is, a string through the
-/// core's string, and whatever the plugin raises is thrown after.
+/// core's string, an instance as its payload behind the Haxe face, a
+/// constructor binding the face Haxe allocated; whatever the plugin raises
+/// is thrown after.
 fn host_link(link: &caribou_plugin::Link) -> Option<HostLink> {
     let mut params = Vec::with_capacity(link.params.len());
     let mut arg_casts = Vec::with_capacity(link.params.len());
@@ -212,6 +215,12 @@ fn host_link(link: &caribou_plugin::Link) -> Option<HostLink> {
         let (word, cast) = word_of(link.ret)?;
         (Some(word), cast.map(|(_, to_haxe)| to_haxe.to_owned()))
     };
+    // A constructor binds the face Haxe allocated to the object it makes.
+    let (ret_cast, init) = if link.kind == caribou::link::Kind::Constructor {
+        (None, Some("caribou_plugin_bind_face".to_owned()))
+    } else {
+        (ret_cast, None)
+    };
     Some(HostLink {
         symbol: link.symbol.clone(),
         params,
@@ -219,7 +228,7 @@ fn host_link(link: &caribou_plugin::Link) -> Option<HostLink> {
         arg_casts,
         ret_cast,
         after: Some("caribou_haxe_raise_pending".to_owned()),
-        init: None,
+        init,
         library: None,
     })
 }
@@ -236,6 +245,11 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
         TypeTag::BYTES => (
             Word::Ptr,
             Some(("caribou_haxe_string_to_str", "caribou_haxe_str_to_string")),
+        ),
+        // An instance: its payload to the plugin, its face to Haxe.
+        TypeTag::OBJ => (
+            Word::Ptr,
+            Some(("caribou_plugin_from_haxe_face", "caribou_plugin_to_haxe_face")),
         ),
         _ => return None,
     })

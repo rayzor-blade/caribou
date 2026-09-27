@@ -9,6 +9,7 @@ use std::process::Command;
 
 const MAIN: &str = r#"
 import math.Math;
+import math.Vec2;
 
 class Main {
   static function main() {
@@ -24,6 +25,15 @@ class Main {
     } catch (e:Dynamic) {
       Sys.println("caught: " + e);
     }
+    var v = new Vec2(3, 4);
+    Sys.println(v.len());
+    v.scale(2);
+    Sys.println(v.len());
+    Sys.println(v.unit().len());
+    Sys.println(v.dot(new Vec2(1, 0)));
+    // Dropped faces release their payloads through the plugin.
+    for (i in 0...200000) new Vec2(i, i);
+    Sys.println(Vec2.live() < 200000);
   }
 }
 "#;
@@ -108,7 +118,12 @@ fn plugin_program(name: &str, link: &str) -> PathBuf {
             "HÉLLO!",
             "5",
             "3.5",
-            "caught: quotient by zero"
+            "caught: quotient by zero",
+            "5",
+            "10",
+            "1",
+            "6",
+            "true",
         ],
         "{ran}"
     );

@@ -620,6 +620,77 @@ pub(crate) fn class_type(name: &str) -> Option<&'static TypeDesc> {
     CLASS_TYPES.read().unwrap().get(name).copied()
 }
 
+/// What makes a plugin that is not loaded yet known, by its name: set by
+/// a program that finds plugins as it runs. False when it has none.
+static LOADER: RwLock<Option<fn(&str) -> bool>> = RwLock::new(None);
+
+pub fn set_loader(load: fn(&str) -> bool) {
+    *LOADER.write().unwrap() = Some(load);
+}
+
+/// The descriptor of the class `type_name` (`plugin.Class`), loading its
+/// plugin through the loader on first need.
+fn class_type_loading(type_name: &str) -> Option<&'static TypeDesc> {
+    if let Some(desc) = class_type(type_name) {
+        return Some(desc);
+    }
+    let (plugin, _) = type_name.split_once('.')?;
+    let load = (*LOADER.read().unwrap())?;
+    load(plugin).then(|| class_type(type_name)).flatten()
+}
+
+/// A new object of the class `type_name` holding `payload`, which a linked
+/// call made: unrooted, for the caller to hand on at once. `None` for a
+/// class no plugin declares.
+pub fn object(type_name: &str, payload: *mut c_void) -> Option<Value> {
+    Some(wrap(class_type_loading(type_name)?, payload))
+}
+
+/// The payload of `v` when it is a plugin object, through the cell another
+/// language holds it by.
+pub fn payload(v: Value) -> Option<*mut c_void> {
+    let obj = cell::unwrap(v).as_object()?;
+    if obj.is_null() {
+        return None;
+    }
+    let desc = unsafe { caribou::protocol::desc_of(obj as *const u8) };
+    if desc.is_null() || !std::ptr::eq(unsafe { (*desc).protocol }, &OBJECT_PROTO) {
+        return None;
+    }
+    Some(unsafe { (*(obj as *const Object)).payload })
+}
+
+/// The plugin a wasm program finds as the side module `name` beside it,
+/// opened by the host before the program started: its entry is given the
+/// host table, as `load` gives it one.
+#[cfg(target_family = "wasm")]
+pub fn load_side_module(name: &str) -> Result<Plugin, Error> {
+    #[link(wasm_import_module = "env")]
+    unsafe extern "C" {
+        fn ash_host_dlopen(name: *const u8, name_len: i32) -> i32;
+        fn ash_host_dlsym(lib: *const u8, lib_len: i32, symbol: *const u8, symbol_len: i32) -> i32;
+    }
+    let path = PathBuf::from(format!("{name}.wasm"));
+    if unsafe { ash_host_dlopen(name.as_ptr(), name.len() as i32) } == 0 {
+        return Err(Error::NotAPlugin(path, "no side module of that name is loaded".into()));
+    }
+    let symbol = PLUGIN_ENTRY_SYMBOL_NAME;
+    let index = unsafe {
+        ash_host_dlsym(name.as_ptr(), name.len() as i32, symbol.as_ptr(), symbol.len() as i32)
+    };
+    if index == 0 {
+        return Err(Error::NotAPlugin(path, format!("it exports no {symbol}")));
+    }
+    // A function's address on wasm is its index in the program's table.
+    let entry: Entry = unsafe { std::mem::transmute(index as usize) };
+    let info = unsafe { entry(&host::HOST) };
+    from_info(info, &path, None)
+}
+
+/// What the loader looks a plugin's entry up by.
+#[cfg(target_family = "wasm")]
+const PLUGIN_ENTRY_SYMBOL_NAME: &str = caribou_abi::PLUGIN_ENTRY_SYMBOL;
+
 fn class_of(desc: &TypeDesc) -> &'static Class {
     unsafe { &*(desc.ext as *const Class) }
 }
