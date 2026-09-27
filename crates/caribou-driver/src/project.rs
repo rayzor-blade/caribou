@@ -119,10 +119,20 @@ pub fn frontends(
 
 /// The namespaces of a project: each directory under a root, and each
 /// name in `imported`, every one over every resident language, the
-/// languages named in `others` (plugins, Zyntax frontends) after the
-/// runtimes.
-pub fn namespaces(roots: &[PathBuf], imported: &[String], others: &[String]) -> Vec<Namespace> {
-    let mut names: BTreeSet<String> = imported.iter().cloned().collect();
+/// languages named in `others` (Zyntax frontends) after the runtimes. A
+/// name in `plugins` is that plugin's own namespace, which resolves to its
+/// language alone, so it is left out.
+pub fn namespaces(
+    roots: &[PathBuf],
+    imported: &[String],
+    others: &[String],
+    plugins: &[String],
+) -> Vec<Namespace> {
+    let mut names: BTreeSet<String> = imported
+        .iter()
+        .filter(|n| !plugins.contains(n))
+        .cloned()
+        .collect();
     for root in roots {
         let Ok(entries) = std::fs::read_dir(root) else {
             continue;
@@ -170,7 +180,7 @@ mod tests {
 
         let found = roots(&dir.join("game.hl"));
         assert_eq!(found, vec![dir.join("src"), dir.join("lib")]);
-        let namespaces = namespaces(&found, &["net".to_owned()], &["gfx".to_owned()]);
+        let namespaces = namespaces(&found, &["net".to_owned()], &["gfx".to_owned()], &[]);
         let names: Vec<&str> = namespaces.iter().map(|n| n.name.as_str()).collect();
         assert_eq!(names, ["game", "net", "ui"]);
         assert_eq!(namespaces[0].langs, ["haxe", "wren", "gfx"]);

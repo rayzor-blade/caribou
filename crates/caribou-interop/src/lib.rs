@@ -49,3 +49,27 @@ pub fn captured<F: FnOnce()>(f: F) -> String {
     let _ = std::fs::remove_file(path);
     text
 }
+
+/// A plugin library copied into `plugins/` beside a fixture program for
+/// one test, where a session finds it, and removed when the test ends:
+/// left behind, it would join every later session over the fixtures.
+pub struct StagedPlugin(std::path::PathBuf);
+
+impl StagedPlugin {
+    pub fn new(library: &std::path::Path, fixtures: &std::path::Path) -> StagedPlugin {
+        let dir = fixtures.join("plugins");
+        std::fs::create_dir_all(&dir).unwrap();
+        let staged = dir.join(library.file_name().expect("a library file"));
+        std::fs::copy(library, &staged).unwrap();
+        StagedPlugin(staged)
+    }
+}
+
+impl Drop for StagedPlugin {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+        if let Some(dir) = self.0.parent() {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}

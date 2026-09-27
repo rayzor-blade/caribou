@@ -14,15 +14,10 @@ fn buffers_and_enums_cross_as_native_haxe_values() {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     );
-    let plugins = fixtures.join("plugins");
-    std::fs::create_dir_all(&plugins).unwrap();
-    std::fs::copy(
-        PathBuf::from(env!("OUT_DIR"))
-            .join("plugins/debug")
-            .join(&library),
-        plugins.join(&library),
-    )
-    .unwrap();
+    let _staged = caribou_interop::StagedPlugin::new(
+        &PathBuf::from(env!("OUT_DIR")).join("plugins/debug").join(&library),
+        &fixtures,
+    );
 
     let mut session = Session::open(
         &fixtures.join("data.hl"),

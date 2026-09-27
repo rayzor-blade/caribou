@@ -198,13 +198,12 @@ impl Session {
             .into_iter()
             .map(|(namespace, _)| namespace)
             .collect();
-        let others: Vec<String> = plugins
-            .iter()
-            .map(|p| p.name().to_owned())
-            .chain(frontends.iter().map(|f| f.name().to_owned()))
-            .collect();
+        // A frontend's modules are files under the project's directories;
+        // a plugin's classes are reached through its own namespace only.
+        let others: Vec<String> = frontends.iter().map(|f| f.name().to_owned()).collect();
+        let plugin_names: Vec<String> = plugins.iter().map(|p| p.name().to_owned()).collect();
         let config = Config {
-            namespaces: project::namespaces(&roots, &imported, &others),
+            namespaces: project::namespaces(&roots, &imported, &others, &plugin_names),
             roots,
             ..Config::default()
         };

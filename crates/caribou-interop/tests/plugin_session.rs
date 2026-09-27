@@ -21,16 +21,22 @@ fn a_bundle_carries_its_plugins() {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_EXTENSION
     );
-    std::fs::create_dir_all(fixtures.join("plugins")).unwrap();
+    // The program and its plugin in a directory of the test's own: a plugin
+    // left in the fixtures would join every later session over them.
+    let staged = std::env::temp_dir().join(format!("caribou-plugin-bundle-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&staged);
+    std::fs::create_dir_all(staged.join("plugins")).unwrap();
+    std::fs::copy(fixtures.join("hud.hl"), staged.join("hud.hl")).unwrap();
     std::fs::copy(
         PathBuf::from(env!("OUT_DIR"))
             .join("plugins/debug")
             .join(&library),
-        fixtures.join("plugins").join(&library),
+        staged.join("plugins").join(&library),
     )
     .unwrap();
-    let bundle = caribou_driver::bundle::build(&fixtures.join("hud.hl"), &[fixtures.join("src")])
+    let bundle = caribou_driver::bundle::build(&staged.join("hud.hl"), &[fixtures.join("src")])
         .expect("the project bundles");
+    let _ = std::fs::remove_dir_all(&staged);
     assert_eq!(
         bundle.native_libs(&caribou::bundle::target()).count(),
         1,
