@@ -20,11 +20,12 @@ libc = "0.2"
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
 # needs lands there first; while it is not pushed, `[patch]` below points
 # the source at the checkout.
-ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "4482e1bea3331e83d0b2c745055c9a47f7650efb" }
-ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "4482e1bea3331e83d0b2c745055c9a47f7650efb" }
-ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "4482e1bea3331e83d0b2c745055c9a47f7650efb", default-features = false }
-ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "4482e1bea3331e83d0b2c745055c9a47f7650efb", default-features = false }
-ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "4482e1bea3331e83d0b2c745055c9a47f7650efb", default-features = false }
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d35c3bb411e6658a34a11c9ba3a413d43d37307" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d35c3bb411e6658a34a11c9ba3a413d43d37307" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d35c3bb411e6658a34a11c9ba3a413d43d37307", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d35c3bb411e6658a34a11c9ba3a413d43d37307", default-features = false }
+ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d35c3bb411e6658a34a11c9ba3a413d43d37307", default-features = false }
+ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d35c3bb411e6658a34a11c9ba3a413d43d37307" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "25856cc78b3552adcb28dcf20cca72a58f3fd873", default-features = false }
 zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
@@ -47,6 +48,7 @@ ash_native_call = { path = "../ash/crates/ash_native_call" }
 ash_core = { path = "../ash/crates/ash" }
 ash_interp = { path = "../ash/crates/ash_interp" }
 ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
+ash_page = { path = "../ash/crates/ash_page" }
 
 [profile.dev]
 opt-level = 1
