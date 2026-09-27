@@ -5,3 +5,4 @@ languages = ["haxe"]
 
 [plugins]
 gpu = { path = "../../plugins/cb_gpu" }
+window = { path = "../../plugins/cb_window" }

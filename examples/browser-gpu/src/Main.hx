@@ -8,6 +8,7 @@ import gpu.GpuInstance;
 import gpu.GpuProgrammableStage;
 import gpu.VertexFormat;
 import gpu.VertexStepMode;
+import window.WindowBuilder;
 
 /** Moves each particle, stored as position then velocity. **/
 class Step implements caribou.hxsl.Shader {
@@ -64,23 +65,22 @@ class Arrow implements caribou.hxsl.Shader {
 }
 
 /**
-	A swarm on the GPU, drawn in the page's canvas: each frame a compute
-	pass moves the particles, and a render pass draws each one as a small
-	arrow pointing where it is heading. Both shaders are HXSL.
+	A swarm on the GPU, drawn in a window: each frame a compute pass moves
+	the particles, and a render pass draws each one as a small arrow pointing
+	where it is heading. Both shaders are HXSL. On a desktop the window is a
+	native one; in a page it is the page's canvas.
 **/
 class Main {
 	static inline final COUNT = 4096;
 
 	static function main() {
+		var window = new WindowBuilder().title("Swarm").size(800, 500).open();
 		var instance = new GpuInstance();
-		// In a page, the surface is the page's canvas.
-		var surface = instance.surface(0, 0, 0, 0, 0);
+		var surface = instance.surface(window.platform(), window.raw(0), window.raw(1), window.raw(2), window.raw(3));
 		var adapter = instance.requestAdapter(HighPerformance).await();
 		var device = adapter.requestDevice().await();
 		var queue = device.queue();
 		var format = surface.preferredFormat(adapter);
-		var width = 640, height = 360;
-		device.configureSurface(surface, width, height, format);
 		trace('drawing $COUNT particles as $format');
 
 		// Positions scattered, velocities small and random.
@@ -129,11 +129,23 @@ class Main {
 
 		var stepValues = haxe.io.Bytes.alloc(Step.PARAMS_SIZE);
 		var arrowValues = haxe.io.Bytes.alloc(Arrow.PARAMS_SIZE);
-		arrowValues.setFloat(Arrow.PARAMS_aspect, height / width);
 		arrowValues.setFloat(Arrow.PARAMS_count, COUNT);
+
+		// The surface follows the window, which in a page has a size only
+		// once the page has laid it out.
+		var configured = false;
+		function configure() {
+			var width = window.width(), height = window.height();
+			if (width <= 0 || height <= 0) return;
+			device.configureSurface(surface, width, height, format);
+			arrowValues.setFloat(Arrow.PARAMS_aspect, height / width);
+			configured = true;
+		}
+		configure();
+
 		var start = haxe.Timer.stamp(), last = start;
 		var frames = 0;
-		while (true) {
+		function render() {
 			var now = haxe.Timer.stamp();
 			stepValues.setFloat(Step.PARAMS_dt, Math.min(now - last, 0.05));
 			stepValues.setFloat(Step.PARAMS_time, now - start);
@@ -160,5 +172,24 @@ class Main {
 			queue.presentSurface(surface);
 			if (++frames % 600 == 0) trace('$frames frames');
 		}
+
+		window.request_redraw();
+		var running = true;
+		while (running) {
+			switch (window.poll()) {
+				case Closed | Destroyed:
+					running = false;
+				case Resized(_, _):
+					configure();
+					window.request_redraw();
+				case RedrawRequested:
+					if (configured) render();
+					window.request_redraw();
+				case None:
+					Sys.sleep(0.001);
+				default:
+			}
+		}
+		window.close();
 	}
 }
