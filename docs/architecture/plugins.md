@@ -154,6 +154,7 @@ These additions change the host and plugin tables. ABI version **2** requires re
 * **Create strings** with `text`, buffers with `Buffer::new`, and enums through `Enum<T>`.
 * **Call values it was given** with `call`. The `Err` case is the error value the call raised.
 * **Raise errors.** `raise` creates an error of a given kind with a message and marks it pending. `raise_value` marks an error value that a call returned as pending. In both cases the plugin function then returns, its result is ignored, and its caller sees the error the same way it sees an error raised by any language.
+* **Start an agent** with `agent`. In a page, Ash's browser host has the page start the plugin's agent module (`<name>_agent.mjs`, shipped beside the program) as a worker. The page hands the worker the program's memory and an address in it, and the plugin and its agent then work through shared memory. Anywhere else, `agent` returns false.
 * **Keep values across calls** in a `Kept`. A `Kept` is a handle that the collector honors until the `Kept` is dropped. A bare `Value` stored in the plugin's own memory is invisible to the collector. A plugin object that keeps a callback stores it in a `Kept` and invokes it with `call` when needed. The function can come from Wren or from Haxe, and anything it raises comes back to the plugin to handle or pass on.
 
 Every entry in the table is called on the caller's thread, inside the plugin function the dispatcher is calling. A plugin has no thread of its own to call from.
