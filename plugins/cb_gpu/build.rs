@@ -8,6 +8,11 @@ fn main() {
         caribou_bindgen::generate("gpu", &api, &idl).expect("valid GPU binding declarations");
     let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(path.join("gpu.rs"), generated).unwrap();
+    // The wire to a browser's WebGPU: the plugin's encoder, and the GPU
+    // agent's decoder, which a web build carries for the program to ship.
+    let wire = caribou_bindgen::wire::wire(&idl).expect("the WebGPU IDL generates its wire");
+    std::fs::write(path.join("gpu_wire.rs"), wire.rust).unwrap();
+    std::fs::write(path.join("gpu_agent.mjs"), wire.js).unwrap();
 }
 
 /// `enum NativeFeature`: every feature wgpu has, WebGPU's and its own, in

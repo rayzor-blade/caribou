@@ -15,6 +15,9 @@ default = ["native"]
 # WebGPU backend so the plugin ABI and generated API remain target portable;
 # loading Caribou plugins in a browser is runtime work outside this crate.
 native = ["dep:wgpu", "dep:pollster", "dep:raw-window-handle"]
+# The browser: calls go to the page's WebGPU over a wire generated from
+# spec/webgpu.idl, with no wgpu in the module.
+web = []
 # Adds Vulkan to a build that would not have it. Windows takes D3D12 by
 # default; this is for the separate build that can also use Vulkan, chosen at
 # run time with WGPU_BACKEND=vulkan.

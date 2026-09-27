@@ -10,6 +10,16 @@ compile_error!(
 mod backend;
 mod handles;
 mod types;
+/// The wire to a browser's WebGPU, generated from spec/webgpu.idl.
+#[cfg(feature = "web")]
+#[allow(dead_code, non_camel_case_types, unused_variables, clippy::all)]
+pub mod wire {
+    include!(concat!(env!("OUT_DIR"), "/gpu_wire.rs"));
+}
+
+/// The GPU agent's half of the wire: an ES module, for the program to ship.
+#[cfg(feature = "web")]
+pub const AGENT: &str = include_str!(concat!(env!("OUT_DIR"), "/gpu_agent.mjs"));
 use caribou_abi::{Buffer, BufferMut, Enum, Future, Text};
 include!(concat!(env!("OUT_DIR"), "/gpu.rs"));
 
