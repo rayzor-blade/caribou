@@ -118,3 +118,39 @@ unsafe fn object(payload: *mut c_void, t: *mut hl_type) -> Option<caribou_abi::V
     let name = unsafe { caribou_ash::link::type_name(t) }?;
     caribou_plugin::object(&name, payload)
 }
+
+/// A Haxe enum value as the core's, for a plugin's `Enum<T>`: its plugin,
+/// named by the enum's (`math.Event`), made known first.
+///
+/// # Safety
+/// `e` is null or a live value of the program's enum type `t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_plugin_enum_from_haxe(e: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
+    unsafe { ensure_enum(t) };
+    // No guard across this: it raises for a value not of the enum, and the
+    // translation roots `e` itself.
+    unsafe { caribou_ash::link::enum_to_core(e, t) }
+}
+
+/// A plugin's `Enum<T>` as a Haxe enum value of the program's type `t`.
+///
+/// # Safety
+/// `p` is null or a live core enum value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_plugin_enum_to_haxe(
+    p: *mut caribou_abi::data::EnumData,
+    t: *mut hl_type,
+) -> *mut vdynamic {
+    unsafe { ensure_enum(t) };
+    let _kept = (!p.is_null()).then(|| caribou::heap::keep(p.cast()));
+    unsafe { caribou_ash::link::core_to_enum(p, t) }
+}
+
+/// The plugin that declares the enum type `t`, made known.
+unsafe fn ensure_enum(t: *mut hl_type) {
+    if let Some(name) = unsafe { caribou_ash::link::enum_name(t) }
+        && let Some((plugin, _)) = name.split_once('.')
+    {
+        caribou_plugin::ensure(plugin);
+    }
+}

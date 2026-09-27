@@ -397,6 +397,7 @@ impl Adapter for Runtime {
     /// dispatcher.
     fn assign_languages(&mut self, ids: &[LangId]) {
         for (plugin, &lang) in self.plugins.iter().zip(ids) {
+            REGISTERED.write().unwrap().push(plugin.name.clone());
             bridge::set_typed_dispatch(lang, dispatch);
             for schema in &plugin.enums {
                 data::register_enum(schema.clone(), lang).expect("validated enum declaration");
@@ -628,6 +629,18 @@ pub fn set_loader(load: fn(&str) -> bool) {
     *LOADER.write().unwrap() = Some(load);
 }
 
+/// The plugins registered with a world, by name.
+static REGISTERED: RwLock<Vec<String>> = RwLock::new(Vec::new());
+
+/// Make the plugin `name` known: registered already, or found now by the
+/// loader. False when neither.
+pub fn ensure(name: &str) -> bool {
+    if REGISTERED.read().unwrap().iter().any(|n| n == name) {
+        return true;
+    }
+    (*LOADER.read().unwrap()).is_some_and(|load| load(name))
+}
+
 /// The descriptor of the class `type_name` (`plugin.Class`), loading its
 /// plugin through the loader on first need.
 fn class_type_loading(type_name: &str) -> Option<&'static TypeDesc> {
@@ -635,8 +648,7 @@ fn class_type_loading(type_name: &str) -> Option<&'static TypeDesc> {
         return Some(desc);
     }
     let (plugin, _) = type_name.split_once('.')?;
-    let load = (*LOADER.read().unwrap())?;
-    load(plugin).then(|| class_type(type_name)).flatten()
+    ensure(plugin).then(|| class_type(type_name)).flatten()
 }
 
 /// A new object of the class `type_name` holding `payload`, which a linked

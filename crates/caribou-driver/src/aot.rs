@@ -246,6 +246,20 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
             Word::Ptr,
             Some(("caribou_haxe_string_to_str", "caribou_haxe_str_to_string")),
         ),
+        // Bytes shared both ways, as a core buffer over Haxe's own.
+        TypeTag::BUFFER | TypeTag::BUFFER_MUT => (
+            Word::Ptr,
+            Some(("caribou_haxe_bytes_to_buffer", "caribou_haxe_buffer_to_bytes")),
+        ),
+        TypeTag::ENUM => (
+            Word::Ptr,
+            Some(("caribou_plugin_enum_from_haxe", "caribou_plugin_enum_to_haxe")),
+        ),
+        // Any value, as the core's.
+        TypeTag::DYN => (
+            Word::I64,
+            Some(("caribou_haxe_dyn_to_value", "caribou_haxe_value_to_dyn")),
+        ),
         // An instance: its payload to the plugin, its face to Haxe.
         TypeTag::OBJ => (
             Word::Ptr,

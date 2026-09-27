@@ -3,7 +3,6 @@
 //! tuple is an anonymous object.
 use crate::proto;
 use caribou::data::TupleData;
-#[cfg(feature = "runner")]
 use caribou::registry::TypeRef;
 use caribou::{
     data,
@@ -37,7 +36,6 @@ struct Types {
 static BYTES_TYPE: AtomicUsize = AtomicUsize::new(0);
 static TYPES: LazyLock<RwLock<Types>> = LazyLock::new(|| RwLock::new(Types::default()));
 
-#[cfg(feature = "runner")]
 unsafe fn name(p: *const u16) -> String {
     if p.is_null() {
         return String::new();
@@ -54,59 +52,86 @@ unsafe fn name(p: *const u16) -> String {
 pub(crate) fn attach(types: impl Iterator<Item = *mut hl_type>) -> anyhow::Result<()> {
     let mut found = Types::default();
     for t in types {
-        if t.is_null() {
-            continue;
-        }
-        unsafe {
-            if proto::obj_name_is(t, "haxe.io.Bytes") {
-                let obj = &*(*t).detail.obj;
-                let rt = ash_std::obj::hlp_get_obj_rt(t.cast());
-                let field = |want: &str| {
-                    (0..obj.nfields as usize)
-                        .find(|&i| name((*obj.fields.add(i)).name) == want)
-                        .map(|i| *(*rt).fields_indexes.add(i) as usize)
-                };
-                found.bytes = Some(BytesType {
-                    t: t as usize,
-                    length: field("length")
-                        .ok_or_else(|| anyhow::anyhow!("Bytes.length missing"))?,
-                    bytes: field("b").ok_or_else(|| anyhow::anyhow!("Bytes.b missing"))?,
-                });
-            } else if (*t).kind == hl::HENUM {
-                let e = &*(*t).detail.tenum;
-                let enum_name = name(e.name);
-                let Some(desc) = data::enum_type(&enum_name) else {
-                    continue;
-                };
-                let schema = data::enum_schema(desc);
-                anyhow::ensure!(
-                    e.nconstructs as usize == schema.variants.len(),
-                    "enum {enum_name} constructors changed; rebuild Haxe bytecode"
-                );
-                for (i, variant) in schema.variants.iter().enumerate() {
-                    let c = &*e.constructs.add(i);
-                    anyhow::ensure!(
-                        name(c.name) == variant.name && c.nparams as usize == variant.fields.len(),
-                        "enum {enum_name} constructor changed; rebuild Haxe bytecode"
-                    );
-                    for (j, field) in variant.fields.iter().enumerate() {
-                        anyhow::ensure!(
-                            matches_type(*c.params.add(j), &field.ty),
-                            "enum {enum_name} field {} changed; rebuild Haxe bytecode",
-                            field.name
-                        );
-                    }
-                }
-                found.enums.insert(t as usize, desc);
-                found.by_name.insert(enum_name, t as usize);
-            }
+        if !t.is_null() {
+            unsafe { learn_into(&mut found, t) }.map_err(|e| anyhow::anyhow!(e))?;
         }
     }
     BYTES_TYPE.store(found.bytes.map_or(0, |b| b.t), Ordering::Release);
     *TYPES.write().unwrap() = found;
     Ok(())
 }
-#[cfg(feature = "runner")]
+
+/// Know the program's type `t`, when it is `haxe.io.Bytes` or the Haxe side
+/// of a core enum: what a compiled program's cast does on first sight of a
+/// type, having no loaded program's type list to attach.
+pub(crate) unsafe fn learn(t: *const hl_type) -> Result<(), String> {
+    if t.is_null() || is_buffer(t) || is_enum(t) {
+        return Ok(());
+    }
+    let mut types = TYPES.write().unwrap();
+    unsafe { learn_into(&mut types, t as *mut hl_type) }?;
+    BYTES_TYPE.store(types.bytes.map_or(0, |b| b.t), Ordering::Release);
+    Ok(())
+}
+
+unsafe fn learn_into(found: &mut Types, t: *mut hl_type) -> Result<(), String> {
+    unsafe {
+        if proto::obj_name_is(t, "haxe.io.Bytes") {
+            let obj = &*(*t).detail.obj;
+            let rt = ash_std::obj::hlp_get_obj_rt(t.cast());
+            let field = |want: &str| {
+                (0..obj.nfields as usize)
+                    .find(|&i| name((*obj.fields.add(i)).name) == want)
+                    .map(|i| *(*rt).fields_indexes.add(i) as usize)
+            };
+            found.bytes = Some(BytesType {
+                t: t as usize,
+                length: field("length").ok_or("Bytes.length missing")?,
+                bytes: field("b").ok_or("Bytes.b missing")?,
+            });
+        } else if (*t).kind == hl::HENUM {
+            let e = &*(*t).detail.tenum;
+            let enum_name = name(e.name);
+            let Some(desc) = data::enum_type(&enum_name) else {
+                return Ok(());
+            };
+            let schema = data::enum_schema(desc);
+            if e.nconstructs as usize != schema.variants.len() {
+                return Err(format!("enum {enum_name} constructors changed; rebuild Haxe bytecode"));
+            }
+            for (i, variant) in schema.variants.iter().enumerate() {
+                let c = &*e.constructs.add(i);
+                if name(c.name) != variant.name || c.nparams as usize != variant.fields.len() {
+                    return Err(format!("enum {enum_name} constructor changed; rebuild Haxe bytecode"));
+                }
+                for (j, field) in variant.fields.iter().enumerate() {
+                    if !matches_type(*c.params.add(j), &field.ty) {
+                        return Err(format!(
+                            "enum {enum_name} field {} changed; rebuild Haxe bytecode",
+                            field.name
+                        ));
+                    }
+                }
+            }
+            found.enums.insert(t as usize, desc);
+            found.by_name.insert(enum_name, t as usize);
+            // What its payloads are made of, which a translation allocates:
+            // strings, bytes and nested enums.
+            for i in 0..e.nconstructs as usize {
+                let c = &*e.constructs.add(i);
+                for j in 0..c.nparams as usize {
+                    let p = *c.params.add(j);
+                    if proto::obj_name_is(p, "String") {
+                        proto::set_string_type(p);
+                    } else if !found.enums.contains_key(&(p as usize)) {
+                        learn_into(found, p)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
 unsafe fn matches_type(t: *const hl_type, ty: &TypeRef) -> bool {
     let kind = unsafe { (*t).kind };
     match ty {
@@ -279,4 +304,12 @@ pub(crate) unsafe fn tuple_to_haxe(p: *mut TupleData) -> Result<*mut vdynamic, S
         }
     }
     Ok(obj)
+}
+
+/// The name of the Haxe enum type `t`.
+///
+/// # Safety
+/// `t` is an `HENUM` type.
+pub(crate) unsafe fn enum_type_name(t: &hl_type) -> String {
+    unsafe { name((*t.detail.tenum).name) }
 }

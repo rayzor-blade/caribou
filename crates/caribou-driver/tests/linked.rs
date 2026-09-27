@@ -279,3 +279,57 @@ fn a_wren_module_links_into_a_wasm_program() {
         "{stressed}"
     );
 }
+
+#[test]
+fn plugin_data_crosses_a_wasm_program_linked_and_as_a_side_module() {
+    for (name, link) in [("caribou-data", ""), ("caribou-data-side", ", link = \"side\"")] {
+        let ran = data_program(name, link);
+        let lines: Vec<&str> = ran.lines().filter(|l| !l.starts_with("[ash]")).collect();
+        assert_eq!(lines, ["data ok"], "{name}: {ran}");
+    }
+}
+
+/// The interop fixtures' plugin data checks (`UseData.data`: bytes shared
+/// both ways, enums with every payload kind, instances, and values of the
+/// wrong type refused), built for wasm with the math plugin taken by
+/// `link`, and run.
+fn data_program(name: &str, link: &str) -> String {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(
+        root.join("crates/caribou-interop/fixtures/src/UseData.hx"),
+        dir.join("src/UseData.hx"),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/WasmData.hx"),
+        "class WasmData {\n  static function main() {\n    UseData.data();\n    Sys.println(\"data ok\");\n  }\n}\n",
+    )
+    .unwrap();
+    let math = root.join("crates/caribou-interop/plugins/math");
+    std::fs::write(
+        dir.join("data.cbproj"),
+        format!(
+            "[project]\nname = \"data\"\nentry = \"haxe:WasmData\"\nlanguages = [\"haxe\"]\n\n\
+             [plugins]\nmath = {{ path = {:?}{link} }}\n",
+            math.display().to_string()
+        ),
+    )
+    .unwrap();
+    let haxelib = dir.join("haxelib");
+    std::fs::create_dir_all(&haxelib).unwrap();
+    let status = Command::new("haxelib")
+        .env("HAXELIB_PATH", &haxelib)
+        .args(["dev", "caribou"])
+        .arg(root.join("haxe"))
+        .status()
+        .expect("haxelib runs");
+    assert!(status.success());
+    let built = caribou(&dir, &haxelib, &["build", "--target", "wasm32-wasip1"]);
+    let module = PathBuf::from(built.lines().last().expect("the module's path").trim());
+    caribou(&dir, &haxelib, &["run", module.to_str().unwrap()])
+}

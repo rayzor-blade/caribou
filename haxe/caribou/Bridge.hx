@@ -274,6 +274,12 @@ class Bridge {
 		that Wren module, else the Haxe class the import names.
 		Plugin object identities are resolved across all plugin modules.
 		Anything else is `Dynamic`. */
+	/** Whether `ty` is a value of a declared enum, which a native returns as
+		that enum. */
+	static function declaredEnum(ty:Dynamic):Bool {
+		return !Std.isOfType(ty, String) && Reflect.hasField(ty, "Enum");
+	}
+
 	/** Whether `ty` is an object of a class, which a native returns as
 		that class. */
 	static function declaredObject(ty:Dynamic):Bool {
@@ -514,15 +520,15 @@ class Bridge {
 			var arity = m.params.length;
 			var callArgs = [for (p in m.params) macro $i{p.name}];
 			var ret = haxeType(m.ret, pack, classes);
-			// A scalar, a string, an object of a declared class or a function
-			// comes back from the native as itself, and nothing comes back
-			// from a `Null` result; anything else as a boxed dynamic the
-			// wrapper casts.
+			// A scalar, a string, an object of a declared class, bytes, an
+			// enum value or a function comes back from the native as itself,
+			// and nothing comes back from a `Null` result; anything else as a
+			// boxed dynamic the wrapper casts.
 			var nativeRet = switch (ret) {
 				case TFunction(_, _): ret;
 				default: switch (haxe.macro.ComplexTypeTools.toString(ret)) {
-					case "Int", "haxe.Int64", "Float", "Bool", "Void", "String": ret;
-					case _ if (declaredObject(m.ret)): ret;
+					case "Int", "haxe.Int64", "Float", "Bool", "Void", "String", "haxe.io.Bytes": ret;
+					case _ if (declaredObject(m.ret) || declaredEnum(m.ret)): ret;
 					default: macro :Dynamic;
 				}
 			}

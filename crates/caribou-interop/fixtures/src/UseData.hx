@@ -8,6 +8,13 @@ class UseData {
         if (!ok) throw what;
     }
     static function main() {
+        data();
+        futures();
+        Sys.println("data ok");
+    }
+
+    /** The data checks, which a program built ahead of time runs too. */
+    public static function data() {
         // Neither returned class is imported or annotated. Their methods
         // must be reached through the types in the plugin signatures.
         var vector = Data.vector();
@@ -60,19 +67,6 @@ class UseData {
             default: throw "wrong wide constructor";
         }
         check(Data.area(Wide(haxe.Int64.make(2, 3))) == 2, "Haxe 64-bit payload");
-        var future = Data.later(73);
-        check(future.await() == 73, "future result");
-        var delayedVector = Data.later_vec().await();
-        check(delayedVector.len() == 10, "typed future resource result");
-        var manual = new caribou.Future<Int>();
-        check(!manual.ready(), "new future ready");
-        check(manual.resolve(91) && !manual.resolve(92), "future settled twice");
-        check(manual.await() == 91, "manual future result");
-        var rejected = new caribou.Future<Int>();
-        check(rejected.reject("future failed"), "future rejection");
-        var rejectedCaught = false;
-        try rejected.await() catch (error:Dynamic) rejectedCaught = true;
-        check(rejectedCaught, "rejected future returned");
         var pair = Data.pair();
         hl.Gc.major();
         // Decode into ordinary Rust nested enums, then encode them again.
@@ -93,6 +87,22 @@ class UseData {
         caught = false;
         try { Data.sum(cast "not bytes"); } catch (_:Dynamic) { caught = true; }
         check(caught, "bad buffer accepted");
-        Sys.println("data ok");
+    }
+
+    /** Futures, through the caribou library's own natives. */
+    public static function futures() {
+        var future = Data.later(73);
+        check(future.await() == 73, "future result");
+        var delayedVector = Data.later_vec().await();
+        check(delayedVector.len() == 10, "typed future resource result");
+        var manual = new caribou.Future<Int>();
+        check(!manual.ready(), "new future ready");
+        check(manual.resolve(91) && !manual.resolve(92), "future settled twice");
+        check(manual.await() == 91, "manual future result");
+        var rejected = new caribou.Future<Int>();
+        check(rejected.reject("future failed"), "future rejection");
+        var rejectedCaught = false;
+        try rejected.await() catch (error:Dynamic) rejectedCaught = true;
+        check(rejectedCaught, "rejected future returned");
     }
 }

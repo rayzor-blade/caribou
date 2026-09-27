@@ -360,10 +360,9 @@ pub(crate) fn throwable(e: Value) -> *mut vdynamic {
 // ---------------------------------------------------------------------------
 
 /// The loaded program's `String` type, for allocating one; null until a
-/// program publishes.
+/// program publishes, or a compiled program's cast first sees it.
 static STRING_TYPE: AtomicPtr<hl_type> = AtomicPtr::new(ptr::null_mut());
 
-#[cfg(feature = "runner")]
 pub(crate) fn set_string_type(t: *mut hl_type) {
     STRING_TYPE.store(t, Ordering::Release);
 }

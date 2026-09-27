@@ -10,6 +10,7 @@ use caribou::bridge;
 use caribou::error::Str;
 use caribou::heap;
 use caribou_abi::Value;
+use caribou_abi::data::{BufferData, EnumData};
 use caribou_abi::hl::{hl_type, vdynamic};
 
 use crate::proto;
@@ -111,6 +112,7 @@ pub fn raise(message: &str, origin: caribou_abi::LangId) {
 /// `s` is null or a live core string; `t` is the program's `String` type.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_haxe_str_to_string(s: *mut u8, t: *mut hl_type) -> *mut vdynamic {
+    proto::set_string_type(t);
     if s.is_null() {
         return core::ptr::null_mut();
     }
@@ -134,6 +136,96 @@ pub unsafe extern "C" fn caribou_haxe_raise_pending() {
         proto::throwable(e)
     };
     unsafe { hlp_throw(thrown.cast()) };
+}
+
+/// A Haxe `Bytes` as a core buffer over the same bytes: what a plugin's
+/// `Buffer` or `BufferMut` is. `t` is the program's `haxe.io.Bytes`.
+///
+/// # Safety
+/// `b` is null or a live `Bytes` of type `t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_bytes_to_buffer(b: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
+    if b.is_null() {
+        return core::ptr::null_mut();
+    }
+    if unsafe { (*b).t } != t || unsafe { crate::data::learn(t) }.is_err() {
+        raise("the value is not a haxe.io.Bytes", proto::lang());
+    }
+    let _kept = heap::keep(b.cast());
+    unsafe { crate::data::buffer_from_haxe(b) }
+        .as_object()
+        .map_or(core::ptr::null_mut(), |p| p.cast())
+}
+
+/// A core buffer as a Haxe `Bytes` of the program's type `t`, over the
+/// same bytes unless they are read-only.
+///
+/// # Safety
+/// `p` is null or a live core buffer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_buffer_to_bytes(p: *mut BufferData, t: *mut hl_type) -> *mut vdynamic {
+    if p.is_null() || unsafe { crate::data::learn(t) }.is_err() {
+        return core::ptr::null_mut();
+    }
+    let _kept = heap::keep(p.cast());
+    unsafe { crate::data::buffer_to_haxe(p) }.unwrap_or(core::ptr::null_mut())
+}
+
+/// A Haxe dynamic as a core value: what a plugin's `Value` is.
+///
+/// # Safety
+/// `d` is null or a live Haxe value.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_dyn_to_value(d: *mut vdynamic, _t: *mut hl_type) -> u64 {
+    unsafe { proto::dyn_to_value(d) }.to_bits()
+}
+
+/// A core value as a Haxe dynamic.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_haxe_value_to_dyn(v: u64, _t: *mut hl_type) -> *mut vdynamic {
+    let v = Value::from_bits(v);
+    let _kept = heap::keep_value(v);
+    unsafe { proto::value_to_dyn(v, caribou_abi::hl::HDYN) }.unwrap_or(core::ptr::null_mut())
+}
+
+/// A Haxe enum value of the program's enum type `t` as the core's, once
+/// the enum it declares is registered; null when it is not.
+///
+/// # Safety
+/// `e` is null or a live value of type `t`.
+pub unsafe fn enum_to_core(e: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
+    if e.is_null() {
+        return core::ptr::null_mut();
+    }
+    if unsafe { (*e).t } != t
+        || unsafe { crate::data::learn(t) }.is_err()
+        || !crate::data::is_enum(t)
+    {
+        raise("the value is not a value of the declared enum", proto::lang());
+    }
+    unsafe { crate::data::enum_from_haxe(e) }
+        .as_object()
+        .map_or(core::ptr::null_mut(), |p| p.cast())
+}
+
+/// A core enum value as a Haxe one of the program's enum type `t`.
+///
+/// # Safety
+/// `p` is null or a live core enum value.
+pub unsafe fn core_to_enum(p: *mut EnumData, t: *mut hl_type) -> *mut vdynamic {
+    if p.is_null() || unsafe { crate::data::learn(t) }.is_err() {
+        return core::ptr::null_mut();
+    }
+    unsafe { crate::data::enum_to_haxe(p) }.unwrap_or(core::ptr::null_mut())
+}
+
+/// The name of the program's enum type `t`, `math.Event`.
+///
+/// # Safety
+/// `t` is null or one of the program's types.
+pub unsafe fn enum_name(t: *const hl_type) -> Option<String> {
+    let t = unsafe { t.as_ref() }?;
+    (t.kind == caribou_abi::hl::HENUM).then(|| unsafe { crate::data::enum_type_name(t) })
 }
 
 /// A `caribou` native's member as the link rule names it: the native
