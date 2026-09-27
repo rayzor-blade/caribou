@@ -38,7 +38,9 @@ use caribou::world::Adapter;
 use caribou_abi::LangId;
 use wren_lift::runtime::rt::{RuntimeVTable, wlift_rt_install};
 
-pub use proto::{current_vm, enter_vm, from_wren, leave_vm, to_wren, unwrap, with_vm, wrap};
+pub use proto::{
+    current_vm, enter_vm, from_wren, keep_value, leave_vm, to_wren, unwrap, with_vm, wrap,
+};
 pub use publish::{PublishError, publish_module};
 
 /// Wren as a resident of a world: one language, `wren`. Registering it gives

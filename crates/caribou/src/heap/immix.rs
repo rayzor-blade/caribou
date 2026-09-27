@@ -675,6 +675,19 @@ fn current_mutator_deferred() -> bool {
 /// collector releases the world. A hosted collector's stop is answered here
 /// too, through its safepoint hook.
 #[inline(never)]
+/// A compiled caller's poll: [`gc_safepoint`], and a true safepoint as an
+/// allocation's refill is, so a collection a deferring mutator left
+/// pending runs here. Compiled code reaches one only when its poll epoch
+/// moves, which each deferred trigger asks for.
+pub fn poll_safepoint() {
+    gc_safepoint();
+    if COLLECT_PENDING.load(Ordering::Relaxed) && current_mutator_registered() {
+        let mut gc = gc_locked();
+        set_collect_origin(7);
+        gc.maybe_collect_at_safepoint();
+    }
+}
+
 pub fn gc_safepoint() {
     if HOSTED_STOPS.load(Ordering::Acquire) != 0 {
         safepoint_hook();
@@ -1592,7 +1605,7 @@ fn quarantine_freed() -> bool {
 /// caller just before the call, printed by the trace lines. A plain static
 /// is sound under the GC lock.
 static COLLECT_ORIGIN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-const ORIGIN_NAMES: [&str; 7] = [
+const ORIGIN_NAMES: [&str; 8] = [
     "?",
     "snapshot-done",    // scan_roots_done honoring a deferred trigger
     "tlab-safepoint",   // tlab_refill_then_alloc's maybe_collect_at_safepoint
@@ -1600,6 +1613,7 @@ const ORIGIN_NAMES: [&str; 7] = [
     "exhaustion",       // allocate's no-free-block backstop
     "large-exhaustion", // allocate_large fallback
     "explicit",         // Gc.major / hlp_gc_major
+    "poll",             // poll_safepoint honoring a deferred trigger
 ];
 fn set_collect_origin(o: u8) {
     COLLECT_ORIGIN.store(o, Ordering::Relaxed);
@@ -3161,6 +3175,10 @@ impl ImmixAllocator {
                 .max(trigger_ceiling_bytes())
                 .min(max_deferred_pressure());
             if pressure < hard {
+                // Compiled code reaches a safepoint only when its poll epoch
+                // moves past the one it last saw, so every deferred trigger
+                // asks for a poll until one collects.
+                request_fiber_poll();
                 self.heap.collect_pending = true;
                 if self.is_singleton() {
                     COLLECT_PENDING.store(true, Ordering::Relaxed);

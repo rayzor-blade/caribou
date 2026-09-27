@@ -59,6 +59,7 @@ pub use immix::{
     gc_register_fiber_stack,
     gc_remove_persistent,
     gc_safepoint,
+    poll_safepoint,
     gc_set_blocking,
     gc_unblock,
     gc_unregister_fiber_stack,
@@ -116,6 +117,19 @@ pub use immix::{
     walk_heap,
     zalloc,
 };
+
+/// Keep an object value alive for this scope. Scalars need no guard.
+///
+/// This is the value-shaped form of [`keep`]: native frames are scanned,
+/// while wasm engine locals are not, so adapter code uses it for values held
+/// across a call that may allocate.
+#[inline]
+pub fn keep_value(value: caribou_abi::Value) -> Option<Kept> {
+    value
+        .as_object()
+        .filter(|ptr| !ptr.is_null())
+        .map(|ptr| keep(ptr.cast()))
+}
 
 // Only where the pool has OS threads to register, as in `immix.rs`.
 #[cfg(any(not(target_family = "wasm"), target_feature = "atomics"))]

@@ -29,12 +29,20 @@ class Main {
 "#;
 
 fn caribou(dir: &Path, haxelib: &Path, args: &[&str]) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_caribou"))
+    caribou_with_env(dir, haxelib, args, &[])
+}
+
+fn caribou_with_env(dir: &Path, haxelib: &Path, args: &[&str], env: &[(&str, &str)]) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_caribou"));
+    command
         .args(args)
         .current_dir(dir)
         .env("HAXELIB_PATH", haxelib)
-        .output()
-        .expect("caribou runs");
+        .env_remove("ASH_GC_STRESS");
+    for &(key, value) in env {
+        command.env(key, value);
+    }
+    let out = command.output().expect("caribou runs");
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
         out.status.success(),
@@ -80,7 +88,15 @@ fn a_plugin_crate_links_into_a_wasm_program() {
     let lines: Vec<&str> = ran.lines().collect();
     assert_eq!(
         lines,
-        ["5", "42", "true", "HÉLLO!", "5", "3.5", "caught: quotient by zero"],
+        [
+            "5",
+            "42",
+            "true",
+            "HÉLLO!",
+            "5",
+            "3.5",
+            "caught: quotient by zero"
+        ],
         "{ran}"
     );
 }
@@ -143,6 +159,25 @@ class Main {
     Sys.println(t.total);
     Sys.println(Tally.make().total);
     Sys.println(Tally.same(t) == t);
+
+    var checksum = 0.0;
+    var identities = true;
+    var failures = 0;
+    for (i in 0...64) {
+      t.total = i;
+      checksum += t.bump(1);
+      checksum += Tally.make().total;
+      identities = identities && Tally.same(t) == t;
+      if (Tally.greet("haxe") != "hello haxe" || !Tally.even(i * 2)) {
+        throw "bad linked value";
+      }
+      try {
+        Tally.fail();
+      } catch (_:Dynamic) {
+        failures++;
+      }
+    }
+    Sys.println('stress $checksum $identities $failures');
   }
 }
 "#;
@@ -175,9 +210,31 @@ fn a_wren_module_links_into_a_wasm_program() {
     let built = caribou(&dir, &haxelib, &["build", "--target", "wasm32-wasip1"]);
     let module = PathBuf::from(built.lines().last().expect("the module's path").trim());
     let ran = caribou(&dir, &haxelib, &["run", module.to_str().unwrap()]);
-    let lines: Vec<&str> = ran.lines().collect();
+    let expected = [
+        "wren module ran",
+        "42",
+        "hello haxe",
+        "true",
+        "caught: wren says no",
+        "15",
+        "2",
+        "7",
+        "true",
+        "stress 2528 true 64",
+    ];
+    assert_eq!(ran.lines().collect::<Vec<_>>(), expected, "{ran}");
+
+    // A wasm engine's locals are outside the core's conservative stack
+    // scan. Collection on every allocation makes every linked conversion
+    // prove that Rust adapter values are explicitly kept.
+    let stressed = caribou_with_env(
+        &dir,
+        &haxelib,
+        &["run", module.to_str().unwrap()],
+        &[("ASH_GC_STRESS", "1")],
+    );
     assert_eq!(
-        lines,
+        stressed.lines().collect::<Vec<_>>(),
         [
             "wren module ran",
             "42",
@@ -188,7 +245,8 @@ fn a_wren_module_links_into_a_wasm_program() {
             "2",
             "7",
             "true",
+            "stress 2528 true 64",
         ],
-        "{ran}"
+        "{stressed}"
     );
 }

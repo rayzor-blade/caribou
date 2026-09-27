@@ -839,7 +839,7 @@ pub fn yield_now() {
 /// others run. A safepoint on a task yields it; one on the main context
 /// advances each ready task once.
 pub fn poll() {
-    heap::gc_safepoint();
+    heap::poll_safepoint();
     if !preempt::any_live_tasks() {
         return;
     }

@@ -320,6 +320,7 @@ pub(crate) unsafe extern "C-unwind" fn guard(
 /// A core `Error` of Haxe's language for a failure at `name`, as a value.
 pub(crate) fn error_value(name: &str, message: &str) -> Value {
     let e = Error::new(ErrorKind::Runtime, message, lang());
+    let _kept = heap::keep(e.cast());
     unsafe { Error::push_segment(e, lang(), name) };
     Error::value(e)
 }
@@ -329,6 +330,7 @@ pub(crate) fn error_value(name: &str, message: &str) -> Value {
 /// a program has published its `String` type, as the runtime's own errors
 /// are thrown.
 pub(crate) fn throwable(e: Value) -> *mut vdynamic {
+    let _kept = heap::keep_value(e);
     if let Some(exc) = unwrap(e) {
         return exc;
     }
@@ -475,6 +477,7 @@ pub(crate) unsafe fn dyn_to_value(d: *mut vdynamic) -> Value {
     if d.is_null() {
         return Value::null();
     }
+    let _kept = heap::keep(d.cast());
     let t = unsafe { (*d).t };
     if t.is_null() {
         return wrap(d);
@@ -530,6 +533,7 @@ unsafe fn box_f64(n: f64) -> *mut vdynamic {
 /// exact type. A core `Str` becomes a `String`; an object of another
 /// language becomes its face (`import.rs`).
 pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, String> {
+    let _kept = heap::keep_value(v);
     let int = || {
         v.as_int()
             .or_else(|| v.as_number().map(|n| n as i32))
@@ -601,6 +605,7 @@ unsafe fn fun_of(t: *const hl_type) -> Option<*const hl_type_fun> {
 /// write the result unboxed by the return kind. `closure` may be a bound
 /// method closure or one built on the stack around a bare code pointer.
 unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) -> u8 {
+    let _closure_kept = heap::keep(closure.cast());
     let Some(fun) = (unsafe { fun_of((*closure).t) }) else {
         return raise_core(ErrorKind::Type, "the closure has no function type");
     };
@@ -629,9 +634,11 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
             None => {}
         }
     }
-    // Boxed before the trap: a throw abandons whatever the trap's frames
-    // hold, and the boxes are on this frame's stack for the scanner.
+    // Boxed before the trap: a throw abandons this frame and its guards.
+    // Explicit guards also cover wasm engine locals, which the collector
+    // cannot conservatively scan.
     let mut boxed: [*mut vdynamic; MAX_ARGS] = [ptr::null_mut(); MAX_ARGS];
+    let mut _boxed_kept: [Option<heap::Kept>; MAX_ARGS] = std::array::from_fn(|_| None);
     for (i, &arg) in args.iter().enumerate() {
         let kind = unsafe { (**(*fun).args.add(i)).kind };
         boxed[i] = match unsafe { value_to_dyn(arg, kind) } {
@@ -640,6 +647,9 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
                 return raise_core(ErrorKind::Type, &format!("argument {i}: {message}"));
             }
         };
+        if !boxed[i].is_null() {
+            _boxed_kept[i] = Some(heap::keep(boxed[i].cast()));
+        }
     }
     let mut result: *mut vdynamic = ptr::null_mut();
     let nargs = args.len() as i32;
@@ -649,6 +659,7 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
     match call {
         Err(exception) => unsafe { raise_exception(exception) },
         Ok(()) => {
+            let _result_kept = (!result.is_null()).then(|| heap::keep(result.cast()));
             unsafe { *out = dyn_to_value(result) };
             REPLY_OK
         }
@@ -1075,9 +1086,8 @@ unsafe extern "C-unwind" fn ctor_call(
     } else {
         unsafe { std::slice::from_raw_parts(args, n) }
     };
-    // The instance is a raw address on this frame, which the conservative
-    // scan sees through the constructor.
     let instance = unsafe { hlp_alloc_obj(ctor.t.cast()) } as *mut vdynamic;
+    let _instance_kept = heap::keep(instance.cast());
     let mut with_this = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
     with_this[0].write(wrap(instance));
     for (slot, &arg) in with_this[1..].iter_mut().zip(args) {
@@ -1673,6 +1683,7 @@ fn invoke_at_opt(
     n: usize,
     out: *mut Value,
 ) -> u8 {
+    let _object_kept = heap::keep(obj);
     let d = unsafe { inner(obj) };
     if !has_members(unsafe { kind_of(d) }) {
         return REPLY_UNSUPPORTED;

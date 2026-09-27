@@ -48,8 +48,11 @@ pub extern "C" fn caribou_wren_from_bool(b: bool, _t: *mut hl_type) -> u64 {
 /// `s` is null or a live `String` object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_from_haxe_string(s: *mut vdynamic, _t: *mut hl_type) -> u64 {
+    let _kept = (!s.is_null()).then(|| caribou::heap::keep(s.cast()));
     match vm() {
-        Some(vm) if !s.is_null() => vm.new_string(unsafe { caribou_ash::link::string_text(s) }).to_bits(),
+        Some(vm) if !s.is_null() => vm
+            .new_string(unsafe { caribou_ash::link::string_text(s) })
+            .to_bits(),
         _ => Value::null().to_bits(),
     }
 }
@@ -82,6 +85,7 @@ pub unsafe extern "C" fn caribou_wren_to_haxe_string(v: u64, t: *mut hl_type) ->
     if !v.is_string_object() {
         return std::ptr::null_mut();
     }
+    let _kept = caribou_wren::keep_value(v);
     unsafe { caribou_ash::link::string(t, as_string(v)) }
 }
 
@@ -96,7 +100,10 @@ pub extern "C" fn caribou_wren_raise_pending() {
         return;
     }
     vm.has_error = false;
-    let message = vm.last_error.take().unwrap_or_else(|| "runtime error".to_owned());
+    let message = vm
+        .last_error
+        .take()
+        .unwrap_or_else(|| "runtime error".to_owned());
     caribou_ash::link::raise(&message, caribou_wren::lang());
 }
 
@@ -107,9 +114,12 @@ pub extern "C" fn caribou_wren_raise_pending() {
 /// `face` is null or a live Haxe object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_from_haxe_face(face: *mut vdynamic, _t: *mut hl_type) -> u64 {
+    let _kept = (!face.is_null()).then(|| caribou::heap::keep(face.cast()));
     let object = unsafe { caribou_ash::link::behind(face) };
     match (vm(), object) {
-        (Some(vm), Some(object)) => caribou_wren::to_wren(vm, object).unwrap_or(Value::null()).to_bits(),
+        (Some(vm), Some(object)) => caribou_wren::to_wren(vm, object)
+            .unwrap_or(Value::null())
+            .to_bits(),
         _ => Value::null().to_bits(),
     }
 }
@@ -121,7 +131,9 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_face(face: *mut vdynamic, _t: *m
 /// `face` is a live instance of a face class.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_bind_face(face: *mut vdynamic, v: u64, _t: *mut hl_type) {
-    unsafe { caribou_ash::link::bind(face, caribou_wren::from_wren(Value::from_bits(v))) }
+    let v = Value::from_bits(v);
+    let _kept = caribou_wren::keep_value(v);
+    unsafe { caribou_ash::link::bind(face, caribou_wren::from_wren(v)) }
 }
 
 /// A Wren object as its Haxe face, of the program's type `t`: the face
@@ -131,5 +143,7 @@ pub unsafe extern "C" fn caribou_wren_bind_face(face: *mut vdynamic, v: u64, _t:
 /// `t` is the program's type of a face class.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_to_haxe_face(v: u64, t: *mut hl_type) -> *mut vdynamic {
-    unsafe { caribou_ash::link::face(caribou_wren::from_wren(Value::from_bits(v)), t) }
+    let v = Value::from_bits(v);
+    let _kept = caribou_wren::keep_value(v);
+    unsafe { caribou_ash::link::face(caribou_wren::from_wren(v), t) }
 }

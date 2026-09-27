@@ -233,8 +233,9 @@ unsafe fn tuple_of(items: &[Any]) -> Result<Value, ForeignError> {
 /// The widest call the program makes of the world.
 const WIDEST: usize = 16;
 
-/// `f` over `args` as values of the core. What conversion made stays on
-/// this frame, where the conservative scan sees it, until `f` returns.
+/// `f` over `args` as values of the core. What conversion made stays rooted
+/// until `f` returns, including when this Rust frame is a wasm engine frame
+/// the collector cannot scan.
 fn with_values<T>(
     args: &[Any],
     f: impl FnOnce(&[Value]) -> Result<T, ForeignError>,
@@ -246,15 +247,15 @@ fn with_values<T>(
         ));
     }
     let mut values = [Value::null(); WIDEST];
-    let mut keep = [std::ptr::null_mut::<u8>(); WIDEST];
+    let mut _kept: [Option<heap::Kept>; WIDEST] = std::array::from_fn(|_| None);
     for (i, &a) in args.iter().enumerate() {
         let (v, made) = unsafe { value_of(a)? };
         values[i] = v;
-        keep[i] = made;
+        if !made.is_null() {
+            _kept[i] = Some(heap::keep(made));
+        }
     }
-    let out = f(&values[..args.len()]);
-    std::hint::black_box(&keep);
-    out
+    f(&values[..args.len()])
 }
 
 /// An error the bridge returned, as the library raises it.

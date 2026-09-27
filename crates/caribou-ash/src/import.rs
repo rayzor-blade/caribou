@@ -43,7 +43,7 @@ use caribou::bridge;
 use caribou::cell;
 use caribou::error::{Int64, Str};
 use caribou::hash::{AddressMap, BuildAddressHasher};
-use caribou::heap::TypeDesc;
+use caribou::heap::{self, TypeDesc};
 use caribou::protocol::{CallSite, Callable, Symbol};
 use caribou::registry::{self, ClassIface, Interface};
 use caribou::report;
@@ -895,15 +895,18 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
     } else {
         (ptr::null_mut(), words, &kinds.args[..])
     };
-    // On the stack, where the conservative scan sees them across the call;
-    // only the slots in use are written.
+    let _receiver_kept = (!receiver.is_null()).then(|| heap::keep(receiver.cast()));
+    // Only the slots in use are written. Converted objects are guarded
+    // explicitly because wasm engine locals are outside the stack scan.
     let mut args = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
-    for (slot, (&w, &k)) in args.iter_mut().zip(params.iter().zip(kinds_of)) {
+    let mut _args_kept: [Option<heap::Kept>; MAX_ARGS] = std::array::from_fn(|_| None);
+    for (i, (slot, (&w, &k))) in args.iter_mut().zip(params.iter().zip(kinds_of)).enumerate() {
         let v = unsafe { word_to_value(w, k) };
         if k == hl::HDYN && is_scalar(v) {
             s.boxed_in.fetch_add(1, Ordering::Relaxed);
         }
         slot.write(v);
+        _args_kept[i] = heap::keep_value(v);
     }
     let args = unsafe { args[..params.len()].assume_init_ref() };
 

@@ -6,11 +6,11 @@
 //! other way to name its types.
 
 use ash_std::error::hlp_throw;
-use caribou_abi::hl::{hl_type, vdynamic};
 use caribou::bridge;
 use caribou::error::Str;
 use caribou::heap;
 use caribou_abi::Value;
+use caribou_abi::hl::{hl_type, vdynamic};
 
 use crate::proto;
 
@@ -23,6 +23,7 @@ pub unsafe extern "C" fn caribou_haxe_string_to_str(s: *mut vdynamic, _t: *mut h
     if s.is_null() {
         return core::ptr::null_mut();
     }
+    let _kept = heap::keep(s.cast());
     Str::new(&unsafe { proto::string_text(s) }) as *mut u8
 }
 
@@ -58,6 +59,8 @@ pub unsafe fn behind(face: *mut vdynamic) -> Option<Value> {
 /// # Safety
 /// `face` is a live instance of a face class.
 pub unsafe fn bind(face: *mut vdynamic, v: Value) {
+    let _face_kept = (!face.is_null()).then(|| heap::keep(face.cast()));
+    let _value_kept = heap::keep_value(v);
     unsafe { crate::import::bind_face(face, crate::wrenref::wrap_foreign(v)) }
 }
 
@@ -70,10 +73,12 @@ pub unsafe fn face(v: Value, t: *mut hl_type) -> *mut vdynamic {
     if v.is_null() {
         return core::ptr::null_mut();
     }
+    let _value_kept = heap::keep_value(v);
     let cell = crate::wrenref::wrap_foreign(v);
     if let Some(front) = caribou::cell::front(cell) {
         return front.cast();
     }
+    let _cell_kept = heap::keep_value(cell);
     let face = unsafe { ash_std::obj::hlp_alloc_obj(t.cast()) } as *mut vdynamic;
     unsafe { crate::import::bind_face(face, cell) };
     face
@@ -83,6 +88,7 @@ pub unsafe fn face(v: Value, t: *mut hl_type) -> *mut vdynamic {
 /// error of the callee's language `origin`.
 pub fn raise(message: &str, origin: caribou_abi::LangId) {
     let e = caribou::error::Error::new(caribou_abi::ErrorKind::Runtime, message, origin);
+    let _kept = heap::keep(e.cast());
     bridge::set_pending(caribou::error::Error::value(e));
     unsafe { caribou_haxe_raise_pending() };
 }
@@ -97,7 +103,9 @@ pub unsafe extern "C" fn caribou_haxe_str_to_string(s: *mut u8, t: *mut hl_type)
         return core::ptr::null_mut();
     }
     let _kept = heap::keep(s);
-    let text = unsafe { Str::text(Value::object(s.cast())) }.unwrap_or("").to_owned();
+    let text = unsafe { Str::text(Value::object(s.cast())) }
+        .unwrap_or("")
+        .to_owned();
     unsafe { proto::alloc_string_typed(t, &text) }
 }
 
@@ -146,7 +154,14 @@ pub fn member_of(native: &str) -> Option<Member> {
     let (name, arity) = match sig.split_once('(') {
         Some((name, params)) => {
             let params = params.trim_end_matches(')');
-            (name, if params.is_empty() { 0 } else { params.split(',').count() })
+            (
+                name,
+                if params.is_empty() {
+                    0
+                } else {
+                    params.split(',').count()
+                },
+            )
         }
         None if kind == Kind::Setter => (sig, 1),
         None => (sig, 0),
@@ -173,13 +188,25 @@ mod tests {
             (m.namespace.as_str(), m.module.as_str(), m.class.as_str()),
             ("math", "Math", "Math")
         );
-        assert_eq!((m.kind, m.name.as_str(), m.arity), (Kind::Static, "hypot", 2));
+        assert_eq!(
+            (m.kind, m.name.as_str(), m.arity),
+            (Kind::Static, "hypot", 2)
+        );
         let m = member_of("game:ui/hud.Hud.add(_)").unwrap();
-        assert_eq!((m.module.as_str(), m.kind, m.arity), ("ui/hud", Kind::Method, 1));
+        assert_eq!(
+            (m.module.as_str(), m.kind, m.arity),
+            ("ui/hud", Kind::Method, 1)
+        );
         let m = member_of("game:hud.Hud.construct:new()").unwrap();
-        assert_eq!((m.kind, m.name.as_str(), m.arity), (Kind::Constructor, "new", 0));
+        assert_eq!(
+            (m.kind, m.name.as_str(), m.arity),
+            (Kind::Constructor, "new", 0)
+        );
         let m = member_of("game:hud.Hud.score=(_)").unwrap();
-        assert_eq!((m.kind, m.name.as_str(), m.arity), (Kind::Setter, "score", 1));
+        assert_eq!(
+            (m.kind, m.name.as_str(), m.arity),
+            (Kind::Setter, "score", 1)
+        );
         let m = member_of("game:hud.Hud.score").unwrap();
         assert_eq!((m.kind, m.arity), (Kind::Getter, 0));
         assert!(member_of("game:hud.Hud.static:count").is_none());

@@ -308,21 +308,28 @@ pub(crate) fn function_for_typed(v: Value, t: *const hl_type) -> *mut vdynamic {
 /// The call of a typed closure: the words by the shape's kinds, the
 /// result as one word by its return kind.
 unsafe extern "C" fn entry(context: usize, words: *const i64) -> i64 {
+    let _callback_kept = heap::keep(context as *const u8);
     let cb = unsafe { &*(context as *const Callback) };
     let shape = cb.shape;
     let n = shape.args.len();
-    // On the stack, where the conservative scan sees them across the call;
-    // only the slots in use are written.
+    // Only the slots in use are written. Explicit guards cover wasm engine
+    // locals, which the collector cannot conservatively scan.
     let mut crossed = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
+    let mut _crossed_kept: [Option<heap::Kept>; MAX_ARGS] = std::array::from_fn(|_| None);
     for (i, slot) in crossed.iter_mut().enumerate().take(n) {
-        slot.write(unsafe { word_to_value(*words.add(i), shape.args[i]) });
+        let value = unsafe { word_to_value(*words.add(i), shape.args[i]) };
+        slot.write(value);
+        _crossed_kept[i] = heap::keep_value(value);
     }
     let crossed = unsafe { crossed[..n].assume_init_ref() };
     // The ref keeps the function; the call goes to the function itself.
     let function = wrenref::unwrap_foreign(cb.target);
     let result = bridge::call_named(Callable::Dynamic(function), crossed, lang(), "callback");
     let thrown = match result {
-        Ok(v) => match unsafe { value_to_word(v, shape.ret, shape.ret_type) } {
+        Ok(v) => match {
+            let _kept = heap::keep_value(v);
+            unsafe { value_to_word(v, shape.ret, shape.ret_type) }
+        } {
             Ok(word) => return word,
             // A result Haxe has no form for is null, as for the var-args
             // form, when the type can take one.
@@ -373,6 +380,8 @@ unsafe extern "C" fn var_entry(bound: *mut vdynamic, args: *mut varray) -> *mut 
 
 /// Everything owned here is dropped before the throw.
 unsafe fn run(bound: *mut vdynamic, args: *mut varray) -> Result<*mut vdynamic, *mut vdynamic> {
+    let _bound_kept = (!bound.is_null()).then(|| heap::keep(bound.cast()));
+    let _args_kept = (!args.is_null()).then(|| heap::keep(args.cast()));
     let function = wrenref::unwrap_foreign(unsafe { wrenref::wrenref_from_abstract(bound.cast()) });
     let n = if args.is_null() {
         0
@@ -385,11 +394,12 @@ unsafe fn run(bound: *mut vdynamic, args: *mut varray) -> Result<*mut vdynamic, 
             &format!("a call takes at most {MAX_ARGS} arguments, not {n}"),
         )));
     }
-    // On the stack, where the conservative scan sees them across the call.
     let mut crossed = [Value::null(); MAX_ARGS];
+    let mut _crossed_kept: [Option<heap::Kept>; MAX_ARGS] = std::array::from_fn(|_| None);
     let items: *mut *mut vdynamic = unsafe { hl::aptr(args) };
     for (i, slot) in crossed.iter_mut().enumerate().take(n) {
         *slot = unsafe { proto::dyn_to_value(*items.add(i)) };
+        _crossed_kept[i] = heap::keep_value(*slot);
     }
     let result = bridge::call_named(
         Callable::Dynamic(function),
@@ -400,7 +410,13 @@ unsafe fn run(bound: *mut vdynamic, args: *mut varray) -> Result<*mut vdynamic, 
     match result {
         // A result Haxe has no form for is null: a callback's last
         // expression is often not meant for the caller at all.
-        Ok(v) => Ok(unsafe { proto::value_to_dyn(v, hl::HDYN) }.unwrap_or(ptr::null_mut())),
-        Err(e) => Err(proto::throwable(e)),
+        Ok(v) => {
+            let _kept = heap::keep_value(v);
+            Ok(unsafe { proto::value_to_dyn(v, hl::HDYN) }.unwrap_or(ptr::null_mut()))
+        }
+        Err(e) => {
+            let _kept = heap::keep_value(e);
+            Err(proto::throwable(e))
+        }
     }
 }

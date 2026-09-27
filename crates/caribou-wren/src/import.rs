@@ -1094,28 +1094,24 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
     };
     let wren = wren_lang();
 
-    // Arguments cross first. On the stack: Wren's widest signature, with
-    // a slot before them for `this`, and only the slots in use written.
-    // An object made for the call is kept as a plain pointer on this
-    // frame, where the conservative scan sees it for exactly as long as
-    // the frame lives: a throw that abandons the frame lets it go too.
+    // Arguments cross first. Wren's widest signature has a slot before them
+    // for `this`, and only the slots in use are written. A conversion can
+    // make a fresh core object; guard it explicitly because a wasm engine
+    // frame is outside the collector's conservative stack scan.
     let n = args.len() - 1;
-    let mut keep = [ptr::null_mut::<u8>(); WIDEST];
+    let mut _kept: [Option<caribou::heap::Kept>; WIDEST] = std::array::from_fn(|_| None);
     let mut buf = [MaybeUninit::<Value>::uninit(); WIDEST + 1];
     if n > WIDEST {
         return Err(format!("{} takes too many arguments", target.name));
     }
     buf[0].write(Value::null());
     for (i, &arg) in args[1..].iter().enumerate() {
-        let (v, kept) = cross_in(arg);
+        let (v, made) = cross_in(arg);
         buf[1 + i].write(v);
-        keep[i] = kept;
+        if !made.is_null() {
+            _kept[i] = Some(caribou::heap::keep(made));
+        }
     }
-    // Read after the call, so the pointers stay in the frame across it.
-    let release = |keep: &[*mut u8; WIDEST]| {
-        std::hint::black_box(keep);
-    };
-    let roots = &keep;
     // Slot 0 is `this` for a method and unused otherwise.
     let with_this = unsafe { buf[..=n].assume_init_mut() };
 
@@ -1132,7 +1128,6 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 wren,
                 &target.name,
             );
-            release(roots);
             let made = made.map_err(message_of)?;
             let Some(haxe) = made.as_object().filter(|p| !p.is_null()) else {
                 return Err(format!(
@@ -1155,23 +1150,17 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 wren,
                 &target.name,
             );
-            release(roots);
             r
         }
         Kind::Index | Kind::SetIndex | Kind::Count | Kind::Iterate | Kind::IteratorValue => {
-            let this = foreign_of(recv).ok_or_else(|| {
-                release(roots);
-                format!("{} has no sequence behind it", vm.class_name_of(recv))
-            })?;
+            let this = foreign_of(recv)
+                .ok_or_else(|| format!("{} has no sequence behind it", vm.class_name_of(recv)))?;
             let r = sequence_send(&target.kind, this, &with_this[1..], wren);
-            release(roots);
             r
         }
         Kind::Call | Kind::Arity => {
-            let this = foreign_of(recv).ok_or_else(|| {
-                release(roots);
-                format!("{} has no function behind it", vm.class_name_of(recv))
-            })?;
+            let this = foreign_of(recv)
+                .ok_or_else(|| format!("{} has no function behind it", vm.class_name_of(recv)))?;
             let r = match target.kind {
                 Kind::Call => {
                     bridge::call_named(Callable::Dynamic(this), &with_this[1..], wren, &target.name)
@@ -1185,7 +1174,6 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                     ))),
                 },
             };
-            release(roots);
             r
         }
         Kind::ClassGetter(name) | Kind::ClassSetter(name) => {
@@ -1197,28 +1185,23 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 _ => bridge::set_at(class_object, name, &target.site, with_this[1], wren)
                     .map(|()| with_this[1]),
             };
-            release(roots);
             r
         }
         Kind::Int64Text | Kind::Int64Equals(_) => {
-            let n = foreign_of(recv).and_then(Int64::of).ok_or_else(|| {
-                release(roots);
-                format!("{} has no integer behind it", vm.class_name_of(recv))
-            })?;
+            let n = foreign_of(recv)
+                .and_then(Int64::of)
+                .ok_or_else(|| format!("{} has no integer behind it", vm.class_name_of(recv)))?;
             let r = match target.kind {
                 Kind::Int64Equals(same) => {
                     Ok(Value::bool((Int64::of(with_this[1]) == Some(n)) == same))
                 }
                 _ => Ok(Str::value(Str::new(&n.to_string()))),
             };
-            release(roots);
             r
         }
         Kind::Method | Kind::Getter(_) | Kind::Setter(_) => {
-            let this = foreign_of(recv).ok_or_else(|| {
-                release(roots);
-                format!("{} has no object behind it", vm.class_name_of(recv))
-            })?;
+            let this = foreign_of(recv)
+                .ok_or_else(|| format!("{} has no object behind it", vm.class_name_of(recv)))?;
             let r = match target.kind {
                 Kind::Method => {
                     with_this[0] = this;
@@ -1229,7 +1212,6 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                     .map(|()| with_this[1]),
                 _ => unreachable!(),
             };
-            release(roots);
             r
         }
     };

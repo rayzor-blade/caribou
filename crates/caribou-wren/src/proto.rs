@@ -142,6 +142,17 @@ pub fn from_wren(v: WValue) -> Value {
     }
 }
 
+/// Keep a native Wren object alive for this scope. A Wren value held only in
+/// a wasm engine local is otherwise invisible to the shared heap while a
+/// Rust adapter allocates.
+pub fn keep_value(v: WValue) -> Option<heap::Kept> {
+    let object = v.as_object()? as *mut u8;
+    // Native Wren objects have the heap prefix here; imported objects are
+    // views at the same offset in a cell. Either way this is the allocation
+    // start the shared collector traces.
+    Some(heap::keep(object.wrapping_sub(PREFIX)))
+}
+
 /// A core value as a wren_lift value. An int becomes a number, Wren having
 /// no other, and so does a boxed `Int64` a double holds exactly; any other
 /// `Int64` stays the core's box, an instance of `Int64` to Wren, so it
