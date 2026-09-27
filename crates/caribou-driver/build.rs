@@ -16,7 +16,9 @@ mod wasm_toolchain;
 const TARGET: &str = "wasm32-wasip1";
 
 fn main() {
-    println!("cargo:rerun-if-env-changed=WASI_SYSROOT");
+    for variable in caribou_wasm_toolchain::CONFIG_ENV {
+        println!("cargo:rerun-if-env-changed={variable}");
+    }
     if env::var_os("CARGO_FEATURE_LLVM").is_none() {
         return;
     }
@@ -24,7 +26,10 @@ fn main() {
         .join("../..")
         .canonicalize()
         .unwrap();
-    println!("cargo:rerun-if-changed={}", root.join("Cargo.lock").display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("Cargo.lock").display()
+    );
     for entry in std::fs::read_dir(root.join("crates")).unwrap() {
         let path = entry.unwrap().path();
         if path.join("Cargo.toml").is_file() && !path.ends_with("caribou-driver") {
@@ -34,8 +39,8 @@ fn main() {
 
     let Some(sysroot) = wasm_toolchain::sysroot(TARGET) else {
         println!(
-            "cargo:warning=no WASI sysroot (set WASI_SYSROOT, or install wasi-libc or the \
-             WASI SDK): this caribou builds no wasm programs"
+            "cargo:warning=no WASI sysroot (set WASI_SYSROOT or WASI_SDK_PATH, or put a \
+             WASI SDK on PATH): this caribou builds no wasm programs"
         );
         return;
     };
@@ -48,7 +53,10 @@ fn main() {
         .args(["--locked", "-p", "caribou-runtime"])
         .status()
         .expect("running cargo");
-    assert!(status.success(), "building caribou-runtime for {TARGET}: {status}");
+    assert!(
+        status.success(),
+        "building caribou-runtime for {TARGET}: {status}"
+    );
 
     let archive = target_dir.join(TARGET).join("release/libcaribou_runtime.a");
     let object = out.join(TARGET).join("caribou_runtime.o");

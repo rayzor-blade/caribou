@@ -34,6 +34,7 @@ libc = { workspace = true }
 [build-dependencies]
 # One C function: the setjmp frame a HashLink trap needs (src/trap.c).
 cc = "1"
+caribou-wasm-toolchain = { path = "../caribou-wasm-toolchain" }
 
 [lib]
 crate-type = ["rlib"]

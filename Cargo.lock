@@ -875,6 +875,7 @@ dependencies = [
  "ash_native_call",
  "ash_std",
  "caribou",
+ "caribou-wasm-toolchain",
  "caribou_abi",
  "cc",
  "libc",
@@ -901,6 +902,7 @@ dependencies = [
  "caribou-lua",
  "caribou-plugin",
  "caribou-python",
+ "caribou-wasm-toolchain",
  "caribou-wren",
  "caribou-zyntax",
  "caribou_abi",
@@ -1010,6 +1012,10 @@ dependencies = [
  "caribou_abi",
  "wren_lift",
 ]
+
+[[package]]
+name = "caribou-wasm-toolchain"
+version = "0.1.0"
 
 [[package]]
 name = "caribou-window"

@@ -8,40 +8,8 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A WASI sysroot with the libc and `libsetjmp` of `target`.
-pub fn sysroot(target: &str) -> Option<PathBuf> {
-    std::env::var_os("WASI_SYSROOT")
-        .map(PathBuf::from)
-        .into_iter()
-        .chain(
-            [
-                "/opt/homebrew/opt/wasi-libc/share/wasi-sysroot",
-                "/usr/local/opt/wasi-libc/share/wasi-sysroot",
-                "/opt/wasi-sdk/share/wasi-sysroot",
-                "/usr/local/wasi-sdk/share/wasi-sysroot",
-                "/usr/share/wasi-sysroot",
-            ]
-            .map(PathBuf::from),
-        )
-        .find(|s| {
-            let lib = s.join("lib").join(target);
-            lib.join("libc.a").is_file() && lib.join("libsetjmp.a").is_file()
-        })
-}
-
-/// A clang whose WebAssembly backend takes the setjmp lowering's flags;
-/// Apple's, first on a Mac's path, refuses them.
-fn clang() -> Option<PathBuf> {
-    [
-        "/opt/homebrew/opt/llvm/bin/clang",
-        "/usr/local/opt/llvm/bin/clang",
-        "/opt/wasi-sdk/bin/clang",
-        "/usr/local/wasi-sdk/bin/clang",
-    ]
-    .into_iter()
-    .map(PathBuf::from)
-    .find(|p| p.is_file())
-}
+use caribou_wasm_toolchain::{cflags_are_configured, clang, compiler_is_configured};
+pub use caribou_wasm_toolchain::{library_dir, sysroot};
 
 /// A release build for `target` into `target_dir`, run from caribou's
 /// source root `root` so its toolchain file and its config, which gives
@@ -60,18 +28,22 @@ pub fn cargo_build(
         .arg(target_dir)
         .current_dir(root)
         .env("WASI_SYSROOT", sysroot)
-        .env(
-            format!("CFLAGS_{}", target.replace('-', "_")),
-            format!("--target={target} --sysroot={}", sysroot.display()),
-        )
         // What an enclosing cargo run sets for its own build.
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .env_remove("RUSTFLAGS")
         .env_remove("RUSTC_WORKSPACE_WRAPPER")
         .env_remove("CLIPPY_ARGS")
         .env("CARGO_INCREMENTAL", "0");
-    if let Some(clang) = clang() {
-        build.env(format!("CC_{}", target.replace('-', "_")), clang);
+    if !cflags_are_configured(target) {
+        build.env(
+            format!("CFLAGS_{}", target.replace('-', "_")),
+            format!("--target={target} --sysroot={}", sysroot.display()),
+        );
+    }
+    if !compiler_is_configured(target) {
+        if let Some(clang) = clang(target) {
+            build.env(format!("CC_{}", target.replace('-', "_")), clang);
+        }
     }
     build
 }
@@ -102,13 +74,19 @@ pub fn prelink(
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     }
     let lld = lld(rustc, root)?;
+    let library_dir = library_dir(sysroot, target).ok_or_else(|| {
+        format!(
+            "{} has no libc and libsetjmp for {target}",
+            sysroot.display()
+        )
+    })?;
     let status = Command::new(&lld)
         .args(["-flavor", "wasm", "-r", "-o"])
         .arg(out)
         .arg("--whole-archive")
         .arg(archive)
         .arg("--no-whole-archive")
-        .arg(format!("-L{}", sysroot.join("lib").join(target).display()))
+        .arg(format!("-L{}", library_dir.display()))
         .args(["-lc", "-lsetjmp"])
         .status()
         .map_err(|e| format!("running {}: {e}", lld.display()))?;

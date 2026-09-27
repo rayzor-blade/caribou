@@ -1,0 +1,9 @@
+[package]
+name = "caribou-wasm-toolchain"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Host-neutral WASI SDK, sysroot, and compiler discovery for Caribou builds"
+
+[lib]
+crate-type = ["rlib"]

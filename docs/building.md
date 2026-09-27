@@ -14,6 +14,7 @@ What the README leaves out: the crates, the comparison runners, the benchmarks, 
 | `caribou-zyntax` | Stable | Zyntax host adapter. Registers frontends (snapshots, `.zyn` grammars, or a frontend with its own parser) as guest languages, compiles modules via the embed runtime, and publishes what each frontend's own conventions export. |
 | `caribou-python` | Stable | The Python frontend of Zyntax (`zyntax_python`) as a guest language: registered when a root holds a `.py` file, with Python's module layout and export rules. |
 | `caribou-runtime` | Nightly | What an AOT or wasm program runs on: `ash_std`, WrenLift's runtime and the core with both adapters, in one static library. A static constructor fills both seams before the program's entry point creates the heap. |
+| `caribou-wasm-toolchain` | Stable | Host-neutral discovery and validation of a WASI SDK, sysroot, and clang for build scripts. |
 | `caribou-driver` | Nightly | Host execution supervisor. Discovers workspace files, initializes the `World`, loads guest languages, and backs the `caribou` CLI. |
 
 ## Standalone A/B Testing
@@ -57,7 +58,7 @@ Tests that need a second thread or unwinding are marked ignored on wasm; a wasm 
 
 A program built ahead of time for wasm links against one prelinked runtime object, as Ash's own wasm builds do. Caribou's is the `caribou-runtime` crate, and `caribou build --target wasm32-wasip1 game.hl` builds the program and links it in one command.
 
-The driver makes the object when it is built with its `llvm` feature. Its build script builds `caribou-runtime` for `wasm32-wasip1` in a target directory of its own, then joins it with WASI's libc and `libsetjmp`. It finds a WASI sysroot (`WASI_SYSROOT`, wasi-libc, or the WASI SDK) and an LLVM clang where Ash's own runtime build looks for them. A machine without a sysroot builds a driver that cannot target wasm, and says so. A release places the object beside the binary, at `wasm32-wasip1/caribou_runtime.o`, as Ash places its own.
+The driver makes the object when it is built with its `llvm` feature. Its build script builds `caribou-runtime` for `wasm32-wasip1` in a target directory of its own, then joins it with WASI's libc and `libsetjmp`. Toolchain discovery is host-independent: set `WASI_SYSROOT` to a sysroot, set `WASI_SDK_PATH` (or `WASI_SDK_ROOT`) to an SDK, or put the SDK's `clang` on `PATH`. `CARIBOU_WASM_CLANG`, `WASI_CLANG`, or `CLANG` can select a compiler explicitly; Cargo's target-specific `CC` variables still take precedence. The selected clang is tested for the WebAssembly exception and setjmp lowering flags rather than identified by an operating-system path. Package-manager lookup is only a fallback. A machine without a sysroot builds a driver that cannot target wasm, and says so. A release places the object beside the binary, at `wasm32-wasip1/caribou_runtime.o`, as Ash places its own.
 
 The workspace's `.cargo/config.toml` builds wasm targets with the flags Ash's config uses. Ash's exceptions are `setjmp`, and the backend rewrites them into the exceptions proposal. caribou-wren is built without its `host` feature there: no JIT tiers and no threads, only compiled Wren on one thread.
 
