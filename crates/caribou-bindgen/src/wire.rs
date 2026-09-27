@@ -781,11 +781,13 @@ impl Encoder {
     }
 }
 
-/// Where the program hands the agent its commands: five words in the
+/// Where the program hands the agent its commands: six words in the
 /// program's memory, which the agent serves. `sent` counts the batches
 /// handed over and `done` those the agent has run, one in flight at a
 /// time, at `address` for `len` bytes; `settled` counts the replies the
-/// agent has settled.
+/// agent has settled. `wake`, when set, is the address of a word the agent
+/// adds one to and notifies after settling one: how a program that waits
+/// for replies other than by sleeping on `settled` hears of them.
 #[repr(C)]
 #[derive(Default)]
 pub struct Mailbox {
@@ -794,6 +796,7 @@ pub struct Mailbox {
     pub address: core::sync::atomic::AtomicU32,
     pub len: core::sync::atomic::AtomicU32,
     pub settled: core::sync::atomic::AtomicI32,
+    pub wake: core::sync::atomic::AtomicU32,
 }
 
 impl Mailbox {
@@ -805,6 +808,7 @@ impl Mailbox {
             address: AtomicU32::new(0),
             len: AtomicU32::new(0),
             settled: AtomicI32::new(0),
+            wake: AtomicU32::new(0),
         }
     }
 
@@ -1044,6 +1048,11 @@ export class Wire {
     if (this.mailbox !== undefined) {
       Atomics.add(words, (this.mailbox >> 2) + 4, 1);
       Atomics.notify(words, (this.mailbox >> 2) + 4);
+      const wake = Atomics.load(words, (this.mailbox >> 2) + 5) >>> 0;
+      if (wake !== 0) {
+        Atomics.add(words, wake >> 2, 1);
+        Atomics.notify(words, wake >> 2);
+      }
     }
   }
   /// A command that threw, which has no reply to carry it.
@@ -1155,7 +1164,7 @@ export async function serve(wire, address) {
   wire.mailbox = address;
   let seen = 0;
   for (;;) {
-    const words = new Int32Array(wire.memory.buffer, address, 5);
+    const words = new Int32Array(wire.memory.buffer, address, 6);
     const waited = Atomics.waitAsync(words, 0, seen);
     if (waited.async) await waited.value;
     const sent = Atomics.load(words, 0);

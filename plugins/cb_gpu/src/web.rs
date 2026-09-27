@@ -9,11 +9,11 @@
 //! made and kept until its batch is sent. Objects are kept by the agent
 //! under the plugin's own handles, so making one needs no round trip; the
 //! GPU itself is handle 1 and the page's canvas handle 2, which no plugin
-//! handle is. A promise settles its future from a thread that waits for the
-//! agent to settle replies.
+//! handle is. The program's world watches the count of replies the agent
+//! has settled, and settles their futures on the program's own thread.
 
 use std::sync::atomic::{AtomicI32, Ordering::SeqCst};
-use std::sync::{LazyLock, Mutex, Once};
+use std::sync::{LazyLock, Mutex};
 
 use caribou_abi::{Buffer, BufferMut, ErrorKind, Future, Rooted, Text, Value, host};
 
@@ -251,19 +251,14 @@ enum Waiting {
     Done(Rooted<Future<()>>),
 }
 
-/// Wait for `promise` in the background, settling `waiting` from it.
+/// Settle `waiting` from `promise` once the agent answers it.
 fn wait(s: &mut State, promise: Box<Promise>, waiting: Waiting) {
     s.pending.push(Pending { promise, waiting });
-    static WATCH: Once = Once::new();
-    WATCH.call_once(|| {
-        std::thread::spawn(|| {
-            let mut seen = 0;
-            loop {
-                seen = MAILBOX.wait_settled(seen);
-                settle();
-            }
-        });
-    });
+}
+
+/// The world's handler for the settled count.
+unsafe extern "C" fn settled(_: *mut std::ffi::c_void) {
+    settle();
 }
 
 /// Settle every future whose promise the agent has settled.
@@ -460,6 +455,20 @@ fn shader_descriptor(
 pub unsafe fn instance_create() -> i32 {
     let mut s = state();
     if !s.agent {
+        // Watched before any request can be answered, so none is missed.
+        let wake = host::watch(
+            MAILBOX.settled.as_ptr().cast_const().cast(),
+            settled,
+            std::ptr::null_mut(),
+        );
+        if wake.is_null() {
+            host::raise(
+                ErrorKind::Runtime,
+                "gpu: no world to settle the GPU's answers on",
+            );
+            return 0;
+        }
+        MAILBOX.wake.store(wake as usize as u32, SeqCst);
         s.agent = host::agent("gpu", &MAILBOX as *const Mailbox as usize);
         if !s.agent {
             host::raise(
