@@ -130,14 +130,18 @@ impl Model {
     }
 }
 
-/// weedle2 predates WebIDL's constants in a namespace. A namespace holding
-/// only constants declares what an interface of the same constants does,
-/// so it is read as one.
+/// weedle2 predates two parts of WebIDL. A namespace holding only
+/// constants declares what an interface of the same constants does, so it
+/// is read as one; and `[Exposed=*]`, which the model does not read, is
+/// read as exposed to a window.
 fn normalize(text: &str) -> String {
     text.lines()
-        .map(|line| match line.strip_prefix("namespace ") {
-            Some(rest) => format!("interface {rest}"),
-            None => line.to_owned(),
+        .map(|line| {
+            let line = line.replace("Exposed=*", "Exposed=Window");
+            match line.strip_prefix("namespace ") {
+                Some(rest) => format!("interface {rest}"),
+                None => line,
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -182,6 +186,8 @@ pub fn parse(text: &str) -> Result<Model, String> {
     let mut model = Model::default();
     let mut mixins: BTreeMap<String, Interface> = BTreeMap::new();
     let mut includes: Vec<(String, String)> = Vec::new();
+    let mut partial_dictionaries = Vec::new();
+    let mut partial_interfaces = Vec::new();
     for d in &definitions {
         match d {
             Definition::Enum(e) => {
@@ -208,26 +214,7 @@ pub fn parse(text: &str) -> Result<Model, String> {
                     })
                     .collect(),
             }),
-            Definition::PartialDictionary(x) => {
-                let members = x.members.body.iter().map(|m| Member {
-                    name: m.identifier.0.to_owned(),
-                    ty: r.ty(&m.type_),
-                    required: m.required.is_some(),
-                });
-                match model
-                    .dictionaries
-                    .iter_mut()
-                    .find(|d| d.name == x.identifier.0)
-                {
-                    Some(d) => d.members.extend(members),
-                    None => {
-                        return Err(format!(
-                            "partial dictionary {} before its dictionary",
-                            x.identifier.0
-                        ));
-                    }
-                }
-            }
+            Definition::PartialDictionary(x) => partial_dictionaries.push(x),
             Definition::Interface(x) => {
                 let mut i = Interface {
                     name: x.identifier.0.to_owned(),
@@ -237,13 +224,7 @@ pub fn parse(text: &str) -> Result<Model, String> {
                 r.interface_members(&mut i, &x.members.body);
                 model.interfaces.push(i);
             }
-            Definition::PartialInterface(x) => {
-                let name = x.identifier.0;
-                let Some(i) = model.interfaces.iter_mut().find(|i| i.name == name) else {
-                    return Err(format!("partial interface {name} before its interface"));
-                };
-                r.interface_members(i, &x.members.body);
-            }
+            Definition::PartialInterface(x) => partial_interfaces.push(x),
             Definition::InterfaceMixin(x) => {
                 let mut i = Interface {
                     name: x.identifier.0.to_owned(),
@@ -266,6 +247,31 @@ pub fn parse(text: &str) -> Result<Model, String> {
             }
             _ => {}
         }
+    }
+    // A partial definition may come before its base, as WebIDL allows.
+    for x in partial_dictionaries {
+        let Some(d) = model
+            .dictionaries
+            .iter_mut()
+            .find(|d| d.name == x.identifier.0)
+        else {
+            return Err(format!(
+                "partial dictionary {} has no dictionary",
+                x.identifier.0
+            ));
+        };
+        d.members.extend(x.members.body.iter().map(|m| Member {
+            name: m.identifier.0.to_owned(),
+            ty: r.ty(&m.type_),
+            required: m.required.is_some(),
+        }));
+    }
+    for x in partial_interfaces {
+        let name = x.identifier.0;
+        let Some(i) = model.interfaces.iter_mut().find(|i| i.name == name) else {
+            return Err(format!("partial interface {name} has no interface"));
+        };
+        r.interface_members(i, &x.members.body);
     }
     for (target, mixin) in includes {
         let Some(m) = mixins.get(&mixin) else {

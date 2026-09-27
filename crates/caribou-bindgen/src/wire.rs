@@ -1194,6 +1194,37 @@ mod tests {
     }
 
     #[test]
+    fn the_window_plugins_browser_apis_parse_and_generate() {
+        let idl = include_str!("../../../plugins/cb_window/spec/window.idl");
+        let model = crate::idl::parse(idl).unwrap();
+        // Partials from other specifications joined their bases.
+        let element = model
+            .interfaces
+            .iter()
+            .find(|i| i.name == "Element")
+            .unwrap();
+        assert!(
+            element
+                .operations
+                .iter()
+                .any(|o| o.name == "requestFullscreen")
+        );
+        assert!(
+            element
+                .operations
+                .iter()
+                .any(|o| o.name == "requestPointerLock")
+        );
+        let wire = wire(idl).unwrap();
+        assert!(
+            wire.rust.contains(
+                "pub fn offscreen_canvas_set_width(&mut self, this: Handle, value: &u64)"
+            )
+        );
+        assert!(wire.js.contains("(self.title = a0)"));
+    }
+
+    #[test]
     fn the_webgpu_wire_generates() {
         let wire = wire(include_str!("../../../plugins/cb_gpu/spec/webgpu.idl")).unwrap();
         assert!(wire.rust.contains("pub fn gpu_device_create_buffer(&mut self, this: Handle, result: Handle, descriptor: &GPUBufferDescriptor)"));

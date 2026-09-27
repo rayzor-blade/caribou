@@ -1,0 +1,1173 @@
+// The browser APIs the window plugin's members and events map to in a page:
+// whole definitions, verbatim, from each specification's IDL as W3C's webref
+// collects it (https://github.com/w3c/webref, curated branch, revision
+// 89e7d68c6612fbedb740c1632d36e482ca39e999, 2026-09-22). Each section names
+// its specification and licence. See README.md for what maps to what.
+
+// ---- dom: https://dom.spec.whatwg.org/
+// webref ed/idl/dom.idl at 89e7d68c6612; WHATWG, CC BY 4.0.
+
+[Exposed=*]
+interface Event {
+  constructor(DOMString type, optional EventInit eventInitDict = {});
+
+  readonly attribute DOMString type;
+  readonly attribute EventTarget? target;
+  readonly attribute EventTarget? srcElement; // legacy
+  readonly attribute EventTarget? currentTarget;
+  sequence<EventTarget> composedPath();
+
+  const unsigned short NONE = 0;
+  const unsigned short CAPTURING_PHASE = 1;
+  const unsigned short AT_TARGET = 2;
+  const unsigned short BUBBLING_PHASE = 3;
+  readonly attribute unsigned short eventPhase;
+
+  undefined stopPropagation();
+           attribute boolean cancelBubble; // legacy alias of .stopPropagation()
+  undefined stopImmediatePropagation();
+
+  readonly attribute boolean bubbles;
+  readonly attribute boolean cancelable;
+           attribute boolean returnValue;  // legacy
+  undefined preventDefault();
+  readonly attribute boolean defaultPrevented;
+  readonly attribute boolean composed;
+
+  [LegacyUnforgeable] readonly attribute boolean isTrusted;
+  readonly attribute DOMHighResTimeStamp timeStamp;
+
+  undefined initEvent(DOMString type, optional boolean bubbles = false, optional boolean cancelable = false); // legacy
+};
+
+dictionary EventInit {
+  boolean bubbles = false;
+  boolean cancelable = false;
+  boolean composed = false;
+};
+
+[Exposed=*]
+interface EventTarget {
+  constructor();
+
+  undefined addEventListener(DOMString type, EventListener? callback, optional (AddEventListenerOptions or boolean) options = {});
+  undefined removeEventListener(DOMString type, EventListener? callback, optional (EventListenerOptions or boolean) options = {});
+  boolean dispatchEvent(Event event);
+};
+
+callback interface EventListener {
+  undefined handleEvent(Event event);
+};
+
+dictionary EventListenerOptions {
+  boolean capture = false;
+};
+
+dictionary AddEventListenerOptions : EventListenerOptions {
+  boolean passive;
+  boolean once = false;
+  AbortSignal signal;
+};
+
+[Exposed=Window]
+interface Element : Node {
+  readonly attribute DOMString? namespaceURI;
+  readonly attribute DOMString? prefix;
+  readonly attribute DOMString localName;
+  readonly attribute DOMString tagName;
+
+  [CEReactions] attribute DOMString id;
+  [CEReactions] attribute DOMString className;
+  [SameObject, PutForwards=value] readonly attribute DOMTokenList classList;
+  [CEReactions, Unscopable] attribute DOMString slot;
+
+  boolean hasAttributes();
+  [SameObject] readonly attribute NamedNodeMap attributes;
+  sequence<DOMString> getAttributeNames();
+  DOMString? getAttribute(DOMString qualifiedName);
+  DOMString? getAttributeNS(DOMString? namespace, DOMString localName);
+  [CEReactions] undefined setAttribute(DOMString qualifiedName, (TrustedType or DOMString) value);
+  [CEReactions] undefined setAttributeNS(DOMString? namespace, DOMString qualifiedName, (TrustedType or DOMString) value);
+  [CEReactions] undefined removeAttribute(DOMString qualifiedName);
+  [CEReactions] undefined removeAttributeNS(DOMString? namespace, DOMString localName);
+  [CEReactions] boolean toggleAttribute(DOMString qualifiedName, optional boolean force);
+  boolean hasAttribute(DOMString qualifiedName);
+  boolean hasAttributeNS(DOMString? namespace, DOMString localName);
+
+  Attr? getAttributeNode(DOMString qualifiedName);
+  Attr? getAttributeNodeNS(DOMString? namespace, DOMString localName);
+  [CEReactions] Attr? setAttributeNode(Attr attr);
+  [CEReactions] Attr? setAttributeNodeNS(Attr attr);
+  [CEReactions] Attr removeAttributeNode(Attr attr);
+
+  ShadowRoot attachShadow(ShadowRootInit init);
+  readonly attribute ShadowRoot? shadowRoot;
+
+  readonly attribute CustomElementRegistry? customElementRegistry;
+
+  Element? closest(DOMString selectors);
+  boolean matches(DOMString selectors);
+  boolean webkitMatchesSelector(DOMString selectors); // legacy alias of .matches
+
+  HTMLCollection getElementsByTagName(DOMString qualifiedName);
+  HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
+  HTMLCollection getElementsByClassName(DOMString classNames);
+
+  [CEReactions] Element? insertAdjacentElement(DOMString where, Element element); // legacy
+  undefined insertAdjacentText(DOMString where, DOMString data); // legacy
+};
+
+[Exposed=Window]
+interface Document : Node {
+  constructor();
+
+  [SameObject] readonly attribute DOMImplementation implementation;
+  readonly attribute USVString URL;
+  readonly attribute USVString documentURI;
+  readonly attribute DOMString compatMode;
+  readonly attribute DOMString characterSet;
+  readonly attribute DOMString charset; // legacy alias of .characterSet
+  readonly attribute DOMString inputEncoding; // legacy alias of .characterSet
+  readonly attribute DOMString contentType;
+
+  readonly attribute DocumentType? doctype;
+  readonly attribute Element? documentElement;
+  HTMLCollection getElementsByTagName(DOMString qualifiedName);
+  HTMLCollection getElementsByTagNameNS(DOMString? namespace, DOMString localName);
+  HTMLCollection getElementsByClassName(DOMString classNames);
+
+  [CEReactions, NewObject] Element createElement(DOMString localName, optional (DOMString or ElementCreationOptions) options = {});
+  [CEReactions, NewObject] Element createElementNS(DOMString? namespace, DOMString qualifiedName, optional (DOMString or ElementCreationOptions) options = {});
+  [NewObject] DocumentFragment createDocumentFragment();
+  [NewObject] Text createTextNode(DOMString data);
+  [NewObject] CDATASection createCDATASection(DOMString data);
+  [NewObject] Comment createComment(DOMString data);
+  [NewObject] ProcessingInstruction createProcessingInstruction(DOMString target, DOMString data);
+
+  [CEReactions, NewObject] Node importNode(Node node, optional (boolean or ImportNodeOptions) options = false);
+  [CEReactions] Node adoptNode(Node node);
+
+  [NewObject] Attr createAttribute(DOMString localName);
+  [NewObject] Attr createAttributeNS(DOMString? namespace, DOMString qualifiedName);
+
+  [NewObject] Event createEvent(DOMString interface); // legacy
+
+  [NewObject] Range createRange();
+
+  // NodeFilter.SHOW_ALL = 0xFFFFFFFF
+  [NewObject] NodeIterator createNodeIterator(Node root, optional unsigned long whatToShow = 0xFFFFFFFF, optional NodeFilter? filter = null);
+  [NewObject] TreeWalker createTreeWalker(Node root, optional unsigned long whatToShow = 0xFFFFFFFF, optional NodeFilter? filter = null);
+};
+
+interface mixin DocumentOrShadowRoot {
+  readonly attribute CustomElementRegistry? customElementRegistry;
+};
+
+Document includes DocumentOrShadowRoot;
+
+// ---- html: https://html.spec.whatwg.org/
+// webref ed/idl/html.idl at 89e7d68c6612; WHATWG, CC BY 4.0.
+
+interface Window : EventTarget {
+  // the current browsing context
+  [LegacyUnforgeable] readonly attribute WindowProxy window;
+  [Replaceable] readonly attribute WindowProxy self;
+  [LegacyUnforgeable] readonly attribute Document document;
+  attribute DOMString name;
+  [PutForwards=href, LegacyUnforgeable] readonly attribute Location location;
+  readonly attribute History history;
+  [Replaceable] readonly attribute Navigation navigation;
+  readonly attribute CustomElementRegistry customElements;
+  [Replaceable] readonly attribute BarProp locationbar;
+  [Replaceable] readonly attribute BarProp menubar;
+  [Replaceable] readonly attribute BarProp personalbar;
+  [Replaceable] readonly attribute BarProp scrollbars;
+  [Replaceable] readonly attribute BarProp statusbar;
+  [Replaceable] readonly attribute BarProp toolbar;
+  attribute DOMString status;
+  undefined close();
+  readonly attribute boolean closed;
+  undefined stop();
+  undefined focus();
+  undefined blur();
+
+  // other browsing contexts
+  [Replaceable] readonly attribute WindowProxy frames;
+  [Replaceable] readonly attribute unsigned long length;
+  [LegacyUnforgeable] readonly attribute WindowProxy? top;
+  attribute any opener;
+  [Replaceable] readonly attribute WindowProxy? parent;
+  readonly attribute Element? frameElement;
+  WindowProxy? open(optional USVString url = "", optional DOMString target = "_blank", optional [LegacyNullToEmptyString] DOMString features = "");
+
+  // Since this is the global object, the IDL named getter adds a NamedPropertiesObject exotic
+  // object on the prototype chain. Indeed, this does not make the global object an exotic object.
+  // Indexed access is taken care of by the WindowProxy exotic object.
+  getter object (DOMString name);
+
+  // the user agent
+  readonly attribute Navigator navigator;
+  [Replaceable] readonly attribute Navigator clientInformation; // legacy alias of .navigator
+  readonly attribute boolean originAgentCluster;
+
+  // user prompts
+  undefined alert();
+  undefined alert(DOMString message);
+  boolean confirm(optional DOMString message = "");
+  DOMString? prompt(optional DOMString message = "", optional DOMString default = "");
+  undefined print();
+
+  undefined postMessage(any message, USVString targetOrigin, optional sequence<object> transfer = []);
+  undefined postMessage(any message, optional WindowPostMessageOptions options = {});
+
+  // also has obsolete members
+};
+
+[LegacyOverrideBuiltIns]
+partial interface Document {
+  static Document parseHTMLUnsafe((TrustedHTML or DOMString) html, optional ParseHTMLUnsafeOptions options = {});
+  static Document parseHTML(DOMString html, optional SetHTMLOptions options = {});
+
+  // resource metadata management
+  [PutForwards=href, LegacyUnforgeable] readonly attribute Location? location;
+  attribute USVString domain;
+  readonly attribute USVString referrer;
+  attribute USVString cookie;
+  readonly attribute DOMString lastModified;
+  readonly attribute DocumentReadyState readyState;
+
+  // DOM tree accessors
+  getter object (DOMString name);
+  [CEReactions] attribute DOMString title;
+  [CEReactions] attribute DOMString dir;
+  [CEReactions] attribute HTMLElement? body;
+  readonly attribute HTMLHeadElement? head;
+  [SameObject] readonly attribute HTMLCollection images;
+  [SameObject] readonly attribute HTMLCollection embeds;
+  [SameObject] readonly attribute HTMLCollection plugins;
+  [SameObject] readonly attribute HTMLCollection links;
+  [SameObject] readonly attribute HTMLCollection forms;
+  [SameObject] readonly attribute HTMLCollection scripts;
+  NodeList getElementsByName(DOMString elementName);
+  readonly attribute HTMLOrSVGScriptElement? currentScript; // classic scripts in a document tree only
+
+  // dynamic markup insertion
+  [CEReactions] Document open(optional DOMString unused1, optional DOMString unused2); // both arguments are ignored
+  WindowProxy? open(USVString url, DOMString name, DOMString features);
+  [CEReactions] undefined close();
+  [CEReactions] undefined write((TrustedHTML or DOMString)... text);
+  [CEReactions] undefined writeln((TrustedHTML or DOMString)... text);
+
+  // user interaction
+  readonly attribute WindowProxy? defaultView;
+  boolean hasFocus();
+  [CEReactions] attribute DOMString designMode;
+  [CEReactions] boolean execCommand(DOMString commandId, optional boolean showUI = false, optional DOMString value = "");
+  boolean queryCommandEnabled(DOMString commandId);
+  boolean queryCommandIndeterm(DOMString commandId);
+  boolean queryCommandState(DOMString commandId);
+  boolean queryCommandSupported(DOMString commandId);
+  DOMString queryCommandValue(DOMString commandId);
+  readonly attribute boolean hidden;
+  readonly attribute DocumentVisibilityState visibilityState;
+
+  // special event handler IDL attributes that only apply to Document objects
+  [LegacyLenientThis] attribute EventHandler onreadystatechange;
+  attribute EventHandler onvisibilitychange;
+
+  // also has obsolete members
+};
+
+partial interface Document {
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString fgColor;
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString linkColor;
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString vlinkColor;
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString alinkColor;
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString bgColor;
+
+  [SameObject] readonly attribute HTMLCollection anchors;
+  [SameObject] readonly attribute HTMLCollection applets;
+
+  undefined clear();
+  undefined captureEvents();
+  undefined releaseEvents();
+
+  [SameObject] readonly attribute HTMLAllCollection all;
+};
+
+enum DocumentVisibilityState { "visible", "hidden" };
+
+[Exposed=Window]
+interface HTMLElement : Element {
+  [HTMLConstructor] constructor();
+
+  // metadata attributes
+  [CEReactions, Reflect] attribute DOMString title;
+  [CEReactions, Reflect] attribute DOMString lang;
+  [CEReactions] attribute boolean translate;
+  [CEReactions] attribute DOMString dir;
+
+  // user interaction
+  [CEReactions] attribute (boolean or unrestricted double or DOMString)? hidden;
+  [CEReactions, Reflect] attribute boolean inert;
+  undefined click();
+  [CEReactions, Reflect] attribute DOMString accessKey;
+  readonly attribute DOMString accessKeyLabel;
+  [CEReactions] attribute boolean draggable;
+  [CEReactions] attribute boolean spellcheck;
+  [CEReactions, ReflectSetter] attribute DOMString writingSuggestions;
+  [CEReactions, ReflectSetter] attribute DOMString autocapitalize;
+  [CEReactions] attribute boolean autocorrect;
+
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString innerText;
+  [CEReactions] attribute [LegacyNullToEmptyString] DOMString outerText;
+
+  ElementInternals attachInternals();
+
+  // The popover API
+  undefined showPopover(optional ShowPopoverOptions options = {});
+  undefined hidePopover();
+  boolean togglePopover(optional (TogglePopoverOptions or boolean) options = {});
+  [CEReactions] attribute DOMString? popover;
+
+  [CEReactions, Reflect, ReflectRange=(0, 8)] attribute unsigned long headingOffset;
+  [CEReactions, Reflect] attribute boolean headingReset;
+};
+
+interface mixin HTMLOrSVGOrMathMLElement {
+  [SameObject] readonly attribute DOMStringMap dataset;
+  attribute DOMString nonce; // intentionally no [CEReactions]
+
+  [CEReactions, Reflect] attribute boolean autofocus;
+  [CEReactions, ReflectSetter] attribute long tabIndex;
+  undefined focus(optional FocusOptions options = {});
+  undefined blur();
+};
+
+HTMLElement includes HTMLOrSVGOrMathMLElement;
+
+dictionary FocusOptions {
+  boolean preventScroll = false;
+  boolean focusVisible;
+};
+
+[Exposed=Window]
+interface HTMLCanvasElement : HTMLElement {
+  [HTMLConstructor] constructor();
+
+  [CEReactions] attribute unsigned long width;
+  [CEReactions] attribute unsigned long height;
+
+  RenderingContext? getContext(DOMString contextId, optional any options = null);
+
+  USVString toDataURL(optional DOMString type = "image/png", optional any quality);
+  undefined toBlob(BlobCallback _callback, optional DOMString type = "image/png", optional any quality);
+  OffscreenCanvas transferControlToOffscreen();
+};
+
+typedef (CanvasRenderingContext2D or ImageBitmapRenderingContext or WebGLRenderingContext or WebGL2RenderingContext or GPUCanvasContext) RenderingContext;
+
+typedef (OffscreenCanvasRenderingContext2D or ImageBitmapRenderingContext or WebGLRenderingContext or WebGL2RenderingContext or GPUCanvasContext) OffscreenRenderingContext;
+
+dictionary ImageEncodeOptions {
+  DOMString type = "image/png";
+  unrestricted double quality;
+};
+
+enum OffscreenRenderingContextId { "2d", "bitmaprenderer", "webgl", "webgl2", "webgpu" };
+
+[Exposed=(Window,Worker), Transferable]
+interface OffscreenCanvas : EventTarget {
+  constructor([EnforceRange] unsigned long long width, [EnforceRange] unsigned long long height);
+
+  attribute [EnforceRange] unsigned long long width;
+  attribute [EnforceRange] unsigned long long height;
+
+  OffscreenRenderingContext? getContext(OffscreenRenderingContextId contextId, optional any options = null);
+  ImageBitmap transferToImageBitmap();
+  Promise<Blob> convertToBlob(optional ImageEncodeOptions options = {});
+
+  attribute EventHandler oncontextlost;
+  attribute EventHandler oncontextrestored;
+};
+
+interface mixin AnimationFrameProvider {
+  unsigned long requestAnimationFrame(FrameRequestCallback callback);
+  undefined cancelAnimationFrame(unsigned long handle);
+};
+
+Window includes AnimationFrameProvider;
+
+callback FrameRequestCallback = undefined (DOMHighResTimeStamp time);
+
+[Exposed=Window]
+interface DragEvent : MouseEvent {
+  constructor(DOMString type, optional DragEventInit eventInitDict = {});
+
+  readonly attribute DataTransfer? dataTransfer;
+};
+
+dictionary DragEventInit : MouseEventInit {
+  DataTransfer? dataTransfer = null;
+};
+
+[Exposed=Window]
+interface DataTransfer {
+  constructor();
+
+  attribute DOMString dropEffect;
+  attribute DOMString effectAllowed;
+
+  [SameObject] readonly attribute DataTransferItemList items;
+
+  undefined setDragImage(Element image, long x, long y);
+
+  /* old interface */
+  readonly attribute FrozenArray<DOMString> types;
+  DOMString getData(DOMString format);
+  undefined setData(DOMString format, DOMString data);
+  undefined clearData(optional DOMString format);
+  [SameObject] readonly attribute FileList files;
+};
+
+[Exposed=Window]
+interface DataTransferItemList {
+  readonly attribute unsigned long length;
+  getter DataTransferItem (unsigned long index);
+  DataTransferItem? add(DOMString data, DOMString type);
+  DataTransferItem? add(File data);
+  undefined remove(unsigned long index);
+  undefined clear();
+};
+
+[Exposed=Window]
+interface DataTransferItem {
+  readonly attribute DOMString kind;
+  readonly attribute DOMString type;
+  undefined getAsString(FunctionStringCallback? _callback);
+  File? getAsFile();
+};
+
+[Exposed=Window]
+interface PageTransitionEvent : Event {
+  constructor(DOMString type, optional PageTransitionEventInit eventInitDict = {});
+
+  readonly attribute boolean persisted;
+};
+
+dictionary PageTransitionEventInit : EventInit {
+  boolean persisted = false;
+};
+
+// ---- cssom: https://drafts.csswg.org/cssom/
+// webref ed/idl/cssom.idl at 89e7d68c6612; W3C Software License.
+
+[Exposed=Window]
+interface CSSStyleDeclaration {
+  [CEReactions] attribute CSSOMString cssText;
+  readonly attribute unsigned long length;
+  getter CSSOMString item(unsigned long index);
+  CSSOMString getPropertyValue(CSSOMString property);
+  CSSOMString getPropertyPriority(CSSOMString property);
+  [CEReactions] undefined setProperty(CSSOMString property, [LegacyNullToEmptyString] CSSOMString value, optional [LegacyNullToEmptyString] CSSOMString priority = "");
+  [CEReactions] CSSOMString removeProperty(CSSOMString property);
+  readonly attribute CSSRule? parentRule;
+};
+
+interface mixin ElementCSSInlineStyle {
+  [SameObject, PutForwards=cssText] readonly attribute CSSStyleProperties style;
+};
+
+HTMLElement includes ElementCSSInlineStyle;
+
+// ---- cssom-view: https://drafts.csswg.org/cssom-view/
+// webref ed/idl/cssom-view.idl at 89e7d68c6612; W3C Software License.
+
+partial interface Window {
+    [NewObject] MediaQueryList matchMedia(CSSOMString query);
+    [SameObject, Replaceable] readonly attribute Screen screen;
+    [SameObject, Replaceable] readonly attribute VisualViewport? visualViewport;
+
+    // browsing context
+    undefined moveTo(long x, long y);
+    undefined moveBy(long x, long y);
+    undefined resizeTo(long width, long height);
+    undefined resizeBy(long x, long y);
+
+    // viewport
+    [Replaceable] readonly attribute long innerWidth;
+    [Replaceable] readonly attribute long innerHeight;
+
+    // viewport scrolling
+    [Replaceable] readonly attribute double scrollX;
+    [Replaceable] readonly attribute double pageXOffset;
+    [Replaceable] readonly attribute double scrollY;
+    [Replaceable] readonly attribute double pageYOffset;
+    Promise<undefined> scroll(optional ScrollToOptions options = {});
+    Promise<undefined> scroll(unrestricted double x, unrestricted double y);
+    Promise<undefined> scrollTo(optional ScrollToOptions options = {});
+    Promise<undefined> scrollTo(unrestricted double x, unrestricted double y);
+    Promise<undefined> scrollBy(optional ScrollToOptions options = {});
+    Promise<undefined> scrollBy(unrestricted double x, unrestricted double y);
+
+    // client
+    [Replaceable] readonly attribute long screenX;
+    [Replaceable] readonly attribute long screenLeft;
+    [Replaceable] readonly attribute long screenY;
+    [Replaceable] readonly attribute long screenTop;
+    [Replaceable] readonly attribute long outerWidth;
+    [Replaceable] readonly attribute long outerHeight;
+    [Replaceable] readonly attribute double devicePixelRatio;
+};
+
+[Exposed=Window]
+interface MediaQueryList : EventTarget {
+  readonly attribute CSSOMString media;
+  readonly attribute boolean matches;
+  undefined addListener(EventListener? callback);
+  undefined removeListener(EventListener? callback);
+           attribute EventHandler onchange;
+};
+
+[Exposed=Window]
+interface MediaQueryListEvent : Event {
+  constructor(CSSOMString type, optional MediaQueryListEventInit eventInitDict = {});
+  readonly attribute CSSOMString media;
+  readonly attribute boolean matches;
+};
+
+dictionary MediaQueryListEventInit : EventInit {
+  CSSOMString media = "";
+  boolean matches = false;
+};
+
+[Exposed=Window]
+interface Screen {
+  readonly attribute long availWidth;
+  readonly attribute long availHeight;
+  readonly attribute long width;
+  readonly attribute long height;
+  readonly attribute unsigned long colorDepth;
+  readonly attribute unsigned long pixelDepth;
+};
+
+partial interface MouseEvent {
+  readonly attribute double pageX;
+  readonly attribute double pageY;
+  readonly attribute double x;
+  readonly attribute double y;
+  readonly attribute double offsetX;
+  readonly attribute double offsetY;
+};
+
+// ---- uievents: https://w3c.github.io/uievents/
+// webref ed/idl/uievents.idl at 89e7d68c6612; W3C Software License.
+
+[Exposed=Window]
+interface UIEvent : Event {
+  constructor(DOMString type, optional UIEventInit eventInitDict = {});
+  readonly attribute Window? view;
+  readonly attribute long detail;
+};
+
+dictionary UIEventInit : EventInit {
+  Window? view = null;
+  long detail = 0;
+};
+
+[Exposed=Window]
+interface FocusEvent : UIEvent {
+  constructor(DOMString type, optional FocusEventInit eventInitDict = {});
+  readonly attribute EventTarget? relatedTarget;
+};
+
+dictionary FocusEventInit : UIEventInit {
+  EventTarget? relatedTarget = null;
+};
+
+dictionary EventModifierInit : UIEventInit {
+  boolean ctrlKey = false;
+  boolean shiftKey = false;
+  boolean altKey = false;
+  boolean metaKey = false;
+
+  boolean modifierAltGraph = false;
+  boolean modifierCapsLock = false;
+  boolean modifierFn = false;
+  boolean modifierFnLock = false;
+  boolean modifierHyper = false;
+  boolean modifierNumLock = false;
+  boolean modifierScrollLock = false;
+  boolean modifierSuper = false;
+  boolean modifierSymbol = false;
+  boolean modifierSymbolLock = false;
+};
+
+[Exposed=Window]
+interface KeyboardEvent : UIEvent {
+  constructor(DOMString type, optional KeyboardEventInit eventInitDict = {});
+  // KeyLocationCode
+  const unsigned long DOM_KEY_LOCATION_STANDARD = 0x00;
+  const unsigned long DOM_KEY_LOCATION_LEFT = 0x01;
+  const unsigned long DOM_KEY_LOCATION_RIGHT = 0x02;
+  const unsigned long DOM_KEY_LOCATION_NUMPAD = 0x03;
+
+  readonly attribute DOMString key;
+  readonly attribute DOMString code;
+  readonly attribute unsigned long location;
+
+  readonly attribute boolean ctrlKey;
+  readonly attribute boolean shiftKey;
+  readonly attribute boolean altKey;
+  readonly attribute boolean metaKey;
+
+  readonly attribute boolean repeat;
+  readonly attribute boolean isComposing;
+
+  boolean getModifierState(DOMString keyArg);
+};
+
+dictionary KeyboardEventInit : EventModifierInit {
+  DOMString key = "";
+  DOMString code = "";
+  unsigned long location = 0;
+  boolean repeat = false;
+  boolean isComposing = false;
+};
+
+[Exposed=Window]
+interface CompositionEvent : UIEvent {
+  constructor(DOMString type, optional CompositionEventInit eventInitDict = {});
+  readonly attribute USVString data;
+};
+
+dictionary CompositionEventInit : UIEventInit {
+  DOMString data = "";
+};
+
+// ---- pointerevents: https://w3c.github.io/pointerevents/
+// webref ed/idl/pointerevents.idl at 89e7d68c6612; W3C Software License.
+
+[Exposed=Window]
+interface MouseEvent : UIEvent {
+  constructor(DOMString type, optional MouseEventInit eventInitDict = {});
+  readonly attribute long screenX;
+  readonly attribute long screenY;
+  readonly attribute long clientX;
+  readonly attribute long clientY;
+  readonly attribute long layerX;
+  readonly attribute long layerY;
+
+  readonly attribute boolean ctrlKey;
+  readonly attribute boolean shiftKey;
+  readonly attribute boolean altKey;
+  readonly attribute boolean metaKey;
+
+  readonly attribute short button;
+  readonly attribute unsigned short buttons;
+
+  readonly attribute EventTarget? relatedTarget;
+
+  boolean getModifierState(DOMString keyArg);
+};
+
+dictionary MouseEventInit : EventModifierInit {
+  long screenX = 0;
+  long screenY = 0;
+  long clientX = 0;
+  long clientY = 0;
+
+  short button = 0;
+  unsigned short buttons = 0;
+  EventTarget? relatedTarget = null;
+};
+
+partial interface MouseEvent {
+  // Deprecated in this specification
+  undefined initMouseEvent(DOMString typeArg,
+    optional boolean bubblesArg = false,
+    optional boolean cancelableArg = false,
+    optional Window? viewArg = null,
+    optional long detailArg = 0,
+    optional long screenXArg = 0,
+    optional long screenYArg = 0,
+    optional long clientXArg = 0,
+    optional long clientYArg = 0,
+    optional boolean ctrlKeyArg = false,
+    optional boolean altKeyArg = false,
+    optional boolean shiftKeyArg = false,
+    optional boolean metaKeyArg = false,
+    optional short buttonArg = 0,
+    optional EventTarget? relatedTargetArg = null);
+};
+
+[Exposed=Window]
+interface WheelEvent : MouseEvent {
+    constructor(DOMString type, optional WheelEventInit eventInitDict = {});
+    // DeltaModeCode
+    const unsigned long DOM_DELTA_PIXEL = 0x00;
+    const unsigned long DOM_DELTA_LINE  = 0x01;
+    const unsigned long DOM_DELTA_PAGE  = 0x02;
+
+    readonly attribute double deltaX;
+    readonly attribute double deltaY;
+    readonly attribute double deltaZ;
+    readonly attribute unsigned long deltaMode;
+    readonly attribute boolean momentum;
+};
+
+dictionary WheelEventInit : MouseEventInit {
+    double deltaX = 0.0;
+    double deltaY = 0.0;
+    double deltaZ = 0.0;
+    unsigned long deltaMode = 0;
+    boolean momentum = false;
+};
+
+[Exposed=Window]
+interface PointerEvent : MouseEvent {
+    constructor(DOMString type, optional PointerEventInit eventInitDict = {});
+    readonly        attribute long        pointerId;
+    readonly        attribute double      width;
+    readonly        attribute double      height;
+    readonly        attribute float       pressure;
+    readonly        attribute float       tangentialPressure;
+    readonly        attribute long        tiltX;
+    readonly        attribute long        tiltY;
+    readonly        attribute long        twist;
+    readonly        attribute double      altitudeAngle;
+    readonly        attribute double      azimuthAngle;
+    readonly        attribute DOMString   pointerType;
+    readonly        attribute boolean     isPrimary;
+    readonly        attribute long        persistentDeviceId;
+    [SecureContext] sequence<PointerEvent> getCoalescedEvents();
+    sequence<PointerEvent> getPredictedEvents();
+};
+
+dictionary PointerEventInit : MouseEventInit {
+    long        pointerId = 0;
+    double      width = 1;
+    double      height = 1;
+    float       pressure = 0;
+    float       tangentialPressure = 0;
+    long        tiltX;
+    long        tiltY;
+    long        twist = 0;
+    double      altitudeAngle;
+    double      azimuthAngle;
+    DOMString   pointerType = "";
+    boolean     isPrimary = false;
+    long        persistentDeviceId = 0;
+    sequence<PointerEvent> coalescedEvents = [];
+    sequence<PointerEvent> predictedEvents = [];
+};
+
+partial interface Element {
+  undefined setPointerCapture (long pointerId);
+  undefined releasePointerCapture (long pointerId);
+  boolean hasPointerCapture (long pointerId);
+};
+
+// ---- touch-events: https://w3c.github.io/touch-events/
+// webref ed/idl/touch-events.idl at 89e7d68c6612; W3C Software License.
+
+enum TouchType {
+    "direct",
+    "stylus"
+};
+
+[Exposed=Window]
+interface Touch {
+    constructor(TouchInit touchInitDict);
+    readonly        attribute long        identifier;
+    readonly        attribute EventTarget target;
+    readonly        attribute double      screenX;
+    readonly        attribute double      screenY;
+    readonly        attribute double      clientX;
+    readonly        attribute double      clientY;
+    readonly        attribute double      pageX;
+    readonly        attribute double      pageY;
+    readonly        attribute float       radiusX;
+    readonly        attribute float       radiusY;
+    readonly        attribute float       rotationAngle;
+    readonly        attribute float       force;
+    readonly        attribute float       altitudeAngle;
+    readonly        attribute float       azimuthAngle;
+    readonly        attribute TouchType   touchType;
+};
+
+dictionary TouchInit {
+    required long        identifier;
+    required EventTarget target;
+             double      clientX = 0;
+             double      clientY = 0;
+             double      screenX = 0;
+             double      screenY = 0;
+             double      pageX = 0;
+             double      pageY = 0;
+             float       radiusX = 0;
+             float       radiusY = 0;
+             float       rotationAngle = 0;
+             float       force = 0;
+             double      altitudeAngle = 0;
+             double      azimuthAngle = 0;
+             TouchType   touchType = "direct";
+};
+
+[Exposed=Window]
+interface TouchList {
+    readonly        attribute unsigned long length;
+    getter Touch? item (unsigned long index);
+};
+
+[Exposed=Window]
+interface TouchEvent : UIEvent {
+    constructor(DOMString type, optional TouchEventInit eventInitDict = {});
+    readonly        attribute TouchList touches;
+    readonly        attribute TouchList targetTouches;
+    readonly        attribute TouchList changedTouches;
+    readonly        attribute boolean   altKey;
+    readonly        attribute boolean   metaKey;
+    readonly        attribute boolean   ctrlKey;
+    readonly        attribute boolean   shiftKey;
+    getter boolean getModifierState (DOMString keyArg);
+};
+
+dictionary TouchEventInit : EventModifierInit {
+            sequence<Touch> touches = [];
+            sequence<Touch> targetTouches = [];
+            sequence<Touch> changedTouches = [];
+};
+
+// ---- pointerlock: https://w3c.github.io/pointerlock/
+// webref ed/idl/pointerlock.idl at 89e7d68c6612; W3C Software License.
+
+dictionary PointerLockOptions {
+  boolean unadjustedMovement = false;
+};
+
+partial interface Element {
+  Promise<undefined> requestPointerLock(optional PointerLockOptions options = {});
+};
+
+partial interface Document {
+  attribute EventHandler onpointerlockchange;
+  attribute EventHandler onpointerlockerror;
+  undefined exitPointerLock();
+};
+
+partial interface mixin DocumentOrShadowRoot {
+  readonly attribute Element? pointerLockElement;
+};
+
+partial interface MouseEvent {
+  readonly attribute double movementX;
+  readonly attribute double movementY;
+};
+
+partial dictionary MouseEventInit {
+  double movementX = 0;
+  double movementY = 0;
+};
+
+// ---- fullscreen: https://fullscreen.spec.whatwg.org/
+// webref ed/idl/fullscreen.idl at 89e7d68c6612; WHATWG, CC BY 4.0.
+
+enum FullscreenNavigationUI {
+  "auto",
+  "show",
+  "hide"
+};
+
+dictionary FullscreenOptions {
+  FullscreenKeyboardLock keyboardLock = "none";
+  FullscreenNavigationUI navigationUI = "auto";
+};
+
+partial interface Element {
+  Promise<undefined> requestFullscreen(optional FullscreenOptions options = {});
+
+  attribute EventHandler onfullscreenchange;
+  attribute EventHandler onfullscreenerror;
+};
+
+partial interface Document {
+  [LegacyLenientSetter] readonly attribute boolean fullscreenEnabled;
+  [LegacyLenientSetter, Unscopable] readonly attribute boolean fullscreen; // historical
+
+  Promise<undefined> exitFullscreen();
+
+  attribute EventHandler onfullscreenchange;
+  attribute EventHandler onfullscreenerror;
+};
+
+partial interface mixin DocumentOrShadowRoot {
+  [LegacyLenientSetter] readonly attribute Element? fullscreenElement;
+};
+
+// ---- resize-observer: https://drafts.csswg.org/resize-observer/
+// webref ed/idl/resize-observer.idl at 89e7d68c6612; W3C Software License.
+
+enum ResizeObserverBoxOptions {
+    "border-box", "content-box", "device-pixel-content-box"
+};
+
+dictionary ResizeObserverOptions {
+    ResizeObserverBoxOptions box = "content-box";
+};
+
+[Exposed=(Window)]
+interface ResizeObserver {
+    constructor(ResizeObserverCallback callback);
+    undefined observe(Element target, optional ResizeObserverOptions options = {});
+    undefined unobserve(Element target);
+    undefined disconnect();
+};
+
+callback ResizeObserverCallback = undefined (sequence<ResizeObserverEntry> entries, ResizeObserver observer);
+
+[Exposed=Window]
+interface ResizeObserverEntry {
+    readonly attribute Element target;
+    readonly attribute DOMRectReadOnly contentRect;
+    readonly attribute FrozenArray<ResizeObserverSize> borderBoxSize;
+    readonly attribute FrozenArray<ResizeObserverSize> contentBoxSize;
+    readonly attribute FrozenArray<ResizeObserverSize> devicePixelContentBoxSize;
+};
+
+[Exposed=Window]
+interface ResizeObserverSize {
+    readonly attribute unrestricted double inlineSize;
+    readonly attribute unrestricted double blockSize;
+};
+
+// ---- edit-context: https://w3c.github.io/edit-context/
+// webref ed/idl/edit-context.idl at 89e7d68c6612; W3C Software License.
+
+dictionary EditContextInit {
+    DOMString text = "";
+    unsigned long selectionStart = 0;
+    unsigned long selectionEnd = 0;
+};
+
+[Exposed=Window]
+interface EditContext : EventTarget {
+    constructor(optional EditContextInit options = {});
+
+    undefined updateText(unsigned long rangeStart, unsigned long rangeEnd,
+        DOMString text);
+    undefined updateSelection(unsigned long start, unsigned long end);
+    undefined updateControlBounds(DOMRect controlBounds);
+    undefined updateSelectionBounds(DOMRect selectionBounds);
+    undefined updateCharacterBounds(unsigned long rangeStart, sequence<DOMRect> characterBounds);
+
+    sequence<HTMLElement> attachedElements();
+
+    readonly attribute DOMString text;
+    readonly attribute unsigned long selectionStart;
+    readonly attribute unsigned long selectionEnd;
+    readonly attribute unsigned long characterBoundsRangeStart;
+    sequence<DOMRect> characterBounds();
+
+    attribute EventHandler ontextupdate;
+    attribute EventHandler ontextformatupdate;
+    attribute EventHandler oncharacterboundsupdate;
+    attribute EventHandler oncompositionstart;
+    attribute EventHandler oncompositionend;
+};
+
+dictionary TextUpdateEventInit : EventInit {
+    unsigned long updateRangeStart = 0;
+    unsigned long updateRangeEnd = 0;
+    DOMString text = "";
+    unsigned long selectionStart = 0;
+    unsigned long selectionEnd = 0;
+};
+
+[Exposed=Window]
+interface TextUpdateEvent : Event {
+    constructor(DOMString type, optional TextUpdateEventInit options = {});
+    readonly attribute unsigned long updateRangeStart;
+    readonly attribute unsigned long updateRangeEnd;
+    readonly attribute DOMString text;
+    readonly attribute unsigned long selectionStart;
+    readonly attribute unsigned long selectionEnd;
+};
+
+enum UnderlineStyle { "none", "solid", "dotted", "dashed", "wavy" };
+
+enum UnderlineThickness { "none", "thin", "thick" };
+
+dictionary TextFormatInit {
+    unsigned long rangeStart = 0;
+    unsigned long rangeEnd = 0;
+    UnderlineStyle underlineStyle = "none";
+    UnderlineThickness underlineThickness = "none";
+};
+
+[Exposed=Window]
+interface TextFormat {
+    constructor(optional TextFormatInit options = {});
+    readonly attribute unsigned long rangeStart;
+    readonly attribute unsigned long rangeEnd;
+    readonly attribute UnderlineStyle underlineStyle;
+    readonly attribute UnderlineThickness underlineThickness;
+};
+
+dictionary TextFormatUpdateEventInit : EventInit {
+    sequence<TextFormat> textFormats = [];
+};
+
+[Exposed=Window]
+interface TextFormatUpdateEvent : Event {
+    constructor(DOMString type, optional TextFormatUpdateEventInit options = {});
+    sequence<TextFormat> getTextFormats();
+};
+
+dictionary CharacterBoundsUpdateEventInit : EventInit {
+    unsigned long rangeStart = 0;
+    unsigned long rangeEnd = 0;
+};
+
+[Exposed=Window]
+interface CharacterBoundsUpdateEvent : Event {
+    constructor(DOMString type, optional CharacterBoundsUpdateEventInit options = {});
+    readonly attribute unsigned long rangeStart;
+    readonly attribute unsigned long rangeEnd;
+};
+
+partial interface HTMLElement {
+     attribute EditContext? editContext;
+};
+
+// ---- window-management: https://w3c.github.io/window-management/
+// webref ed/idl/window-management.idl at 89e7d68c6612; W3C Software License.
+
+partial interface Screen /* : EventTarget */ {
+  [SecureContext]
+  readonly attribute boolean isExtended;
+
+  [SecureContext]
+  attribute EventHandler onchange;
+};
+
+partial interface Window {
+  [SecureContext]
+  Promise<ScreenDetails> getScreenDetails();
+
+  [SecureContext]
+  Promise<undefined> minimize();
+
+  [SecureContext]
+  Promise<undefined> maximize();
+
+  [SecureContext]
+  Promise<undefined> restore();
+
+  [SecureContext]
+  Promise<undefined> setResizable(boolean resizable);
+};
+
+[Exposed=Window, SecureContext]
+interface ScreenDetails : EventTarget {
+  readonly attribute FrozenArray<ScreenDetailed> screens;
+  readonly attribute ScreenDetailed currentScreen;
+
+  attribute EventHandler onscreenschange;
+  attribute EventHandler oncurrentscreenchange;
+};
+
+[Exposed=Window, SecureContext]
+interface ScreenDetailed : Screen {
+  readonly attribute long availLeft;
+  readonly attribute long availTop;
+  readonly attribute long left;
+  readonly attribute long top;
+  readonly attribute boolean isPrimary;
+  readonly attribute boolean isInternal;
+  readonly attribute float devicePixelRatio;
+  readonly attribute DOMString label;
+};
+
+// ---- url: https://url.spec.whatwg.org/
+// webref ed/idl/url.idl at 89e7d68c6612; WHATWG, CC BY 4.0.
+
+interface URL {
+  constructor(USVString url, optional USVString base);
+
+  static URL? parse(USVString url, optional USVString base);
+  static boolean canParse(USVString url, optional USVString base);
+
+  stringifier attribute USVString href;
+  readonly attribute USVString origin;
+           attribute USVString protocol;
+           attribute USVString username;
+           attribute USVString password;
+           attribute USVString host;
+           attribute USVString hostname;
+           attribute USVString port;
+           attribute USVString pathname;
+           attribute USVString search;
+  [SameObject] readonly attribute URLSearchParams searchParams;
+           attribute USVString hash;
+
+  USVString toJSON();
+};
+
+// ---- FileAPI: https://w3c.github.io/FileAPI/
+// webref ed/idl/FileAPI.idl at 89e7d68c6612; W3C Software License.
+
+[Exposed=(Window,Worker), Serializable]
+interface Blob {
+  constructor(optional sequence<BlobPart> blobParts,
+              optional BlobPropertyBag options = {});
+
+  readonly attribute unsigned long long size;
+  readonly attribute DOMString type;
+
+  // slice Blob into byte-ranged chunks
+  Blob slice(optional [Clamp] long long start,
+            optional [Clamp] long long end,
+            optional DOMString contentType);
+
+  // read from the Blob.
+  [NewObject] ReadableStream stream();
+  [NewObject] Promise<USVString> text();
+  [NewObject] Promise<ArrayBuffer> arrayBuffer();
+  [NewObject] ReadableStream textStream();
+  [NewObject] Promise<Uint8Array> bytes();
+};
+
+dictionary BlobPropertyBag {
+  DOMString type = "";
+  EndingType endings = "transparent";
+};
+
+typedef (BufferSource or Blob or USVString) BlobPart;
+
+enum EndingType { "transparent", "native" };
+
+[Exposed=(Window,Worker), Serializable]
+interface File : Blob {
+  constructor(sequence<BlobPart> fileBits,
+              USVString fileName,
+              optional FilePropertyBag options = {});
+  readonly attribute DOMString name;
+  readonly attribute long long lastModified;
+};
+
+dictionary FilePropertyBag : BlobPropertyBag {
+  long long lastModified;
+};
+
+[Exposed=(Window,Worker), Serializable]
+interface FileList {
+  getter File? item(unsigned long index);
+  readonly attribute unsigned long length;
+};
+
+[Exposed=(Window,DedicatedWorker,SharedWorker)]
+partial interface URL {
+  static DOMString createObjectURL((Blob or MediaSource) obj);
+  static undefined revokeObjectURL(DOMString url);
+};
