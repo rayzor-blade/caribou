@@ -240,16 +240,15 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_object(
 }
 
 /// A Wren instance of a class made for a Haxe type as the Haxe object it
-/// holds; null for anything else.
+/// holds; null for anything else. It reads the instance and allocates
+/// nothing, so nothing is rooted.
 ///
 /// # Safety
 /// `t` is one of the program's object types.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_to_haxe_object(v: u64, _t: *mut hl_type) -> *mut vdynamic {
-    let v = Value::from_bits(v);
-    let _kept = caribou_wren::keep_value(v);
-    caribou_wren::from_wren(v)
-        .as_object()
+    caribou_wren::import::foreign_of(Value::from_bits(v))
+        .and_then(|object| object.as_object())
         .map_or(std::ptr::null_mut(), |p| p.cast())
 }
 

@@ -104,6 +104,9 @@ pub fn plan(
                     ret_cast,
                     raise: RAISE.to_owned(),
                     unit: Value::null().to_bits(),
+                    // Caribou's casts answer null or a default for a value
+                    // of another kind; none raises.
+                    casts_nothrow: true,
                 });
             };
             for m in &class.members {

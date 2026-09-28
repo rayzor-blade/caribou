@@ -657,7 +657,7 @@ fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
 /// this heap that is neither, or an instance whose constructor never
 /// reached the installed class's. Only `adopt` writes the field and the
 /// bit, so no lock or lookup is needed.
-pub(crate) fn foreign_of(v: WValue) -> Option<Value> {
+pub fn foreign_of(v: WValue) -> Option<Value> {
     let ptr = v.as_object()?;
     let start = ptr.wrapping_sub(cell::VIEW);
     if unsafe { cell::is_cell(start) } {
