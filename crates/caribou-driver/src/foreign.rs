@@ -5,7 +5,7 @@
 //! exports as thunks over the Haxe members, casting each value between
 //! the two languages' forms on Ash's side, where the program's types are.
 
-use ash_core::host_export::{ExportKind, HostExport};
+use ash_core::host_export::{ExportKind, HostClosure, HostExport};
 use caribou::describe::{MemberKind, ModuleDesc};
 use caribou::link::{Kind, symbol};
 use caribou::registry::TypeRef;
@@ -27,10 +27,7 @@ const OBJECT: (&str, &str) = (
 /// say what those modules are and which Haxe members they call. An import
 /// `ns:module` names the Haxe module `module`, or `ns.module`, as a hosted
 /// run's namespace does.
-pub fn plan(
-    modules: &mut [AotModule],
-    haxe: &[ModuleDesc],
-) -> (Vec<AotForeignModule>, Vec<HostExport>) {
+pub fn plan(modules: &mut [AotModule], haxe: &[ModuleDesc], wren: &[(String, ModuleDesc)]) -> Plan {
     let mut used: Vec<&ModuleDesc> = Vec::new();
     for module in modules.iter_mut() {
         for source in module.module_var_sources.iter_mut().flatten() {
@@ -56,6 +53,28 @@ pub fn plan(
     let mut foreign = Vec::new();
     let mut exports = Vec::new();
     let mut functions: Vec<TypeRef> = Vec::new();
+    let mut closures: Vec<HostClosure> = Vec::new();
+    // Wren's own exports: a function one gives Haxe is a closure Ash makes,
+    // and a Haxe function one takes crosses as its type's class.
+    for (_, desc) in wren {
+        for m in desc
+            .classes
+            .iter()
+            .flat_map(|c| &c.members)
+            .filter(|m| m.exported)
+        {
+            if let Some(closure) = host_closure(&m.ret, haxe)
+                && !closures.iter().any(|c| c.fun_type == closure.fun_type)
+            {
+                closures.push(closure);
+            }
+            for p in &m.params {
+                if matches!(p.ty, TypeRef::Function { .. }) && !functions.contains(&p.ty) {
+                    functions.push(p.ty.clone());
+                }
+            }
+        }
+    }
     for desc in used {
         for class in &desc.classes {
             let mut members = Vec::new();
@@ -71,6 +90,14 @@ pub fn plan(
                     arg_casts.push(OBJECT.1.to_owned());
                 }
                 for param in &params {
+                    // A Wren function Haxe takes is a closure Ash makes.
+                    if let Some(closure) = host_closure(param, haxe) {
+                        if !closures.iter().any(|c| c.fun_type == closure.fun_type) {
+                            closures.push(closure);
+                        }
+                        arg_casts.push(CLOSURE.to_owned());
+                        continue;
+                    }
                     let Some((_, to_haxe)) = casts(param, haxe) else {
                         return;
                     };
@@ -174,7 +201,55 @@ pub fn plan(
             }
         }
     }
-    (foreign, exports)
+    Plan {
+        foreign,
+        exports,
+        closures,
+    }
+}
+
+/// What compiled Wren's links with Haxe need from WrenLift and from Ash.
+pub struct Plan {
+    /// The Haxe classes and function types WrenLift makes classes for.
+    pub foreign: Vec<AotForeignModule>,
+    /// The Haxe members Ash exports for them.
+    pub exports: Vec<HostExport>,
+    /// The function types Ash makes Haxe closures of Wren functions for.
+    pub closures: Vec<HostClosure>,
+}
+
+/// The built-in cast that makes a Wren function a Haxe closure of the
+/// type at the cast, through that type's [`HostClosure`].
+pub const CLOSURE: &str = "ash:closure";
+
+/// How Ash makes a Haxe closure of the function type `ty` over a Wren
+/// function: an adapter of the type's own signature that casts the
+/// arguments to Wren's words, calls WrenLift's direct call of a function
+/// with that many, and casts the result back. `None` for a type that is
+/// not a function type Ash can be told, or whose values have no static
+/// form; such a function stays a closure the bridge calls.
+pub fn host_closure(ty: &TypeRef, haxe: &[ModuleDesc]) -> Option<HostClosure> {
+    let TypeRef::Function { params, ret } = ty else {
+        return None;
+    };
+    let mut arg_casts = Vec::new();
+    for param in params {
+        arg_casts.push(Some(casts(param, haxe)?.0.to_owned()));
+    }
+    let ret_cast = match ret.as_ref() {
+        TypeRef::Void => None,
+        ret => Some(casts(ret, haxe)?.1.to_owned()),
+    };
+    Some(HostClosure {
+        fun_type: caribou_ash::link::spell(ty)?,
+        callee: format!("wlift_aot_call_fn_{}", params.len()),
+        hold: "caribou_wren_hold_fn".to_owned(),
+        held: "caribou_wren_held_fn".to_owned(),
+        arg_casts,
+        ret_cast,
+        after: Some("caribou_wren_raise_pending".to_owned()),
+        after_flag: Some("wlift_error_pending".to_owned()),
+    })
 }
 
 /// A Haxe function type as Wren holds one of its functions: the module
@@ -334,7 +409,9 @@ mod tests {
         let mut modules = wren_lift::codegen::aot::walk_imports(&path)
             .unwrap()
             .modules;
-        let (foreign, exports) = plan(&mut modules, &[bench]);
+        let Plan {
+            foreign, exports, ..
+        } = plan(&mut modules, &[bench], &[]);
         std::fs::remove_dir_all(&dir).ok();
 
         let source = modules[0]

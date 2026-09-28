@@ -45,6 +45,9 @@ pub struct Artifact {
     pub modules: Vec<(String, ModuleDesc)>,
     /// The Haxe members the object calls, for Ash to export.
     pub exports: Vec<ash_core::host_export::HostExport>,
+    /// The function types Ash makes Haxe closures of this language's
+    /// functions for.
+    pub closures: Vec<ash_core::host_export::HostClosure>,
     linker: Box<dyn Linker>,
 }
 
@@ -60,6 +63,7 @@ impl Artifact {
             object,
             modules,
             exports: Vec::new(),
+            closures: Vec::new(),
             linker,
         }
     }
@@ -147,6 +151,14 @@ impl Artifacts {
             .collect()
     }
 
+    /// The function types Ash makes Haxe closures for.
+    pub fn closures(&self) -> Vec<ash_core::host_export::HostClosure> {
+        self.items
+            .iter()
+            .flat_map(|artifact| artifact.closures.iter().cloned())
+            .collect()
+    }
+
     /// The first frontend artifact that can bind `member` for Ash.
     pub fn host_link(&self, member: &caribou_ash::link::Member) -> Option<HostLink> {
         self.items
@@ -216,7 +228,11 @@ fn build_wren(
         described.push((name.clone(), desc));
     }
     name_imports(&mut modules, &found);
-    let (foreign, exports) = crate::foreign::plan(&mut modules, haxe);
+    let crate::foreign::Plan {
+        foreign,
+        exports,
+        closures,
+    } = crate::foreign::plan(&mut modules, haxe, &described);
     let modules = dependencies_first(modules);
     if let Some(dir) = out.parent() {
         std::fs::create_dir_all(dir)?;
@@ -239,6 +255,7 @@ fn build_wren(
     .map_err(|error| anyhow!("compiling the Wren modules: {error:?}"))?;
     let mut artifact = Artifact::new("wren", out.to_path_buf(), described, Box::new(WrenLinker));
     artifact.exports = exports;
+    artifact.closures = closures;
     Ok(Some(artifact))
 }
 
@@ -343,6 +360,14 @@ impl Linker for WrenLinker {
         let (ret_cast, init) = match (&described.ret, member.kind) {
             (_, Kind::Constructor) => (None, Some("caribou_wren_bind_face".to_owned())),
             (TypeRef::Void | TypeRef::Dyn, _) => (None, None),
+            // A Wren function Haxe receives is a closure Ash makes, when it
+            // has an adapter for the type.
+            (ty @ TypeRef::Function { .. }, _)
+                if caribou_ash::link::spell(ty)
+                    .is_some_and(|t| wren.closures.iter().any(|c| c.fun_type == t)) =>
+            {
+                (Some(crate::foreign::CLOSURE.to_owned()), None)
+            }
             (ty, _) => (Some(wren_casts(ty, desc)?.1.to_owned()), None),
         };
         Some(HostLink {
@@ -359,6 +384,9 @@ impl Linker for WrenLinker {
             arg_casts,
             ret_cast,
             after: Some("caribou_wren_raise_pending".to_owned()),
+            // WrenLift's word saying an error may be pending: the check
+            // runs only when it is set.
+            after_flag: Some("wlift_error_pending".to_owned()),
             init,
             library: None,
         })

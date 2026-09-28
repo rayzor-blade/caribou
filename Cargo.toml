@@ -52,6 +52,10 @@ ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
 ash_page = { path = "../ash/crates/ash_page" }
 ash_window = { path = "../ash/crates/ash_window" }
 
+# WrenLift from the sibling checkout while a change it has not pushed waits.
+[patch."https://github.com/wrenlift/WrenLift.git"]
+wren_lift = { git = "file:///Users/amaterasu/Vibranium/wren_lift", rev = "b842ec8860e695abde07c7810915c3f21e509260" }
+
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"

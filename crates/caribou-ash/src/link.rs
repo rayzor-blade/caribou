@@ -184,6 +184,40 @@ pub unsafe fn function(v: Value, t: *mut hl_type) -> *mut vdynamic {
     crate::callback::function_for_typed(v, t)
 }
 
+/// Another language's value as a heap object Haxe can keep as a closure's
+/// bound value: its cell. Null for null.
+pub fn hold(v: Value) -> *mut core::ffi::c_void {
+    if v.is_null() {
+        return core::ptr::null_mut();
+    }
+    crate::wrenref::wrap_foreign(v)
+        .as_object()
+        .map_or(core::ptr::null_mut(), |p| p.cast())
+}
+
+/// The value [`hold`] kept in `bound`.
+///
+/// # Safety
+/// `bound` is null or what `hold` gave.
+pub unsafe fn held(bound: *mut core::ffi::c_void) -> Value {
+    if bound.is_null() {
+        return Value::null();
+    }
+    crate::wrenref::unwrap_foreign(Value::object(bound.cast_const()))
+}
+
+/// Whether the Haxe closure `c` is one Ash made over a value [`hold`]
+/// kept: its bound value is a cell.
+///
+/// # Safety
+/// `c` is null or a live Haxe closure.
+pub unsafe fn holds(c: *mut vdynamic) -> Option<*mut core::ffi::c_void> {
+    let closure = c.cast::<caribou_abi::hl::vclosure>();
+    let closure = unsafe { closure.as_ref() }?;
+    (closure.hasValue == 1 && unsafe { caribou::cell::is_cell(closure.value.cast()) })
+        .then_some(closure.value)
+}
+
 /// A Haxe value as the core value another language holds it by: a
 /// function or an object that came from one as itself, any other object
 /// as the object.

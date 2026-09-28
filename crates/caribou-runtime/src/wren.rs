@@ -163,6 +163,10 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_function(
     c: *mut vdynamic,
     _t: *mut hl_type,
 ) -> u64 {
+    // A Wren function Ash wrapped for Haxe goes home as itself.
+    if let Some(bound) = unsafe { caribou_ash::link::holds(c) } {
+        return unsafe { caribou_wren_held_fn(bound) };
+    }
     let _kept = (!c.is_null()).then(|| caribou::heap::keep(c.cast()));
     let function = unsafe { caribou_ash::link::value(c) };
     match vm() {
@@ -275,4 +279,28 @@ fn function_class(vm: &mut VM, t: usize) -> Option<*mut wren_lift::runtime::obje
     let module = format!("haxe:{}", caribou_ash::link::spell(&ty)?);
     let class = vm.find_imported_var_from("Function", &module)?;
     class.as_object().map(|p| p.cast())
+}
+
+/// A Wren function as the bound value of the Haxe closure Ash makes for it
+/// (`ash:closure`): its cell, which the closure keeps alive.
+#[unsafe(no_mangle)]
+pub extern "C" fn caribou_wren_hold_fn(v: u64) -> *mut std::ffi::c_void {
+    let v = Value::from_bits(v);
+    let _kept = caribou_wren::keep_value(v);
+    caribou_ash::link::hold(caribou_wren::from_wren(v))
+}
+
+/// The Wren function a closure Ash made keeps in `bound`.
+///
+/// # Safety
+/// `bound` is what [`caribou_wren_hold_fn`] gave.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn caribou_wren_held_fn(bound: *mut std::ffi::c_void) -> u64 {
+    let function = unsafe { caribou_ash::link::held(bound) };
+    match vm() {
+        Some(vm) => caribou_wren::to_wren(vm, function)
+            .unwrap_or(Value::null())
+            .to_bits(),
+        None => Value::null().to_bits(),
+    }
 }

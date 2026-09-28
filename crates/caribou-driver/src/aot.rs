@@ -152,6 +152,8 @@ pub fn build_with_languages(
         objects: languages.objects(),
         // The Haxe members the other languages' objects call.
         exports: languages.exports(),
+        // The Haxe closures Ash makes of the other languages' functions.
+        closures: languages.closures(),
         // Caribou's tasks run on Ash's fibers in a wasm program, which
         // suspend only in a module the transform instrumented.
         wasm_fibers: true,
@@ -264,6 +266,7 @@ fn library_native(name: &str) -> Option<HostLink> {
         },
         ret_cast: None,
         after: Some("caribou_haxe_raise_pending".to_owned()),
+        after_flag: None,
         init: None,
         library: None,
     })
@@ -301,6 +304,7 @@ fn host_link(link: &caribou_plugin::Link) -> Option<HostLink> {
         arg_casts,
         ret_cast,
         after: Some("caribou_haxe_raise_pending".to_owned()),
+        after_flag: None,
         init,
         library: None,
     })
