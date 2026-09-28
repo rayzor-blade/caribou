@@ -337,42 +337,48 @@ pub unsafe fn device_feature(device: i32, which: i32) -> bool {
 }
 
 fn limit_value(limits: &wgpu::Limits, which: i32) -> Option<i64> {
-    let value = match which {
-        0 => limits.max_texture_dimension_1d as u64,
-        1 => limits.max_texture_dimension_2d as u64,
-        2 => limits.max_texture_dimension_3d as u64,
-        3 => limits.max_texture_array_layers as u64,
-        4 => limits.max_bind_groups as u64,
-        5 => limits.max_bind_groups_plus_vertex_buffers as u64,
-        6 => limits.max_immediate_size as u64,
-        7 => limits.max_bindings_per_bind_group as u64,
-        8 => limits.max_dynamic_uniform_buffers_per_pipeline_layout as u64,
-        9 => limits.max_dynamic_storage_buffers_per_pipeline_layout as u64,
-        10 => limits.max_sampled_textures_per_shader_stage as u64,
-        11 => limits.max_samplers_per_shader_stage as u64,
-        12 => limits.max_storage_buffers_per_shader_stage as u64,
-        13 | 14 => return None,
-        15 => limits.max_storage_textures_per_shader_stage as u64,
-        16 | 17 => return None,
-        18 => limits.max_uniform_buffers_per_shader_stage as u64,
-        19 => limits.max_uniform_buffer_binding_size,
-        20 => limits.max_storage_buffer_binding_size,
-        21 => limits.min_uniform_buffer_offset_alignment as u64,
-        22 => limits.min_storage_buffer_offset_alignment as u64,
-        23 => limits.max_vertex_buffers as u64,
-        24 => limits.max_buffer_size,
-        25 => limits.max_vertex_attributes as u64,
-        26 => limits.max_vertex_buffer_array_stride as u64,
-        27 => limits.max_inter_stage_shader_variables as u64,
-        28 => limits.max_color_attachments as u64,
-        29 => limits.max_color_attachment_bytes_per_sample as u64,
-        30 => limits.max_compute_workgroup_storage_size as u64,
-        31 => limits.max_compute_invocations_per_workgroup as u64,
-        32 => limits.max_compute_workgroup_size_x as u64,
-        33 => limits.max_compute_workgroup_size_y as u64,
-        34 => limits.max_compute_workgroup_size_z as u64,
-        35 => limits.max_compute_workgroups_per_dimension as u64,
-        _ => return None,
+    use crate::Limit::*;
+    let value = match crate::Limit::from_native(which)? {
+        MaxTextureDimension1D => limits.max_texture_dimension_1d as u64,
+        MaxTextureDimension2D => limits.max_texture_dimension_2d as u64,
+        MaxTextureDimension3D => limits.max_texture_dimension_3d as u64,
+        MaxTextureArrayLayers => limits.max_texture_array_layers as u64,
+        MaxBindGroups => limits.max_bind_groups as u64,
+        MaxBindGroupsPlusVertexBuffers => limits.max_bind_groups_plus_vertex_buffers as u64,
+        MaxImmediateSize => limits.max_immediate_size as u64,
+        MaxBindingsPerBindGroup => limits.max_bindings_per_bind_group as u64,
+        MaxDynamicUniformBuffersPerPipelineLayout => {
+            limits.max_dynamic_uniform_buffers_per_pipeline_layout as u64
+        }
+        MaxDynamicStorageBuffersPerPipelineLayout => {
+            limits.max_dynamic_storage_buffers_per_pipeline_layout as u64
+        }
+        MaxSampledTexturesPerShaderStage => limits.max_sampled_textures_per_shader_stage as u64,
+        MaxSamplersPerShaderStage => limits.max_samplers_per_shader_stage as u64,
+        MaxStorageBuffersPerShaderStage
+        | MaxStorageBuffersInVertexStage
+        | MaxStorageBuffersInFragmentStage => limits.max_storage_buffers_per_shader_stage as u64,
+        MaxStorageTexturesPerShaderStage
+        | MaxStorageTexturesInVertexStage
+        | MaxStorageTexturesInFragmentStage => limits.max_storage_textures_per_shader_stage as u64,
+        MaxUniformBuffersPerShaderStage => limits.max_uniform_buffers_per_shader_stage as u64,
+        MaxUniformBufferBindingSize => limits.max_uniform_buffer_binding_size,
+        MaxStorageBufferBindingSize => limits.max_storage_buffer_binding_size,
+        MinUniformBufferOffsetAlignment => limits.min_uniform_buffer_offset_alignment as u64,
+        MinStorageBufferOffsetAlignment => limits.min_storage_buffer_offset_alignment as u64,
+        MaxVertexBuffers => limits.max_vertex_buffers as u64,
+        MaxBufferSize => limits.max_buffer_size,
+        MaxVertexAttributes => limits.max_vertex_attributes as u64,
+        MaxVertexBufferArrayStride => limits.max_vertex_buffer_array_stride as u64,
+        MaxInterStageShaderVariables => limits.max_inter_stage_shader_variables as u64,
+        MaxColorAttachments => limits.max_color_attachments as u64,
+        MaxColorAttachmentBytesPerSample => limits.max_color_attachment_bytes_per_sample as u64,
+        MaxComputeWorkgroupStorageSize => limits.max_compute_workgroup_storage_size as u64,
+        MaxComputeInvocationsPerWorkgroup => limits.max_compute_invocations_per_workgroup as u64,
+        MaxComputeWorkgroupSizeX => limits.max_compute_workgroup_size_x as u64,
+        MaxComputeWorkgroupSizeY => limits.max_compute_workgroup_size_y as u64,
+        MaxComputeWorkgroupSizeZ => limits.max_compute_workgroup_size_z as u64,
+        MaxComputeWorkgroupsPerDimension => limits.max_compute_workgroups_per_dimension as u64,
     };
     Some(value.min(i64::MAX as u64) as i64)
 }
@@ -417,46 +423,85 @@ fn requested_limits(requested: &[(i32, i64)]) -> Result<wgpu::Limits, String> {
     let defaults = wgpu::Limits::default();
     let mut limits = defaults.clone();
     for &(which, value) in requested {
-        match which {
-            0 => limits.max_texture_dimension_1d = u32_value(value)?,
-            1 => limits.max_texture_dimension_2d = u32_value(value)?,
-            2 => limits.max_texture_dimension_3d = u32_value(value)?,
-            3 => limits.max_texture_array_layers = u32_value(value)?,
-            4 => limits.max_bind_groups = u32_value(value)?,
-            5 => limits.max_bind_groups_plus_vertex_buffers = u32_value(value)?,
-            6 => limits.max_immediate_size = u32_value(value)?,
-            7 => limits.max_bindings_per_bind_group = u32_value(value)?,
-            8 => limits.max_dynamic_uniform_buffers_per_pipeline_layout = u32_value(value)?,
-            9 => limits.max_dynamic_storage_buffers_per_pipeline_layout = u32_value(value)?,
-            10 => limits.max_sampled_textures_per_shader_stage = u32_value(value)?,
-            11 => limits.max_samplers_per_shader_stage = u32_value(value)?,
-            12 => limits.max_storage_buffers_per_shader_stage = u32_value(value)?,
-            13 | 14 => {
-                return Err("per-stage storage-buffer limits are unavailable in wgpu 30".into());
+        use crate::Limit::*;
+        match crate::Limit::from_native(which)
+            .ok_or_else(|| format!("unknown GPU limit {which}"))?
+        {
+            MaxTextureDimension1D => limits.max_texture_dimension_1d = u32_value(value)?,
+            MaxTextureDimension2D => limits.max_texture_dimension_2d = u32_value(value)?,
+            MaxTextureDimension3D => limits.max_texture_dimension_3d = u32_value(value)?,
+            MaxTextureArrayLayers => limits.max_texture_array_layers = u32_value(value)?,
+            MaxBindGroups => limits.max_bind_groups = u32_value(value)?,
+            MaxBindGroupsPlusVertexBuffers => {
+                limits.max_bind_groups_plus_vertex_buffers = u32_value(value)?
             }
-            15 => limits.max_storage_textures_per_shader_stage = u32_value(value)?,
-            16 | 17 => {
-                return Err("per-stage storage-texture limits are unavailable in wgpu 30".into());
+            MaxImmediateSize => limits.max_immediate_size = u32_value(value)?,
+            MaxBindingsPerBindGroup => limits.max_bindings_per_bind_group = u32_value(value)?,
+            MaxDynamicUniformBuffersPerPipelineLayout => {
+                limits.max_dynamic_uniform_buffers_per_pipeline_layout = u32_value(value)?
             }
-            18 => limits.max_uniform_buffers_per_shader_stage = u32_value(value)?,
-            19 => limits.max_uniform_buffer_binding_size = u64_value(value)?,
-            20 => limits.max_storage_buffer_binding_size = u64_value(value)?,
-            21 => limits.min_uniform_buffer_offset_alignment = u32_value(value)?,
-            22 => limits.min_storage_buffer_offset_alignment = u32_value(value)?,
-            23 => limits.max_vertex_buffers = u32_value(value)?,
-            24 => limits.max_buffer_size = u64_value(value)?,
-            25 => limits.max_vertex_attributes = u32_value(value)?,
-            26 => limits.max_vertex_buffer_array_stride = u32_value(value)?,
-            27 => limits.max_inter_stage_shader_variables = u32_value(value)?,
-            28 => limits.max_color_attachments = u32_value(value)?,
-            29 => limits.max_color_attachment_bytes_per_sample = u32_value(value)?,
-            30 => limits.max_compute_workgroup_storage_size = u32_value(value)?,
-            31 => limits.max_compute_invocations_per_workgroup = u32_value(value)?,
-            32 => limits.max_compute_workgroup_size_x = u32_value(value)?,
-            33 => limits.max_compute_workgroup_size_y = u32_value(value)?,
-            34 => limits.max_compute_workgroup_size_z = u32_value(value)?,
-            35 => limits.max_compute_workgroups_per_dimension = u32_value(value)?,
-            _ => return Err(format!("unknown GPU limit {which}")),
+            MaxDynamicStorageBuffersPerPipelineLayout => {
+                limits.max_dynamic_storage_buffers_per_pipeline_layout = u32_value(value)?
+            }
+            MaxSampledTexturesPerShaderStage => {
+                limits.max_sampled_textures_per_shader_stage = u32_value(value)?
+            }
+            MaxSamplersPerShaderStage => limits.max_samplers_per_shader_stage = u32_value(value)?,
+            // Native wgpu exposes the core feature level: vertex, fragment
+            // and compute share one cap. WebGPU raises that cap to the largest
+            // of the three requested stage values.
+            MaxStorageBuffersPerShaderStage
+            | MaxStorageBuffersInVertexStage
+            | MaxStorageBuffersInFragmentStage => {
+                limits.max_storage_buffers_per_shader_stage = limits
+                    .max_storage_buffers_per_shader_stage
+                    .max(u32_value(value)?);
+            }
+            MaxStorageTexturesPerShaderStage
+            | MaxStorageTexturesInVertexStage
+            | MaxStorageTexturesInFragmentStage => {
+                limits.max_storage_textures_per_shader_stage = limits
+                    .max_storage_textures_per_shader_stage
+                    .max(u32_value(value)?);
+            }
+            MaxUniformBuffersPerShaderStage => {
+                limits.max_uniform_buffers_per_shader_stage = u32_value(value)?
+            }
+            MaxUniformBufferBindingSize => {
+                limits.max_uniform_buffer_binding_size = u64_value(value)?
+            }
+            MaxStorageBufferBindingSize => {
+                limits.max_storage_buffer_binding_size = u64_value(value)?
+            }
+            MinUniformBufferOffsetAlignment => {
+                limits.min_uniform_buffer_offset_alignment = u32_value(value)?
+            }
+            MinStorageBufferOffsetAlignment => {
+                limits.min_storage_buffer_offset_alignment = u32_value(value)?
+            }
+            MaxVertexBuffers => limits.max_vertex_buffers = u32_value(value)?,
+            MaxBufferSize => limits.max_buffer_size = u64_value(value)?,
+            MaxVertexAttributes => limits.max_vertex_attributes = u32_value(value)?,
+            MaxVertexBufferArrayStride => limits.max_vertex_buffer_array_stride = u32_value(value)?,
+            MaxInterStageShaderVariables => {
+                limits.max_inter_stage_shader_variables = u32_value(value)?
+            }
+            MaxColorAttachments => limits.max_color_attachments = u32_value(value)?,
+            MaxColorAttachmentBytesPerSample => {
+                limits.max_color_attachment_bytes_per_sample = u32_value(value)?
+            }
+            MaxComputeWorkgroupStorageSize => {
+                limits.max_compute_workgroup_storage_size = u32_value(value)?
+            }
+            MaxComputeInvocationsPerWorkgroup => {
+                limits.max_compute_invocations_per_workgroup = u32_value(value)?
+            }
+            MaxComputeWorkgroupSizeX => limits.max_compute_workgroup_size_x = u32_value(value)?,
+            MaxComputeWorkgroupSizeY => limits.max_compute_workgroup_size_y = u32_value(value)?,
+            MaxComputeWorkgroupSizeZ => limits.max_compute_workgroup_size_z = u32_value(value)?,
+            MaxComputeWorkgroupsPerDimension => {
+                limits.max_compute_workgroups_per_dimension = u32_value(value)?
+            }
         }
     }
     Ok(limits.or_better_values_from(&defaults))
@@ -3054,11 +3099,35 @@ mod capability_tests {
     #[test]
     fn requested_limits_preserve_defaults_and_validate_values() {
         let defaults = wgpu::Limits::default();
-        let requested = requested_limits(&[(4, 1), (24, 1 << 30)]).unwrap();
+        let requested = requested_limits(&[
+            (crate::Limit::MaxBindGroups.native(), 1),
+            (crate::Limit::MaxBufferSize.native(), 1 << 30),
+            (crate::Limit::MaxStorageBuffersInVertexStage.native(), 16),
+            (crate::Limit::MaxStorageBuffersPerShaderStage.native(), 12),
+            (crate::Limit::MaxStorageTexturesInFragmentStage.native(), 8),
+            (crate::Limit::MaxStorageTexturesPerShaderStage.native(), 6),
+        ])
+        .unwrap();
         assert_eq!(requested.max_bind_groups, defaults.max_bind_groups);
         assert_eq!(requested.max_buffer_size, 1 << 30);
-        assert!(requested_limits(&[(24, -1)]).is_err());
-        assert!(requested_limits(&[(13, 8)]).is_err());
+        assert_eq!(requested.max_storage_buffers_per_shader_stage, 16);
+        assert_eq!(requested.max_storage_textures_per_shader_stage, 8);
+        assert_eq!(
+            limit_value(
+                &requested,
+                crate::Limit::MaxStorageBuffersInFragmentStage.native()
+            ),
+            Some(16)
+        );
+        assert_eq!(
+            limit_value(
+                &requested,
+                crate::Limit::MaxStorageTexturesInVertexStage.native()
+            ),
+            Some(8)
+        );
+        assert!(requested_limits(&[(crate::Limit::MaxBufferSize.native(), -1)]).is_err());
+        assert!(requested_limits(&[(i32::MAX, 8)]).is_err());
     }
 
     #[test]
