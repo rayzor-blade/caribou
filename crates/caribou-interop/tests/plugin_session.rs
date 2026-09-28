@@ -28,7 +28,7 @@ fn a_bundle_carries_its_plugins() {
     std::fs::create_dir_all(staged.join("plugins")).unwrap();
     std::fs::copy(fixtures.join("hud.hl"), staged.join("hud.hl")).unwrap();
     std::fs::copy(
-        PathBuf::from(env!("OUT_DIR"))
+        PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("plugins/debug")
             .join(&library),
         staged.join("plugins").join(&library),

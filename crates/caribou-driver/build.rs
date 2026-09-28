@@ -6,7 +6,7 @@
 //! builds the driver without it and says so.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // The driver uses all of it; this script, the runtime build.
 #[allow(dead_code)]
@@ -47,7 +47,7 @@ fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     // Cargo holds the outer target directory's lock, so the runtime builds
     // in one of its own.
-    let target_dir = out.join("runtime");
+    let target_dir = nested_target(&out, "caribou-runtime");
     let cargo = env::var_os("CARGO").unwrap();
     let status = wasm_toolchain::cargo_build(&cargo, &root, TARGET, &sysroot, &target_dir)
         .args(["--locked", "-p", "caribou-runtime"])
@@ -64,4 +64,18 @@ fn main() {
     wasm_toolchain::prelink(&rustc, &root, &archive, &sysroot, TARGET, &object)
         .unwrap_or_else(|e| panic!("{e}"));
     println!("cargo:rustc-env=CARIBOU_WASM_RUNTIME={}", object.display());
+}
+
+/// A target directory for a nested build that stays put when this build
+/// script reruns: `nested/<name>` beside the `build` directory `OUT_DIR`
+/// lies in, whichever layout cargo gives it (`build/<package>-<hash>/out`
+/// or `build/<package>/<hash>/out`). A rerun reuses and updates it rather
+/// than leaving a whole build behind in each `OUT_DIR`.
+fn nested_target(out: &Path, name: &str) -> PathBuf {
+    out.ancestors()
+        .find(|dir| dir.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR lies in a build directory")
+        .join("nested")
+        .join(name)
 }

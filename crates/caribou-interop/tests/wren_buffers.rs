@@ -32,7 +32,7 @@ fn wren_passes_typed_arrays_as_buffers_and_loads_a_root_module() {
         std::env::consts::DLL_EXTENSION
     );
     let plugin = caribou_plugin::load(
-        &PathBuf::from(env!("OUT_DIR"))
+        &PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("plugins/debug")
             .join(library),
     )

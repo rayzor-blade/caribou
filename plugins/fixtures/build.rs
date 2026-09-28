@@ -42,7 +42,7 @@ fn main() {
     let fixtures = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").unwrap());
     let root = fixtures.join("../..").canonicalize().unwrap();
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
-    let target = out.join("plugins");
+    let target = nested_target(&out, "caribou-plugin-fixtures");
     let haxe = root.join("haxe");
 
     watch(root.join("Cargo.toml"));
@@ -143,4 +143,18 @@ fn main() {
             &format!("compiling the {} Haxe fixture", fixture.name),
         );
     }
+}
+
+/// A target directory for a nested build that stays put when this build
+/// script reruns: `nested/<name>` beside the `build` directory `OUT_DIR`
+/// lies in, whichever layout cargo gives it (`build/<package>-<hash>/out`
+/// or `build/<package>/<hash>/out`). A rerun reuses and updates it rather
+/// than leaving a whole build behind in each `OUT_DIR`.
+fn nested_target(out: &Path, name: &str) -> PathBuf {
+    out.ancestors()
+        .find(|dir| dir.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR lies in a build directory")
+        .join("nested")
+        .join(name)
 }

@@ -40,7 +40,7 @@ fn a_lua_module_uses_a_plugins_classes() {
         std::env::consts::DLL_EXTENSION
     );
     let plugin = caribou_plugin::load(
-        &PathBuf::from(env!("OUT_DIR"))
+        &PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("plugins/debug")
             .join(library),
     )

@@ -15,7 +15,7 @@ fn buffers_and_enums_cross_as_native_haxe_values() {
         std::env::consts::DLL_EXTENSION
     );
     let _staged = caribou_interop::StagedPlugin::new(
-        &PathBuf::from(env!("OUT_DIR"))
+        &PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("plugins/debug")
             .join(&library),
         &fixtures,

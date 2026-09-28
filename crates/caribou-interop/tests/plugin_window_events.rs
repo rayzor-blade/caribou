@@ -15,7 +15,7 @@ fn window_events_and_scale_callback_cross_haxe() {
     let plugins = fixtures.join("plugins");
     std::fs::create_dir_all(&plugins).unwrap();
     std::fs::copy(
-        PathBuf::from(env!("OUT_DIR"))
+        PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("window-events/debug")
             .join(&library),
         plugins.join(library),

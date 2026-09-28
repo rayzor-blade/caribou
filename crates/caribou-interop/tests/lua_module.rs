@@ -53,7 +53,7 @@ fn another_language_calls_a_lua_module() {
         std::env::consts::DLL_EXTENSION
     );
     let plugin = caribou_plugin::load(
-        &PathBuf::from(env!("OUT_DIR"))
+        &PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("plugins/debug")
             .join(library),
     )

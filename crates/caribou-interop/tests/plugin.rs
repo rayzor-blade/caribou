@@ -18,7 +18,7 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 /// Where the build script put the test plugins.
 fn plugin_dir() -> PathBuf {
-    PathBuf::from(env!("OUT_DIR")).join("plugins/debug")
+    PathBuf::from(env!("CARIBOU_TEST_PLUGINS")).join("plugins/debug")
 }
 
 const USE: &str = r#"

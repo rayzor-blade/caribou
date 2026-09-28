@@ -15,7 +15,7 @@ fn window_events_and_scale_callback_cross_wren() {
         std::env::consts::DLL_EXTENSION
     );
     let plugin = caribou_plugin::load(
-        &PathBuf::from(env!("OUT_DIR"))
+        &PathBuf::from(env!("CARIBOU_TEST_PLUGINS"))
             .join("window-events/debug")
             .join(library),
     )

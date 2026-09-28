@@ -1,9 +1,9 @@
 //! Builds the test plugins as the libraries the tests load: a cdylib is
 //! no dependency cargo links, so each is built here, into a target
-//! directory of its own under `OUT_DIR` (the outer build holds the
-//! workspace's), and the tests find it by `OUT_DIR`.
+//! directory of its own (the outer build holds the workspace's), which the
+//! tests find by `CARIBOU_TEST_PLUGINS`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
@@ -31,13 +31,15 @@ fn main() {
             .join("../../plugins/cb_window/src/events")
             .display()
     );
+    let nested = nested_target(&out_dir, "caribou-interop");
+    println!("cargo:rustc-env=CARIBOU_TEST_PLUGINS={}", nested.display());
     for (package, directory) in [
         ("caribou-plugin-math", "plugins"),
         ("caribou-plugin-window-events", "window-events"),
     ] {
         let status = Command::new(std::env::var("CARGO").unwrap())
             .args(["build", "-p", package, "--target-dir"])
-            .arg(out_dir.join(directory))
+            .arg(nested.join(directory))
             .current_dir(&manifest_dir)
             .env_remove("CARGO_ENCODED_RUSTFLAGS")
             .env_remove("RUSTFLAGS")
@@ -49,4 +51,18 @@ fn main() {
             .expect("cargo runs");
         assert!(status.success(), "the test plugins build");
     }
+}
+
+/// A target directory for a nested build that stays put when this build
+/// script reruns: `nested/<name>` beside the `build` directory `OUT_DIR`
+/// lies in, whichever layout cargo gives it (`build/<package>-<hash>/out`
+/// or `build/<package>/<hash>/out`). A rerun reuses and updates it rather
+/// than leaving a whole build behind in each `OUT_DIR`.
+fn nested_target(out: &Path, name: &str) -> PathBuf {
+    out.ancestors()
+        .find(|dir| dir.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR lies in a build directory")
+        .join("nested")
+        .join(name)
 }
