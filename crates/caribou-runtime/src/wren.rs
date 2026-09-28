@@ -107,7 +107,7 @@ pub extern "C" fn caribou_wren_raise_pending() {
 /// `face` is null or a live Haxe object.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_from_haxe_face(face: *mut vdynamic, _t: *mut hl_type) -> u64 {
-    let _kept = (!face.is_null()).then(|| caribou::heap::keep(face.cast()));
+    // The face's object is what crosses; reaching it allocates nothing.
     let object = unsafe { caribou_ash::link::behind(face) };
     match (vm(), object) {
         (Some(vm), Some(object)) => caribou_wren::to_wren(vm, object)

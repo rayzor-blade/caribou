@@ -599,9 +599,16 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
 
 /// The cell a constructed face holds: its first field.
 unsafe fn ref_field(face: *mut vdynamic) -> *mut *mut c_void {
-    let t = unsafe { (*face).t };
-    let rt = unsafe { hlp_get_obj_rt(t.cast()) };
-    let offset = unsafe { *(*rt).fields_indexes } as usize;
+    // `caribou.Ref` declares the field and every face extends it, so it
+    // lies at one offset in every face: read once, from the first face.
+    static OFFSET: AtomicUsize = AtomicUsize::new(0);
+    let mut offset = OFFSET.load(Ordering::Relaxed);
+    if offset == 0 {
+        let t = unsafe { (*face).t };
+        let rt = unsafe { hlp_get_obj_rt(t.cast()) };
+        offset = unsafe { *(*rt).fields_indexes } as usize;
+        OFFSET.store(offset, Ordering::Relaxed);
+    }
     unsafe { (face as *mut u8).add(offset) as *mut *mut c_void }
 }
 
