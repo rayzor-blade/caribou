@@ -232,9 +232,10 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_object(
     let Some(vm) = vm().filter(|_| !obj.is_null()) else {
         return Value::null().to_bits();
     };
-    let _kept = caribou::heap::keep(obj.cast());
-    let value = unsafe { caribou_ash::link::value(obj) };
-    caribou_wren::to_wren(vm, value)
+    // An object of one of the program's classes is a core object as
+    // itself: its type rules out a string, a buffer and a face.
+    let object = caribou_abi::Value::object(obj.cast());
+    caribou_wren::object_to_wren(vm, object)
         .unwrap_or(Value::null())
         .to_bits()
 }

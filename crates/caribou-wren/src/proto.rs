@@ -214,9 +214,14 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
             return Some(WValue::object((native as *mut u8).wrapping_add(PREFIX)));
         }
     }
-    // Any other object is held through the instance a subclass
-    // constructed in front of its cell, else the view the cell keeps for
-    // Wren, filled on first need.
+    object_to_wren(vm, v)
+}
+
+/// Another language's object as Wren holds it: through the instance a
+/// subclass constructed in front of its cell, else the view the cell keeps
+/// for Wren, filled on first need. What [`to_wren`] does for such an
+/// object, for a caller whose types already say `v` is one.
+pub fn object_to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
     let cell = crate::import::cell_of(v);
     if let cell::Found::Cell(c) = cell {
         if let Some(front) = cell::front(c) {
