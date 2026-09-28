@@ -27,7 +27,7 @@ ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eac
 ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573", default-features = false }
 ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573" }
 ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573" }
-wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "c826e81266f5ece30f22c6d7ba8c7a76fc3a5235", default-features = false }
+wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "b842ec8860e695abde07c7810915c3f21e509260", default-features = false }
 zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
 zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
@@ -51,10 +51,6 @@ ash_interp = { path = "../ash/crates/ash_interp" }
 ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
 ash_page = { path = "../ash/crates/ash_page" }
 ash_window = { path = "../ash/crates/ash_window" }
-
-# WrenLift from the sibling checkout while a change it has not pushed waits.
-[patch."https://github.com/wrenlift/WrenLift.git"]
-wren_lift = { git = "file:///Users/amaterasu/Vibranium/wren_lift", rev = "b842ec8860e695abde07c7810915c3f21e509260" }
 
 [profile.dev]
 opt-level = 1
