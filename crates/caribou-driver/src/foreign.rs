@@ -55,6 +55,7 @@ pub fn plan(
     }
     let mut foreign = Vec::new();
     let mut exports = Vec::new();
+    let mut functions: Vec<TypeRef> = Vec::new();
     for desc in used {
         for class in &desc.classes {
             let mut members = Vec::new();
@@ -74,6 +75,11 @@ pub fn plan(
                         return;
                     };
                     arg_casts.push(to_haxe.to_owned());
+                }
+                for ty in params.iter().copied().chain([ret]) {
+                    if matches!(ty, TypeRef::Function { .. }) && !functions.contains(ty) {
+                        functions.push(ty.clone());
+                    }
                 }
                 let ret_cast = match ret {
                     TypeRef::Void => None,
@@ -154,7 +160,78 @@ pub fn plan(
             });
         }
     }
+    // Each function type that crosses, and each one those take or give.
+    let mut next = 0;
+    while let Some(TypeRef::Function { params, ret }) = functions.get(next).cloned() {
+        next += 1;
+        if let Some((module, export)) = function_class(&params, &ret, haxe) {
+            foreign.push(module);
+            exports.push(export);
+            for ty in params.iter().chain([ret.as_ref()]) {
+                if matches!(ty, TypeRef::Function { .. }) && !functions.contains(ty) {
+                    functions.push(ty.clone());
+                }
+            }
+        }
+    }
     (foreign, exports)
+}
+
+/// A Haxe function type as Wren holds one of its functions: the module
+/// `haxe:<type>`, spelled as Haxe spells it, with a class `Function`
+/// whose `call` calls the function through Ash's export for the type.
+/// `None` for a type Ash cannot be told, or one whose values have no
+/// static form; its functions stay on the bridge.
+fn function_class(
+    params: &[TypeRef],
+    ret: &TypeRef,
+    haxe: &[ModuleDesc],
+) -> Option<(AotForeignModule, HostExport)> {
+    let ty = TypeRef::Function {
+        params: params.to_vec(),
+        ret: Box::new(ret.clone()),
+    };
+    let spelled = caribou_ash::link::spell(&ty)?;
+    // The function is the receiver, and crosses as an object.
+    let mut arg_casts = vec![Some(OBJECT.1.to_owned())];
+    for param in params {
+        arg_casts.push(Some(casts(param, haxe)?.1.to_owned()));
+    }
+    let ret_cast = match ret {
+        TypeRef::Void => None,
+        ret => Some(casts(ret, haxe)?.0.to_owned()),
+    };
+    let symbol = symbol(
+        "haxe",
+        &spelled,
+        "Function",
+        Kind::Method,
+        "call",
+        params.len(),
+    );
+    let module = AotForeignModule {
+        name: format!("haxe:{spelled}"),
+        classes: vec![AotForeignClass {
+            name: "Function".to_owned(),
+            members: vec![AotForeignMember {
+                signature: format!("call({})", vec!["_"; params.len()].join(",")),
+                is_static: false,
+                symbol: symbol.clone(),
+            }],
+        }],
+    };
+    let export = HostExport {
+        symbol,
+        class: spelled,
+        member: "call".to_owned(),
+        kind: ExportKind::Call,
+        arg_casts,
+        ret_cast,
+        raise: RAISE.to_owned(),
+        unit: Value::null().to_bits(),
+        casts_nothrow: true,
+    };
+    Some((module, export))
 }
 
 /// The casts for a value of `ty` crossing between Haxe and Wren: from
@@ -233,6 +310,15 @@ mod tests {
                     member("add", MemberKind::Static, &[TypeRef::Float], TypeRef::Float),
                     member("bump", MemberKind::Method, &[TypeRef::Float], TypeRef::Void),
                     member("any", MemberKind::Static, &[TypeRef::Dyn], TypeRef::Void),
+                    member(
+                        "adder",
+                        MemberKind::Static,
+                        &[],
+                        TypeRef::Function {
+                            params: vec![TypeRef::Float],
+                            ret: Box::new(TypeRef::Float),
+                        },
+                    ),
                 ],
             }],
             enums: Vec::new(),
@@ -258,7 +344,8 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(source.module, "haxe:Bench");
-        assert_eq!(foreign.len(), 1);
+        // Bench, and the function type `adder` gives.
+        assert_eq!(foreign.len(), 2);
         let signatures: Vec<(&str, bool)> = foreign[0].classes[0]
             .members
             .iter()
@@ -271,6 +358,7 @@ mod tests {
                 ("new()", true),
                 ("add(_)", true),
                 ("bump(_)", false),
+                ("adder()", true),
                 ("v", false),
                 ("v=(_)", false)
             ]
@@ -287,5 +375,18 @@ mod tests {
         assert_eq!(bump.ret_cast, None);
         let new = exports.iter().find(|e| e.member == "new").unwrap();
         assert_eq!(new.ret_cast.as_deref(), Some(OBJECT.0));
+        // `adder` gives a Float->Float, which Wren calls through its class.
+        let function = foreign
+            .iter()
+            .find(|m| m.name == "haxe:(Float)->Float")
+            .unwrap();
+        assert_eq!(function.classes[0].members[0].signature, "call(_)");
+        let call = exports.iter().find(|e| e.kind == ExportKind::Call).unwrap();
+        assert_eq!(call.class, "(Float)->Float");
+        assert_eq!(
+            call.arg_casts,
+            [Some(OBJECT.1.to_owned()), Some("ash:unbox_f64".to_owned())]
+        );
+        assert_eq!(call.ret_cast.as_deref(), Some("ash:box_f64"));
     }
 }

@@ -541,6 +541,38 @@ fn type_ref(types: &[HLType], t: &HlRef) -> TypeRef {
     }
 }
 
+/// [`type_ref`], with a function type's parameters and result: what a
+/// build links a function by, where the bridge takes any function.
+fn typed_ref(types: &[HLType], t: &HlRef) -> TypeRef {
+    let Some(ty) = types.get(t.0) else {
+        return TypeRef::Dyn;
+    };
+    match ty.kind {
+        // A function type a build cannot spell to Ash stays any function.
+        hl::HFUN => match &ty.fun {
+            Some(fun)
+                if fun.args.iter().chain([&fun.ret]).all(|a| {
+                    types
+                        .get(a.0)
+                        .is_some_and(|t| !matches!(t.kind, hl::HUI8 | hl::HUI16))
+                }) =>
+            {
+                TypeRef::Function {
+                    params: fun.args.iter().map(|a| typed_ref(types, a)).collect(),
+                    ret: Box::new(typed_ref(types, &fun.ret)),
+                }
+            }
+            _ => TypeRef::Fun,
+        },
+        hl::HI64 => TypeRef::Int64,
+        hl::HNULL => ty
+            .tparam
+            .as_ref()
+            .map_or(TypeRef::Dyn, |inner| typed_ref(types, inner)),
+        _ => type_ref(types, t),
+    }
+}
+
 /// Whether a type is published: not the runtime's own, not a companion,
 /// and not `String`, which crosses as a value.
 fn publishable(name: &str) -> bool {
@@ -709,14 +741,15 @@ fn signature(
     functions: &HashMap<i32, &HLFunction>,
     findex: i32,
     skip_this: bool,
+    typing: fn(&[HLType], &HlRef) -> TypeRef,
 ) -> Option<(Vec<TypeRef>, TypeRef)> {
     let types = &bytecode.types;
     let f = functions.get(&findex)?;
     let fun = types.get(f.type_.0)?.fun.as_ref()?;
     let args = fun.args.iter().skip(usize::from(skip_this));
     Some((
-        args.map(|a| type_ref(types, a)).collect(),
-        type_ref(types, &fun.ret),
+        args.map(|a| typing(types, a)).collect(),
+        typing(types, &fun.ret),
     ))
 }
 
@@ -760,7 +793,7 @@ pub fn publish_module(
         let mut methods: Vec<MethodIface> = Vec::new();
         for (name, is_static, findex) in &shape.methods {
             let (Some((params, ret)), Some(target)) = (
-                signature(bytecode, &functions, *findex, !is_static),
+                signature(bytecode, &functions, *findex, !is_static, type_ref),
                 target(*findex),
             ) else {
                 continue;
@@ -774,7 +807,7 @@ pub fn publish_module(
             });
         }
         let ctor = shape.ctor.and_then(|findex| {
-            let (params, _) = signature(bytecode, &functions, findex, true)?;
+            let (params, _) = signature(bytecode, &functions, findex, true, type_ref)?;
             let t = this_type(findex)?;
             let Callable::Cell {
                 cell, signature, ..
@@ -848,7 +881,7 @@ pub fn describe_program(path: &Path) -> Result<Vec<caribou::describe::ModuleDesc
         let mut members = Vec::new();
         if let Some((params, _)) = shape
             .ctor
-            .and_then(|findex| signature(&bytecode, &functions, findex, true))
+            .and_then(|findex| signature(&bytecode, &functions, findex, true, typed_ref))
         {
             members.push(member(
                 "new",
@@ -858,7 +891,9 @@ pub fn describe_program(path: &Path) -> Result<Vec<caribou::describe::ModuleDesc
             ));
         }
         for (name, is_static, findex) in &shape.methods {
-            if let Some((params, ret)) = signature(&bytecode, &functions, *findex, !is_static) {
+            if let Some((params, ret)) =
+                signature(&bytecode, &functions, *findex, !is_static, typed_ref)
+            {
                 let kind = if *is_static {
                     MemberKind::Static
                 } else {

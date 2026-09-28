@@ -162,6 +162,9 @@ pub(crate) struct Imports {
     /// instance of, once installed.
     int64: Option<*mut ObjClass>,
     by_hl_type: ByHlType,
+    /// A function's type, as the word zero of its object, to the class a
+    /// compiled program made for that type ([`set_function_classes`]).
+    by_function_type: HashMap<usize, *mut ObjClass, BuildAddressHasher>,
 }
 
 /// The class an object typed by a bare `hl_type` crosses as, by that
@@ -226,6 +229,7 @@ pub(crate) fn forget_classes(rec: &WrenHeap) {
     imports.classes.clear();
     imports.by_type.clear();
     imports.by_hl_type = ByHlType::default();
+    imports.by_function_type.clear();
 }
 
 /// The adopted instance at `instance` is dying: the cell it stood in
@@ -923,7 +927,8 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValu
 fn class_for(vm: &mut VM, rec: &WrenHeap, v: Value) -> Option<(*mut ObjClass, bool)> {
     let lang = bridge::language_of(v)?;
     if bridge::arity(v).is_some() {
-        return Some((function_class(vm).ok()?, true));
+        let class = typed_function_class(vm, rec, v).or_else(|| function_class(vm).ok())?;
+        return Some((class, true));
     }
     let published = bridge::type_symbol(v).and_then(|type_name| {
         let known = rec
@@ -952,6 +957,32 @@ fn class_for(vm: &mut VM, rec: &WrenHeap, v: Value) -> Option<(*mut ObjClass, bo
         .flatten()
         .or_else(|| Int64::is(v).then(|| int64_class(vm).ok()).flatten())
         .map(|class| (class, false))
+}
+
+/// Finds the class a compiled program made for a function's type, from
+/// the type as word zero of the function's object.
+pub type FunctionClasses = fn(&mut VM, usize) -> Option<*mut ObjClass>;
+
+static FUNCTION_CLASSES: OnceLock<FunctionClasses> = OnceLock::new();
+
+/// Have a function of a type a compiled program made a class for cross as
+/// an instance of that class, whose `call` calls it directly, rather than
+/// as a `Function` the bridge calls. Set once by the runtime that links
+/// such a program; a hosted run sets none.
+pub fn set_function_classes(find: FunctionClasses) {
+    let _ = FUNCTION_CLASSES.set(find);
+}
+
+/// The class `find` gives the function `v`'s type, once per type.
+fn typed_function_class(vm: &mut VM, rec: &WrenHeap, v: Value) -> Option<*mut ObjClass> {
+    let find = FUNCTION_CLASSES.get()?;
+    let t = unsafe { *(v.as_object()? as *const usize) };
+    if let Some(&class) = rec.imports().borrow().by_function_type.get(&t) {
+        return Some(class);
+    }
+    let class = find(vm, t)?;
+    rec.imports().borrow_mut().by_function_type.insert(t, class);
+    Some(class)
 }
 
 /// The class a compiled program made for another language's type, in the

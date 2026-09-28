@@ -45,6 +45,79 @@ pub unsafe fn type_name(t: *const hl_type) -> Option<String> {
     unsafe { proto::obj_name(t) }
 }
 
+/// The running program's type `t` as a build describes it
+/// (`program::describe_program`): a function type with its parameters and
+/// result.
+///
+/// # Safety
+/// `t` is null or one of the program's types.
+pub unsafe fn type_ref(t: *const hl_type) -> caribou::registry::TypeRef {
+    use caribou::registry::TypeRef;
+    use caribou_abi::hl;
+    let Some(ty) = (unsafe { t.as_ref() }) else {
+        return TypeRef::Dyn;
+    };
+    match ty.kind {
+        hl::HVOID => TypeRef::Void,
+        hl::HUI8 | hl::HUI16 | hl::HI32 => TypeRef::Int,
+        hl::HI64 => TypeRef::Int64,
+        hl::HF32 | hl::HF64 => TypeRef::Float,
+        hl::HBOOL => TypeRef::Bool,
+        // As the build describes it: one it cannot spell is any function.
+        hl::HFUN => match unsafe { ty.detail.fun.as_ref() } {
+            Some(fun)
+                if (0..fun.nargs.max(0) as usize)
+                    .map(|i| unsafe { *fun.args.add(i) })
+                    .chain([fun.ret])
+                    .all(|a| {
+                        unsafe { a.as_ref() }
+                            .is_some_and(|a| !matches!(a.kind, hl::HUI8 | hl::HUI16))
+                    }) =>
+            {
+                TypeRef::Function {
+                    params: (0..fun.nargs.max(0) as usize)
+                        .map(|i| unsafe { type_ref(*fun.args.add(i)) })
+                        .collect(),
+                    ret: Box::new(unsafe { type_ref(fun.ret) }),
+                }
+            }
+            _ => TypeRef::Fun,
+        },
+        hl::HMETHOD => TypeRef::Fun,
+        hl::HARRAY => TypeRef::Array(Box::new(TypeRef::Dyn)),
+        hl::HNULL => unsafe { type_ref(ty.detail.tparam) },
+        hl::HOBJ | hl::HSTRUCT => match unsafe { proto::obj_name(t) } {
+            Some(name) if name == "String" => TypeRef::Str,
+            Some(name) => TypeRef::Object(name),
+            None => TypeRef::Dyn,
+        },
+        _ => TypeRef::Dyn,
+    }
+}
+
+/// A type spelled as Haxe spells it, `(Float, String)->Bool` for a function
+/// type: how a build names a function type to Ash and to another
+/// language's module for it, the same from the bytecode and at run time.
+/// `None` for a type Haxe code cannot spell, which has no such module.
+pub fn spell(ty: &caribou::registry::TypeRef) -> Option<String> {
+    use caribou::registry::TypeRef;
+    Some(match ty {
+        TypeRef::Void => "Void".to_owned(),
+        TypeRef::Int => "Int".to_owned(),
+        TypeRef::Float => "Float".to_owned(),
+        TypeRef::Bool => "Bool".to_owned(),
+        TypeRef::Str => "String".to_owned(),
+        TypeRef::Int64 => "haxe.Int64".to_owned(),
+        TypeRef::Dyn => "Dynamic".to_owned(),
+        TypeRef::Object(name) => name.clone(),
+        TypeRef::Function { params, ret } => {
+            let params: Option<Vec<String>> = params.iter().map(spell).collect();
+            format!("({})->{}", params?.join(", "), spell(ret)?)
+        }
+        _ => return None,
+    })
+}
+
 /// A Haxe `String` of the program's type `t` holding `text`, for another
 /// language's cast. Unrooted, like every fresh Haxe object.
 ///
@@ -102,6 +175,10 @@ pub unsafe fn face(v: Value, t: *mut hl_type) -> *mut vdynamic {
 pub unsafe fn function(v: Value, t: *mut hl_type) -> *mut vdynamic {
     if v.is_null() {
         return core::ptr::null_mut();
+    }
+    // A Haxe function that went to another language comes back as itself.
+    if bridge::language_of(v) == Some(proto::lang()) {
+        return v.as_object().map_or(core::ptr::null_mut(), |p| p.cast());
     }
     let _value_kept = heap::keep_value(v);
     crate::callback::function_for_typed(v, t)

@@ -23,6 +23,7 @@ static VM_PTR: AtomicPtr<VM> = AtomicPtr::new(std::ptr::null_mut());
 pub(crate) fn start() -> i32 {
     let vm = wlift_aot_new_vm();
     VM_PTR.store(vm, Ordering::Release);
+    caribou_wren::import::set_function_classes(function_class);
     unsafe { caribou_wren::enter_vm(vm) };
     unsafe { wlift_aot_run_programs(vm) }
 }
@@ -264,4 +265,14 @@ pub unsafe extern "C" fn caribou_wren_raise_haxe(exc: *mut vdynamic) {
     if let Some(vm) = vm() {
         vm.runtime_error(message);
     }
+}
+
+/// The class the linked modules have for the Haxe function type `t`, the
+/// module `haxe:<type>` a build makes for a function type Wren receives
+/// (`caribou-driver`'s `foreign.rs`); its `call` calls the function.
+fn function_class(vm: &mut VM, t: usize) -> Option<*mut wren_lift::runtime::object::ObjClass> {
+    let ty = unsafe { caribou_ash::link::type_ref(t as *const hl_type) };
+    let module = format!("haxe:{}", caribou_ash::link::spell(&ty)?);
+    let class = vm.find_imported_var_from("Function", &module)?;
+    class.as_object().map(|p| p.cast())
 }
