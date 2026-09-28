@@ -9,6 +9,7 @@ use ash_std::error::hlp_throw;
 use caribou::bridge;
 use caribou::error::Str;
 use caribou::heap;
+use caribou::protocol::{Fault, Send};
 use caribou_abi::Value;
 use caribou_abi::data::{BufferData, EnumData};
 use caribou_abi::hl::{hl_type, vdynamic};
@@ -145,6 +146,42 @@ pub unsafe fn bind(face: *mut vdynamic, v: Value) {
     let _face_kept = (!face.is_null()).then(|| heap::keep(face.cast()));
     let _value_kept = heap::keep_value(v);
     unsafe { crate::import::bind_face(face, crate::wrenref::wrap_foreign(v)) }
+}
+
+/// Bind a face directly to `v`, with the face as `v`'s weak shadow. This is
+/// for an AOT face class whose allocation carries a host drop policy.
+pub unsafe fn bind_attachment(face: *mut vdynamic, v: Value) {
+    let Some(object) = v.as_object().map(|p| p as *mut u8) else {
+        return;
+    };
+    unsafe { crate::import::set_direct_attachment(face, object) };
+    let mut kept = core::ptr::null_mut();
+    let result = unsafe { Send::keep_shadow(object, face.cast(), &mut kept) };
+    debug_assert!(
+        result.is_ok() || matches!(result, Err(Fault::Missing)) && kept == face.cast(),
+        "a freshly constructed object already has another Haxe face"
+    );
+}
+
+/// The directly attached face of type `t` for `v`, allocating and binding it
+/// when the weak edge is empty.
+pub unsafe fn attachment_face(v: Value, t: *mut hl_type) -> *mut vdynamic {
+    let Some(object) = v.as_object().map(|p| p as *mut u8) else {
+        return core::ptr::null_mut();
+    };
+    let _value_kept = heap::keep_value(v);
+    if let Ok(shadow) = unsafe { Send::shadow(object, proto::lang()) } {
+        if unsafe { caribou::cell::is_cell(shadow) } {
+            if let Some(front) = caribou::cell::front(Value::object(shadow.cast())) {
+                return front.cast();
+            }
+        } else {
+            return shadow.cast();
+        }
+    }
+    let face = unsafe { ash_std::obj::hlp_alloc_obj(t.cast()) } as *mut vdynamic;
+    unsafe { bind_attachment(face, v) };
+    face
 }
 
 /// The face of type `t` for the core object `v`: the one already in front

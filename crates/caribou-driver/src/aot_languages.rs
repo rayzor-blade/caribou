@@ -50,6 +50,9 @@ pub struct Artifact {
     pub closures: Vec<ash_core::host_export::HostClosure>,
     /// The Haxe classes whose instances get a tail for this language's view.
     pub tails: Vec<String>,
+    /// The emitted Haxe face classes whose direct attachment needs a drop
+    /// notification from the shared heap.
+    pub drops: Vec<String>,
     linker: Box<dyn Linker>,
 }
 
@@ -67,6 +70,7 @@ impl Artifact {
             exports: Vec::new(),
             closures: Vec::new(),
             tails: Vec::new(),
+            drops: Vec::new(),
             linker,
         }
     }
@@ -161,6 +165,17 @@ impl Artifacts {
         for class in self.items.iter().flat_map(|artifact| &artifact.tails) {
             if !out.iter().any(|(c, _)| c == class) {
                 out.push((class.clone(), caribou::cell::TAIL_BYTES));
+            }
+        }
+        out
+    }
+
+    /// Haxe face classes allocated through Ash's host-drop seam.
+    pub fn object_drops(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        for class in self.items.iter().flat_map(|artifact| &artifact.drops) {
+            if !out.contains(class) {
+                out.push(class.clone());
             }
         }
         out
@@ -269,10 +284,25 @@ fn build_wren(
         out,
     )
     .map_err(|error| anyhow!("compiling the Wren modules: {error:?}"))?;
+    let drops = described
+        .iter()
+        .flat_map(|(name, module)| {
+            let mut pack: Vec<&str> = name.split('/').collect();
+            if pack.len() == 1 {
+                pack.insert(0, "wren");
+            }
+            module.classes.iter().map(move |class| {
+                let mut path = pack.clone();
+                path.push(&class.name);
+                path.join(".")
+            })
+        })
+        .collect();
     let mut artifact = Artifact::new("wren", out.to_path_buf(), described, Box::new(WrenLinker));
     artifact.exports = exports;
     artifact.closures = closures;
     artifact.tails = tails;
+    artifact.drops = drops;
     Ok(Some(artifact))
 }
 

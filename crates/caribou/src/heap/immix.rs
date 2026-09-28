@@ -45,8 +45,11 @@ const OBJECT_KIND_RAW: u8 = 0x00;
 /// Never scanned.
 const OBJECT_KIND_NOPTR: u8 = 0x20;
 /// Word zero is a `*const TypeDesc`; the marker traces through its hook and
-/// sweep drops through the other. `0x60` is reserved.
+/// sweep drops through the other.
 const OBJECT_KIND_TRACED: u8 = 0x40;
+/// Conservatively scanned foreign storage whose registered descriptor owns
+/// its drop hook.
+const OBJECT_KIND_FOREIGN: u8 = 0x60;
 const OBJECT_SIZE_MASK: u8 = 0x1F;
 
 /// Word zero of a `MEM_KIND_FINALIZER` block: `void (*)(void *block)`,
@@ -1338,6 +1341,12 @@ pub fn gc_alloc(size: usize) -> Option<NonNull<u8>> {
 /// keeps it reachable and never scans it.
 pub fn gc_alloc_noptr(size: usize) -> Option<NonNull<u8>> {
     gc_alloc_kind(size, OBJECT_KIND_NOPTR, false)
+}
+
+/// [`gc_alloc`] for a foreign object that may need its registered descriptor's
+/// drop hook. Its fields remain conservatively scanned.
+pub fn gc_alloc_foreign(size: usize, has_drop: bool) -> Option<NonNull<u8>> {
+    gc_alloc_kind(size, OBJECT_KIND_FOREIGN, has_drop)
 }
 
 /// [`gc_alloc`] with the allocation's kind bits written beside its size in
@@ -2780,9 +2789,8 @@ fn scan_allocation_shared(
             }
             first = WORD;
         }
-        OBJECT_KIND_RAW => {}
-        // Reserved. Scanned as raw: that retains, never frees.
-        _ => {}
+        OBJECT_KIND_RAW | OBJECT_KIND_FOREIGN => {}
+        _ => unreachable!("all object kind bits are assigned"),
     }
     for off in (first..size).step_by(WORD) {
         let val = unsafe { *((heap_start + start + off) as *const usize) };
@@ -4423,13 +4431,13 @@ impl ImmixAllocator {
         }
     }
 
-    /// Run the drop hook of every unmarked traced object and forget its start,
+    /// Run the drop hook of every unmarked hooked object and forget its start,
     /// so no later cycle can resolve a stale pointer into it and trace or drop
     /// it again. Only in blocks flagged `has_drop`; see it for the rest. Marks
     /// are standing and the world is stopped. Before any block is reclaimed or
     /// poisoned: a hook reads its object, and a span may run on into a block
     /// the reclaim loop would visit first.
-    fn drop_dead_traced(&mut self, used: &[usize]) {
+    fn drop_dead_hooked(&mut self, used: &[usize]) {
         let base = self.heap.memory.as_ptr() as usize;
         // A hooked bump region's block stays flagged: the next object
         // bumped into it has a drop hook.
@@ -4461,12 +4469,17 @@ impl ImmixAllocator {
                         .max(1),
                     n => n as usize,
                 };
-                if code & OBJECT_KIND_MASK == OBJECT_KIND_TRACED {
+                let kind = code & OBJECT_KIND_MASK;
+                if matches!(kind, OBJECT_KIND_TRACED | OBJECT_KIND_FOREIGN) {
                     if code & OBJECT_MARK != 0 {
                         any_live = true;
                     } else {
                         let obj = (base + q * ALLOC_QUANTUM) as *mut u8;
-                        let desc = unsafe { *(obj as *const *const TypeDesc) };
+                        let desc = if kind == OBJECT_KIND_TRACED {
+                            unsafe { *(obj as *const *const TypeDesc) }
+                        } else {
+                            unsafe { crate::protocol::desc_of(obj) }
+                        };
                         if let Some(drop) = unsafe { desc.as_ref() }.and_then(|d| d.drop) {
                             unsafe { drop(obj) };
                         }
@@ -4494,7 +4507,7 @@ impl ImmixAllocator {
         // they are rebuilt below anyway.
         self.heap.recycle_spans.clear();
         let used_block_addrs: Vec<usize> = self.heap.used_blocks.iter().copied().collect();
-        self.drop_dead_traced(&used_block_addrs);
+        self.drop_dead_hooked(&used_block_addrs);
         let mut freed: Vec<usize> = Vec::new();
         let (mut occ_blocks, mut occ_marked) = (0usize, 0usize);
         let mut occ_hist = [0usize; 6];
@@ -6595,6 +6608,14 @@ mod tests {
         assert!(object_marked(&gc, target));
     }
 
+    #[test]
+    fn a_foreign_block_retains_conservatively() {
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
+        let (holder, target) = holder_and_target(&mut gc, OBJECT_KIND_FOREIGN);
+        assert!(object_marked(&gc, holder));
+        assert!(object_marked(&gc, target));
+    }
+
     /// A traced object shaped like WrenLift's: a descriptor word, then
     /// pointers the conservative scan cannot see, in containers outside the
     /// heap. `items` are raw addresses, `boxed` are NaN-boxed values.
@@ -6635,6 +6656,40 @@ mod tests {
         drop: Some(drop_holder),
         ..TypeDesc::new(plain_type())
     };
+
+    static FOREIGN_DROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn drop_foreign(_obj: *mut u8) {
+        FOREIGN_DROPS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    static FOREIGN_DESC: TypeDesc = TypeDesc {
+        drop: Some(drop_foreign),
+        ..TypeDesc::new(plain_type())
+    };
+
+    #[test]
+    fn an_unreachable_foreign_object_runs_its_registered_drop_once() {
+        let _turn = holder_test_turn();
+        crate::protocol::set_foreign_descriptor(&FOREIGN_DESC);
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 4);
+        let object = gc.allocate(16).unwrap();
+        let sibling = gc.allocate(16).unwrap();
+        let mut bare_type = Box::new(plain_type());
+        unsafe { (object.as_ptr() as *mut *mut hl_type).write(&raw mut *bare_type) };
+        let object = offset(&gc, object);
+        let sibling = offset(&gc, sibling);
+        gc.set_allocation_kind_with(object, OBJECT_KIND_FOREIGN, true);
+        let before = FOREIGN_DROPS.load(Ordering::SeqCst);
+
+        let mut work = Vec::new();
+        gc.mark_allocation(sibling, &mut work);
+        gc.conservative_trace(work);
+        gc.sweep(&[]);
+        assert_eq!(FOREIGN_DROPS.load(Ordering::SeqCst), before + 1);
+        gc.sweep(&[]);
+        assert_eq!(FOREIGN_DROPS.load(Ordering::SeqCst), before + 1);
+    }
 
     /// A `Holder` referencing `child` by address and `boxed` by value.
     /// Returns the three heap offsets: holder, child, boxed.

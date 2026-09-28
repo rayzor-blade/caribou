@@ -20,9 +20,15 @@ pub unsafe extern "C" fn gc_alloc(size: usize) -> *mut u8 {
 }
 
 /// A class instance of `size` bytes, with its bridge word past the fields
-/// (see `proto::bridge_word`).
-pub unsafe extern "C" fn gc_alloc_object(size: usize) -> *mut u8 {
-    raw(heap::gc_alloc(fields_end(size) + size_of::<usize>()))
+/// (see `proto::bridge_word`). Selected types carry a host attachment whose
+/// descriptor receives a drop notification.
+pub unsafe extern "C" fn gc_alloc_object(_t: *mut hl_type, size: usize, flags: u32) -> *mut u8 {
+    let size = fields_end(size) + size_of::<usize>();
+    if flags & ash_std::rt::RT_OBJECT_HOST_DROP != 0 {
+        raw(heap::gc_alloc_foreign(size, true))
+    } else {
+        raw(heap::gc_alloc(size))
+    }
 }
 
 /// Where the fields of an instance of `size` bytes end: its bridge word.

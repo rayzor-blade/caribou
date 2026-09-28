@@ -49,7 +49,7 @@ use std::time::Instant;
 
 use caribou::cell;
 use caribou::heap::{self, Handle, ImmixAllocator, TraceFn, Tracer, TypeDesc};
-use caribou::protocol::CallSite;
+use caribou::protocol::{CallSite, Send as ProtocolSend};
 use caribou_abi::hl::{self, hl_type, hl_type_detail};
 use caribou_abi::mem;
 use wren_lift::runtime::rt::{RtStats, Visit, wlift_rt_object_drop, wlift_rt_object_trace};
@@ -588,7 +588,12 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
             let w = unsafe { *bridge_word(pin.start as *mut u8) };
             let shadow = (w & !FLAGS) as *mut u8;
             if !shadow.is_null() {
-                unsafe { cell::sever(shadow) };
+                if unsafe { cell::is_cell(shadow) } {
+                    unsafe { cell::sever(shadow) };
+                } else {
+                    let object = (pin.start + PREFIX) as *mut u8;
+                    let _ = unsafe { ProtocolSend::release_attachment(shadow, object) };
+                }
             }
             if w & ADOPTED != 0 {
                 import::forget_front((pin.start + PREFIX) as *mut u8);

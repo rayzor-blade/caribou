@@ -156,6 +156,8 @@ pub fn build_with_languages(
         closures: languages.closures(),
         // Room in the other languages' Haxe objects for their views of them.
         object_tails: languages.object_tails(),
+        // Face classes whose direct object attachment needs weak-edge cleanup.
+        object_drops: languages.object_drops(),
         // Caribou's tasks run on Ash's fibers in a wasm program, which
         // suspend only in a module the transform instrumented.
         wasm_fibers: true,

@@ -828,6 +828,7 @@ static PROTO: Protocol = Protocol {
     shadow: Some(shadow),
     keep_shadow: Some(keep_shadow),
     drop_shadow: Some(drop_shadow),
+    release_attachment: None,
 };
 
 #[cfg(test)]

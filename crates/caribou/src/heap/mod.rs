@@ -46,6 +46,7 @@ pub use immix::{
     free_allocation,
     gc_add_persistent,
     gc_alloc,
+    gc_alloc_foreign,
     gc_alloc_noptr,
     // Mutators, safepoints and the stop-the-world rendezvous.
     gc_block_at,

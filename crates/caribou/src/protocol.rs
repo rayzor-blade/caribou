@@ -128,6 +128,11 @@ pub struct Protocol {
         Option<unsafe extern "C-unwind" fn(obj: *mut u8, shadow: *mut u8, out: *mut *mut u8) -> u8>,
     /// Forget `shadow`, if it is the one kept.
     pub drop_shadow: Option<unsafe extern "C-unwind" fn(obj: *mut u8, shadow: *mut u8) -> u8>,
+    /// Forget `attachment`, if this object holds it directly. Called while a
+    /// foreign runtime is tearing the attachment down; it must not allocate
+    /// or take the heap lock.
+    pub release_attachment:
+        Option<unsafe extern "C-unwind" fn(obj: *mut u8, attachment: *mut u8) -> u8>,
 }
 
 /// Reply codes an entry returns.
@@ -164,6 +169,7 @@ impl Protocol {
         shadow: None,
         keep_shadow: None,
         drop_shadow: None,
+        release_attachment: None,
     };
 }
 
@@ -627,6 +633,13 @@ impl Send {
             return Err(Fault::Unsupported);
         };
         reply(unsafe { f(obj, shadow) }, Value::null()).map(|_| ())
+    }
+
+    pub unsafe fn release_attachment(obj: *mut u8, attachment: *mut u8) -> Result<(), Fault> {
+        let Some(f) = unsafe { Self::proto(obj) }.and_then(|p| p.release_attachment) else {
+            return Err(Fault::Unsupported);
+        };
+        reply(unsafe { f(obj, attachment) }, Value::null()).map(|_| ())
     }
 }
 

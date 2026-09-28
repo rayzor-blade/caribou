@@ -46,8 +46,8 @@ use caribou::bridge;
 use caribou::error::{Error, Int64, Str};
 use caribou::heap::{self, Handle, TypeDesc};
 use caribou::protocol::{
-    CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED, Symbol,
-    desc_of,
+    CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED, REPLY_UNSUPPORTED,
+    Send as ProtocolSend, Symbol, desc_of,
 };
 use caribou::registry::ClassIface;
 use caribou_abi::hl::{
@@ -85,11 +85,20 @@ pub(crate) const fn haxe_type() -> hl_type {
 /// at registration and read from then on.
 static mut HAXE_DESC: TypeDesc = {
     let mut d = TypeDesc::new(haxe_type());
+    d.drop = Some(drop_haxe_attachment);
     d.protocol = &HAXE_PROTO;
     d.name = "haxe object".as_ptr();
     d.name_len = "haxe object".len();
     d
 };
+
+/// A selected Haxe face died. Its direct attachment is strong in this
+/// direction and weak from the object back to the face.
+unsafe extern "C" fn drop_haxe_attachment(obj: *mut u8) {
+    if let Some(attachment) = unsafe { import::direct_attachment(obj.cast()) } {
+        let _ = unsafe { ProtocolSend::drop_shadow(attachment, obj) };
+    }
+}
 
 fn haxe_desc() -> &'static TypeDesc {
     // A static the world writes once, at registration, and reads after.
@@ -2278,6 +2287,12 @@ unsafe extern "C-unwind" fn drop_shadow(obj: *mut u8, shadow: *mut u8) -> u8 {
     REPLY_OK
 }
 
+/// The directly attached object is going away with its runtime.
+unsafe extern "C-unwind" fn release_attachment(obj: *mut u8, attachment: *mut u8) -> u8 {
+    unsafe { import::release_direct_attachment(obj.cast(), attachment) };
+    REPLY_OK
+}
+
 static HAXE_PROTO: Protocol = Protocol {
     get_member: Some(get_member),
     set_member: Some(set_member),
@@ -2299,6 +2314,7 @@ static HAXE_PROTO: Protocol = Protocol {
     shadow: Some(shadow),
     keep_shadow: Some(keep_shadow),
     drop_shadow: Some(drop_shadow),
+    release_attachment: Some(release_attachment),
     ..Protocol::NONE
 };
 

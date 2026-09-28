@@ -598,7 +598,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
 // ---------------------------------------------------------------------------
 
 /// The cell a constructed face holds: its first field.
-unsafe fn ref_field(face: *mut vdynamic) -> *mut *mut c_void {
+pub(crate) unsafe fn ref_field(face: *mut vdynamic) -> *mut *mut c_void {
     // `caribou.Ref` declares the field and every face extends it, so it
     // lies at one offset in every face: read once, from the first face.
     static OFFSET: AtomicUsize = AtomicUsize::new(0);
@@ -610,6 +610,29 @@ unsafe fn ref_field(face: *mut vdynamic) -> *mut *mut c_void {
         OFFSET.store(offset, Ordering::Relaxed);
     }
     unsafe { (face as *mut u8).add(offset) as *mut *mut c_void }
+}
+
+fn ref_atom<'a>(face: *mut vdynamic) -> &'a AtomicUsize {
+    unsafe { AtomicUsize::from_ptr(ref_field(face).cast::<usize>()) }
+}
+
+/// The core object a face holds directly, rather than through a cell.
+pub(crate) unsafe fn direct_attachment(face: *mut vdynamic) -> Option<*mut u8> {
+    let p = ref_atom(face).load(Ordering::Acquire) as *mut u8;
+    (!p.is_null() && heap::is_allocation_start(p.cast()) && !unsafe { cell::is_cell(p) })
+        .then_some(p)
+}
+
+/// Bind a face directly to a core object. The face field is a strong edge;
+/// the object's shadow is the weak edge back.
+pub(crate) unsafe fn set_direct_attachment(face: *mut vdynamic, object: *mut u8) {
+    ref_atom(face).store(object as usize, Ordering::Release);
+}
+
+/// Clear a direct attachment only when it still names `object`.
+pub(crate) unsafe fn release_direct_attachment(face: *mut vdynamic, object: *mut u8) {
+    let _ =
+        ref_atom(face).compare_exchange(object as usize, 0, Ordering::AcqRel, Ordering::Acquire);
 }
 
 /// Whether `t` is `caribou.Ref` or extends it. Names are compared in
@@ -641,9 +664,16 @@ pub(crate) unsafe fn behind_face(d: *mut vdynamic) -> Option<Value> {
     if r.is_null() {
         return None;
     }
-    Some(wrenref::unwrap_foreign(unsafe {
-        wrenref::wrenref_from_abstract(r)
-    }))
+    if !heap::is_allocation_start(r) {
+        return None;
+    }
+    if unsafe { cell::is_cell(r.cast()) } {
+        Some(wrenref::unwrap_foreign(unsafe {
+            wrenref::wrenref_from_abstract(r)
+        }))
+    } else {
+        Some(Value::object(r.cast_const()))
+    }
 }
 
 /// The foreign object a receiver stands for: a cell, or a constructed
@@ -659,9 +689,16 @@ pub(crate) unsafe fn behind(face: *mut vdynamic) -> Result<Value, String> {
     if r.is_null() {
         return Err("the receiver holds no object: its constructor did not run".to_owned());
     }
-    Ok(wrenref::unwrap_foreign(unsafe {
-        wrenref::wrenref_from_abstract(r)
-    }))
+    if !heap::is_allocation_start(r) {
+        return Err("the receiver's object is no longer alive".to_owned());
+    }
+    if unsafe { cell::is_cell(r.cast()) } {
+        Ok(wrenref::unwrap_foreign(unsafe {
+            wrenref::wrenref_from_abstract(r)
+        }))
+    } else {
+        Ok(Value::object(r.cast_const()))
+    }
 }
 
 /// Put `face`, an instance Haxe constructed, in front of the cell `r`.

@@ -125,8 +125,9 @@ pub unsafe extern "C" fn caribou_wren_from_haxe_face(face: *mut vdynamic, _t: *m
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_wren_bind_face(face: *mut vdynamic, v: u64, _t: *mut hl_type) {
     let v = Value::from_bits(v);
-    let _kept = caribou_wren::keep_value(v);
-    unsafe { caribou_ash::link::bind(face, caribou_wren::from_wren(v)) }
+    // Binding only writes the two edges, so the caller's live arguments are
+    // enough; no collection can start between them.
+    unsafe { caribou_ash::link::bind_attachment(face, caribou_wren::from_wren(v)) }
 }
 
 /// A Wren object as its Haxe face, of the program's type `t`: the face
@@ -138,7 +139,7 @@ pub unsafe extern "C" fn caribou_wren_bind_face(face: *mut vdynamic, v: u64, _t:
 pub unsafe extern "C" fn caribou_wren_to_haxe_face(v: u64, t: *mut hl_type) -> *mut vdynamic {
     let v = Value::from_bits(v);
     let _kept = caribou_wren::keep_value(v);
-    unsafe { caribou_ash::link::face(caribou_wren::from_wren(v), t) }
+    unsafe { caribou_ash::link::attachment_face(caribou_wren::from_wren(v), t) }
 }
 
 /// A Wren function as a Haxe closure of the program's function type `t`;

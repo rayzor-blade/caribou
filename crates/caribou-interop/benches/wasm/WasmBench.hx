@@ -8,6 +8,7 @@ import bench.tally.Tally;
 // not link yet raises, and is left blank.
 class WasmBench {
 	static function main() {
+		attachmentProbe();
 		var args = Sys.args();
 		var n = args.length > 0 ? Std.parseInt(args[0]) : 200000;
 		var runs = args.length > 1 ? Std.parseInt(args[1]) : 5;
@@ -31,6 +32,19 @@ class WasmBench {
 				line += StringTools.lpad(measure(cell, n, runs), " ", 12);
 			Sys.println(line);
 		}
+	}
+
+	static function attachmentProbe() {
+		var live = new Tally(41);
+		if (Tally.same(live) != live)
+			throw "a live Wren object did not keep its Haxe face";
+		Tally.keep(live);
+		live = null;
+		hl.Gc.major();
+		var restored = Tally.kept();
+		if (restored.total != 41)
+			throw "a Wren object did not survive its Haxe face";
+		Tally.clear();
 	}
 
 	static function measure(cell:Int->Float, n:Int, runs:Int):String {

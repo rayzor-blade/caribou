@@ -24,6 +24,22 @@ class Tally {
   #export = "adder() -> Fn(Num) -> Num"
   static adder() { Fn.new {|x| x + 1 } }
 
+  #export = "same(t: Tally) -> Tally"
+  static same(t) { t }
+  #export = "keep(t: Tally) -> Tally"
+  static keep(t) {
+    __kept = t
+    return t
+  }
+  #export = "kept() -> Tally"
+  static kept() { __kept }
+  #export = "clear() -> Tally"
+  static clear() {
+    var old = __kept
+    __kept = null
+    return old
+  }
+
   // Objects, strings and sequences crossing (benches/transfer.rs).
 
   #export = "take(o: Bench) -> Num"
