@@ -20,13 +20,13 @@ libc = "0.2"
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
 # needs lands there first; while it is not pushed, `[patch]` below points
 # the source at the checkout.
-ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302" }
-ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302" }
-ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302", default-features = false }
-ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302", default-features = false }
-ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302", default-features = false }
-ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302" }
-ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "c394c421d4989385c4987cb96dc9994b19a31302" }
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573", default-features = false }
+ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573", default-features = false }
+ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573" }
+ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "1d5383eacff48aee410e6df0c3163e8d468b5573" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "c826e81266f5ece30f22c6d7ba8c7a76fc3a5235", default-features = false }
 zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0", default-features = false }
