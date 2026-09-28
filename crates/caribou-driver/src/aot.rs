@@ -154,6 +154,8 @@ pub fn build_with_languages(
         exports: languages.exports(),
         // The Haxe closures Ash makes of the other languages' functions.
         closures: languages.closures(),
+        // Room in the other languages' Haxe objects for their views of them.
+        object_tails: languages.object_tails(),
         // Caribou's tasks run on Ash's fibers in a wasm program, which
         // suspend only in a module the transform instrumented.
         wasm_fibers: true,

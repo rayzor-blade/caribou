@@ -222,6 +222,14 @@ pub fn to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
 /// for Wren, filled on first need. What [`to_wren`] does for such an
 /// object, for a caller whose types already say `v` is one.
 pub fn object_to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
+    // An object whose language reserved a tail in it keeps its view there.
+    if let Some(start) = cell::tail_of(v) {
+        if unsafe { crate::import::viewed(start) } {
+            crate::heap::hold_view(record_for(vm.object_class as *mut u8), start);
+            return Some(WValue::object(unsafe { cell::view_at(start) }));
+        }
+        return crate::import::proxy_in(vm, v, crate::import::Room::Tail(start));
+    }
     let cell = crate::import::cell_of(v);
     if let cell::Found::Cell(c) = cell {
         if let Some(front) = cell::front(c) {
@@ -233,7 +241,7 @@ pub fn object_to_wren(vm: &mut VM, v: Value) -> Option<WValue> {
             return Some(WValue::object(unsafe { cell::view_at(start) }));
         }
     }
-    crate::import::proxy_in(vm, v, cell)
+    crate::import::proxy_in(vm, v, crate::import::Room::Cell(cell))
 }
 
 /// [`from_wren`], for a host handing a Wren value to the bridge.

@@ -2190,6 +2190,48 @@ fn bridge_word<'a>(obj: *mut u8) -> Option<&'a AtomicUsize> {
     Some(unsafe { &*(obj.add(at) as *const AtomicUsize) })
 }
 
+/// Where the tail of the Haxe object `obj` starts, if it has one: after
+/// its bridge word, on a 16-byte boundary. An object has a tail when a
+/// build reserved one for its class (`caribou::cell::TAIL_BYTES` more
+/// than its fields and bridge word), which its allocation's size shows;
+/// that is read once per type.
+pub(crate) fn tail(obj: *mut u8) -> Option<*mut u8> {
+    let t = unsafe { *(obj as *const *mut hl_type) };
+    if t.is_null() || unsafe { (*t).kind } != hl::HOBJ {
+        return None;
+    }
+    let rt = unsafe { (*(*t).detail.obj).rt };
+    if rt.is_null() {
+        return None;
+    }
+    let after = crate::heap::fields_end(unsafe { (*rt).size } as usize) + size_of::<usize>();
+    if !tailed(t, || {
+        heap::in_heap(obj as *const c_void)
+            && unsafe { heap::allocation_size(obj as *const c_void) }
+                >= after + caribou::cell::TAIL_BYTES
+    }) {
+        return None;
+    }
+    Some(((obj as usize + after).next_multiple_of(16)) as *mut u8)
+}
+
+/// Whether objects of type `t` have a tail: `measure` answers it for one
+/// of them, once per type, remembered in a direct-mapped table whose
+/// entry is the type's address with the answer in its low bit.
+fn tailed(t: *mut hl_type, measure: impl FnOnce() -> bool) -> bool {
+    const WAYS: usize = 64;
+    static TYPES: [AtomicUsize; WAYS] = [const { AtomicUsize::new(0) }; WAYS];
+    let key = t as usize;
+    let way = &TYPES[(key / size_of::<hl_type>()) % WAYS];
+    let entry = way.load(Ordering::Relaxed);
+    if entry & !1 == key {
+        return entry & 1 != 0;
+    }
+    let answer = measure();
+    way.store(key | usize::from(answer), Ordering::Relaxed);
+    answer
+}
+
 /// The language a cell kept on an object holds it for.
 unsafe fn holder_of(cell: *mut u8) -> LangId {
     unsafe { (*desc_of(cell)).lang }

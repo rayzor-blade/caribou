@@ -197,6 +197,7 @@ pub fn install_into(seam: Seam) -> Result<(), InstallError> {
         return Err(InstallError::Refused);
     }
     proto::register_descriptor();
+    caribou::cell::set_tails(proto::tail);
     caribou::sched::add_task_hook(sched::task_born);
     caribou::sched::add_stack_hook(sched::stack_born);
     INSTALLED.store(true, Ordering::Release);

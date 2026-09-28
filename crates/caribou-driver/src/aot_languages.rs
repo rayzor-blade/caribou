@@ -48,6 +48,8 @@ pub struct Artifact {
     /// The function types Ash makes Haxe closures of this language's
     /// functions for.
     pub closures: Vec<ash_core::host_export::HostClosure>,
+    /// The Haxe classes whose instances get a tail for this language's view.
+    pub tails: Vec<String>,
     linker: Box<dyn Linker>,
 }
 
@@ -64,6 +66,7 @@ impl Artifact {
             modules,
             exports: Vec::new(),
             closures: Vec::new(),
+            tails: Vec::new(),
             linker,
         }
     }
@@ -151,6 +154,18 @@ impl Artifacts {
             .collect()
     }
 
+    /// The Haxe classes whose instances Ash allocates with a tail, and its
+    /// size.
+    pub fn object_tails(&self) -> Vec<(String, usize)> {
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for class in self.items.iter().flat_map(|artifact| &artifact.tails) {
+            if !out.iter().any(|(c, _)| c == class) {
+                out.push((class.clone(), caribou::cell::TAIL_BYTES));
+            }
+        }
+        out
+    }
+
     /// The function types Ash makes Haxe closures for.
     pub fn closures(&self) -> Vec<ash_core::host_export::HostClosure> {
         self.items
@@ -232,6 +247,7 @@ fn build_wren(
         foreign,
         exports,
         closures,
+        tails,
     } = crate::foreign::plan(&mut modules, haxe, &described);
     let modules = dependencies_first(modules);
     if let Some(dir) = out.parent() {
@@ -256,6 +272,7 @@ fn build_wren(
     let mut artifact = Artifact::new("wren", out.to_path_buf(), described, Box::new(WrenLinker));
     artifact.exports = exports;
     artifact.closures = closures;
+    artifact.tails = tails;
     Ok(Some(artifact))
 }
 

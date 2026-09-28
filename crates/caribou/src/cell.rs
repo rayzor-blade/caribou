@@ -300,6 +300,89 @@ pub unsafe fn view_at(p: *mut u8) -> *mut u8 {
     unsafe { p.add(VIEW) }
 }
 
+// ---------------------------------------------------------------------------
+// Tails
+// ---------------------------------------------------------------------------
+
+/// Room an object's language reserves at the end of an object for a
+/// holder's view, so the holder keeps the view there rather than in a
+/// cell: no second allocation, nothing kept on the object, nothing for
+/// the sweep to forget, and the same view each time the object crosses.
+///
+/// It begins as a cell begins, so the holder's code and collector read it
+/// as they read a cell: a descriptor ([`is_tail`]), the bridge word the
+/// holder's collector marks in, and the view at [`VIEW`]. The object's
+/// address follows the view.
+#[repr(C)]
+pub struct Tail {
+    desc: *const TypeDesc,
+    bridge: usize,
+    _pad: [u8; VIEW - 2 * size_of::<usize>()],
+    view: [u64; VIEW_WORDS],
+    obj: *mut u8,
+}
+
+/// The bytes an object's language reserves for a [`Tail`]: its size,
+/// and room to start it on a 16-byte boundary, as a holder's own objects
+/// start. The same on every target.
+pub const TAIL_BYTES: usize = 80;
+const _: () = assert!(size_of::<Tail>() + 15 <= TAIL_BYTES);
+
+static TAIL_DESC: TypeDesc = TypeDesc::new(hl_type {
+    kind: caribou_abi::hl::HVOID,
+    detail: caribou_abi::hl::hl_type_detail {
+        abs_name: ptr::null(),
+    },
+    vobj_proto: ptr::null_mut(),
+    mark_bits: ptr::null_mut(),
+});
+
+/// Finds the tail of an object whose language reserves one: set once by
+/// that language's adapter.
+pub type TailOf = fn(obj: *mut u8) -> Option<*mut u8>;
+
+static TAILS: std::sync::OnceLock<TailOf> = std::sync::OnceLock::new();
+
+/// Name the function that finds an object's tail. The first set wins.
+pub fn set_tails(find: TailOf) {
+    let _ = TAILS.set(find);
+}
+
+/// Where the tail of `v` starts, if its language reserved one: aligned to
+/// 16, and made a tail ([`is_tail`]) on first use.
+pub fn tail_of(v: Value) -> Option<*mut u8> {
+    let find = TAILS.get()?;
+    let obj = address_of(v)? as *mut u8;
+    let start = find(obj)?;
+    // A tail is made on first use; its object never moves.
+    unsafe {
+        let t = start as *mut Tail;
+        if !ptr::eq((*t).desc, &TAIL_DESC) {
+            (*t).obj = obj;
+            (*t).desc = &TAIL_DESC;
+        }
+    }
+    Some(start)
+}
+
+/// Whether the memory at `p` is a tail, by its word zero.
+///
+/// # Safety
+/// `p` must be readable for a word.
+#[inline]
+pub unsafe fn is_tail(p: *const u8) -> bool {
+    ptr::eq(unsafe { *(p as *const *const TypeDesc) }, &TAIL_DESC)
+}
+
+/// The object whose tail starts at `p`.
+///
+/// # Safety
+/// `p` must be a tail.
+#[inline]
+pub unsafe fn tail_object(p: *const u8) -> *mut u8 {
+    unsafe { (*(p as *const Tail)).obj }
+}
+
 /// The descriptor the cell `v` is read under.
 pub fn descriptor_of(v: Value) -> Option<&'static TypeDesc> {
     as_cell(v).map(|c| unsafe { &*(*c).desc })

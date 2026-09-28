@@ -471,7 +471,13 @@ unsafe extern "C" fn trace_anchor(obj: *mut u8, tracer: *mut Tracer<'_>) {
             tracer.mark(pin.start as *const u8);
         }
         for &view in &shard.views {
-            tracer.mark(view as *const u8);
+            // A view in a tail is held by marking the object it is in.
+            let start = view as *const u8;
+            if unsafe { cell::is_tail(start) } {
+                tracer.mark(unsafe { cell::tail_object(start) });
+            } else {
+                tracer.mark(start);
+            }
         }
     }
 }
@@ -560,6 +566,21 @@ pub unsafe extern "C" fn heap_drop(heap: *mut c_void) {
     let mut gc = heap::gc_locked_init();
     import::forget_classes(rec);
     for shard in rec.shards.all() {
+        // A view in a tail outlives this VM with its object: cleared, so
+        // the object's next crossing makes it afresh.
+        for &view in &unsafe { &*shard }.views {
+            let start = view as *mut u8;
+            if unsafe { cell::is_tail(start) } {
+                unsafe {
+                    ptr::write_bytes(
+                        cell::view_at(start),
+                        0,
+                        size_of::<wren_lift::runtime::object::ObjInstance>(),
+                    );
+                    *bridge_word(start) = 0;
+                }
+            }
+        }
         for pin in &unsafe { &*shard }.pins {
             // Another language may hold one of these objects through a
             // cell: it stands for nothing now. An adopted instance in
@@ -665,6 +686,16 @@ pub(crate) fn hold_view(heap: &WrenHeap, start: *mut u8) {
 /// objects.
 unsafe fn viewed_cell(gc: &ImmixAllocator, addr: usize) -> Option<(usize, usize)> {
     let (start, size) = gc.allocation_containing(addr)?;
+    // A view Wren holds in an object's tail: the address is the view,
+    // `PREFIX` into the tail.
+    let tail = addr.wrapping_sub(PREFIX);
+    if tail >= start
+        && tail + size_of::<cell::Tail>() <= start + size
+        && unsafe { cell::is_tail(tail as *const u8) }
+        && unsafe { *bridge_word(tail as *mut u8) } & VIEW_HELD != 0
+    {
+        return Some((tail, size_of::<cell::Tail>()));
+    }
     // Only a traced allocation has a descriptor at word zero to read.
     let held = heap::is_traced_allocation(start as *const c_void)
         && unsafe { cell::is_cell(start as *const u8) }
@@ -880,7 +911,13 @@ pub unsafe extern "C" fn collect_end(heap: *mut c_void) -> usize {
             let w = unsafe { *word };
             if w & MARKED != 0 {
                 unsafe { *word = w & !MARKED };
-                held.push(start as *const u8);
+                // A view in a tail keeps the object the tail is in.
+                let object = if unsafe { cell::is_tail(start as *const u8) } {
+                    unsafe { cell::tail_object(start as *const u8) }.cast_const()
+                } else {
+                    start as *const u8
+                };
+                held.push(object);
                 return true;
             }
             unsafe { *word = w & !VIEW_HELD };

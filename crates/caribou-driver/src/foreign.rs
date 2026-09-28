@@ -54,6 +54,7 @@ pub fn plan(modules: &mut [AotModule], haxe: &[ModuleDesc], wren: &[(String, Mod
     let mut exports = Vec::new();
     let mut functions: Vec<TypeRef> = Vec::new();
     let mut closures: Vec<HostClosure> = Vec::new();
+    let mut tails: Vec<String> = Vec::new();
     // Wren's own exports: a function one gives Haxe is a closure Ash makes,
     // and a Haxe function one takes crosses as its type's class.
     for (_, desc) in wren {
@@ -178,6 +179,8 @@ pub fn plan(modules: &mut [AotModule], haxe: &[ModuleDesc], wren: &[(String, Mod
                     &TypeRef::Void,
                 );
             }
+            // Its instances keep their view for Wren in a tail.
+            tails.push(class.type_name.clone());
             foreign.push(AotForeignModule {
                 name: format!("haxe:{}", desc.module),
                 classes: vec![AotForeignClass {
@@ -205,6 +208,7 @@ pub fn plan(modules: &mut [AotModule], haxe: &[ModuleDesc], wren: &[(String, Mod
         foreign,
         exports,
         closures,
+        tails,
     }
 }
 
@@ -216,6 +220,9 @@ pub struct Plan {
     pub exports: Vec<HostExport>,
     /// The function types Ash makes Haxe closures of Wren functions for.
     pub closures: Vec<HostClosure>,
+    /// The Haxe classes whose instances Ash allocates with a tail for their
+    /// view in Wren (`caribou::cell::Tail`).
+    pub tails: Vec<String>,
 }
 
 /// The built-in cast that makes a Wren function a Haxe closure of the

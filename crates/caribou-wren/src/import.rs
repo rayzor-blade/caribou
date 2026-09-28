@@ -664,6 +664,11 @@ fn adopt(instance: *mut ObjInstance, obj: *mut u8) {
 pub fn foreign_of(v: WValue) -> Option<Value> {
     let ptr = v.as_object()?;
     let start = ptr.wrapping_sub(cell::VIEW);
+    if unsafe { cell::is_tail(start) } {
+        return Some(Value::object(
+            unsafe { cell::tail_object(start) } as *const c_void
+        ));
+    }
     if unsafe { cell::is_cell(start) } {
         return Some(cell::unwrap(Value::object(start as *const c_void)));
     }
@@ -867,11 +872,19 @@ fn int64_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
 /// written into the view it keeps for Wren and is held through it; any
 /// other object gets an instance of the class holding it.
 pub(crate) fn proxy(vm: &mut VM, v: Value) -> Option<WValue> {
-    proxy_in(vm, v, cell_of(v))
+    proxy_in(vm, v, Room::Cell(cell_of(v)))
 }
 
-/// [`proxy`] of `v`, for which the caller found `cell`.
-pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValue> {
+/// Where an object's view for Wren is kept: in its cell, which the caller
+/// found or which is made here, or in the tail its language reserved in
+/// it (`cell::tail_of`), which needs nothing made.
+pub(crate) enum Room {
+    Cell(cell::Found),
+    Tail(*mut u8),
+}
+
+/// [`proxy`] of `v`, whose view goes in `room`.
+pub(crate) fn proxy_in(vm: &mut VM, v: Value, room: Room) -> Option<WValue> {
     let obj = v.as_object()? as *mut u8;
     if obj.is_null() || !crate::installed() {
         return None;
@@ -899,9 +912,11 @@ pub(crate) fn proxy_in(vm: &mut VM, v: Value, cell: cell::Found) -> Option<WValu
         }
     };
     // The object's cell, made here when it has none yet: a cell holds a
-    // view for Wren whichever language made it.
-    let c = cell::found_or_make(v, view_desc(), cell);
-    let start = c.as_object()? as *mut u8;
+    // view for Wren whichever language made it. A tail holds it in place.
+    let start = match room {
+        Room::Cell(found) => cell::found_or_make(v, view_desc(), found).as_object()? as *mut u8,
+        Room::Tail(start) => start,
+    };
     let view = unsafe { cell::view_at(start) } as *mut ObjInstance;
     unsafe {
         view.write(ObjInstance {
