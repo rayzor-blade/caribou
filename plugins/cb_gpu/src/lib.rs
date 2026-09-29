@@ -13,9 +13,14 @@
 compile_error!("caribou-gpu needs a backend: its wgpu one (native), or a WASI target's WebGPU");
 
 #[cfg(not(target_os = "wasi"))]
-mod backend;
+#[allow(clippy::too_many_arguments)]
+mod backend {
+    include!(concat!(env!("OUT_DIR"), "/xgpu_backend/backend.rs"));
+}
 #[cfg(target_os = "wasi")]
-mod web;
+mod web {
+    include!(concat!(env!("OUT_DIR"), "/xgpu_backend/web.rs"));
+}
 /// The web backend: what `web` defines, and a refusal for every other
 /// function.
 #[cfg(target_os = "wasi")]
@@ -24,8 +29,15 @@ mod backend {
     use super::*;
     include!(concat!(env!("OUT_DIR"), "/gpu_web_backend.rs"));
 }
-mod handles;
-mod types;
+mod handles {
+    pub use xgpu_core::{Slab, kind_of};
+}
+mod types {
+    pub use xgpu_core::Kind;
+}
+mod runtime {
+    pub use caribou_abi::{Buffer, BufferMut, ErrorKind, Future, Rooted, Text, Value, host};
+}
 /// The wire to a browser's WebGPU, generated from spec/webgpu.idl.
 #[cfg(target_os = "wasi")]
 #[allow(dead_code, non_camel_case_types, unused_variables, clippy::all)]
@@ -33,7 +45,8 @@ pub mod wire {
     include!(concat!(env!("OUT_DIR"), "/gpu_wire.rs"));
 }
 
-use caribou_abi::{Buffer, BufferMut, Enum, Future, Text};
+use caribou_abi::Enum;
+use runtime::{Buffer, BufferMut, Future, Text};
 include!(concat!(env!("OUT_DIR"), "/gpu.rs"));
 
 #[cfg(test)]

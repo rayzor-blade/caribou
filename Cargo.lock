@@ -893,16 +893,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "caribou-bindgen"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "weedle2",
-]
-
-[[package]]
 name = "caribou-driver"
 version = "0.1.0"
 dependencies = [
@@ -930,13 +920,14 @@ dependencies = [
 name = "caribou-gpu"
 version = "0.1.0"
 dependencies = [
- "caribou-bindgen",
  "caribou_abi",
  "pollster",
  "raw-window-handle",
  "wasm-bindgen-futures",
  "wgpu",
- "wgpu-types",
+ "xgpu-backend",
+ "xgpu-bindgen",
+ "xgpu-core",
 ]
 
 [[package]]
@@ -7130,6 +7121,25 @@ name = "xcursor"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163b33ed8786455e2fa5d72f554057ce3f3182425434f756cd39c99839d88e23"
+
+[[package]]
+name = "xgpu-backend"
+version = "0.1.0"
+
+[[package]]
+name = "xgpu-bindgen"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "weedle2",
+ "wgpu-types",
+]
+
+[[package]]
+name = "xgpu-core"
+version = "0.1.0"
 
 [[package]]
 name = "xkbcommon-dl"

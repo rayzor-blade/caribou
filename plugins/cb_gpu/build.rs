@@ -1,19 +1,15 @@
 fn main() {
-    println!("cargo:rerun-if-changed=gpu.api.rs");
-    println!("cargo:rerun-if-changed=spec/webgpu.idl");
-    let mut api = std::fs::read_to_string("gpu.api.rs").unwrap();
-    api.push_str(&native_features());
-    let idl = std::fs::read_to_string("spec/webgpu.idl").unwrap();
+    let api = xgpu_bindgen::gpu_api();
+    let idl = xgpu_bindgen::WEBGPU_IDL;
     let generated =
-        caribou_bindgen::generate("gpu", &api, &idl).expect("valid GPU binding declarations");
+        xgpu_bindgen::generate_caribou("gpu", &api, idl).expect("valid GPU binding declarations");
     let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    xgpu_backend::install(&path).expect("the shared GPU backend installs");
     std::fs::write(path.join("gpu.rs"), generated).unwrap();
     // The wire to a browser's WebGPU: the plugin's encoder, and the GPU
     // agent's decoder, which a web build carries for the program to ship.
     // The wire also carries the canvas, whose size the agent sets.
-    println!("cargo:rerun-if-changed=spec/canvas.idl");
-    let canvas = std::fs::read_to_string("spec/canvas.idl").unwrap();
-    let wire = caribou_bindgen::wire::wire(&format!("{idl}\n{canvas}"))
+    let wire = xgpu_bindgen::wire::wire(&format!("{idl}\n{}", xgpu_bindgen::CANVAS_IDL))
         .expect("the WebGPU IDL generates its wire");
     std::fs::write(path.join("gpu_wire.rs"), wire.rust).unwrap();
     // The agent, and the page's shim that starts it.
@@ -23,35 +19,13 @@ fn main() {
     std::fs::create_dir_all(&page).unwrap();
     std::fs::write(page.join("gpu_agent.mjs"), agent).unwrap();
     std::fs::write(page.join("gpu.mjs"), PAGE_SHIM).unwrap();
-    // For a WASI program, the backend the members call: what src/web.rs
-    // defines, and a refusal for the rest.
-    println!("cargo:rerun-if-changed=src/web.rs");
+    // For a WASI program, the backend the members call: xgpu's web operations,
+    // and a refusal for the rest.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
-        let web = std::fs::read_to_string("src/web.rs").unwrap();
-        let backend = caribou_bindgen::web_backend("gpu", &api, &idl, &web)
+        let backend = xgpu_bindgen::web_backend("gpu", &api, idl, xgpu_backend::WEB)
             .expect("the web backend generates");
         std::fs::write(path.join("gpu_web_backend.rs"), backend).unwrap();
     }
-}
-
-/// `enum NativeFeature`: every feature wgpu has, WebGPU's and its own, in
-/// `wgpu::Features::all()` order, which is the order the backend maps back.
-fn native_features() -> String {
-    let variants: Vec<String> = wgpu_types::Features::all()
-        .iter_names()
-        .map(|(name, _)| {
-            name.split('_')
-                .map(|word| {
-                    let lower = word.to_ascii_lowercase();
-                    let mut chars = lower.chars();
-                    chars.next().map_or(String::new(), |first| {
-                        first.to_ascii_uppercase().to_string() + chars.as_str()
-                    })
-                })
-                .collect()
-        })
-        .collect();
-    format!("\nenum NativeFeature {{ {} }}\n", variants.join(", "))
 }
 
 /// The GPU agent's start, after the generated wire: the browser's GPU under

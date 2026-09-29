@@ -35,6 +35,9 @@ zynml = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a
 zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_lua = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
 zyntax_lua_capi = { git = "https://github.com/darmie/zyntax.git", rev = "fc9386cfbc68c604a5f581f7d8f0b59bdbaf7fe0" }
+xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "0750cecd4ad1be233375a80687cb76495de2291b" }
+xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "0750cecd4ad1be233375a80687cb76495de2291b" }
+xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "0750cecd4ad1be233375a80687cb76495de2291b" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,
@@ -51,6 +54,11 @@ ash_interp = { path = "../ash/crates/ash_interp" }
 ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
 ash_page = { path = "../ash/crates/ash_page" }
 ash_window = { path = "../ash/crates/ash_window" }
+
+[patch."https://github.com/rayzor-blade/xgpu.git"]
+xgpu-backend = { path = "../xgpu/crates/xgpu-backend" }
+xgpu-bindgen = { path = "../xgpu/crates/xgpu-bindgen" }
+xgpu-core = { path = "../xgpu/crates/xgpu-core" }
 
 [profile.dev]
 opt-level = 1

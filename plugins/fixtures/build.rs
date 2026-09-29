@@ -72,6 +72,12 @@ fn main() {
                 .join(format!("{}.hxml", fixture.name)),
         );
     }
+    let xgpu = root.join("../xgpu");
+    watch(xgpu.join("Cargo.toml"));
+    watch(xgpu.join("api"));
+    watch(xgpu.join("crates/xgpu-backend"));
+    watch(xgpu.join("crates/xgpu-bindgen"));
+    watch(xgpu.join("crates/xgpu-core"));
 
     // Cargo holds the outer target directory's lock. Build both plugins and
     // the descriptor command in our own target directory to avoid re-entry
@@ -123,7 +129,9 @@ fn main() {
 
     for fixture in FIXTURES {
         let project = fixtures.join(fixture.name);
-        let plugins = project.join("plugins");
+        // Bridge discovers plugins beside the Haxe output, whose directory
+        // is `bin` in every fixture hxml.
+        let plugins = project.join("bin/plugins");
         fs::create_dir_all(&plugins).expect("the fixture plugin directory is created");
         for &(_, library) in fixture.plugins {
             let filename = format!(

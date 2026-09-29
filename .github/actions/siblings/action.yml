@@ -5,7 +5,7 @@
 # checkout's target directory, so a job that builds caribou-ash builds
 # `ash_std` in `ash/` first, after its cache is restored.
 name: Sibling checkouts
-description: Clone ash, wren_lift and zyntax beside caribou at the revs its manifest pins.
+description: Clone ash, wren_lift, zyntax and xgpu beside caribou at the revs its manifest pins.
 runs:
   using: composite
   steps:
@@ -17,6 +17,7 @@ runs:
         echo "ash=$(rev ash_std)" >> "$GITHUB_OUTPUT"
         echo "wren_lift=$(rev wren_lift)" >> "$GITHUB_OUTPUT"
         echo "zyntax=$(rev zyntax_embed)" >> "$GITHUB_OUTPUT"
+        echo "xgpu=$(rev xgpu-core)" >> "$GITHUB_OUTPUT"
     - uses: actions/checkout@v4
       with:
         repository: rayzor-blade/ash
@@ -32,3 +33,8 @@ runs:
         repository: darmie/zyntax
         ref: ${{ steps.revs.outputs.zyntax }}
         path: zyntax
+    - uses: actions/checkout@v4
+      with:
+        repository: rayzor-blade/xgpu
+        ref: ${{ steps.revs.outputs.xgpu }}
+        path: xgpu
