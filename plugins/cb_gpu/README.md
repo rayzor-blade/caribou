@@ -10,6 +10,10 @@ generators, resource handle core, and native/browser backend operations. This
 package supplies Caribou's text, buffer, future, object, error, and heap
 conventions around that shared model.
 
+Use the official [WebGPU specification](https://www.w3.org/TR/webgpu/) as the
+API reference for the portable `gpu` surface. `caribou-gpu` also exposes
+xgpu's native extensions where the selected backend supports them.
+
 The sibling revision is pinned in the workspace `Cargo.toml` and cloned by the
 CI sibling action. The local `[patch]` entry makes development use `../xgpu`
 at that revision.

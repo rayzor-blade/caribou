@@ -11,7 +11,7 @@ The plugin's native backend is winit. Its web backend (`src/web.rs`) reaches
 these APIs through Ash's page, which owns the canvas and its events and
 writes them into a block of the program's memory in the format of Ash's
 `docs/wasm/window.md`. This file is the reference for that mapping.
-`caribou_bindgen::idl` parses it whole, and `caribou_bindgen::wire`
+`xgpu_bindgen::idl` parses it whole, and `xgpu_bindgen::wire`
 generates a wire from it.
 
 ## Where things run in a page
@@ -98,6 +98,6 @@ request inside the next input event's handler.
 Take the same definitions from a newer webref revision, and record the
 revision here and in the file's header. Definitions move between
 specifications. For example, `MouseEvent` and `WheelEvent` are now in Pointer
-Events, not UI Events. Check each one, then run caribou-bindgen's tests,
+Events, not UI Events. Check each one, then run xgpu-bindgen's tests,
 which parse this file and generate its wire. The build never rewrites the
 file.
