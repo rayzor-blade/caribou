@@ -20,21 +20,21 @@ libc = "0.2"
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
 # needs lands there first; while it is not pushed, `[patch]` below points
 # the source at the checkout.
-ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e" }
-ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e" }
-ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e", default-features = false }
-ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e", default-features = false }
-ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e", default-features = false }
-ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e" }
-ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "2ffdb2be067525aac75b0da05f47f9ada4d3f74e" }
-wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "b842ec8860e695abde07c7810915c3f21e509260", default-features = false }
-zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7" }
-zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7", default-features = false }
-zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7" }
-zynml = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7", default-features = false }
-zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7" }
-zyntax_lua = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7" }
-zyntax_lua_capi = { git = "https://github.com/darmie/zyntax.git", rev = "ff51664c1ef469af3183e5cdba06294f370d49f7" }
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6", default-features = false }
+ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6", default-features = false }
+ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6" }
+ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6" }
+wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "eca0254cfde790e781903ff2ddb8de639be0673f", default-features = false }
+zyntax_embed = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0" }
+zyntax_compiler = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0", default-features = false }
+zyntax_typed_ast = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0" }
+zynml = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0", default-features = false }
+zyntax_python = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0" }
+zyntax_lua = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0" }
+zyntax_lua_capi = { git = "https://github.com/darmie/zyntax.git", rev = "685d64cc31eaaf773f3a32835ac05f290877bcd0" }
 xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "0750cecd4ad1be233375a80687cb76495de2291b" }
 xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "0750cecd4ad1be233375a80687cb76495de2291b" }
 xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "0750cecd4ad1be233375a80687cb76495de2291b" }
@@ -95,3 +95,9 @@ opt-level = 0
 
 [profile.release]
 debug = false
+
+# Ash's generated dispatch table contains every supported native signature.
+# Optimising its tens of thousands of tiny forwarding arms costs far more
+# than it saves at run time; keep the same release policy as Ash itself.
+[profile.release.package.ash_native_call]
+opt-level = 0

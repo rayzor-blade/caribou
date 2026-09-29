@@ -7010,7 +7010,7 @@ dependencies = [
 [[package]]
 name = "wlift_region"
 version = "0.1.0"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=b842ec8860e695abde07c7810915c3f21e509260#b842ec8860e695abde07c7810915c3f21e509260"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=eca0254cfde790e781903ff2ddb8de639be0673f#eca0254cfde790e781903ff2ddb8de639be0673f"
 dependencies = [
  "libc",
 ]
@@ -7018,9 +7018,10 @@ dependencies = [
 [[package]]
 name = "wren_lift"
 version = "0.1.22"
-source = "git+https://github.com/wrenlift/WrenLift.git?rev=b842ec8860e695abde07c7810915c3f21e509260#b842ec8860e695abde07c7810915c3f21e509260"
+source = "git+https://github.com/wrenlift/WrenLift.git?rev=eca0254cfde790e781903ff2ddb8de639be0673f#eca0254cfde790e781903ff2ddb8de639be0673f"
 dependencies = [
  "aes-gcm",
+ "ahash",
  "argon2",
  "ariadne",
  "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash?rev=312b4a4f0da6cf3f26807aa3d3d6b2dd01da3f56)",

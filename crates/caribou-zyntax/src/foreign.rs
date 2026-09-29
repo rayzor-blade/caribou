@@ -120,9 +120,13 @@ fn hold(held: Held) -> Any {
     foreign::boxed(word)
 }
 
-fn hold_object(object: *mut u8) -> Any {
+fn root_object(object: *mut u8) -> usize {
     let handle = heap::handle_new(object);
-    foreign::boxed(((handle.as_raw() as usize) << 1) | OBJECT_WORD)
+    ((handle.as_raw() as usize) << 1) | OBJECT_WORD
+}
+
+fn hold_object(object: *mut u8) -> Any {
+    foreign::boxed(root_object(object))
 }
 
 fn object_handle(word: usize) -> Option<Handle> {
@@ -338,12 +342,16 @@ fn result(r: Result<Value, Value>) -> Result<Any, ForeignError> {
 }
 
 fn object_result(r: Result<Value, Value>) -> Result<Any, ForeignError> {
+    object_word_result(r).map(foreign::boxed)
+}
+
+fn object_word_result(r: Result<Value, Value>) -> Result<usize, ForeignError> {
     let value = r.map_err(error_of)?;
     let object = value
         .as_object()
         .filter(|object| !object.is_null())
         .ok_or_else(|| ForeignError::new("TypeError", "a host constructor returned no object"))?;
-    Ok(hold_object(object as *mut u8))
+    Ok(root_object(object as *mut u8))
 }
 
 fn float_result(r: Result<Value, Value>) -> Result<f64, ForeignError> {
@@ -389,9 +397,21 @@ fn construct_target(target: &Callable, args: &[Any]) -> Result<Any, ForeignError
     })
 }
 
+fn construct_word_target(target: &Callable, args: &[Any]) -> Result<usize, ForeignError> {
+    with_values(args, |values| {
+        object_word_result(bridge::call(*target, values, caller()))
+    })
+}
+
 fn construct_float_target(target: &Callable, args: &[f64]) -> Result<Any, ForeignError> {
     with_float_values(args, |values| {
         object_result(bridge::call(*target, values, caller()))
+    })
+}
+
+fn construct_float_word_target(target: &Callable, args: &[f64]) -> Result<usize, ForeignError> {
+    with_float_values(args, |values| {
+        object_word_result(bridge::call(*target, values, caller()))
     })
 }
 
@@ -581,6 +601,23 @@ impl Foreign for World {
         }
     }
 
+    fn construct_word(&self, word: usize, args: &[Any]) -> Result<usize, ForeignError> {
+        let held = unsafe { held(word) };
+        match held {
+            Held::Class(iface, i) => match &iface.classes[*i].ctor {
+                Some(ctor) => construct_word_target(&ctor.target, args),
+                None => Err(ForeignError::new(
+                    "TypeError",
+                    format!("{} has no constructor", held.describe()),
+                )),
+            },
+            _ => Err(ForeignError::new(
+                "TypeError",
+                format!("{} is not a class", held.describe()),
+            )),
+        }
+    }
+
     fn construct_float(&self, word: usize, args: &[f64]) -> Result<Any, ForeignError> {
         let held = unsafe { held(word) };
         match held {
@@ -596,6 +633,34 @@ impl Foreign for World {
                 format!("{} is not a class", held.describe()),
             )),
         }
+    }
+
+    fn construct_float_word(&self, word: usize, args: &[f64]) -> Result<usize, ForeignError> {
+        let held = unsafe { held(word) };
+        match held {
+            Held::Class(iface, i) => match &iface.classes[*i].ctor {
+                Some(ctor) => construct_float_word_target(&ctor.target, args),
+                None => Err(ForeignError::new(
+                    "TypeError",
+                    format!("{} has no constructor", held.describe()),
+                )),
+            },
+            _ => Err(ForeignError::new(
+                "TypeError",
+                format!("{} is not a class", held.describe()),
+            )),
+        }
+    }
+
+    fn retain(&self, word: usize) -> Result<usize, ForeignError> {
+        let Some(handle) = object_handle(word) else {
+            return Err(ForeignError::new(
+                "TypeError",
+                "only host objects can be retained",
+            ));
+        };
+        heap::handle_retain(handle);
+        Ok(word)
     }
 
     fn invoke(&self, word: usize, name: &str, args: &[Any]) -> Result<Any, ForeignError> {
