@@ -69,6 +69,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt # bindgen pretty-prints through it
+          targets: wasm32-wasip1, wasm32-unknown-unknown
       - uses: ./caribou/.github/actions/llvm21
         with:
           link: "true"
