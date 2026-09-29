@@ -352,6 +352,12 @@ fn call_float_target(target: &Callable, args: &[f64]) -> Result<f64, ForeignErro
     })
 }
 
+fn construct_float_target(target: &Callable, args: &[f64]) -> Result<Any, ForeignError> {
+    with_float_values(args, |values| {
+        result(bridge::call(*target, values, caller()))
+    })
+}
+
 fn call_float_target_at(
     target: &Callable,
     site: &CallSite,
@@ -519,6 +525,40 @@ impl Foreign for World {
             Held::Module(_) => Err(ForeignError::new(
                 "TypeError",
                 format!("{} is not callable", held.describe()),
+            )),
+        }
+    }
+
+    fn construct(&self, word: usize, args: &[Any]) -> Result<Any, ForeignError> {
+        let held = unsafe { held(word) };
+        match held {
+            Held::Class(iface, i) => match &iface.classes[*i].ctor {
+                Some(ctor) => call_target(&ctor.target, args),
+                None => Err(ForeignError::new(
+                    "TypeError",
+                    format!("{} has no constructor", held.describe()),
+                )),
+            },
+            _ => Err(ForeignError::new(
+                "TypeError",
+                format!("{} is not a class", held.describe()),
+            )),
+        }
+    }
+
+    fn construct_float(&self, word: usize, args: &[f64]) -> Result<Any, ForeignError> {
+        let held = unsafe { held(word) };
+        match held {
+            Held::Class(iface, i) => match &iface.classes[*i].ctor {
+                Some(ctor) => construct_float_target(&ctor.target, args),
+                None => Err(ForeignError::new(
+                    "TypeError",
+                    format!("{} has no constructor", held.describe()),
+                )),
+            },
+            _ => Err(ForeignError::new(
+                "TypeError",
+                format!("{} is not a class", held.describe()),
             )),
         }
     }
