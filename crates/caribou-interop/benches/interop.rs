@@ -160,6 +160,13 @@ fn main() {
                 print!("{:>15}", "n/a");
                 continue;
             };
+            // Each cell starts after both heaps have retired the previous
+            // cell's temporaries. Otherwise the later construction columns
+            // inherit collection debt from every earlier column and a full
+            // row disagrees sharply with the same cell run by itself.
+            session.wren().collect_garbage();
+            caribou::heap::major();
+            session.wren().collect_garbage();
             let member = format!("{prefix}{suffix}");
             let arg = if int {
                 Value::int(args.n as i32)

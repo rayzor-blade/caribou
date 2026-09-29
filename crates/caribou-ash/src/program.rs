@@ -364,7 +364,18 @@ fn load_with(
     let search_dir = path.parent().unwrap_or_else(|| Path::new("."));
     resolver.discover_and_load_libraries(search_dir, &bytecode.natives, true)?;
     let mut interpreter = Box::new(HLInterpreter::new(&bytecode, &resolver));
-    crate::import::attach_types(&bytecode, &interpreter)?;
+    let object_drops = crate::import::attach_types(&bytecode, &interpreter)?;
+    if !object_drops.is_empty() {
+        let set = resolver
+            .resolve_function("std", "hlp_set_object_drops")
+            .context("resolving hlp_set_object_drops")?;
+        if set.is_null() {
+            bail!("hlp_set_object_drops resolved to null");
+        }
+        type SetObjectDrops = unsafe extern "C" fn(*const *mut hl_type, usize);
+        let set: SetObjectDrops = unsafe { std::mem::transmute(set) };
+        unsafe { set(object_drops.as_ptr(), object_drops.len()) };
+    }
     if options.mode == Mode::Hybrid {
         // ash's CLI defaults: the Application preset, tier from ASH_TIER.
         let tier_mode = match std::env::var("ASH_TIER") {

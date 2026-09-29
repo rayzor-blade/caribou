@@ -22,7 +22,7 @@
 // Only a loaded program binds natives; the faces are reached regardless.
 #![cfg_attr(not(feature = "runner"), allow(dead_code))]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -522,9 +522,13 @@ pub fn bind(bytecode: &DecodedBytecode) -> Result<HashMap<(String, String), Host
 /// runtime types are its. Every class a bound native names must be in
 /// the program; `caribou.Ref` need not be.
 #[cfg(feature = "runner")]
-pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> Result<()> {
+pub fn attach_types(
+    bytecode: &DecodedBytecode,
+    interpreter: &HLInterpreter,
+) -> Result<Vec<*mut hl_type>> {
     let table = SLOT_TABLE.read().unwrap();
     let mut by_class = HashMap::new();
+    let mut drop_roots = HashSet::new();
     for s in table.iter() {
         // An operation of the bridge's own names no class.
         if Kind::operation(&s.name).is_some() {
@@ -545,8 +549,30 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
                     .flatten()
             })
             .ok_or_else(|| anyhow!("the program declares `{}` but no class `{name}`", s.name))?;
+        drop_roots.insert(index);
         by_class.insert(key, interpreter.c_type_of(index) as usize);
     }
+    let drop_types = bytecode
+        .types
+        .iter()
+        .enumerate()
+        .filter_map(|(index, ty)| {
+            if ty.kind != hl::HOBJ {
+                return None;
+            }
+            let mut current = Some(index);
+            while let Some(i) = current {
+                if drop_roots.contains(&i) {
+                    return Some(interpreter.c_type_of(index).cast::<hl_type>());
+                }
+                current = bytecode.types[i]
+                    .obj
+                    .as_ref()
+                    .and_then(|obj| obj.super_.as_ref().map(|super_| super_.0));
+            }
+            None
+        })
+        .collect();
     let fallback = bytecode
         .type_index_of(REF_CLASS)
         .map_or(0, |i| interpreter.c_type_of(i) as usize);
@@ -590,7 +616,7 @@ pub fn attach_types(bytecode: &DecodedBytecode, interpreter: &HLInterpreter) -> 
             .insert((caribou::world::LANG_CORE, intern("caribou.Future")), view);
     }
     *FACES.write().unwrap() = Some(faces);
-    Ok(())
+    Ok(drop_types)
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,7 +1137,7 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
             // superclass's, is the `super()` a Haxe constructor must make.
             Ok(None) => Ok(Value::null()),
             Ok(Some(target)) => bridge::call_at(target, &s.site, args, haxe, &s.name).map(|obj| {
-                unsafe { bind_face(receiver, wrenref::wrap_foreign(obj)) };
+                unsafe { crate::link::bind_attachment(receiver, obj) };
                 Value::null()
             }),
         },
