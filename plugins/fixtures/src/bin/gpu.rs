@@ -11,7 +11,7 @@ fn main() {
     println!("fixture: {}", fixture.display());
 
     let mut session = Session::open(
-        &fixture.join("gpu.hl"),
+        &fixture.join("bin/gpu.hl"),
         Options {
             mode: Mode::Hybrid,
             ..Options::default()

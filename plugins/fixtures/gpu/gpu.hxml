@@ -2,4 +2,4 @@
 -lib caribou
 --macro Framework.register()
 -main Main
--hl gpu.hl
+-hl bin/gpu.hl

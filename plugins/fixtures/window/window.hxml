@@ -1,4 +1,4 @@
 -cp src
 -lib caribou
 -main Main
--hl window.hl
+-hl bin/window.hl

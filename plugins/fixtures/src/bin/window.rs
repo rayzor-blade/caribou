@@ -11,7 +11,7 @@ fn main() {
     println!("fixture: {}", fixture.display());
 
     let mut session = Session::open(
-        &fixture.join("window.hl"),
+        &fixture.join("bin/window.hl"),
         Options {
             mode: Mode::Hybrid,
             ..Options::default()

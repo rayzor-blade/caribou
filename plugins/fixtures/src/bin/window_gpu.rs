@@ -12,7 +12,7 @@ fn main() {
     let args = std::env::args().skip(1).collect();
 
     let mut session = Session::open(
-        &fixture.join("window_gpu.hl"),
+        &fixture.join("bin/window_gpu.hl"),
         Options {
             mode: Mode::Hybrid,
             args,
