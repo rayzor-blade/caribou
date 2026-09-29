@@ -52,6 +52,48 @@ fn caribou(dir: &Path, haxelib: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn describe_hides_frontend_object_layout_fields() {
+    let dir = std::env::temp_dir().join(format!("caribou-describe-{}", std::process::id()));
+    let game = dir.join("game");
+    std::fs::create_dir_all(&game).unwrap();
+    std::fs::write(
+        game.join("tally.py"),
+        r#"
+class Tally:
+    def __init__(self, hits: int):
+        self.hits = hits
+"#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_caribou"))
+        .args(["describe", dir.to_str().unwrap()])
+        .output()
+        .expect("caribou describes Python");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let modules: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let tally = modules
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|module| module["lang"] == "python" && module["module"] == "game/tally")
+        .unwrap_or_else(|| panic!("{modules}"));
+    let fields: Vec<&str> = tally["classes"][0]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|field| field["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(fields, ["hits"]);
+
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
 fn a_project_file_runs_and_builds_its_program() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let fixtures = root.join("crates/caribou-interop/fixtures/src/game");

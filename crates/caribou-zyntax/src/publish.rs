@@ -316,9 +316,15 @@ pub fn declared(
                 }
                 let at = class_at(&mut classes, name.clone());
                 for field in &c.fields {
+                    let field_name = name_of(field.name);
+                    // Frontends reserve `$` fields for their object layout.
+                    // They are not members another language can access.
+                    if field_name.starts_with('$') {
+                        continue;
+                    }
                     classes[at]
                         .fields
-                        .push((name_of(field.name), type_ref(&field.ty, types, lang)));
+                        .push((field_name, type_ref(&field.ty, types, lang)));
                 }
                 for m in &c.methods {
                     if let Some(function) = method(&name, m) {
