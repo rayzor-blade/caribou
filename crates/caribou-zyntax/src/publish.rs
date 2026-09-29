@@ -10,7 +10,7 @@
 
 use caribou::native;
 use caribou::protocol::Callable;
-use caribou::registry::{ClassIface, FieldIface, Interface, MethodIface, TypeRef};
+use caribou::registry::{ClassIface, FieldIface, Interface, MethodIface, TupleField, TypeRef};
 use caribou_abi::LangId;
 use caribou_abi::hl::{self, hl_type};
 use std::collections::HashMap;
@@ -19,7 +19,16 @@ use zyntax_embed::HirModule;
 
 use zyntax_embed::{ExportedSymbol, SymbolKind};
 use zyntax_typed_ast::type_registry::{PrimitiveType, Type, TypeId, TypeRegistry};
-use zyntax_typed_ast::{InternedString, TypedDeclaration, TypedProgram, Visibility};
+use zyntax_typed_ast::{
+    InternedString, TypedBlock, TypedCall, TypedDeclaration, TypedExpression, TypedNode,
+    TypedProgram, TypedStatement, Visibility, typed_node,
+};
+
+const TUPLE_BRIDGE_PREFIX: &str = "__caribou_tuple$";
+
+fn tuple_bridge_symbol(symbol: &str) -> String {
+    format!("{TUPLE_BRIDGE_PREFIX}{symbol}")
+}
 
 /// A function as published: the name a language calls it by, the
 /// runtime's symbol, its typed parameters and result, and whether it
@@ -169,6 +178,16 @@ pub fn type_ref(ty: &Type, types: &Types<'_>, lang: &str) -> TypeRef {
             type_ref(inner, types, lang)
         }
         Type::Function { .. } => TypeRef::Fun,
+        Type::Tuple(fields) => TypeRef::Tuple(
+            fields
+                .iter()
+                .enumerate()
+                .map(|(i, ty)| TupleField {
+                    name: format!("_{}", i + 1),
+                    ty: type_ref(ty, types, lang),
+                })
+                .collect(),
+        ),
         _ => TypeRef::Dyn,
     }
 }
@@ -182,6 +201,112 @@ fn hir_function<'a>(hir: &'a HirModule, symbol: &str) -> Option<&'a HirFunction>
     hir.functions
         .values()
         .find(|f| f.name.resolve_global().as_deref() == Some(symbol))
+}
+
+/// Add scalar-returning entry points for exported functions whose result is
+/// a tuple value struct. Each entry calls the function and then its frontend's
+/// generated tuple boxer, so the generic dispatcher receives `Any`.
+pub fn bridge_tuple_returns(program: &mut TypedProgram, exports: &[ExportedSymbol]) {
+    let boxers: Vec<(Type, InternedString)> = program
+        .declarations
+        .iter()
+        .filter_map(|node| match &node.node {
+            TypedDeclaration::Function(f)
+                if name_of(f.name).starts_with("zb_tuple_box_")
+                    && f.params.len() == 1
+                    && f.return_type == Type::Any =>
+            {
+                Some((f.params[0].ty.clone(), f.name))
+            }
+            _ => None,
+        })
+        .collect();
+    let exported = |name: &str| {
+        exports.iter().any(|export| {
+            export.is_public
+                && ((export.kind == SymbolKind::Function && export.name == name)
+                    || name.split_once('$').is_some_and(|(class, method)| {
+                        export.kind == SymbolKind::Class
+                            && export.name == class
+                            && !method.starts_with("__")
+                    }))
+        })
+    };
+    let wrappers: Vec<TypedNode<TypedDeclaration>> = program
+        .declarations
+        .iter()
+        .filter_map(|node| {
+            let TypedDeclaration::Function(f) = &node.node else {
+                return None;
+            };
+            let name = name_of(f.name);
+            if !exported(&name) || f.is_async || f.is_fiber {
+                return None;
+            }
+            let Type::Tuple(_) = &f.return_type else {
+                return None;
+            };
+            let (_, boxer) = boxers.iter().find(|(ty, _)| ty == &f.return_type)?;
+            let args = f
+                .params
+                .iter()
+                .map(|param| {
+                    typed_node(
+                        TypedExpression::Variable(param.name),
+                        param.ty.clone(),
+                        node.span,
+                    )
+                })
+                .collect();
+            let result = typed_node(
+                TypedExpression::Call(TypedCall {
+                    callee: Box::new(typed_node(
+                        TypedExpression::Variable(f.name),
+                        Type::Unknown,
+                        node.span,
+                    )),
+                    positional_args: args,
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                }),
+                f.return_type.clone(),
+                node.span,
+            );
+            let boxed = typed_node(
+                TypedExpression::Call(TypedCall {
+                    callee: Box::new(typed_node(
+                        TypedExpression::Variable(*boxer),
+                        Type::Unknown,
+                        node.span,
+                    )),
+                    positional_args: vec![result],
+                    named_args: Vec::new(),
+                    type_args: Vec::new(),
+                }),
+                Type::Any,
+                node.span,
+            );
+            let mut wrapper = f.clone();
+            wrapper.name = InternedString::new_global(&tuple_bridge_symbol(&name));
+            wrapper.return_type = Type::Any;
+            wrapper.body = Some(TypedBlock {
+                statements: vec![typed_node(
+                    TypedStatement::Return(Some(Box::new(boxed))),
+                    Type::Unknown,
+                    node.span,
+                )],
+                span: node.span,
+            });
+            wrapper.link_name = None;
+            wrapper.mark_generated();
+            Some(typed_node(
+                TypedDeclaration::Function(wrapper),
+                Type::Unknown,
+                node.span,
+            ))
+        })
+        .collect();
+    program.declarations.extend(wrappers);
 }
 
 /// A function or method as the typed AST declares it.
@@ -201,7 +326,11 @@ fn function(
     types: &Types<'_>,
     lang: &str,
 ) -> Option<Function> {
-    let f = hir_function(hir, &sig.symbol)?;
+    let tuple_bridge = matches!(sig.ret, Type::Tuple(_))
+        .then(|| tuple_bridge_symbol(&sig.symbol))
+        .filter(|symbol| hir_function(hir, symbol).is_some());
+    let symbol = tuple_bridge.as_deref().unwrap_or(&sig.symbol);
+    let f = hir_function(hir, symbol)?;
     let hir_params = &f.signature.params;
     let mut kinds = Vec::with_capacity(sig.params.len());
     let mut refs = Vec::with_capacity(sig.params.len());
@@ -213,12 +342,16 @@ fn function(
     let hir_ret = f.signature.returns.first().unwrap_or(&HirType::Void);
     Some(Function {
         name: sig.name,
-        symbol: sig.symbol,
+        symbol: symbol.to_owned(),
         is_static: sig.is_static,
         params: refs,
         ret: type_ref(sig.ret, types, lang),
         kinds,
-        ret_kind: kind_of(sig.ret, hir_ret),
+        ret_kind: if tuple_bridge.is_some() {
+            hl::HDYN
+        } else {
+            kind_of(sig.ret, hir_ret)
+        },
     })
 }
 

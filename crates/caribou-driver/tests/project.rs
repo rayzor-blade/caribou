@@ -52,13 +52,16 @@ fn caribou(dir: &Path, haxelib: &Path, args: &[&str]) -> String {
 }
 
 #[test]
-fn describe_hides_frontend_object_layout_fields() {
+fn describe_publishes_only_frontend_api() {
     let dir = std::env::temp_dir().join(format!("caribou-describe-{}", std::process::id()));
     let game = dir.join("game");
     std::fs::create_dir_all(&game).unwrap();
     std::fs::write(
         game.join("tally.py"),
         r#"
+def pair(a: int, b: int) -> tuple[int, int]:
+    return (a, b)
+
 class Tally:
     def __init__(self, hits: int):
         self.hits = hits
@@ -89,6 +92,21 @@ class Tally:
         .map(|field| field["name"].as_str().unwrap())
         .collect();
     assert_eq!(fields, ["hits"]);
+    let pair = tally["functions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|function| function["name"] == "pair")
+        .unwrap();
+    assert_eq!(
+        pair["ret"],
+        serde_json::json!({
+            "Tuple": [
+                { "name": "_1", "ty": "Int" },
+                { "name": "_2", "ty": "Int" }
+            ]
+        })
+    );
 
     std::fs::remove_dir_all(dir).ok();
 }

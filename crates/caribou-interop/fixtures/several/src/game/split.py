@@ -12,3 +12,7 @@ def split(a: int, b: int) -> int:
 # Wren has one number, a float.
 def counted() -> float:
     return Show.count((1, 2, 3))
+
+
+def pair(a: int, b: int) -> tuple[int, int]:
+    return (a, b)

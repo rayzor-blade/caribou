@@ -781,15 +781,16 @@ impl State {
         let lowered = self
             .language
             .parse(&self.runtime, &source, &file, &sources)
-            .and_then(|program| {
+            .and_then(|mut program| {
+                let exports = self.language.exports(&program);
+                publish::bridge_tuple_returns(&mut program, &exports);
                 self.runtime
                     .lower_to_hir(program.clone())
-                    .map(|hir| (program, hir))
+                    .map(|hir| (program, hir, exports))
                     .map_err(|e| e.to_string())
             });
         *self.importing.lock().unwrap() = None;
-        let (program, hir) = lowered.map_err(|e| format!("`{name}`: {e}"))?;
-        let exports = self.language.exports(&program);
+        let (program, hir, exports) = lowered.map_err(|e| format!("`{name}`: {e}"))?;
         let mut declared = publish::declared(&program, &exports, &hir, self.language.name());
         for class in &mut declared.classes {
             if let Some(members) = self.language.exported_members(&program, &class.name) {

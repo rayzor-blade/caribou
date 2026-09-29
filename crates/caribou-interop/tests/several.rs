@@ -13,9 +13,11 @@ use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
 use wren_lift::runtime::vm::{VM, VMConfig};
 
 const USE: &str = r#"
-import "game:split" for split, counted
+import "game:split" for split, counted, pair
 System.print(split.call(17, 5))
 System.print(counted.call())
+var values = pair.call(7, 4)
+System.print(values[0] * 10 + values[1])
 "#;
 
 #[test]
@@ -63,5 +65,5 @@ fn several_values_cross_between_lua_python_and_wren() {
         "{:?} {output:?}",
         errors.borrow()
     );
-    assert_eq!(output, "302\n3\n");
+    assert_eq!(output, "302\n3\n74\n");
 }
