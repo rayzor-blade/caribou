@@ -498,16 +498,16 @@ pub fn declared(
 
 /// The interface of a module: each class it exports, and the functions
 /// it exports as the module's own. `func_of` gives a symbol's compiled
-/// address.
+/// reload cell. The cell always holds the current promoted entry.
 pub fn interface(
     lang: LangId,
     lang_name: &str,
     module: &str,
     declared: Declared,
-    func_of: &dyn Fn(&str) -> Option<*const u8>,
+    func_of: &dyn Fn(&str) -> Option<*const std::sync::atomic::AtomicUsize>,
 ) -> Interface {
     let method = |f: &Function| -> Option<MethodIface> {
-        let func = func_of(&f.symbol)?;
+        let cell = func_of(&f.symbol)?;
         let params: Vec<*const hl_type> = f
             .kinds
             .iter()
@@ -520,8 +520,8 @@ pub fn interface(
             is_static: f.is_static,
             params: f.params.iter().skip(declared).cloned().collect(),
             ret: f.ret.clone(),
-            target: Callable::Typed {
-                func: func as *const std::ffi::c_void,
+            target: Callable::AtomicCell {
+                cell,
                 signature: native::signature(&params, native::kind_type(f.ret_kind)),
                 lang,
             },

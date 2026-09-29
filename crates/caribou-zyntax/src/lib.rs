@@ -809,7 +809,7 @@ impl State {
     /// runtime's current code behind each symbol.
     fn publish(&self, lang: LangId, name: &str, declared: publish::Declared) -> Result<(), String> {
         let iface = publish::interface(lang, self.language.name(), name, declared, &|symbol| {
-            self.runtime.function_pointer(symbol)
+            self.runtime.function_cell(symbol)
         });
         registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))
     }

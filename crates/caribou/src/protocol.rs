@@ -663,6 +663,14 @@ pub enum Callable {
         signature: *const caribou_abi::hl::hl_type,
         lang: LangId,
     },
+    /// A typed function behind an atomically updated code-pointer cell.
+    /// Tiered runtimes use this so promotion and reload affect the next
+    /// foreign call without retaining an interpreter stub or older tier.
+    AtomicCell {
+        cell: *const AtomicUsize,
+        signature: *const caribou_abi::hl::hl_type,
+        lang: LangId,
+    },
     /// An object that answers `call`. Its language is its descriptor's.
     Dynamic(Value),
     /// A method implemented by the receiver's language-neutral protocol.

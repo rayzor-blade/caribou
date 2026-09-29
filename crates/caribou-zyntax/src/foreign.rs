@@ -18,7 +18,7 @@ use std::sync::{Arc, RwLock};
 use caribou::bridge;
 use caribou::error::{Error, Int64, Str};
 use caribou::heap::{self, Handle};
-use caribou::protocol::Callable;
+use caribou::protocol::{CallSite, Callable};
 use caribou::registry::{self, Interface, MethodIface, MethodKind};
 use caribou::symbol::Symbol;
 use caribou::world::LANG_CORE;
@@ -67,6 +67,33 @@ impl Held {
 thread_local! {
     /// The Zyntax language whose code is running, for the bridge's traces.
     static CALLER: Cell<LangId> = const { Cell::new(LANG_CORE) };
+}
+
+struct HostSlot {
+    name: Symbol,
+    get: CallSite,
+    set: CallSite,
+    invoke: CallSite,
+    target: Option<Callable>,
+}
+
+/// A process-local schema key carrying the already interned member, its call
+/// sites, and an optional published target. Zyntax treats this as opaque data.
+pub fn host_key(name: &str, target: Option<Callable>) -> u64 {
+    Box::into_raw(Box::new(HostSlot {
+        name: Symbol::intern(name),
+        get: CallSite::new(),
+        set: CallSite::new(),
+        invoke: CallSite::new(),
+        target,
+    })) as u64
+}
+
+fn host_slot(key: u64) -> Result<&'static HostSlot, ForeignError> {
+    if key == 0 {
+        return Err(ForeignError::new("TypeError", "invalid host member key"));
+    }
+    Ok(unsafe { &*(key as *const HostSlot) })
 }
 
 /// Run `f` as code of `lang`: what calls out of it name as their caller.
@@ -325,6 +352,38 @@ fn call_float_target(target: &Callable, args: &[f64]) -> Result<f64, ForeignErro
     })
 }
 
+fn call_float_target_at(
+    target: &Callable,
+    site: &CallSite,
+    name: &str,
+    args: &[f64],
+) -> Result<f64, ForeignError> {
+    with_float_values(args, |values| {
+        float_result(bridge::call_at(*target, site, values, caller(), name))
+    })
+}
+
+fn call_float_method_at(
+    receiver: Value,
+    target: &Callable,
+    site: &CallSite,
+    name: &str,
+    args: &[f64],
+) -> Result<f64, ForeignError> {
+    with_float_values(args, |values| {
+        let mut all = [Value::null(); WIDEST + 1];
+        all[0] = receiver;
+        all[1..=values.len()].copy_from_slice(values);
+        float_result(bridge::call_at(
+            *target,
+            site,
+            &all[..=values.len()],
+            caller(),
+            name,
+        ))
+    })
+}
+
 /// The method `name` of `v`'s published class, rather than a field or a
 /// getter: its target takes the receiver first.
 fn method_of(v: Value, name: &str) -> Option<Callable> {
@@ -565,6 +624,50 @@ impl Foreign for World {
                 None => Err(no_member(held, name)),
             },
             Held::Function(_) | Held::Method(_) => Err(no_member(held, name)),
+        }
+    }
+
+    fn get_float_key(&self, word: usize, key: u64) -> Result<f64, ForeignError> {
+        let held = unsafe { held(word) };
+        let Some(object) = held.value() else {
+            return Err(ForeignError::new(
+                "AttributeError",
+                format!("{} has no keyed field", held.describe()),
+            ));
+        };
+        let slot = host_slot(key)?;
+        float_result(bridge::get_at(object, slot.name, &slot.get, caller()))
+    }
+
+    fn set_float_key(&self, word: usize, key: u64, value: f64) -> Result<(), ForeignError> {
+        let held = unsafe { held(word) };
+        let Some(object) = held.value() else {
+            return Err(ForeignError::new(
+                "AttributeError",
+                format!("{} has no keyed field", held.describe()),
+            ));
+        };
+        let slot = host_slot(key)?;
+        bridge::set_at(object, slot.name, &slot.set, Value::number(value), caller())
+            .map_err(error_of)
+    }
+
+    fn invoke_float_key(&self, word: usize, key: u64, args: &[f64]) -> Result<f64, ForeignError> {
+        let held = unsafe { held(word) };
+        let slot = host_slot(key)?;
+        match held {
+            Held::Object(_) => {
+                let receiver = held.value().expect("an object");
+                let target = slot
+                    .target
+                    .ok_or_else(|| no_member(held, slot.name.name()))?;
+                call_float_method_at(receiver, &target, &slot.invoke, slot.name.name(), args)
+            }
+            Held::Class(..) | Held::Module(_) => match slot.target {
+                Some(target) => call_float_target_at(&target, &slot.invoke, slot.name.name(), args),
+                None => Err(no_member(held, slot.name.name())),
+            },
+            Held::Function(_) | Held::Method(_) => Err(no_member(held, slot.name.name())),
         }
     }
 

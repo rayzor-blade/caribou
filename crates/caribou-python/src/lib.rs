@@ -16,7 +16,7 @@ use caribou::registry::{self, ClassIface, Interface, MethodIface, MethodKind, Ty
 use caribou_zyntax::zyntax_embed::{
     Collector, ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
 };
-use caribou_zyntax::{Language, Sources};
+use caribou_zyntax::{Language, Sources, foreign::host_key};
 use zyntax_python::{HostClass, HostField, HostMethod, HostModule, HostType};
 
 fn host_type(ty: &TypeRef) -> HostType {
@@ -28,12 +28,15 @@ fn host_type(ty: &TypeRef) -> HostType {
         TypeRef::Str => HostType::Str,
         TypeRef::Buffer => HostType::Bytes,
         TypeRef::Object(name) => HostType::Object(name.clone()),
+        TypeRef::Function { params, ret } => HostType::Function {
+            params: params.iter().map(host_type).collect(),
+            ret: Box::new(host_type(ret)),
+        },
         TypeRef::Enum(_)
         | TypeRef::Future(_)
         | TypeRef::Array(_)
         | TypeRef::Dyn
         | TypeRef::Fun
-        | TypeRef::Function { .. }
         | TypeRef::Tuple(_) => HostType::Dynamic,
     }
 }
@@ -41,6 +44,7 @@ fn host_type(ty: &TypeRef) -> HostType {
 fn host_method(method: &MethodIface) -> HostMethod {
     HostMethod {
         name: method.name.clone(),
+        key: host_key(&method.name, Some(method.target)),
         params: method.params.iter().map(host_type).collect(),
         ret: host_type(&method.ret),
         is_static: method.is_static,
@@ -53,11 +57,13 @@ fn host_class(class: &ClassIface) -> HostClass {
         .iter()
         .map(|field| HostField {
             name: field.name.clone(),
+            key: host_key(&field.name, None),
             ty: host_type(&field.ty),
             is_static: false,
         })
         .chain(class.statics.iter().map(|field| HostField {
             name: field.name.clone(),
+            key: host_key(&field.name, None),
             ty: host_type(&field.ty),
             is_static: true,
         }))
@@ -70,6 +76,7 @@ fn host_class(class: &ClassIface) -> HostClass {
         {
             fields.push(HostField {
                 name: method.name.clone(),
+                key: host_key(&method.name, None),
                 ty: host_type(&method.ret),
                 is_static: method.is_static,
             });

@@ -793,7 +793,7 @@ pub fn publish_module(
         let mut methods: Vec<MethodIface> = Vec::new();
         for (name, is_static, findex) in &shape.methods {
             let (Some((params, ret)), Some(target)) = (
-                signature(bytecode, &functions, *findex, !is_static, type_ref),
+                signature(bytecode, &functions, *findex, !is_static, typed_ref),
                 target(*findex),
             ) else {
                 continue;
@@ -807,7 +807,7 @@ pub fn publish_module(
             });
         }
         let ctor = shape.ctor.and_then(|findex| {
-            let (params, _) = signature(bytecode, &functions, findex, true, type_ref)?;
+            let (params, _) = signature(bytecode, &functions, findex, true, typed_ref)?;
             let t = this_type(findex)?;
             let Callable::Cell {
                 cell, signature, ..

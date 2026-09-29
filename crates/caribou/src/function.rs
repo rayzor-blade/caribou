@@ -150,6 +150,7 @@ unsafe extern "C" fn trace(obj: *mut u8, tracer: *mut Tracer) {
         Callable::WrenMethod { class, .. } => Some(class),
         Callable::Typed { .. }
         | Callable::Cell { .. }
+        | Callable::AtomicCell { .. }
         | Callable::ProtocolMethod { .. }
         | Callable::Core(_) => None,
     };

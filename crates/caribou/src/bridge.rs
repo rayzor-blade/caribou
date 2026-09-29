@@ -925,6 +925,13 @@ pub fn call_direct_at(
     let (func, lang) = match callable {
         Callable::Typed { func, lang, .. } => (func as usize, lang),
         Callable::Cell { cell, lang, .. } => (unsafe { *cell } as usize, lang),
+        Callable::AtomicCell { cell, lang, .. } => {
+            let func = unsafe { (*cell).load(Ordering::Acquire) };
+            if func == 0 {
+                return None;
+            }
+            (func, lang)
+        }
         _ => return None,
     };
     Some(match direct(site, func, args)? {
@@ -1004,6 +1011,31 @@ fn call_at_opt(
                 return result;
             }
             let func = unsafe { *cell };
+            let outcome = typed_call(func, signature, lang, args, site);
+            settle(outcome, lang, name, caller)
+        }
+        Callable::AtomicCell {
+            cell,
+            signature,
+            lang,
+        } => {
+            if let Some(site) = site
+                && let Some(result) = call_direct_at(callable, site, args, caller, name)
+            {
+                return result;
+            }
+            let func = unsafe { (*cell).load(Ordering::Acquire) } as *const c_void;
+            if func.is_null() {
+                return settle(
+                    Outcome::Fault(
+                        ErrorKind::Internal,
+                        "callable has no current entry".to_owned(),
+                    ),
+                    lang,
+                    name,
+                    caller,
+                );
+            }
             let outcome = typed_call(func, signature, lang, args, site);
             settle(outcome, lang, name, caller)
         }
@@ -1731,6 +1763,14 @@ mod tests {
         n as f64 * factor
     }
 
+    extern "C" fn increment(n: i32) -> i32 {
+        n + 1
+    }
+
+    extern "C" fn double(n: i32) -> i32 {
+        n * 2
+    }
+
     extern "C" fn mix(a: f64, flag: bool, b: i32, c: f64) -> i32 {
         (if flag { a + c } else { a - c }) as i32 + b
     }
@@ -1831,6 +1871,32 @@ mod tests {
             Ok(Value::null())
         );
         assert_eq!(TOUCHED.load(std::sync::atomic::Ordering::SeqCst), 99);
+    }
+
+    #[test]
+    fn atomic_callable_cells_follow_the_current_compiled_entry() {
+        let _lock = locked();
+        let sig = signature(&[hl::HI32], hl::HI32);
+        let entry = std::sync::atomic::AtomicUsize::new(increment as *const () as usize);
+        let callable = Callable::AtomicCell {
+            cell: &entry,
+            signature: sig,
+            lang: LANG_CORE,
+        };
+        let site = CallSite::new();
+
+        assert_eq!(
+            call_at(callable, &site, &[Value::int(4)], LANG_B, "current"),
+            Ok(Value::int(5))
+        );
+        entry.store(
+            double as *const () as usize,
+            std::sync::atomic::Ordering::Release,
+        );
+        assert_eq!(
+            call_at(callable, &site, &[Value::int(4)], LANG_B, "current"),
+            Ok(Value::int(8))
+        );
     }
 
     #[test]
