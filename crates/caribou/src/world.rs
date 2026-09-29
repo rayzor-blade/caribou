@@ -411,6 +411,37 @@ fn seen(path: &std::path::Path) -> Seen {
     Some((meta.modified().ok()?, meta.len()))
 }
 
+#[derive(Default)]
+struct SourceWatch {
+    last: HashMap<PathBuf, Seen>,
+    settling: HashMap<PathBuf, (LangId, String)>,
+}
+
+impl SourceWatch {
+    /// Observe one source. A changed file must have the same metadata on the
+    /// next pass before it is ready, so a write seen in parts reloads once.
+    fn observe(
+        &mut self,
+        lang: LangId,
+        module: String,
+        path: PathBuf,
+        now: Seen,
+    ) -> Option<(LangId, String)> {
+        match self.last.insert(path.clone(), now) {
+            // Seen for the first time as it is: nothing to reload.
+            None => {
+                self.settling.remove(&path);
+                None
+            }
+            Some(before) if before != now => {
+                self.settling.insert(path, (lang, module));
+                None
+            }
+            Some(_) => self.settling.remove(&path),
+        }
+    }
+}
+
 /// The watch thread: look at every loaded module's file on an interval,
 /// queue the modules whose files changed and raise the signal, until the
 /// world is gone.
@@ -419,7 +450,7 @@ fn watch_sources(
     changed: &Mutex<Vec<(LangId, String)>>,
     stop: &AtomicBool,
 ) {
-    let mut last: HashMap<PathBuf, Seen> = HashMap::new();
+    let mut watch = SourceWatch::default();
     loop {
         std::thread::sleep(WATCH_INTERVAL);
         if stop.load(Ordering::Relaxed) {
@@ -428,17 +459,9 @@ fn watch_sources(
         let mut any = false;
         for (lang, module, path) in registry::sources() {
             let now = seen(&path);
-            match last.get(&path) {
-                // Seen for the first time as it is: nothing to reload.
-                None => {
-                    last.insert(path, now);
-                }
-                Some(before) if *before != now => {
-                    last.insert(path, now);
-                    changed.lock().unwrap().push((lang, module));
-                    any = true;
-                }
-                Some(_) => {}
+            if let Some(module) = watch.observe(lang, module, path, now) {
+                changed.lock().unwrap().push(module);
+                any = true;
             }
         }
         if any && !signal.raise() {
@@ -570,5 +593,35 @@ mod tests {
         let _serial = SERIAL.lock().unwrap();
         let world = World::new(Config::default());
         assert!(!world.tick(Some(std::time::Instant::now())));
+    }
+
+    #[test]
+    fn source_watch_waits_for_a_changed_file_to_settle() {
+        let mut watch = SourceWatch::default();
+        let path = PathBuf::from("game/tune.wren");
+        let at = |millis| {
+            Some((
+                SystemTime::UNIX_EPOCH + Duration::from_millis(millis),
+                millis,
+            ))
+        };
+
+        assert_eq!(
+            watch.observe(1, "game/tune".into(), path.clone(), at(1)),
+            None
+        );
+        assert_eq!(
+            watch.observe(1, "game/tune".into(), path.clone(), at(2)),
+            None
+        );
+        assert_eq!(
+            watch.observe(1, "game/tune".into(), path.clone(), at(3)),
+            None
+        );
+        assert_eq!(
+            watch.observe(1, "game/tune".into(), path.clone(), at(3)),
+            Some((1, "game/tune".into()))
+        );
+        assert_eq!(watch.observe(1, "game/tune".into(), path, at(3)), None);
     }
 }
