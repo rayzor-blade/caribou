@@ -150,6 +150,10 @@ pub unsafe fn bind(face: *mut vdynamic, v: Value) {
 
 /// Bind a face directly to `v`, with the face as `v`'s weak shadow. This is
 /// for an AOT face class whose allocation carries a host drop policy.
+///
+/// # Safety
+/// `face` is a live instance of that face class and `v` is its live core
+/// object.
 pub unsafe fn bind_attachment(face: *mut vdynamic, v: Value) {
     let Some(object) = v.as_object().map(|p| p as *mut u8) else {
         return;
@@ -165,6 +169,10 @@ pub unsafe fn bind_attachment(face: *mut vdynamic, v: Value) {
 
 /// The directly attached face of type `t` for `v`, allocating and binding it
 /// when the weak edge is empty.
+///
+/// # Safety
+/// `v` is null or a live core object and `t` is the program's corresponding
+/// face class with the attachment drop policy.
 pub unsafe fn attachment_face(v: Value, t: *mut hl_type) -> *mut vdynamic {
     let Some(object) = v.as_object().map(|p| p as *mut u8) else {
         return core::ptr::null_mut();
@@ -303,6 +311,9 @@ pub unsafe extern "C" fn caribou_haxe_str_to_string(s: *mut u8, t: *mut hl_type)
 }
 
 /// After a linked callee returns: what it left pending, thrown into Haxe.
+///
+/// # Safety
+/// The caller is inside a Haxe invocation with an active exception trap.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_haxe_raise_pending() {
     let Some(e) = bridge::take_pending() else {
@@ -378,6 +389,9 @@ pub unsafe extern "C" fn caribou_haxe_dyn_to_value(d: *mut vdynamic, _t: *mut hl
 }
 
 /// A core value as a Haxe dynamic.
+///
+/// # Safety
+/// `v` is the bit representation of a valid live core value.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn caribou_haxe_value_to_dyn(v: u64, _t: *mut hl_type) -> *mut vdynamic {
     let v = Value::from_bits(v);

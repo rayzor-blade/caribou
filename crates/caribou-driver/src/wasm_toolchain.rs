@@ -40,10 +40,10 @@ pub fn cargo_build(
             format!("--target={target} --sysroot={}", sysroot.display()),
         );
     }
-    if !compiler_is_configured(target) {
-        if let Some(clang) = clang(target) {
-            build.env(format!("CC_{}", target.replace('-', "_")), clang);
-        }
+    if !compiler_is_configured(target)
+        && let Some(clang) = clang(target)
+    {
+        build.env(format!("CC_{}", target.replace('-', "_")), clang);
     }
     build
 }

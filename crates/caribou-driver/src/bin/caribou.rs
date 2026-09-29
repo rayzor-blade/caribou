@@ -177,6 +177,7 @@ fn project(program: Option<&Path>) -> Result<Option<Project>, String> {
 }
 
 #[cfg(feature = "llvm")]
+#[allow(clippy::too_many_arguments)]
 fn aot(
     program: &Path,
     triple: &str,
@@ -201,6 +202,7 @@ fn aot(
 }
 
 #[cfg(not(feature = "llvm"))]
+#[allow(clippy::too_many_arguments)]
 fn aot(
     _: &Path,
     triple: &str,

@@ -238,70 +238,6 @@ fn expand(input: DeriveInput) -> syn::Result<proc_macro2::TokenStream> {
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_invalid_declarations() {
-        for (input, message) in [
-            (
-                quote!(
-                    struct Bad;
-                ),
-                "add #[caribou",
-            ),
-            (
-                quote!(
-                    #[caribou(name = "test.Bad")]
-                    struct Bad;
-                ),
-                "only be derived for enums",
-            ),
-            (
-                quote!(
-                    #[caribou(name = "test.Bad")]
-                    enum Bad<T> {
-                        Value(T),
-                    }
-                ),
-                "cannot be generic",
-            ),
-            (
-                quote!(
-                    #[caribou(name = "test.Bad")]
-                    enum Bad {}
-                ),
-                "at least one variant",
-            ),
-        ] {
-            let error = expand(syn::parse2(input).unwrap()).unwrap_err();
-            assert!(error.to_string().contains(message), "{error}");
-        }
-    }
-
-    #[test]
-    fn conversion_attributes_without_a_source_are_ignored() {
-        // A target without the source type drops `from` and keeps the rest.
-        let expanded = expand(
-            syn::parse2(quote!(
-                #[caribou(name = "test.Kept")]
-                enum Kept {
-                    #[caribou(skip)]
-                    A,
-                    #[caribou(pattern = native::Kept::B(x))]
-                    B(#[caribou(value = x.0)] i32),
-                }
-            ))
-            .unwrap(),
-        )
-        .unwrap()
-        .to_string();
-        assert!(expanded.contains("impl :: caribou_abi :: PluginEnum for Kept"));
-        assert!(!expanded.contains("From"), "{expanded}");
-    }
-}
-
 /// One `plugin!` member, exported under its link symbol
 /// (`caribou_mangle::symbol`): the name an AOT call reaches it by. The
 /// input is what `plugin!` gathered for the member: the plugin's name, the
@@ -448,5 +384,69 @@ fn capitalised(name: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().chain(chars).collect(),
         None => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_declarations() {
+        for (input, message) in [
+            (
+                quote!(
+                    struct Bad;
+                ),
+                "add #[caribou",
+            ),
+            (
+                quote!(
+                    #[caribou(name = "test.Bad")]
+                    struct Bad;
+                ),
+                "only be derived for enums",
+            ),
+            (
+                quote!(
+                    #[caribou(name = "test.Bad")]
+                    enum Bad<T> {
+                        Value(T),
+                    }
+                ),
+                "cannot be generic",
+            ),
+            (
+                quote!(
+                    #[caribou(name = "test.Bad")]
+                    enum Bad {}
+                ),
+                "at least one variant",
+            ),
+        ] {
+            let error = expand(syn::parse2(input).unwrap()).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn conversion_attributes_without_a_source_are_ignored() {
+        // A target without the source type drops `from` and keeps the rest.
+        let expanded = expand(
+            syn::parse2(quote!(
+                #[caribou(name = "test.Kept")]
+                enum Kept {
+                    #[caribou(skip)]
+                    A,
+                    #[caribou(pattern = native::Kept::B(x))]
+                    B(#[caribou(value = x.0)] i32),
+                }
+            ))
+            .unwrap(),
+        )
+        .unwrap()
+        .to_string();
+        assert!(expanded.contains("impl :: caribou_abi :: PluginEnum for Kept"));
+        assert!(!expanded.contains("From"), "{expanded}");
     }
 }

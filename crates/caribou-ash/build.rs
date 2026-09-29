@@ -22,10 +22,10 @@ fn main() {
 /// honours explicit configuration and SDKs on PATH; cc's target variables
 /// still take precedence over a discovered compiler.
 fn wasm(build: &mut cc::Build, target: &str) {
-    if !caribou_wasm_toolchain::compiler_is_configured(target) {
-        if let Some(clang) = caribou_wasm_toolchain::clang(target) {
-            build.compiler(clang);
-        }
+    if !caribou_wasm_toolchain::compiler_is_configured(target)
+        && let Some(clang) = caribou_wasm_toolchain::clang(target)
+    {
+        build.compiler(clang);
     }
     if let Some(sysroot) = caribou_wasm_toolchain::sysroot(target) {
         build.flag(format!("--sysroot={}", sysroot.display()));

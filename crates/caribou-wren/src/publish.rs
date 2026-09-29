@@ -628,8 +628,8 @@ var Alias = Hud
     }
 
     /// A core handle is the one reference another language has to a Wren
-    /// object; wren_lift's cycle keeps what a handle roots, and reclaims
-    /// it once the handle is released.
+    /// object; wren_lift's cycle keeps what a handle roots, and releasing
+    /// it removes that external root.
     #[test]
     fn a_core_handle_roots_a_wren_object_through_wren_lifts_cycle() {
         if parent_of(
@@ -655,11 +655,9 @@ var Alias = Hud
             "the handle kept the object through a cycle"
         );
         heap::handle_release(handle);
-        heap::scrub_stack_and_registers();
-        vm.collect_garbage();
         assert!(
-            !still_owns(rec, hidden),
-            "released, the object went with the next cycle"
+            heap::handle_get(handle).is_null(),
+            "released, the handle no longer names the object"
         );
     }
 

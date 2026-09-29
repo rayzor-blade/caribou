@@ -59,6 +59,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt # bindgen pretty-prints through it
+          targets: wasm32-wasip1-threads # wire mailbox integration test
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
       - uses: krdlab/setup-haxe@v2

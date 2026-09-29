@@ -1208,26 +1208,22 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
             adopt(obj as *mut ObjInstance, haxe as *mut u8);
             return Ok(recv);
         }
-        Kind::Static => {
-            let r = bridge::call_at(
-                target.callable,
-                &target.site,
-                &with_this[1..],
-                wren,
-                &target.name,
-            );
-            r
-        }
+        Kind::Static => bridge::call_at(
+            target.callable,
+            &target.site,
+            &with_this[1..],
+            wren,
+            &target.name,
+        ),
         Kind::Index | Kind::SetIndex | Kind::Count | Kind::Iterate | Kind::IteratorValue => {
             let this = foreign_of(recv)
                 .ok_or_else(|| format!("{} has no sequence behind it", vm.class_name_of(recv)))?;
-            let r = sequence_send(&target.kind, this, &with_this[1..], wren);
-            r
+            sequence_send(&target.kind, this, &with_this[1..], wren)
         }
         Kind::Call | Kind::Arity => {
             let this = foreign_of(recv)
                 .ok_or_else(|| format!("{} has no function behind it", vm.class_name_of(recv)))?;
-            let r = match target.kind {
+            match target.kind {
                 Kind::Call => {
                     bridge::call_named(Callable::Dynamic(this), &with_this[1..], wren, &target.name)
                 }
@@ -1239,36 +1235,33 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                         wren,
                     ))),
                 },
-            };
-            r
+            }
         }
         Kind::ClassGetter(name) | Kind::ClassSetter(name) => {
             let Callable::Dynamic(class_object) = target.callable else {
                 unreachable!("a static field's target is its class object");
             };
-            let r = match target.kind {
+            match target.kind {
                 Kind::ClassGetter(_) => bridge::get_at(class_object, name, &target.site, wren),
                 _ => bridge::set_at(class_object, name, &target.site, with_this[1], wren)
                     .map(|()| with_this[1]),
-            };
-            r
+            }
         }
         Kind::Int64Text | Kind::Int64Equals(_) => {
             let n = foreign_of(recv)
                 .and_then(Int64::of)
                 .ok_or_else(|| format!("{} has no integer behind it", vm.class_name_of(recv)))?;
-            let r = match target.kind {
+            match target.kind {
                 Kind::Int64Equals(same) => {
                     Ok(Value::bool((Int64::of(with_this[1]) == Some(n)) == same))
                 }
                 _ => Ok(Str::value(Str::new(&n.to_string()))),
-            };
-            r
+            }
         }
         Kind::Method | Kind::Getter(_) | Kind::Setter(_) => {
             let this = foreign_of(recv)
                 .ok_or_else(|| format!("{} has no object behind it", vm.class_name_of(recv)))?;
-            let r = match target.kind {
+            match target.kind {
                 Kind::Method => {
                     with_this[0] = this;
                     bridge::call_at(target.callable, &target.site, with_this, wren, &target.name)
@@ -1277,8 +1270,7 @@ fn run(vm: &mut VM, target: &Target, args: &[WValue]) -> Result<WValue, String> 
                 Kind::Setter(name) => bridge::set_at(this, name, &target.site, with_this[1], wren)
                     .map(|()| with_this[1]),
                 _ => unreachable!(),
-            };
-            r
+            }
         }
     };
     finish(vm, target, args, result)

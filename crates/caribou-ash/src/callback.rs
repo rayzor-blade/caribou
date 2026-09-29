@@ -326,18 +326,21 @@ unsafe extern "C" fn entry(context: usize, words: *const i64) -> i64 {
     let function = wrenref::unwrap_foreign(cb.target);
     let result = bridge::call_named(Callable::Dynamic(function), crossed, lang(), "callback");
     let thrown = match result {
-        Ok(v) => match {
-            let _kept = heap::keep_value(v);
-            unsafe { value_to_word(v, shape.ret, shape.ret_type) }
-        } {
-            Ok(word) => return word,
-            // A result Haxe has no form for is null, as for the var-args
-            // form, when the type can take one.
-            Err(_) if shape.ret_code == 0 && !matches!(shape.ret, hl::HI32 | hl::HBOOL) => {
-                return 0;
+        Ok(v) => {
+            let converted = {
+                let _kept = heap::keep_value(v);
+                unsafe { value_to_word(v, shape.ret, shape.ret_type) }
+            };
+            match converted {
+                Ok(word) => return word,
+                // A result Haxe has no form for is null, as for the var-args
+                // form, when the type can take one.
+                Err(_) if shape.ret_code == 0 && !matches!(shape.ret, hl::HI32 | hl::HBOOL) => {
+                    return 0;
+                }
+                Err(m) => proto::throwable(proto::error_value("callback", &m)),
             }
-            Err(m) => proto::throwable(proto::error_value("callback", &m)),
-        },
+        }
         Err(e) => proto::throwable(e),
     };
     unsafe { hlp_throw(thrown.cast()) };

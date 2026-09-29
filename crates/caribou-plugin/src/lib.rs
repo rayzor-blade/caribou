@@ -623,7 +623,8 @@ pub(crate) fn class_type(name: &str) -> Option<&'static TypeDesc> {
 
 /// What makes a plugin that is not loaded yet known, by its name: set by
 /// a program that finds plugins as it runs. False when it has none.
-static LOADER: RwLock<Option<fn(&str) -> bool>> = RwLock::new(None);
+type Loader = fn(&str) -> bool;
+static LOADER: RwLock<Option<Loader>> = RwLock::new(None);
 
 pub fn set_loader(load: fn(&str) -> bool) {
     *LOADER.write().unwrap() = Some(load);
