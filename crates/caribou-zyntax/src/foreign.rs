@@ -27,8 +27,6 @@ use zyntax_embed::foreign::{self, Any, Foreign, ForeignError};
 
 /// What a foreign object's word points at.
 enum Held {
-    /// An object of the core.
-    Object(Handle),
     /// A module: its classes and functions are its members.
     Module(Arc<Interface>),
     /// A class: its statics and static methods are its members, and
@@ -44,7 +42,6 @@ enum Held {
 impl Held {
     fn value(&self) -> Option<Value> {
         match self {
-            Held::Object(h) => Some(Value::object(heap::handle_get(*h) as *const c_void)),
             Held::Class(iface, i) => {
                 let object = iface.classes[*i].class_object;
                 (!object.is_null()).then_some(object)
@@ -55,7 +52,6 @@ impl Held {
 
     fn describe(&self) -> String {
         match self {
-            Held::Object(_) => self.value().map_or_else(String::new, bridge::describe),
             Held::Module(iface) => format!("module {}", iface.module),
             Held::Class(iface, i) => format!("class {}", iface.classes[*i].name),
             Held::Function(m) => format!("function {}", m.name),
@@ -114,8 +110,31 @@ pub fn caller() -> LangId {
     CALLER.with(Cell::get)
 }
 
+/// Object words use their low alignment bit to carry a core handle directly.
+/// Metadata values remain aligned pointers to [`Held`].
+const OBJECT_WORD: usize = 1;
+
 fn hold(held: Held) -> Any {
-    foreign::boxed(Box::into_raw(Box::new(held)) as usize)
+    let word = Box::into_raw(Box::new(held)) as usize;
+    debug_assert_eq!(word & OBJECT_WORD, 0);
+    foreign::boxed(word)
+}
+
+fn hold_object(object: *mut u8) -> Any {
+    let handle = heap::handle_new(object);
+    foreign::boxed(((handle.as_raw() as usize) << 1) | OBJECT_WORD)
+}
+
+fn object_handle(word: usize) -> Option<Handle> {
+    (word & OBJECT_WORD != 0).then(|| Handle::from_raw((word >> 1) as u32))
+}
+
+fn direct_object(word: usize) -> Option<Value> {
+    object_handle(word).map(|handle| Value::object(heap::handle_get(handle) as *const c_void))
+}
+
+fn object_of(word: usize) -> Option<Value> {
+    direct_object(word).or_else(|| unsafe { held(word) }.value())
 }
 
 /// # Safety
@@ -167,7 +186,7 @@ pub fn any_of(v: Value) -> Any {
         return own;
     }
     match v.as_object() {
-        Some(p) => hold(Held::Object(heap::handle_new(p as *mut u8))),
+        Some(p) => hold_object(p as *mut u8),
         None => foreign::none(),
     }
 }
@@ -195,6 +214,9 @@ pub unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
         // place.
         V::Tuple(items) => made(unsafe { tuple_of(items)? }),
         V::Foreign(word) => {
+            if let Some(value) = direct_object(word) {
+                return Ok((value, std::ptr::null_mut()));
+            }
             let held = unsafe { held(word) };
             match held.value() {
                 Some(v) => (v, std::ptr::null_mut()),
@@ -315,6 +337,15 @@ fn result(r: Result<Value, Value>) -> Result<Any, ForeignError> {
     r.map(any_of).map_err(error_of)
 }
 
+fn object_result(r: Result<Value, Value>) -> Result<Any, ForeignError> {
+    let value = r.map_err(error_of)?;
+    let object = value
+        .as_object()
+        .filter(|object| !object.is_null())
+        .ok_or_else(|| ForeignError::new("TypeError", "a host constructor returned no object"))?;
+    Ok(hold_object(object as *mut u8))
+}
+
 fn float_result(r: Result<Value, Value>) -> Result<f64, ForeignError> {
     let value = r.map_err(error_of)?;
     value
@@ -352,9 +383,15 @@ fn call_float_target(target: &Callable, args: &[f64]) -> Result<f64, ForeignErro
     })
 }
 
+fn construct_target(target: &Callable, args: &[Any]) -> Result<Any, ForeignError> {
+    with_values(args, |values| {
+        object_result(bridge::call(*target, values, caller()))
+    })
+}
+
 fn construct_float_target(target: &Callable, args: &[f64]) -> Result<Any, ForeignError> {
     with_float_values(args, |values| {
-        result(bridge::call(*target, values, caller()))
+        object_result(bridge::call(*target, values, caller()))
     })
 }
 
@@ -459,6 +496,12 @@ pub(crate) struct World;
 
 impl Foreign for World {
     fn get(&self, word: usize, name: &str) -> Result<Any, ForeignError> {
+        if let Some(object) = direct_object(word) {
+            if method_of(object, name).is_some() {
+                return Ok(hold(Held::Method(Symbol::intern(name))));
+            }
+            return result(bridge::get(object, Symbol::intern(name), caller()));
+        }
         let held = unsafe { held(word) };
         match held {
             Held::Module(iface) => module_member(iface, name).ok_or_else(|| no_member(held, name)),
@@ -476,20 +519,13 @@ impl Foreign for World {
                     None => Err(no_member(held, name)),
                 }
             }
-            Held::Object(_) => {
-                let v = held.value().expect("an object");
-                if method_of(v, name).is_some() {
-                    return Ok(hold(Held::Method(Symbol::intern(name))));
-                }
-                result(bridge::get(v, Symbol::intern(name), caller()))
-            }
             Held::Function(_) | Held::Method(_) => Err(no_member(held, name)),
         }
     }
 
     fn set(&self, word: usize, name: &str, value: Any) -> Result<(), ForeignError> {
-        let held = unsafe { held(word) };
-        let Some(object) = held.value() else {
+        let Some(object) = object_of(word) else {
+            let held = unsafe { held(word) };
             return Err(no_member(held, name));
         };
         with_values(&[value], |values| {
@@ -498,10 +534,13 @@ impl Foreign for World {
     }
 
     fn call(&self, word: usize, args: &[Any]) -> Result<Any, ForeignError> {
+        if let Some(object) = direct_object(word) {
+            return call_target(&Callable::Dynamic(object), args);
+        }
         let held = unsafe { held(word) };
         match held {
             Held::Class(iface, i) => match &iface.classes[*i].ctor {
-                Some(ctor) => call_target(&ctor.target, args),
+                Some(ctor) => construct_target(&ctor.target, args),
                 None => Err(ForeignError::new(
                     "TypeError",
                     format!("{} has no constructor", held.describe()),
@@ -518,10 +557,6 @@ impl Foreign for World {
                 let name = name.name();
                 with_values(&[receiver], |recv| send(recv[0], name, rest))
             }
-            Held::Object(_) => {
-                let v = held.value().expect("an object");
-                call_target(&Callable::Dynamic(v), args)
-            }
             Held::Module(_) => Err(ForeignError::new(
                 "TypeError",
                 format!("{} is not callable", held.describe()),
@@ -533,7 +568,7 @@ impl Foreign for World {
         let held = unsafe { held(word) };
         match held {
             Held::Class(iface, i) => match &iface.classes[*i].ctor {
-                Some(ctor) => call_target(&ctor.target, args),
+                Some(ctor) => construct_target(&ctor.target, args),
                 None => Err(ForeignError::new(
                     "TypeError",
                     format!("{} has no constructor", held.describe()),
@@ -564,9 +599,11 @@ impl Foreign for World {
     }
 
     fn invoke(&self, word: usize, name: &str, args: &[Any]) -> Result<Any, ForeignError> {
+        if let Some(object) = direct_object(word) {
+            return send(object, name, args);
+        }
         let held = unsafe { held(word) };
         match held {
-            Held::Object(_) => send(held.value().expect("an object"), name, args),
             Held::Class(iface, i) => {
                 let class = &iface.classes[*i];
                 if let Some(m) = class.methods.iter().find(|m| m.is_static && m.name == name) {
@@ -591,7 +628,7 @@ impl Foreign for World {
                 }
                 match iface.classes.iter().find(|c| c.name == name) {
                     Some(class) => match &class.ctor {
-                        Some(ctor) => call_target(&ctor.target, args),
+                        Some(ctor) => construct_target(&ctor.target, args),
                         None => Err(ForeignError::new(
                             "TypeError",
                             format!("class {} has no constructor", class.name),
@@ -605,28 +642,28 @@ impl Foreign for World {
     }
 
     fn get_float(&self, word: usize, name: &str) -> Result<f64, ForeignError> {
-        let held = unsafe { held(word) };
-        let Some(object) = held.value() else {
+        let Some(object) = object_of(word) else {
+            let held = unsafe { held(word) };
             return Err(no_member(held, name));
         };
         float_result(bridge::get(object, Symbol::intern(name), caller()))
     }
 
     fn set_float(&self, word: usize, name: &str, value: f64) -> Result<(), ForeignError> {
-        let held = unsafe { held(word) };
-        let Some(object) = held.value() else {
+        let Some(object) = object_of(word) else {
+            let held = unsafe { held(word) };
             return Err(no_member(held, name));
         };
         bridge::set(object, Symbol::intern(name), Value::number(value), caller()).map_err(error_of)
     }
 
     fn call_float(&self, word: usize, args: &[f64]) -> Result<f64, ForeignError> {
+        if let Some(object) = direct_object(word) {
+            return call_float_target(&Callable::Dynamic(object), args);
+        }
         let held = unsafe { held(word) };
         match held {
             Held::Function(function) => call_float_target(&function.target, args),
-            Held::Object(_) => {
-                call_float_target(&Callable::Dynamic(held.value().expect("an object")), args)
-            }
             _ => Err(ForeignError::new(
                 "TypeError",
                 format!("{} does not return a number", held.describe()),
@@ -635,9 +672,11 @@ impl Foreign for World {
     }
 
     fn invoke_float(&self, word: usize, name: &str, args: &[f64]) -> Result<f64, ForeignError> {
+        if let Some(object) = direct_object(word) {
+            return send_float(object, name, args);
+        }
         let held = unsafe { held(word) };
         match held {
-            Held::Object(_) => send_float(held.value().expect("an object"), name, args),
             Held::Class(iface, i) => {
                 let class = &iface.classes[*i];
                 if let Some(method) = class
@@ -668,8 +707,8 @@ impl Foreign for World {
     }
 
     fn get_float_key(&self, word: usize, key: u64) -> Result<f64, ForeignError> {
-        let held = unsafe { held(word) };
-        let Some(object) = held.value() else {
+        let Some(object) = object_of(word) else {
+            let held = unsafe { held(word) };
             return Err(ForeignError::new(
                 "AttributeError",
                 format!("{} has no keyed field", held.describe()),
@@ -680,8 +719,8 @@ impl Foreign for World {
     }
 
     fn set_float_key(&self, word: usize, key: u64, value: f64) -> Result<(), ForeignError> {
-        let held = unsafe { held(word) };
-        let Some(object) = held.value() else {
+        let Some(object) = object_of(word) else {
+            let held = unsafe { held(word) };
             return Err(ForeignError::new(
                 "AttributeError",
                 format!("{} has no keyed field", held.describe()),
@@ -693,16 +732,18 @@ impl Foreign for World {
     }
 
     fn invoke_float_key(&self, word: usize, key: u64, args: &[f64]) -> Result<f64, ForeignError> {
-        let held = unsafe { held(word) };
         let slot = host_slot(key)?;
+        if let Some(receiver) = direct_object(word) {
+            let target = slot.target.ok_or_else(|| {
+                ForeignError::new(
+                    "AttributeError",
+                    format!("object has no member '{}'", slot.name.name()),
+                )
+            })?;
+            return call_float_method_at(receiver, &target, &slot.invoke, slot.name.name(), args);
+        }
+        let held = unsafe { held(word) };
         match held {
-            Held::Object(_) => {
-                let receiver = held.value().expect("an object");
-                let target = slot
-                    .target
-                    .ok_or_else(|| no_member(held, slot.name.name()))?;
-                call_float_method_at(receiver, &target, &slot.invoke, slot.name.name(), args)
-            }
             Held::Class(..) | Held::Module(_) => match slot.target {
                 Some(target) => call_float_target_at(&target, &slot.invoke, slot.name.name(), args),
                 None => Err(no_member(held, slot.name.name())),
@@ -712,15 +753,14 @@ impl Foreign for World {
     }
 
     fn text(&self, word: usize) -> String {
-        unsafe { held(word) }.describe()
+        direct_object(word).map_or_else(|| unsafe { held(word) }.describe(), bridge::describe)
     }
 
     fn type_name(&self, word: usize) -> String {
+        if let Some(object) = direct_object(word) {
+            return bridge::type_name(object).unwrap_or_else(|| "object".to_owned());
+        }
         match unsafe { held(word) } {
-            held @ Held::Object(_) => held
-                .value()
-                .and_then(bridge::type_name)
-                .unwrap_or_else(|| "object".to_owned()),
             Held::Module(_) => "module".to_owned(),
             Held::Class(..) => "class".to_owned(),
             Held::Function(_) => "function".to_owned(),
@@ -729,8 +769,12 @@ impl Foreign for World {
     }
 
     fn equals(&self, a: usize, b: usize) -> bool {
+        match (direct_object(a), direct_object(b)) {
+            (Some(x), Some(y)) => return x == y,
+            (Some(_), None) | (None, Some(_)) => return false,
+            (None, None) => {}
+        }
         match unsafe { (held(a), held(b)) } {
-            (Held::Object(_), Held::Object(_)) => unsafe { held(a).value() == held(b).value() },
             (Held::Module(x), Held::Module(y)) => x.lang == y.lang && x.module == y.module,
             (Held::Class(x, i), Held::Class(y, j)) => {
                 x.lang == y.lang && x.module == y.module && i == j
@@ -743,8 +787,11 @@ impl Foreign for World {
     fn hash(&self, word: usize) -> i64 {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
+        if let Some(object) = direct_object(word) {
+            object.to_bits().hash(&mut h);
+            return h.finish() as i64;
+        }
         match unsafe { held(word) } {
-            held @ Held::Object(_) => held.value().map(Value::to_bits).hash(&mut h),
             Held::Module(iface) => iface.module.hash(&mut h),
             Held::Class(iface, i) => (&iface.module, i).hash(&mut h),
             Held::Method(name) => name.name().hash(&mut h),
@@ -765,16 +812,17 @@ impl Foreign for World {
     }
 
     fn release(&self, word: usize) {
-        let held = unsafe { Box::from_raw(word as *mut Held) };
-        if let Held::Object(h) = *held {
-            heap::handle_release(h);
+        if let Some(handle) = object_handle(word) {
+            heap::handle_release(handle);
+        } else {
+            unsafe { drop(Box::from_raw(word as *mut Held)) };
         }
     }
 
     /// A core buffer is read in place: the program holds it rooted, and
     /// the heap does not move it.
     fn bytes(&self, word: usize) -> Option<(*const u8, usize)> {
-        let buffer = caribou::data::buffer_of(unsafe { held(word) }.value()?)?;
+        let buffer = caribou::data::buffer_of(object_of(word)?)?;
         let b = unsafe { &*buffer };
         Some((b.bytes, b.len))
     }
@@ -782,14 +830,12 @@ impl Foreign for World {
     /// A core tuple is several values given at once: a call that returns
     /// one gives the program that many.
     fn values(&self, word: usize) -> Option<usize> {
-        let tuple = caribou::data::tuple_of(unsafe { held(word) }.value()?)?;
+        let tuple = caribou::data::tuple_of(object_of(word)?)?;
         Some(unsafe { caribou::data::tuple_values(tuple) }.len())
     }
 
     fn value(&self, word: usize, index: usize) -> Any {
-        let tuple = unsafe { held(word) }
-            .value()
-            .and_then(caribou::data::tuple_of);
+        let tuple = object_of(word).and_then(caribou::data::tuple_of);
         match tuple.and_then(|t| unsafe { caribou::data::tuple_values(t) }.get(index)) {
             Some(&v) => any_of(v),
             None => foreign::none(),
