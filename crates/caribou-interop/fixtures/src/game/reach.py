@@ -6,6 +6,10 @@ def length() -> float:
     return Vec2(3, 4).len()
 
 
+def inferred_length():
+    return Vec2(3, 4).len()
+
+
 def scaled(k: float) -> float:
     v = Vec2(3, 4)
     v.scale(k)

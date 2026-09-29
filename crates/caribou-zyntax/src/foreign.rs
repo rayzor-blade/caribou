@@ -288,9 +288,40 @@ fn result(r: Result<Value, Value>) -> Result<Any, ForeignError> {
     r.map(any_of).map_err(error_of)
 }
 
+fn float_result(r: Result<Value, Value>) -> Result<f64, ForeignError> {
+    let value = r.map_err(error_of)?;
+    value
+        .as_number()
+        .or_else(|| value.as_int().map(|n| n as f64))
+        .ok_or_else(|| ForeignError::new("TypeError", "a numeric host result was expected"))
+}
+
+fn with_float_values<T>(
+    args: &[f64],
+    f: impl FnOnce(&[Value]) -> Result<T, ForeignError>,
+) -> Result<T, ForeignError> {
+    if args.len() > WIDEST {
+        return Err(ForeignError::new(
+            "TypeError",
+            format!("a call of more than {WIDEST} arguments"),
+        ));
+    }
+    let mut values = [Value::null(); WIDEST];
+    for (value, &number) in values.iter_mut().zip(args) {
+        *value = Value::number(number);
+    }
+    f(&values[..args.len()])
+}
+
 fn call_target(target: &Callable, args: &[Any]) -> Result<Any, ForeignError> {
     with_values(args, |values| {
         result(bridge::call(*target, values, caller()))
+    })
+}
+
+fn call_float_target(target: &Callable, args: &[f64]) -> Result<f64, ForeignError> {
+    with_float_values(args, |values| {
+        float_result(bridge::call(*target, values, caller()))
     })
 }
 
@@ -324,6 +355,25 @@ fn send(receiver: Value, name: &str, args: &[Any]) -> Result<Any, ForeignError> 
         all[0] = receiver;
         all[1..=values.len()].copy_from_slice(values);
         result(bridge::call(target, &all[..=values.len()], caller()))
+    })
+}
+
+fn send_float(receiver: Value, name: &str, args: &[f64]) -> Result<f64, ForeignError> {
+    let Some(target) = method_of(receiver, name) else {
+        return with_float_values(args, |values| {
+            float_result(bridge::invoke(
+                receiver,
+                Symbol::intern(name),
+                values,
+                caller(),
+            ))
+        });
+    };
+    with_float_values(args, |values| {
+        let mut all = [Value::null(); WIDEST + 1];
+        all[0] = receiver;
+        all[1..=values.len()].copy_from_slice(values);
+        float_result(bridge::call(target, &all[..=values.len()], caller()))
     })
 }
 
@@ -451,6 +501,69 @@ impl Foreign for World {
                     None => Err(no_member(held, name)),
                 }
             }
+            Held::Function(_) | Held::Method(_) => Err(no_member(held, name)),
+        }
+    }
+
+    fn get_float(&self, word: usize, name: &str) -> Result<f64, ForeignError> {
+        let held = unsafe { held(word) };
+        let Some(object) = held.value() else {
+            return Err(no_member(held, name));
+        };
+        float_result(bridge::get(object, Symbol::intern(name), caller()))
+    }
+
+    fn set_float(&self, word: usize, name: &str, value: f64) -> Result<(), ForeignError> {
+        let held = unsafe { held(word) };
+        let Some(object) = held.value() else {
+            return Err(no_member(held, name));
+        };
+        bridge::set(object, Symbol::intern(name), Value::number(value), caller()).map_err(error_of)
+    }
+
+    fn call_float(&self, word: usize, args: &[f64]) -> Result<f64, ForeignError> {
+        let held = unsafe { held(word) };
+        match held {
+            Held::Function(function) => call_float_target(&function.target, args),
+            Held::Object(_) => {
+                call_float_target(&Callable::Dynamic(held.value().expect("an object")), args)
+            }
+            _ => Err(ForeignError::new(
+                "TypeError",
+                format!("{} does not return a number", held.describe()),
+            )),
+        }
+    }
+
+    fn invoke_float(&self, word: usize, name: &str, args: &[f64]) -> Result<f64, ForeignError> {
+        let held = unsafe { held(word) };
+        match held {
+            Held::Object(_) => send_float(held.value().expect("an object"), name, args),
+            Held::Class(iface, i) => {
+                let class = &iface.classes[*i];
+                if let Some(method) = class
+                    .methods
+                    .iter()
+                    .find(|method| method.is_static && method.name == name)
+                {
+                    return call_float_target(&method.target, args);
+                }
+                match held.value() {
+                    Some(object) => with_float_values(args, |values| {
+                        float_result(bridge::invoke(
+                            object,
+                            Symbol::intern(name),
+                            values,
+                            caller(),
+                        ))
+                    }),
+                    None => Err(no_member(held, name)),
+                }
+            }
+            Held::Module(iface) => match iface.functions.iter().find(|f| f.name == name) {
+                Some(function) => call_float_target(&function.target, args),
+                None => Err(no_member(held, name)),
+            },
             Held::Function(_) | Held::Method(_) => Err(no_member(held, name)),
         }
     }

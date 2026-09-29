@@ -1,5 +1,7 @@
 //! The cost of a call across the bridge, beside the same call inside each
-//! language.
+//! language. Python can call all three languages. Calls into Python that
+//! return or retain Python objects are shown as unavailable until Zyntax
+//! objects cross out through the core protocol.
 //!
 //! Every cell is one operation looped `n` times inside a function of the
 //! calling language (`fixtures/src/Bench.hx`, `fixtures/src/bench/
@@ -10,7 +12,7 @@
 //!
 //!     cargo bench -p caribou-interop -- [--mode interp|hybrid]
 //!         [--wren interpreter|tiered] [--n 200000] [--runs 5]
-//!         [--only <operation>] [--column <0-3>]
+//!         [--only <operation>] [--column <0-8>]
 //!
 //! `--only` and `--column` run one cell, for a profiler to sample.
 
@@ -32,12 +34,34 @@ const OPERATIONS: [(&str, &str); 6] = [
     ("construct", "New"),
 ];
 
-/// (column, namespace, module, class, member prefix, argument as int)
-const COLUMNS: [(&str, &str, &str, &str, &str, bool); 4] = [
-    ("Haxe→Haxe", "bench", "Bench", "Bench", "haxe", true),
-    ("Wren→Wren", "bench", "tally", "Tally", "wren", false),
-    ("Haxe→Wren", "bench", "Bench", "Bench", "wren", true),
-    ("Wren→Haxe", "bench", "tally", "Tally", "haxe", false),
+type Cell = Option<(&'static str, &'static str, &'static str, &'static str, bool)>;
+
+/// (column, caller module/class/member prefix and whether its count is an int)
+const COLUMNS: [(&str, Cell); 9] = [
+    ("Haxe→Haxe", Some(("bench", "Bench", "Bench", "haxe", true))),
+    ("Haxe→Wren", Some(("bench", "Bench", "Bench", "wren", true))),
+    ("Haxe→Python", None),
+    (
+        "Wren→Haxe",
+        Some(("bench", "tally", "Tally", "haxe", false)),
+    ),
+    (
+        "Wren→Wren",
+        Some(("bench", "tally", "Tally", "wren", false)),
+    ),
+    ("Wren→Python", None),
+    (
+        "Python→Haxe",
+        Some(("bench", "python_tally", "PythonTally", "haxe", true)),
+    ),
+    (
+        "Python→Wren",
+        Some(("bench", "python_tally", "PythonTally", "wren", true)),
+    ),
+    (
+        "Python→Python",
+        Some(("bench", "python_tally", "PythonTally", "python", true)),
+    ),
 ];
 
 struct Args {
@@ -113,8 +137,8 @@ fn main() {
         args.n, args.runs
     );
     print!("{:<14}", "");
-    for (column, ..) in COLUMNS {
-        print!("{column:>12}");
+    for (column, _) in COLUMNS {
+        print!("{column:>15}");
     }
     println!();
 
@@ -127,11 +151,15 @@ fn main() {
             continue;
         }
         print!("{label:<14}");
-        for (i, (_, namespace, module, class, prefix, int)) in COLUMNS.into_iter().enumerate() {
+        for (i, (_, cell)) in COLUMNS.into_iter().enumerate() {
             if args.column.is_some_and(|c| c != i) {
-                print!("{:>12}", "");
+                print!("{:>15}", "");
                 continue;
             }
+            let Some((namespace, module, class, prefix, int)) = cell else {
+                print!("{:>15}", "n/a");
+                continue;
+            };
             let member = format!("{prefix}{suffix}");
             let arg = if int {
                 Value::int(args.n as i32)
@@ -160,7 +188,7 @@ fn main() {
             let mut samples: Vec<f64> = (0..args.runs).map(|_| call()).collect();
             samples.sort_by(|a, b| a.total_cmp(b));
             let median = samples[samples.len() / 2];
-            print!("{median:>12.1}");
+            print!("{median:>15.1}");
         }
         println!();
     }

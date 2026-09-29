@@ -53,7 +53,16 @@ fn a_python_module_uses_a_plugins_classes() {
     };
     let text = |v: Value| unsafe { caribou::error::Str::text(v) }.unwrap().to_owned();
 
+    assert_eq!(
+        reach
+            .functions
+            .iter()
+            .find(|function| function.name == "inferred_length")
+            .map(|function| &function.ret),
+        Some(&caribou::registry::TypeRef::Float)
+    );
     assert_eq!(call("length", &[]).as_number(), Some(5.0));
+    assert_eq!(call("inferred_length", &[]).as_number(), Some(5.0));
     assert_eq!(
         call("scaled", &[Value::number(2.0)]).as_number(),
         Some(10.0)
