@@ -15,7 +15,7 @@ extern crate alloc;
 /// A side module allocates with the program's `malloc`: two allocators
 /// over one linear memory would each hand out pages the other believes
 /// free.
-#[cfg(feature = "side_module")]
+#[cfg(all(feature = "side_module", target_family = "wasm"))]
 mod program_allocator {
     use core::alloc::{GlobalAlloc, Layout};
 

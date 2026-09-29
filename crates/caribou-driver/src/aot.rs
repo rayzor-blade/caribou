@@ -18,6 +18,14 @@ use caribou_abi::TypeTag;
 
 use crate::{aot_languages, linked};
 
+/// Inputs used only by a project build: plugins emitted beside the program and
+/// source-language frontends that contribute objects to the final link.
+#[derive(Clone, Copy, Default)]
+pub struct ProjectInputs<'a> {
+    pub side_modules: &'a [PathBuf],
+    pub languages: &'a [String],
+}
+
 /// Build `program` for `triple` into `out`, by default the program's name
 /// with the target's extension beside it. Plugin crates use the linked
 /// compatibility path, while language frontends contribute objects to Ash's
@@ -31,7 +39,15 @@ pub fn build(
     sources: &[PathBuf],
     target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
-    build_with_languages(program, triple, out, plugins, &[], sources, &[], target_dir)
+    build_with_languages(
+        program,
+        triple,
+        out,
+        plugins,
+        sources,
+        ProjectInputs::default(),
+        target_dir,
+    )
 }
 
 /// Build with the languages declared by a project. A frontend without a
@@ -44,11 +60,14 @@ pub fn build_with_languages(
     triple: &str,
     out: Option<&Path>,
     plugins: &[PathBuf],
-    side_modules: &[PathBuf],
     sources: &[PathBuf],
-    languages: &[String],
+    project: ProjectInputs<'_>,
     target_dir: Option<&Path>,
 ) -> Result<PathBuf> {
+    let ProjectInputs {
+        side_modules,
+        languages,
+    } = project;
     if !is_wasm_triple(triple) {
         bail!("`{triple}`: caribou builds wasm programs ahead of time so far");
     }

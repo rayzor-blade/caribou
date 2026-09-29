@@ -193,9 +193,11 @@ fn aot(
         triple,
         out,
         plugins,
-        side_modules,
         sources,
-        languages,
+        caribou_driver::aot::ProjectInputs {
+            side_modules,
+            languages,
+        },
         target_dir,
     )
     .map_err(|e| format!("{e:#}"))

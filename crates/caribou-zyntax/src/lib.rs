@@ -527,9 +527,9 @@ impl Language for Unprepared {
 /// A language's runtime and frontend, on the thread that registered it,
 /// and the module sources a bundle staged for it, by path under a root.
 struct State {
-    /// Shared, so a module's code runs with no borrow of the states held.
+    /// Shared, so parsing and module code run with no borrow of the states held.
     language: Rc<dyn Language>,
-    /// Boxed, so it keeps one address as the state moves.
+    /// Boxed, so resource snapshots keep a stable pointer as the state moves.
     runtime: Box<TieredRuntime>,
     staged: Arc<Staged>,
     /// The namespace of the module being parsed and lowered, for the
@@ -738,6 +738,29 @@ struct Parsed {
 }
 
 impl State {
+    /// The immutable resources used while parsing, compiling, and running a
+    /// module. Cloning them lets imports reenter the loader without borrowing
+    /// the thread-local state table.
+    fn resources(&self) -> Resources {
+        Resources {
+            language: Rc::clone(&self.language),
+            runtime: self.runtime.as_ref() as *const TieredRuntime as *mut TieredRuntime,
+            staged: Arc::clone(&self.staged),
+            importing: Arc::clone(&self.importing),
+        }
+    }
+}
+
+struct Resources {
+    language: Rc<dyn Language>,
+    /// The boxed runtime in the registered state. A loader cannot outlive the
+    /// adapter that owns that state, and all access stays on this thread.
+    runtime: *mut TieredRuntime,
+    staged: Arc<Staged>,
+    importing: Arc<Mutex<Option<String>>>,
+}
+
+impl Resources {
     /// Find, parse and lower module `name` (`game/scorer`); `None` when
     /// no layout of the language has it. Lowered from a copy of the
     /// program: the declarations type the interface, the HIR is what
@@ -778,13 +801,17 @@ impl State {
         // imports are read: at the parse for a frontend that reads them
         // itself, at the lowering for one the runtime reads them for.
         *self.importing.lock().unwrap() = segments.first().cloned();
+        // SAFETY: the registered state owns the boxed runtime for this
+        // loader's lifetime. Parsing may reenter another loader, so it runs
+        // without borrowing the thread-local state table.
+        let runtime = unsafe { &*self.runtime };
         let lowered = self
             .language
-            .parse(&self.runtime, &source, &file, &sources)
+            .parse(runtime, &source, &file, &sources)
             .and_then(|mut program| {
                 let exports = self.language.exports(&program);
                 publish::bridge_tuple_returns(&mut program, &exports);
-                self.runtime
+                runtime
                     .lower_to_hir(program.clone())
                     .map(|hir| (program, hir, exports))
                     .map_err(|e| e.to_string())
@@ -809,7 +836,8 @@ impl State {
     /// runtime's current code behind each symbol.
     fn publish(&self, lang: LangId, name: &str, declared: publish::Declared) -> Result<(), String> {
         let iface = publish::interface(lang, self.language.name(), name, declared, &|symbol| {
-            self.runtime.function_cell(symbol)
+            // SAFETY: see `parse_source`; this only reads the stable runtime.
+            unsafe { &*self.runtime }.function_cell(symbol)
         });
         registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))
     }
@@ -833,15 +861,16 @@ fn find_module(lang: LangId, namespace: &str, module: &str) -> Result<Option<Loc
     } else {
         format!("{namespace}/{module}")
     };
-    STATES.with(|states| {
+    let resources = STATES.with(|states| {
         let states = states.borrow();
         let state = states.get(&lang).ok_or_else(|| {
             format!("`{name}` cannot load: its Zyntax runtime is not on this thread")
         })?;
-        Ok(state
-            .source(&name)?
-            .map(|found| (name, Rc::clone(&state.language), found)))
-    })
+        Ok::<_, String>(state.resources())
+    })?;
+    Ok(resources
+        .source(&name)?
+        .map(|found| (name, Rc::clone(&resources.language), found)))
 }
 
 /// The registry's loader while describing: each module's interface from
@@ -859,11 +888,12 @@ fn describe_load(lang: LangId, namespace: &str, module: &str) -> Result<bool, St
             publish::run_interface(lang, &name, run)
         }
         None => {
-            let declared = STATES.with(|states| {
+            let resources = STATES.with(|states| {
                 let states = states.borrow();
                 let state = states.get(&lang).expect("found above");
-                state.parse_source(&name, found).map(|p| p.declared)
-            })?;
+                state.resources()
+            });
+            let declared = resources.parse_source(&name, found)?.declared;
             publish::interface(lang, language.name(), &name, declared, &|_| {
                 Some(std::ptr::null())
             })
@@ -894,38 +924,28 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
         }
         return Ok(true);
     }
-    let (declared, file, runtime) = STATES.with(|states| {
+    let resources = STATES.with(|states| {
+        let states = states.borrow();
+        states.get(&lang).expect("found above").resources()
+    });
+    let parsed = resources.parse_source(&name, found)?;
+    // SAFETY: the runtime is stable and this thread serializes compilation.
+    unsafe { &mut *resources.runtime }
+        .compile_module(parsed.hir)
+        .map_err(|e| format!("`{name}`: {e}"))?;
+    STATES.with(|states| {
         let mut states = states.borrow_mut();
         let state = states.get_mut(&lang).expect("found above");
-        let parsed = state.parse_source(&name, found)?;
-        state
-            .runtime
-            .compile_module(parsed.hir)
-            .map_err(|e| format!("`{name}`: {e}"))?;
         state.current = Some(name.clone());
-        Ok::<_, String>((
-            parsed.declared,
-            parsed.file,
-            &*state.runtime as *const TieredRuntime,
-        ))
-    })?;
+    });
     // The module's body, which binds what its functions read.
     if let Some(entry) = language.entry() {
-        // SAFETY: the runtime is boxed in its state, which stays
-        // registered for the world's life.
-        let runtime = unsafe { &*runtime };
-        foreign::as_caller(lang, || runtime.call_raw(entry, &[]))
+        foreign::as_caller(lang, || unsafe { &*resources.runtime }.call_raw(entry, &[]))
             .map_err(|e| format!("`{name}`: {e}"))?;
     }
-    STATES.with(|states| {
-        let states = states.borrow();
-        states
-            .get(&lang)
-            .expect("found above")
-            .publish(lang, &name, declared)
-    })?;
+    resources.publish(lang, &name, parsed.declared)?;
     // A file the world watches: an edit reloads the module.
-    if let Some(path) = file {
+    if let Some(path) = parsed.file {
         registry::set_source(lang, &name, path);
     }
     Ok(true)
@@ -939,17 +959,16 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
 /// compiled last, so only that module reloads; see git-bug
 /// 5bcf0d678e3b10197a5554df0fea80caaac84522e7921e6aabca4449011fdc98.
 fn reload(lang: LangId, name: &str) -> Result<(), String> {
-    let found = STATES.with(|states| {
+    let resources = STATES.with(|states| {
         let states = states.borrow();
         let state = states.get(&lang).ok_or_else(|| {
             format!("`{name}` cannot reload: its Zyntax runtime is not on this thread")
         })?;
-        Ok::<_, String>(
-            state
-                .source(name)?
-                .map(|found| (Rc::clone(&state.language), found)),
-        )
+        Ok::<_, String>(state.resources())
     })?;
+    let found = resources
+        .source(name)?
+        .map(|found| (Rc::clone(&resources.language), found));
     // A module a language runs is run again, and published over itself.
     if let Some((language, found)) = &found
         && let Some(run) =
@@ -963,33 +982,27 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
         return registry::publish(iface).map_err(|e| format!("`{name}`: {e}"));
     }
     STATES.with(|states| {
-        let mut states = states.borrow_mut();
-        let Some(state) = states.get_mut(&lang) else {
-            return Err(format!(
-                "`{name}` cannot reload: its Zyntax runtime is not on this thread"
-            ));
-        };
+        let states = states.borrow();
+        let state = states.get(&lang).expect("found above");
         match &state.current {
-            Some(current) if current == name => {}
-            Some(current) => {
-                return Err(format!(
-                    "`{name}` cannot reload: its runtime compiled `{current}` after it, and reloads only the last module it compiled"
-                ));
-            }
-            None => return Err(format!("`{name}` is not loaded")),
+            Some(current) if current == name => Ok(()),
+            Some(current) => Err(format!(
+                "`{name}` cannot reload: its runtime compiled `{current}` after it, and reloads only the last module it compiled"
+            )),
+            None => Err(format!("`{name}` is not loaded")),
         }
-        let Some(parsed) = state.parse(name)? else {
-            return Err(format!("`{name}` has no source to reload from"));
-        };
-        let report = state
-            .runtime
-            .reload_typed_program(parsed.program)
-            .map_err(|e| format!("`{name}`: {e}"))?;
-        if let Some((function, error)) = report.failed.first() {
-            return Err(format!("`{name}`: {function}: {error}"));
-        }
-        state.publish(lang, name, parsed.declared)
-    })
+    })?;
+    let Some(parsed) = resources.parse(name)? else {
+        return Err(format!("`{name}` has no source to reload from"));
+    };
+    // SAFETY: the runtime is stable and this thread serializes compilation.
+    let report = unsafe { &mut *resources.runtime }
+        .reload_typed_program(parsed.program)
+        .map_err(|e| format!("`{name}`: {e}"))?;
+    if let Some((function, error)) = report.failed.first() {
+        return Err(format!("`{name}`: {function}: {error}"));
+    }
+    resources.publish(lang, name, parsed.declared)
 }
 
 /// The modules of the frontends under `root` as data, for a build step:

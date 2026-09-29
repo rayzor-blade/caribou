@@ -148,8 +148,9 @@ pub unsafe fn bind(face: *mut vdynamic, v: Value) {
     unsafe { crate::import::bind_face(face, crate::wrenref::wrap_foreign(v)) }
 }
 
-/// Bind a face directly to `v`, with the face as `v`'s weak shadow. This is
-/// for an AOT face class whose allocation carries a host drop policy.
+/// Bind a face directly to `v`, with the face as `v`'s weak shadow. Objects
+/// that cannot keep a shadow use the ordinary cell representation instead.
+/// This is for an AOT face class whose allocation carries a host drop policy.
 ///
 /// # Safety
 /// `face` is a live instance of that face class and `v` is its live core
@@ -158,13 +159,22 @@ pub unsafe fn bind_attachment(face: *mut vdynamic, v: Value) {
     let Some(object) = v.as_object().map(|p| p as *mut u8) else {
         return;
     };
-    unsafe { crate::import::set_direct_attachment(face, object) };
     let mut kept = core::ptr::null_mut();
     let result = unsafe { Send::keep_shadow(object, face.cast(), &mut kept) };
-    debug_assert!(
-        result.is_ok() || matches!(result, Err(Fault::Missing)) && kept == face.cast(),
-        "a freshly constructed object already has another Haxe face"
-    );
+    match result {
+        Ok(()) => unsafe { crate::import::set_direct_attachment(face, object) },
+        Err(Fault::Unsupported) => unsafe { bind(face, v) },
+        Err(Fault::Missing) if kept == face.cast() => unsafe {
+            crate::import::set_direct_attachment(face, object)
+        },
+        Err(_) => {
+            debug_assert!(
+                false,
+                "a freshly constructed object already has another Haxe face"
+            );
+            unsafe { bind(face, v) };
+        }
+    }
 }
 
 /// The directly attached face of type `t` for `v`, allocating and binding it

@@ -30,7 +30,7 @@ runs:
         path: wren_lift
     - uses: actions/checkout@v4
       with:
-        repository: darmie/zyntax
+        repository: zyntax-project/zyntax
         ref: ${{ steps.revs.outputs.zyntax }}
         path: zyntax
     - uses: actions/checkout@v4
