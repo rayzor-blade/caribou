@@ -460,16 +460,25 @@ unsafe fn alloc_string(text: &str) -> Option<*mut vdynamic> {
 /// A `String` object of the type `t` holding `text`: [`alloc_string`] for
 /// a caller that has the program's `String` type in hand.
 pub(crate) unsafe fn alloc_string_typed(t: *mut hl_type, text: &str) -> *mut vdynamic {
-    let n = text.encode_utf16().count();
+    // ASCII, as most text is: one unit per byte, widened in place.
+    let ascii = text.is_ascii();
+    let n = if ascii {
+        text.len()
+    } else {
+        text.encode_utf16().count()
+    };
     let bytes = unsafe { hlp_alloc_bytes(((n + 1) * 2) as i32) } as *mut uchar;
-    let mut at = bytes;
-    for unit in text.encode_utf16() {
-        unsafe {
-            *at = unit;
-            at = at.add(1);
+    let units = unsafe { std::slice::from_raw_parts_mut(bytes, n + 1) };
+    if ascii {
+        for (u, &b) in units.iter_mut().zip(text.as_bytes()) {
+            *u = uchar::from(b);
+        }
+    } else {
+        for (u, unit) in units.iter_mut().zip(text.encode_utf16()) {
+            *u = unit;
         }
     }
-    unsafe { *at = 0 };
+    units[n] = 0;
     let s = unsafe { hlp_alloc_obj(t.cast()) } as *mut vdynamic;
     let base = s as *mut u8;
     unsafe {

@@ -481,9 +481,23 @@ unsafe extern "C-unwind" fn function_call(
     } else {
         unsafe { std::slice::from_raw_parts(args, n) }
     };
-    let anys: Vec<Any> = args.iter().map(|&v| crate::foreign::any_of(v)).collect();
+    if args.len() > foreign::MAX_CALL_ARITY {
+        return raise(
+            ErrorKind::Type,
+            &format!(
+                "a call through a function value passes at most {} arguments",
+                foreign::MAX_CALL_ARITY
+            ),
+            origin.lang,
+        );
+    }
+    let mut anys = [std::ptr::null_mut(); foreign::MAX_CALL_ARITY];
+    for (slot, &v) in anys.iter_mut().zip(args) {
+        *slot = crate::foreign::any_of(v);
+    }
+    let anys = &anys[..args.len()];
     crate::foreign::as_caller(origin.lang, || {
-        let result = unsafe { foreign::call_function(proxy.value, &anys) };
+        let result = unsafe { foreign::call_function(proxy.value, anys) };
         if let Some(error) = origin.take_error() {
             bridge::set_pending(error);
             return REPLY_RAISED;

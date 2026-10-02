@@ -166,19 +166,25 @@ impl Str {
     /// `units` as UTF-8, an unpaired surrogate as U+FFFD, encoded where
     /// the string lies; rooted by the caller, as for `new`.
     pub fn from_utf16(units: &[u16]) -> *mut Str {
+        // ASCII, as most text is: one byte per unit, narrowed in place.
+        if units.iter().all(|&u| u < 0x80) {
+            let p = Self::alloc(units.len());
+            let at = unsafe { std::slice::from_raw_parts_mut(Self::bytes_ptr(p), units.len()) };
+            for (b, &u) in at.iter_mut().zip(units) {
+                *b = u as u8;
+            }
+            return p;
+        }
         let chars = || {
             char::decode_utf16(units.iter().copied())
                 .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
         };
         let p = Self::alloc(chars().map(char::len_utf8).sum());
-        let mut at = unsafe { Self::bytes_ptr(p) };
-        let mut buf = [0u8; 4];
+        let len = unsafe { (*p).len };
+        let mut out = unsafe { std::slice::from_raw_parts_mut(Self::bytes_ptr(p), len) };
         for c in chars() {
-            let bytes = c.encode_utf8(&mut buf).as_bytes();
-            unsafe {
-                ptr::copy_nonoverlapping(bytes.as_ptr(), at, bytes.len());
-                at = at.add(bytes.len());
-            }
+            let n = c.encode_utf8(out).len();
+            out = &mut out[n..];
         }
         p
     }
