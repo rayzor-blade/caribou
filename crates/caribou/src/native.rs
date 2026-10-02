@@ -174,6 +174,37 @@ pub unsafe fn call(
     }
 }
 
+/// The most arguments the call table takes.
+pub const MAX_ARGS: usize = ash_native_call::MAX_ARGS;
+
+/// The table's pattern for arguments passed as `word_kinds` say: what
+/// [`call_pattern`] takes, worked out once for a signature.
+pub fn pattern_of(word_kinds: &[u8]) -> u32 {
+    ash_native_call::pattern_of(word_kinds)
+}
+
+/// [`call`] with the arguments' pattern already worked out and the
+/// result's word kind as [`word_kind`] gives it.
+///
+/// # Safety
+/// As [`call`]; `pattern` is the pattern of `func`'s arguments.
+#[inline]
+pub unsafe fn call_pattern(
+    func: *const std::ffi::c_void,
+    words: &[u64],
+    ret_word_kind: u8,
+    pattern: u32,
+) -> Option<i64> {
+    unsafe {
+        ash_native_call::dispatch_by_pattern(
+            func as *mut std::ffi::c_void,
+            words,
+            ret_word_kind,
+            pattern,
+        )
+    }
+}
+
 /// A typed dispatcher for a language whose signatures are scalar kinds
 /// alone: each argument as the word of its kind, the result read back
 /// the same way. A value a kind cannot take is a `Type` error naming
