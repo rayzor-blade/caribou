@@ -153,7 +153,9 @@ fn park_with_deadline_and_no_wake_times_out() {
 
 #[test]
 fn sleep_until_does_not_spin() {
-    let deadline = Instant::now() + Duration::from_millis(20);
+    // Far past what a thousand yields take on a loaded machine: the test is
+    // whether the parked task costs the yielder switches, not timing.
+    let deadline = Instant::now() + Duration::from_millis(500);
     let sleeper = Rc::new(Cell::new(None));
     let yields_done_at = Rc::new(Cell::new(None));
 
