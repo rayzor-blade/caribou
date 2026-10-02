@@ -1,8 +1,10 @@
 //! A project's layout: where its modules are and what namespaces it has.
 //!
-//! The source roots are the class paths of the project's `.hxml` files,
-//! read from the directory the command runs in and from the program's
-//! own; without any, `src` under those directories when it exists, else
+//! The source roots are the class paths of the `.hxml` that built the
+//! program, the one whose `-hl` names it, found in the directory the
+//! command runs in, the program's own or the one above it (a program in
+//! `bin/`). Without one, the class paths of every `.hxml` in the first
+//! two; without any, `src` under those directories when it exists, else
 //! the directories themselves. A namespace is a directory under a root
 //! (`src/game` is `game`), or one the program imports, and every
 //! namespace covers every resident language, Haxe first, the plugins
@@ -39,24 +41,63 @@ fn class_paths(hxml: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// The program an `.hxml` writes, its `-hl`, relative to its directory.
+fn output(hxml: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(hxml).ok()?;
+    let dir = hxml.parent().unwrap_or(Path::new("."));
+    let mut words = text
+        .lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .flat_map(|l| l.split_whitespace());
+    while let Some(word) = words.next() {
+        if word == "-hl" {
+            return words.next().map(|path| dir.join(path));
+        }
+    }
+    None
+}
+
+/// The `.hxml` files in `dir`, in name order.
+fn hxmls_in(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut hxmls: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "hxml"))
+        .collect();
+    hxmls.sort();
+    hxmls
+}
+
 /// The source roots for `program`: see the module doc.
 pub fn roots(program: &Path) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = vec![PathBuf::from(".")];
-    if let Some(dir) = program.parent().filter(|d| !d.as_os_str().is_empty()) {
+    let own = program.parent().filter(|d| !d.as_os_str().is_empty());
+    if let Some(dir) = own {
         dirs.push(dir.to_owned());
     }
-    let mut roots = Vec::new();
-    for dir in &dirs {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            continue;
-        };
-        let mut hxmls: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| p.extension().is_some_and(|e| e == "hxml"))
-            .collect();
-        hxmls.sort();
-        for hxml in hxmls {
-            roots.extend(class_paths(&hxml));
+    // The `.hxml` that built the program decides, wherever it is.
+    let above = own
+        .and_then(Path::parent)
+        .filter(|d| !d.as_os_str().is_empty());
+    let built = std::fs::canonicalize(program).ok();
+    let mut roots: Vec<PathBuf> = dirs
+        .iter()
+        .map(PathBuf::as_path)
+        .chain(above)
+        .flat_map(hxmls_in)
+        .filter(|hxml| {
+            built.is_some() && output(hxml).and_then(|out| std::fs::canonicalize(out).ok()) == built
+        })
+        .flat_map(|hxml| class_paths(&hxml))
+        .collect();
+    if roots.is_empty() {
+        for dir in &dirs {
+            for hxml in hxmls_in(dir) {
+                roots.extend(class_paths(&hxml));
+            }
         }
     }
     if roots.is_empty() {
@@ -191,6 +232,23 @@ mod tests {
         let found = roots(&dir.join("game.hl"));
         assert!(found.contains(&dir.join("src")), "{found:?}");
         assert!(!found.contains(&dir), "{found:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_hxml_that_built_a_program_in_bin_gives_its_roots() {
+        let dir = std::env::temp_dir().join(format!("caribou-project-bin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        std::fs::write(
+            dir.join("gpu.hxml"),
+            "-cp src\n-main Main\n-hl bin/gpu.hl\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("bin/gpu.hl"), "").unwrap();
+
+        assert_eq!(roots(&dir.join("bin/gpu.hl")), vec![dir.join("src")]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
