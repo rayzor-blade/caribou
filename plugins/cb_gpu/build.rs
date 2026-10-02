@@ -1,8 +1,18 @@
+use std::{env::temp_dir, path::PathBuf};
+
+fn gpu_decl(content:&str)-> Option<PathBuf> {
+        // make file unique to avoid collisions with other tests
+        let file_name = format!("gpu.api.{}.rs", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros());
+        let path = temp_dir().join(file_name);
+        std::fs::write(&path, content).ok()?;
+        Some(path)
+    }
+
 fn main() {
     let api = xgpu_bindgen::gpu_api();
     let idl = xgpu_bindgen::WEBGPU_IDL;
     let generated =
-        xgpu_bindgen::generate_caribou("gpu", &api, idl).expect("valid GPU binding declarations");
+        xgpu_bindgen::generate_caribou("gpu", gpu_decl(&api), idl).expect("valid GPU binding declarations");
     let path = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     xgpu_backend::install(&path).expect("the shared GPU backend installs");
     std::fs::write(path.join("gpu.rs"), generated).unwrap();
@@ -22,7 +32,7 @@ fn main() {
     // For a WASI program, the backend the members call: xgpu's web operations,
     // and a refusal for the rest.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
-        let backend = xgpu_bindgen::web_backend("gpu", &api, idl, xgpu_backend::WEB)
+        let backend = xgpu_bindgen::web_backend("gpu", gpu_decl(&api), idl, xgpu_backend::WEB)
             .expect("the web backend generates");
         std::fs::write(path.join("gpu_web_backend.rs"), backend).unwrap();
     }

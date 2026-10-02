@@ -7114,6 +7114,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
+name = "x_idl"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/x-idl.git?rev=e9a8e1158bbbd7df3f63e738b0e0b6753101e566#e9a8e1158bbbd7df3f63e738b0e0b6753101e566"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "rand 0.8.8",
+ "syn 2.0.119",
+ "weedle2",
+]
+
+[[package]]
 name = "xcursor"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7132,6 +7144,7 @@ dependencies = [
  "syn 2.0.119",
  "weedle2",
  "wgpu-types",
+ "x_idl",
 ]
 
 [[package]]
