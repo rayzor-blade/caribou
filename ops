@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1790979854,"nonce":"0GlzyRIsj1VQERk7RJdJiE0GqsQ=","message":"Closing (2026-10-02 review): crates/caribou-interop/benches/interop_wasm.rs exists and every cell runs on wasm, Wren→Haxe included since 7263d4a. The cost of those cells is tracked in ccaa3bf and 332b4a8.","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1790979854,"nonce":"7F/q/I9eMlj9nHgvOuUUijcBkXQ=","status":2}]}
