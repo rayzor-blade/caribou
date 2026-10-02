@@ -184,7 +184,15 @@ unsafe extern "C-unwind" fn direct(
     if key != target || plan.kinds.len() != n {
         return REPLY_MISSING;
     }
-    unsafe { call_as(lang as caribou_abi::LangId, plan, target as *const c_void, args, out) }
+    unsafe {
+        call_as(
+            lang as caribou_abi::LangId,
+            plan,
+            target as *const c_void,
+            args,
+            out,
+        )
+    }
 }
 
 unsafe fn call_as(

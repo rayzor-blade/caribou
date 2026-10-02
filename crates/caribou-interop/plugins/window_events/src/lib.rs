@@ -1,7 +1,10 @@
 //! Headless probes of the window plugin's events: xwindow's generated
 //! `window` model and native backend, with a class of samples that makes
 //! the events a window reports without opening one.
-#![allow(non_snake_case, clippy::too_many_arguments)]
+#![allow(non_snake_case)]
+// Nearly all of the crate is xwindow's generated model and backend, which
+// xwindow lints.
+#![allow(clippy::all)]
 
 mod backend {
     include!(concat!(env!("OUT_DIR"), "/xwindow_backend/native.rs"));

@@ -691,7 +691,7 @@ pub(crate) fn hold_view(heap: &WrenHeap, start: *mut u8) {
 /// objects.
 unsafe fn viewed_cell(gc: &ImmixAllocator, addr: usize) -> Option<(usize, usize)> {
     // A view is word-aligned; a scanned word that is not names no view.
-    if addr % size_of::<usize>() != 0 {
+    if !addr.is_multiple_of(size_of::<usize>()) {
         return None;
     }
     let (start, size) = gc.allocation_containing(addr)?;

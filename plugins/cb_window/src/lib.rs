@@ -2,7 +2,10 @@
 //! model is generated from xwindow's declaration; on a desktop its backend
 //! is winit, and in a page the page's canvas, driven by xwindow's agent,
 //! which the host starts beside the program.
-#![allow(non_snake_case, clippy::too_many_arguments)]
+#![allow(non_snake_case)]
+// Nearly all of the crate is xwindow's generated model and backend, which
+// xwindow lints.
+#![allow(clippy::all)]
 // The page backend reaches only part of what the model declares.
 #![cfg_attr(target_os = "wasi", allow(dead_code))]
 // The page backend's mailbox waits with wasm's atomic wait.

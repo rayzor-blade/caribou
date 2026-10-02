@@ -17,7 +17,11 @@ fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     xwindow_backend::install(&out).expect("xwindow's backend installs");
     let declaration = out.join("window.api.rs");
-    std::fs::write(&declaration, format!("{}\n{SAMPLES}", xwindow_bindgen::window_api())).unwrap();
+    std::fs::write(
+        &declaration,
+        format!("{}\n{SAMPLES}", xwindow_bindgen::window_api()),
+    )
+    .unwrap();
     let model = x_idl::generate_caribou(
         xwindow_bindgen::NAMESPACE,
         Some(declaration),

@@ -13,7 +13,11 @@ fn main() {
     // The page's half of the wire beside the agent `install` wrote, which
     // a program in a page ships with its other page files.
     let wire = xwindow_bindgen::browser_wire().expect("xwindow's wire generates");
-    std::fs::write(out.join("page").join(xwindow_backend::WIRE_MODULE), &wire.js).unwrap();
+    std::fs::write(
+        out.join("page").join(xwindow_backend::WIRE_MODULE),
+        &wire.js,
+    )
+    .unwrap();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("wasi") {
         std::fs::write(out.join("window_wire.rs"), &wire.rust).unwrap();
         let backend = xwindow_bindgen::web_backend(Runtime::Caribou, xwindow_backend::WEB)

@@ -36,9 +36,7 @@ fn a_cycle_through_python_and_wren_names_itself() {
     let mut stderr = String::new();
     std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
     assert!(
-        stderr.contains(
-            "ImportError: import cycle: cyc:py_side -> cyc:wren_side -> cyc:py_side;"
-        ),
+        stderr.contains("ImportError: import cycle: cyc:py_side -> cyc:wren_side -> cyc:py_side;"),
         "{stderr}"
     );
 }
@@ -76,6 +74,6 @@ fn load_the_cycle() {
     let mut vm = VM::new(config);
     vm.krio_fiber_active = true;
     let loaded = caribou_wren::with_vm(&mut vm, |_| registry::lookup_or_load("cyc", "py_side"));
-    let error = loaded.err().expect("a module that imports itself back does not load");
+    let error = loaded.expect_err("a module that imports itself back does not load");
     eprintln!("{error}");
 }
