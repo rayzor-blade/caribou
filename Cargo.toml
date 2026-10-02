@@ -26,7 +26,6 @@ ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e7765
 ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6", default-features = false }
 ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6", default-features = false }
 ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6" }
-ash_window = { git = "https://github.com/rayzor-blade/ash.git", rev = "59a945e77654a0905afb7d2515532dc951e9e1e6" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "eca0254cfde790e781903ff2ddb8de639be0673f", default-features = false }
 zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "c9adf74893b19f836152fac08a6eca1d9f021132" }
 zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "c9adf74893b19f836152fac08a6eca1d9f021132", default-features = false }
@@ -38,6 +37,10 @@ zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = 
 xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "ab97ab0b9bb52a41b5ac5b0490d4d098990a7867" }
 xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "ab97ab0b9bb52a41b5ac5b0490d4d098990a7867" }
 xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "ab97ab0b9bb52a41b5ac5b0490d4d098990a7867" }
+xwindow-backend = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
+xwindow-bindgen = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
+xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
+x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "3435b2905e1804712f3d1b8addfbeb6ee876048f" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,
@@ -53,7 +56,6 @@ ash_core = { path = "../ash/crates/ash" }
 ash_interp = { path = "../ash/crates/ash_interp" }
 ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
 ash_page = { path = "../ash/crates/ash_page" }
-ash_window = { path = "../ash/crates/ash_window" }
 
 [patch."https://github.com/rayzor-blade/xgpu.git"]
 xgpu-backend = { path = "../xgpu/crates/xgpu-backend" }

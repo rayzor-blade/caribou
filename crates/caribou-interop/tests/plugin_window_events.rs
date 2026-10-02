@@ -5,7 +5,7 @@ use caribou_interop::captured;
 use std::path::PathBuf;
 
 #[test]
-fn window_events_and_scale_callback_cross_haxe() {
+fn window_events_cross_haxe() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/window_events");
     let library = format!(
         "{}caribou_plugin_window_events.{}",

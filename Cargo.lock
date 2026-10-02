@@ -409,10 +409,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ash_window"
-version = "0.1.0"
-
-[[package]]
 name = "async-trait"
 version = "0.1.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -992,7 +988,12 @@ name = "caribou-plugin-window-events"
 version = "0.1.0"
 dependencies = [
  "caribou_abi",
+ "raw-window-handle",
  "winit",
+ "x_idl",
+ "xwindow-backend",
+ "xwindow-bindgen",
+ "xwindow-core",
 ]
 
 [[package]]
@@ -1026,10 +1027,12 @@ version = "0.1.0"
 name = "caribou-window"
 version = "0.1.0"
 dependencies = [
- "ash_window",
  "caribou_abi",
  "raw-window-handle",
  "winit",
+ "xwindow-backend",
+ "xwindow-bindgen",
+ "xwindow-core",
 ]
 
 [[package]]
@@ -7116,7 +7119,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x_idl"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/x-idl.git?rev=bce92e00cd3b13b1b1ca0e94020b065a28d9e911#bce92e00cd3b13b1b1ca0e94020b065a28d9e911"
+source = "git+https://github.com/rayzor-blade/x-idl.git?rev=3435b2905e1804712f3d1b8addfbeb6ee876048f#3435b2905e1804712f3d1b8addfbeb6ee876048f"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7175,6 +7178,28 @@ name = "xml-rs"
 version = "0.8.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
+
+[[package]]
+name = "xwindow-backend"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
+
+[[package]]
+name = "xwindow-bindgen"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
+dependencies = [
+ "x_idl",
+ "xwindow-core",
+]
+
+[[package]]
+name = "xwindow-core"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
+dependencies = [
+ "raw-window-handle",
+]
 
 [[package]]
 name = "yansi"

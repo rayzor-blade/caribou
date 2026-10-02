@@ -1,130 +1,132 @@
-//! Headless probes using the production window event definitions.
-use caribou_abi::{Enum, Kept, Value};
-#[path = "../../../../../plugins/cb_window/src/events.rs"]
-mod events;
-use events::*;
+//! Headless probes of the window plugin's events: xwindow's generated
+//! `window` model and native backend, with a class of samples that makes
+//! the events a window reports without opening one.
+#![allow(non_snake_case, clippy::too_many_arguments)]
 
-pub struct Samples;
-impl Samples {
-    pub extern "C" fn physical(width: i32, height: i32) -> Enum<ScaleSize> {
-        ScaleSize::Physical { width, height }.into()
+mod backend {
+    include!(concat!(env!("OUT_DIR"), "/xwindow_backend/native.rs"));
+
+    use super::*;
+
+    pub unsafe fn samples_event(which: i32) -> Event {
+        sample(which)
     }
-    pub extern "C" fn event(which: i32) -> Enum<Event> {
-        sample(which).into()
-    }
-    pub extern "C" fn echo(event: Enum<Event>) -> Enum<Event> {
-        event.get().into()
-    }
-    pub extern "C" fn scale(callback: Value, factor: f64) -> Enum<ScaleSize> {
-        match events::scale_request(&Kept::new(callback), factor) {
-            Ok(size) => size.into(),
-            Err(error) => {
-                error.raise();
-                ScaleSize::Default.into()
-            }
+
+    /// As the backend returns an enum: its native code.
+    pub unsafe fn samples_sizing(which: i32) -> i32 {
+        match which {
+            0 => ScaleSizing::Logical,
+            _ => ScaleSizing::Physical,
         }
+        .native()
     }
 }
-
-caribou_abi::plugin! {
-    name: "window";
-    enum Event;
-    enum MouseButton;
-    enum MouseElementState;
-    enum MouseScrollDelta;
-    enum TouchPhase;
-    enum FilePath;
-    enum OptionalText;
-    enum OptionalFloat;
-    enum CursorRange;
-    enum Ime;
-    enum TouchForce;
-    enum Theme;
-    enum NativeKeyCode;
-    enum NativeKey;
-    enum PhysicalKey;
-    enum Key;
-    enum KeyCode;
-    enum NamedKey;
-    enum KeyLocation;
-    enum KeySupplement;
-    enum KeyEvent;
-    enum ModifiersKeyState;
-    enum Modifiers;
-    enum DeviceEvent;
-    enum ScaleSize;
-
-    class Samples {
-        fn physical(i32, i32) -> Enum<ScaleSize>;
-        fn event(i32) -> Enum<Event>;
-        fn echo(Enum<Event>) -> Enum<Event>;
-        fn scale(Value, f64) -> Enum<ScaleSize>;
-    }
+mod runtime {
+    pub use caribou_abi::{Buffer, BufferMut, Enum, ErrorKind, Future, Text, host};
 }
+
+#[allow(unused_imports)]
+use runtime::{Buffer, BufferMut, Enum, Future, Text};
+include!(concat!(env!("OUT_DIR"), "/window.rs"));
 
 fn sample(which: i32) -> Event {
-    use winit::event as n;
-    let device_id = n::DeviceId::dummy();
+    let device_id = 7;
     match which {
-        0 => n::WindowEvent::Resized(winit::dpi::PhysicalSize::new(u32::MAX, 600)).into(),
-        1 => n::WindowEvent::Ime(n::Ime::Preedit("é文".into(), Some((2, 5)))).into(),
-        2 => n::WindowEvent::Touch(n::Touch {
+        // A width no i32 holds.
+        0 => Event::Resized {
+            width: i64::from(u32::MAX),
+            height: 600,
+        },
+        // The cursor range is in bytes.
+        1 => Event::Ime {
+            event: Ime::Preedit {
+                text: "é文".into(),
+                cursor: CursorRange::Range { start: 2, end: 5 },
+            },
+        },
+        // Every bit of a 64-bit touch id.
+        2 => Event::Touch {
             device_id,
-            phase: n::TouchPhase::Moved,
-            location: (1.5, -2.5).into(),
-            force: Some(n::Force::Calibrated {
+            phase: TouchPhase::Moved,
+            x: 1.5,
+            y: -2.5,
+            force: TouchForce::Calibrated {
                 force: 2.0,
                 max_possible_force: 4.0,
-                altitude_angle: Some(0.5),
-            }),
-            id: u64::MAX,
-        })
-        .into(),
+                altitude_angle: OptionalFloat::Some { value: 0.5 },
+            },
+            id: u64::MAX as i64,
+        },
         3 => Event::KeyboardInput {
-            device_id: events::device_key(device_id),
+            device_id,
             event: KeyEvent::Input {
-                physical_key: PhysicalKey::Code(KeyCode::KeyA),
-                logical_key: Key::Character("é".into()),
-                text: OptionalText::Some("é".into()),
+                physical_key: PhysicalKey::Code {
+                    code: KeyCode::KeyA,
+                },
+                logical_key: Key::Character { text: "é".into() },
+                text: OptionalText::Some { text: "é".into() },
                 location: KeyLocation::Left,
                 state: MouseElementState::Pressed,
                 repeat: true,
                 supplement: KeySupplement::Supplement {
-                    key_without_modifiers: Key::Named(NamedKey::Enter),
+                    key_without_modifiers: Key::Named {
+                        key: NamedKey::Enter,
+                    },
                     text_with_all_modifiers: OptionalText::None,
                 },
             },
             is_synthetic: true,
         },
-        4 => n::WindowEvent::MouseInput {
+        4 => Event::MouseInput {
+            state: MouseElementState::Released,
+            button: MouseButton::Other { button: 65535 },
             device_id,
-            state: n::ElementState::Released,
-            button: n::MouseButton::Other(65535),
-        }
-        .into(),
-        5 => Event::Device {
-            device_id: events::device_key(device_id),
-            event: n::DeviceEvent::Key(n::RawKeyEvent {
-                physical_key: winit::keyboard::PhysicalKey::Unidentified(
-                    winit::keyboard::NativeKeyCode::Xkb(u32::MAX),
-                ),
-                state: n::ElementState::Pressed,
-            })
-            .into(),
         },
-        6 => Event::DroppedFile(FilePath::UnixBytes(EventBytes(vec![b'/', 255]))),
-        7 => n::WindowEvent::RedrawRequested.into(),
-        8 => n::WindowEvent::ModifiersChanged(winit::keyboard::ModifiersState::SHIFT.into()).into(),
-        9 => n::WindowEvent::ThemeChanged(winit::window::Theme::Dark).into(),
-        // An id no double holds exactly.
-        10 => n::WindowEvent::Touch(n::Touch {
+        // A native key code past i32.
+        5 => Event::Device {
             device_id,
-            phase: n::TouchPhase::Started,
-            location: (0.0, 0.0).into(),
-            force: None,
+            event: DeviceEvent::Key {
+                physical_key: PhysicalKey::Unidentified {
+                    code: NativeKeyCode::Xkb {
+                        code: i64::from(u32::MAX),
+                    },
+                },
+                state: MouseElementState::Pressed,
+            },
+        },
+        // A path that is not Unicode keeps its bytes.
+        6 => Event::DroppedFile {
+            path: FilePath::UnixBytes {
+                bytes: VariantBytes(vec![b'/', 255]),
+            },
+        },
+        7 => Event::RedrawRequested,
+        8 => Event::ModifiersChanged {
+            modifiers: Modifiers::State {
+                shift: true,
+                control: false,
+                alt: false,
+                super_key: false,
+                left_shift: ModifiersKeyState::Pressed,
+                right_shift: ModifiersKeyState::Unknown,
+                left_control: ModifiersKeyState::Unknown,
+                right_control: ModifiersKeyState::Unknown,
+                left_alt: ModifiersKeyState::Unknown,
+                right_alt: ModifiersKeyState::Unknown,
+                left_super: ModifiersKeyState::Unknown,
+                right_super: ModifiersKeyState::Unknown,
+            },
+        },
+        9 => Event::ThemeChanged { theme: Theme::Dark },
+        // An id no double holds exactly.
+        10 => Event::Touch {
+            device_id,
+            phase: TouchPhase::Started,
+            x: 0.0,
+            y: 0.0,
+            force: TouchForce::None,
             id: (1 << 60) + 1,
-        })
-        .into(),
+        },
         _ => Event::None,
     }
 }

@@ -1,17 +1,18 @@
 import window.Samples;
 import window.Event;
-import window.ScaleSize;
+import window.ScaleSizing;
 
 class UseWindowEvents {
     static function check(ok:Bool, message:String) {
         if (!ok) throw message;
     }
     static function main() {
-        // Decode into the production Rust event types and encode again.
+        // The events a window reports, made by the plugin's generated model,
+        // kept across a collection before they are read.
         function event(index:Int):Event {
             var e = Samples.event(index);
             hl.Gc.major();
-            return Samples.echo(e);
+            return e;
         }
         switch (event(0)) {
             case Resized(width, height):
@@ -56,30 +57,8 @@ class UseWindowEvents {
             default: throw "modifiers";
         }
         switch (event(9)) { case ThemeChanged(Dark): default: throw "theme"; }
-        switch (Samples.scale(function(factor:Float):ScaleSize {
-            hl.Gc.major();
-            check(factor == 1.25, "scale argument");
-            return Physical(960, 720);
-        }, 1.25)) {
-            case Physical(w, h): check(w == 960 && h == 720, "scale result");
-            default: throw "scale request";
-        }
-        switch (Samples.scale(function(_:Float):ScaleSize { return Default; }, 2)) {
-            case Default:
-            default: throw "default scale size";
-        }
-        var caught = false;
-        try { Samples.scale(function(_:Float):ScaleSize { throw "scale failure"; }, 1); }
-        catch (e:Dynamic) { caught = Std.string(e).indexOf("scale failure") >= 0; }
-        check(caught, "callback error was swallowed");
-        caught = false;
-        try { Samples.scale(function(_:Float):ScaleSize { return Physical(-1, 20); }, 1); }
-        catch (_:Dynamic) { caught = true; }
-        check(caught, "negative scale dimensions accepted");
-        caught = false;
-        try { Samples.scale(function(_:Float):Dynamic { return "wrong"; }, 1); }
-        catch (_:Dynamic) { caught = true; }
-        check(caught, "wrong scale callback result accepted");
+        switch (Samples.sizing(0)) { case Logical: default: throw "logical sizing"; }
+        switch (Samples.sizing(1)) { case Physical: default: throw "physical sizing"; }
         Sys.println("window events ok");
     }
 }

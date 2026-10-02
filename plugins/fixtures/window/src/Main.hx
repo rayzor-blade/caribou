@@ -1,21 +1,21 @@
 import window.Event;
-import window.WindowBuilder;
-import window.ScaleSize;
+import window.ScaleSizing;
+import window.Window;
+import window.WindowAttributes;
 
 class Main {
     static function main() {
-        var window = new WindowBuilder()
-            .title("Caribou Window Test")
-            .size(800, 600)
-            .open();
-        window.set_ime_allowed(true);
-        window.set_ime_cursor_area(20, 20, 400, 24);
-        // This runs inside winit's scale callback. Return Physical(w, h)
-        // to override its suggestion; window methods cannot re-enter it.
-        window.on_scale_factor_changed(function(factor:Float):ScaleSize {
-            return Default;
-        });
-        window.request_redraw();
+        var attributes = new WindowAttributes();
+        attributes.title("Caribou Window Test");
+        attributes.width(800);
+        attributes.height(600);
+        var window = Window.open(attributes);
+        window.setImeAllowed(true);
+        window.setImeCursorArea(20, 20, 400, 24);
+        // A change of scale keeps the window's logical size, as winit
+        // suggests; Physical keeps its size in pixels.
+        window.setScaleSizing(Logical);
+        window.requestRedraw();
 
         var running = true;
         while (running) {

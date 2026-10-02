@@ -8,7 +8,8 @@ import gpu.GpuInstance;
 import gpu.GpuProgrammableStage;
 import gpu.VertexFormat;
 import gpu.VertexStepMode;
-import window.WindowBuilder;
+import window.Window;
+import window.WindowAttributes;
 
 /** Moves each particle, stored as position then velocity. **/
 class Step implements caribou.hxsl.Shader {
@@ -74,7 +75,11 @@ class Main {
 	static inline final COUNT = 4096;
 
 	static function main() {
-		var window = new WindowBuilder().title("Swarm").size(800, 500).open();
+		var attributes = new WindowAttributes();
+		attributes.title("Swarm");
+		attributes.width(800);
+		attributes.height(500);
+		var window = Window.open(attributes);
 		var instance = new GpuInstance();
 		var surface = instance.surface(window.platform(), window.raw(0), window.raw(1), window.raw(2), window.raw(3));
 		var adapter = instance.requestAdapter(HighPerformance).await();
@@ -171,7 +176,7 @@ class Main {
 			queue.presentSurface(surface);
 		}
 
-		window.request_redraw();
+		window.requestRedraw();
 		var running = true;
 		while (running) {
 			switch (window.poll()) {
@@ -179,9 +184,9 @@ class Main {
 					running = false;
 				case Resized(_, _):
 					configure();
-					window.request_redraw();
+					window.requestRedraw();
 				case RedrawRequested:
-					window.request_redraw();
+					window.requestRedraw();
 					if (configured) render();
 				case None:
 					Sys.sleep(0.001);

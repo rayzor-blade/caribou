@@ -7,7 +7,8 @@ import gpu.GpuBufferDescriptor;
 import gpu.GpuInstance;
 import gpu.VertexFormat;
 import gpu.VertexStepMode;
-import window.WindowBuilder;
+import window.Window;
+import window.WindowAttributes;
 
 /** A bird: a small arrow at its position, turned to its heading. **/
 class Bird implements caribou.hxsl.Shader {
@@ -41,7 +42,11 @@ class Bird implements caribou.hxsl.Shader {
 **/
 class Main {
 	static function main() {
-		var window = new WindowBuilder().title("Flock").size(800, 500).open();
+		var attributes = new WindowAttributes();
+		attributes.title("Flock");
+		attributes.width(800);
+		attributes.height(500);
+		var window = Window.open(attributes);
 		var instance = new GpuInstance();
 		var surface = instance.surface(window.platform(), window.raw(0), window.raw(1), window.raw(2), window.raw(3));
 		var adapter = instance.requestAdapter(HighPerformance).await();
@@ -123,7 +128,7 @@ class Main {
 			}
 		}
 
-		window.request_redraw();
+		window.requestRedraw();
 		var running = true;
 		while (running) {
 			switch (window.poll()) {
@@ -131,9 +136,9 @@ class Main {
 					running = false;
 				case Resized(_, _):
 					configure();
-					window.request_redraw();
+					window.requestRedraw();
 				case RedrawRequested:
-					window.request_redraw();
+					window.requestRedraw();
 					if (configured) render();
 				case CursorMoved(x, y, _):
 					pointerX = x;

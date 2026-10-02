@@ -8,6 +8,13 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[build-dependencies]
+x_idl = { workspace = true }
+xwindow-backend = { workspace = true }
+xwindow-bindgen = { workspace = true }
+
 [dependencies]
 caribou_abi = { workspace = true }
+xwindow-core = { workspace = true }
 winit = "0.30"
+raw-window-handle = "0.6"

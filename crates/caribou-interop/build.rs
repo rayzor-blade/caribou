@@ -19,18 +19,6 @@ fn main() {
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../caribou_abi_derive/src").display()
     );
-    println!(
-        "cargo:rerun-if-changed={}",
-        manifest_dir
-            .join("../../plugins/cb_window/src/events.rs")
-            .display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        manifest_dir
-            .join("../../plugins/cb_window/src/events")
-            .display()
-    );
     let nested = nested_target(&out_dir, "caribou-interop");
     println!("cargo:rustc-env=CARIBOU_TEST_PLUGINS={}", nested.display());
     for (package, directory) in [

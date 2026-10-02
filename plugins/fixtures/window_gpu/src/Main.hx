@@ -10,7 +10,8 @@ import gpu.Power;
 import gpu.VertexFormat;
 import gpu.VertexStepMode;
 import window.Event;
-import window.WindowBuilder;
+import window.Window;
+import window.WindowAttributes;
 
 /** A triangle rendered through the gpu plugin into a window plugin surface. */
 using Lambda;
@@ -38,11 +39,12 @@ class Main {
         var frameLimit = Sys.args().length == 0 ? -1 : Std.parseInt(Sys.args()[0]);
         if (frameLimit == null) frameLimit = -1;
 
-        var window = new WindowBuilder()
-            .title("Caribou GPU Triangle")
-            .size(800, 500)
-            .resizable(true)
-            .open();
+        var attributes = new WindowAttributes();
+        attributes.title("Caribou GPU Triangle");
+        attributes.width(800);
+        attributes.height(500);
+        attributes.resizable(true);
+        var window = Window.open(attributes);
         check(window.width() > 0 && window.height() > 0, "window creation failed");
 
         var instance = new GpuInstance();
@@ -123,17 +125,17 @@ class Main {
             queue.presentSurface(surface);
             frames++;
         }
-        window.request_redraw();
+        window.requestRedraw();
         while (running && (frameLimit < 0 || frames < frameLimit)) {
             switch (window.poll()) {
                 case Closed | Destroyed:
                     running = false;
                 case Resized(width, height):
                     if (width.low > 0 && height.low > 0) configure();
-                    window.request_redraw();
+                    window.requestRedraw();
                 case RedrawRequested:
                     render();
-                    window.request_redraw();
+                    window.requestRedraw();
                 case None:
                     Sys.sleep(0.001);
                 default:
