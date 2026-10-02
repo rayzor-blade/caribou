@@ -78,18 +78,9 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 3
 
-# ash's crates at the opt-levels ash's own dev profile gives them, so the
-# caribou-ash runner and ash's binary differ only in what the seam replaces.
-[profile.dev.package.ash_std]
-opt-level = 1
-[profile.dev.package.ash_core]
-opt-level = 1
-[profile.dev.package.ash_interp]
-opt-level = 1
-[profile.dev.package.air]
-opt-level = 1
-[profile.dev.package.ash_trace]
-opt-level = 1
+# Ash optimised like every other dependency: a debug program spends its
+# startup in Ash's interpreter and optimiser. Its generated dispatch table
+# stays unoptimised, as in release.
 [profile.dev.package.ash_native_call]
 opt-level = 0
 
