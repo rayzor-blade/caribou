@@ -95,14 +95,16 @@ fn host_slot(key: u64) -> Result<&'static HostSlot, ForeignError> {
 /// Run `f` as code of `lang`: what calls out of it name as their caller.
 /// The caller before is back once `f` returns or a throw leaves it.
 pub fn as_caller<T>(lang: LangId, f: impl FnOnce() -> T) -> T {
-    struct Restore(LangId);
-    impl Drop for Restore {
+    struct Restore<'a>(&'a Cell<LangId>, LangId);
+    impl Drop for Restore<'_> {
         fn drop(&mut self) {
-            CALLER.with(|c| c.set(self.0));
+            self.0.set(self.1);
         }
     }
-    let _restore = Restore(CALLER.with(|c| c.replace(lang)));
-    f()
+    CALLER.with(|caller| {
+        let _restore = Restore(caller, caller.replace(lang));
+        f()
+    })
 }
 
 /// The Zyntax language whose code is running now.

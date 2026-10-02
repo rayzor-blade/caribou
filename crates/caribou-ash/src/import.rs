@@ -1050,17 +1050,24 @@ unsafe fn run(s: &Slot, kinds: &Kinds, words: *const i64) -> Result<Value, *mut 
         (ptr::null_mut(), words, &kinds.args[..])
     };
     let _receiver_kept = (!receiver.is_null()).then(|| heap::keep(receiver.cast()));
-    // Only the slots in use are written. Converted objects are guarded
-    // explicitly because wasm engine locals are outside the stack scan.
+    // Only the slots in use are written. Natively the array is on the
+    // stack for the whole call, which borrows it, so the scan sees what
+    // it holds; a wasm engine's locals are outside the scan, so there a
+    // converted object is kept explicitly.
     let mut args = [MaybeUninit::<Value>::uninit(); MAX_ARGS];
+    #[cfg(target_family = "wasm")]
     let mut _args_kept: [Option<heap::Kept>; MAX_ARGS] = std::array::from_fn(|_| None);
+    #[cfg_attr(not(target_family = "wasm"), allow(unused_variables))]
     for (i, (slot, (&w, &k))) in args.iter_mut().zip(params.iter().zip(kinds_of)).enumerate() {
         let v = unsafe { word_to_value(w, k) };
         if k == hl::HDYN && is_scalar(v) {
             s.boxed_in.fetch_add(1, Ordering::Relaxed);
         }
         slot.write(v);
-        _args_kept[i] = heap::keep_value(v);
+        #[cfg(target_family = "wasm")]
+        {
+            _args_kept[i] = heap::keep_value(v);
+        }
     }
     let args = unsafe { args[..params.len()].assume_init_ref() };
 
