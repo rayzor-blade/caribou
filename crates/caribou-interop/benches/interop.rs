@@ -166,13 +166,6 @@ fn main() {
                 print!("{:>15}", "n/a");
                 continue;
             };
-            // A Python object or function does not cross out of Python yet
-            // (git-bug c5751252b0e8b1e9a019fb93e9db98caf8bc2a9dc5bee7b2f890bfac10344c23),
-            // so another language reaches Python by its static methods only.
-            if prefix == "python" && module != "python_tally" && suffix != "Static" {
-                print!("{:>15}", "n/a");
-                continue;
-            }
             // Each cell starts after both heaps have retired the previous
             // cell's temporaries. Otherwise the later construction columns
             // inherit collection debt from every earlier column and a full

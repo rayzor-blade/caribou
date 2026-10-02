@@ -3,9 +3,10 @@
 //! allocates its strings for the call, and a result string copied into a
 //! core string. A dynamic value crosses as the program's `Any`: a
 //! scalar or string as its own, anything else as a foreign object
-//! (`foreign`). A value of a kind the core does not pass yet, an object,
-//! an array or a function of a Zyntax type, is a `Type` error naming the
-//! argument.
+//! (`foreign`). An object of a class a module publishes crosses as its
+//! proxy (`object`). An array, or a function not passed as a dynamic
+//! value, is a `Type` error naming the argument. An error the call left
+//! pending is raised in the core, as its module describes it.
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -13,32 +14,49 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{LazyLock, RwLock};
 
 use caribou::bridge;
-use caribou::error::{Error, Str};
+use caribou::error::Error;
 use caribou::native;
 use caribou::protocol::{CallSite, REPLY_MISSING, REPLY_OK, REPLY_RAISED};
 use caribou::world::LANG_CORE;
 use caribou_abi::hl::{self, hl_type};
 use caribou_abi::{ErrorKind, Value};
-use zyntax_embed::ZyntaxString;
+use std::sync::OnceLock;
 
-/// A core string as a Zyntax string, allocated as Zyntax's own strings are:
-/// the callee may keep it or release it as any string of its own.
-fn zyntax_string(text: &str) -> *mut c_void {
-    ZyntaxString::from_str(text).into_raw().cast()
-}
-
-/// The text of a Zyntax string, read in place; none for a null pointer.
-unsafe fn text_of(p: *const c_void) -> Option<String> {
-    let string = unsafe { ZyntaxString::from_ptr(p.cast()) }?;
-    Some(String::from_utf8_lossy(string.as_bytes()).into_owned())
-}
+use crate::object::{self, Class, Origin};
 
 fn raise(message: String) -> u8 {
     bridge::raise(Error::new(ErrorKind::Type, &message, LANG_CORE))
 }
 
-fn crosses(kind: hl::hl_type_kind) -> bool {
-    !matches!(kind, hl::HOBJ | hl::HARRAY | hl::HFUN)
+fn crosses(kind: hl::hl_type_kind, class: Option<&String>) -> bool {
+    match kind {
+        hl::HOBJ => class.is_some(),
+        hl::HARRAY | hl::HFUN | hl::HSTRUCT | hl::HPACKED => false,
+        _ => true,
+    }
+}
+
+/// What the dispatch knows of one published function beyond its kinds:
+/// where it came from, and the class of each object it takes, receiver
+/// first, and of the object it returns.
+pub struct Callee {
+    pub origin: Origin,
+    pub params: Vec<Option<String>>,
+    pub ret: Option<String>,
+}
+
+/// Callees by the address of the signature each was published with.
+static CALLEES: LazyLock<RwLock<HashMap<usize, &'static Callee>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Know the function published with `signature`, a signature of its own,
+/// as `callee`.
+pub fn register(signature: *const hl_type, callee: Callee) {
+    let callee: &'static Callee = Box::leak(Box::new(callee));
+    CALLEES
+        .write()
+        .unwrap()
+        .insert(signature as usize, callee);
 }
 
 /// What the calls of one signature need, worked out on the first: each
@@ -49,6 +67,23 @@ struct Plan {
     ret: hl::hl_type_kind,
     ret_word: u8,
     pattern: u32,
+    callee: Option<&'static Callee>,
+    /// The class of the object the function returns, found on the first
+    /// call that returns one: its module publishes it after the function.
+    ret_class: OnceLock<Option<&'static Class>>,
+}
+
+impl Plan {
+    fn param_class(&self, i: usize) -> Option<&str> {
+        self.callee?.params.get(i)?.as_deref()
+    }
+
+    fn ret_class(&self) -> Option<&'static Class> {
+        *self.ret_class.get_or_init(|| {
+            let callee = self.callee?;
+            object::class(callee.origin.lang, callee.ret.as_deref()?)
+        })
+    }
 }
 
 /// Plans by signature address.
@@ -61,15 +96,17 @@ fn plan(sig: *const hl_type) -> Result<&'static Plan, String> {
         return Ok(plan);
     }
     let (types, ret_type) = unsafe { native::parts(sig) };
+    let callee = CALLEES.read().unwrap().get(&(sig as usize)).copied();
     let kinds: Box<[hl::hl_type_kind]> = types.iter().map(|&t| unsafe { (*t).kind }).collect();
-    if let Some(i) = kinds.iter().position(|&kind| !crosses(kind)) {
+    let param_class = |i: usize| callee.and_then(|c| c.params.get(i)?.as_ref());
+    if let Some(i) = (0..kinds.len()).find(|&i| !crosses(kinds[i], param_class(i))) {
         return Err(format!(
             "argument {} of the function is of a Zyntax type the core does not pass yet",
             i + 1
         ));
     }
     let ret = unsafe { (*ret_type).kind };
-    if !crosses(ret) {
+    if !crosses(ret, callee.and_then(|c| c.ret.as_ref())) {
         return Err("the function returns a Zyntax type the core does not pass yet".to_owned());
     }
     if kinds.len() > native::MAX_ARGS {
@@ -81,6 +118,8 @@ fn plan(sig: *const hl_type) -> Result<&'static Plan, String> {
         ret_word: native::word_kind(ret),
         kinds,
         ret,
+        callee,
+        ret_class: OnceLock::new(),
     }));
     Ok(*PLANS.write().unwrap().entry(sig as usize).or_insert(plan))
 }
@@ -210,36 +249,15 @@ unsafe fn call_as(
 }
 
 /// Each argument as the word its kind passes, the call, and its result
-/// back as a value.
+/// back as a value, or the error it left pending raised.
 unsafe fn call(plan: &Plan, func: *const c_void, args: *const Value, out: *mut Value) -> u8 {
     let n = plan.kinds.len();
     let mut words = [0u64; native::MAX_ARGS];
     for (i, &kind) in plan.kinds.iter().enumerate() {
         let v = unsafe { *args.add(i) };
-        words[i] = if kind == hl::HDYN {
-            crate::foreign::any_of(v) as u64
-        } else if kind == hl::HBYTES {
-            match unsafe { Str::text(v) } {
-                Some(text) => zyntax_string(text) as u64,
-                None => {
-                    return raise(format!(
-                        "argument {} of the function must be a string, not {}",
-                        i + 1,
-                        bridge::describe(v)
-                    ));
-                }
-            }
-        } else {
-            match native::word_of(v, kind) {
-                Some(word) => word,
-                None => {
-                    return raise(format!(
-                        "argument {} of the function cannot be {}",
-                        i + 1,
-                        bridge::describe(v)
-                    ));
-                }
-            }
+        words[i] = match object::word_in(v, kind, plan.param_class(i)) {
+            Ok(word) => word,
+            Err(m) => return raise(format!("argument {} of the function {m}", i + 1)),
         };
     }
     let Some(word) =
@@ -247,22 +265,19 @@ unsafe fn call(plan: &Plan, func: *const c_void, args: *const Value, out: *mut V
     else {
         return raise("the function's signature is not one the core can call".to_owned());
     };
+    let origin = plan.callee.map(|c| &c.origin);
+    if let Some(error) = origin.and_then(Origin::take_error) {
+        bridge::set_pending(error);
+        return REPLY_RAISED;
+    }
     if bridge::has_pending() {
         return REPLY_RAISED;
     }
-    let result = if plan.ret == hl::HDYN {
-        match unsafe { crate::foreign::value_of(word as zyntax_embed::foreign::Any) } {
-            Ok((v, _)) => v,
-            Err(e) => return raise(e.message),
+    match unsafe { object::value_out(word as u64, plan.ret, plan.ret_class(), origin) } {
+        Ok(result) => {
+            unsafe { *out = result };
+            REPLY_OK
         }
-    } else if plan.ret == hl::HBYTES {
-        match unsafe { text_of(word as *const c_void) } {
-            Some(text) => Str::value(Str::new(&text)),
-            None => Value::null(),
-        }
-    } else {
-        native::value_of(word, plan.ret)
-    };
-    unsafe { *out = result };
-    REPLY_OK
+        Err(m) => raise(m),
+    }
 }

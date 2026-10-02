@@ -45,6 +45,7 @@ use zyntax_embed::{
 
 mod dispatch;
 pub mod foreign;
+pub mod object;
 pub mod publish;
 
 pub use zyntax_embed;
@@ -120,6 +121,14 @@ pub trait Language {
     /// (Python's module statements). `None` for a language whose modules
     /// only declare.
     fn entry(&self) -> Option<&str> {
+        None
+    }
+
+    /// The function each module of the language describes a value it
+    /// raised with: its text as an error of the core. A module's own, so
+    /// the adapter takes its cell once the module is compiled. `None` for
+    /// a language whose modules have none.
+    fn describe(&self) -> Option<&str> {
         None
     }
 
@@ -497,6 +506,7 @@ impl Frontend {
             staged,
             importing,
             current: None,
+            origin: None,
         })
     }
 }
@@ -540,6 +550,9 @@ struct State {
     /// The module the runtime compiled last: the one its reload diffs
     /// an edit against.
     current: Option<String>,
+    /// Where the module compiled last came from: what a value whose
+    /// program is not otherwise known is described by.
+    origin: Option<object::Origin>,
 }
 
 /// The form a bundle carries a module of these languages in.
@@ -846,13 +859,42 @@ impl Resources {
         })
     }
 
+    /// Where the module the runtime compiled last comes from: this
+    /// runtime, and that module's describing function.
+    fn origin(&self, lang: LangId) -> object::Origin {
+        // SAFETY: see `parse_source`; this only reads the stable runtime.
+        let runtime = unsafe { &*self.runtime };
+        object::Origin {
+            lang,
+            runtime: self.runtime,
+            describe: self
+                .language
+                .describe()
+                .and_then(|symbol| runtime.function_cell(symbol)),
+        }
+    }
+
     /// Publish module `name`'s interface from `declared`, with the
-    /// runtime's current code behind each symbol.
-    fn publish(&self, lang: LangId, name: &str, declared: publish::Declared) -> Result<(), String> {
-        let iface = publish::interface(lang, self.language.name(), name, declared, &|symbol| {
-            // SAFETY: see `parse_source`; this only reads the stable runtime.
-            unsafe { &*self.runtime }.function_cell(symbol)
-        });
+    /// runtime's current code behind each symbol, its calls described by
+    /// `origin`.
+    fn publish(
+        &self,
+        lang: LangId,
+        name: &str,
+        declared: publish::Declared,
+        origin: object::Origin,
+    ) -> Result<(), String> {
+        let iface = publish::interface(
+            lang,
+            self.language.name(),
+            name,
+            declared,
+            &|symbol| {
+                // SAFETY: see `parse_source`; this only reads the stable runtime.
+                unsafe { &*self.runtime }.function_cell(symbol)
+            },
+            Some(origin),
+        );
         registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))
     }
 }
@@ -908,9 +950,14 @@ fn describe_load(lang: LangId, namespace: &str, module: &str) -> Result<bool, St
                 state.resources()
             });
             let declared = resources.parse_source(&name, found)?.declared;
-            publish::interface(lang, language.name(), &name, declared, &|_| {
-                Some(std::ptr::null())
-            })
+            publish::interface(
+                lang,
+                language.name(),
+                &name,
+                declared,
+                &|_| Some(std::ptr::null()),
+                None,
+            )
         }
     };
     registry::publish(iface).map_err(|e| format!("`{name}`: {e}"))?;
@@ -936,6 +983,11 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
     let loaded = load_found(lang, name, language, found);
     LOADING.with(|loading| loading.borrow_mut().pop());
     loaded
+}
+
+/// The origin of `lang`'s module compiled last on this thread.
+pub(crate) fn origin_of(lang: LangId) -> Option<object::Origin> {
+    STATES.with(|states| states.borrow().get(&lang).and_then(|state| state.origin))
 }
 
 thread_local! {
@@ -970,17 +1022,25 @@ fn load_found(
     unsafe { &mut *resources.runtime }
         .compile_module(parsed.hir)
         .map_err(|e| format!("`{name}`: {e}"))?;
+    // Taken before the body runs: a module the body loads is compiled
+    // after this one, and a name asked for then is that module's.
+    let origin = resources.origin(lang);
     STATES.with(|states| {
         let mut states = states.borrow_mut();
         let state = states.get_mut(&lang).expect("found above");
         state.current = Some(name.clone());
+        state.origin = Some(origin);
     });
-    // The module's body, which binds what its functions read.
+    // The module's body, which binds what its functions read. An error
+    // it raised and did not catch fails the load.
     if let Some(entry) = language.entry() {
         foreign::as_caller(lang, || unsafe { &*resources.runtime }.call_raw(entry, &[]))
             .map_err(|e| format!("`{name}`: {e}"))?;
+        if let Some(error) = origin.take_error() {
+            return Err(format!("`{name}`: {}", bridge_message(error)));
+        }
     }
-    resources.publish(lang, &name, parsed.declared)?;
+    resources.publish(lang, &name, parsed.declared, origin)?;
     // A file the world watches: an edit reloads the module.
     if let Some(path) = parsed.file {
         registry::set_source(lang, &name, path);
@@ -1039,7 +1099,16 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
     if let Some((function, error)) = report.failed.first() {
         return Err(format!("`{name}`: {function}: {error}"));
     }
-    resources.publish(lang, name, parsed.declared)
+    let origin = resources.origin(lang);
+    resources.publish(lang, name, parsed.declared, origin)
+}
+
+/// The message of an error of the core, as a load failing reports it.
+fn bridge_message(error: caribou_abi::Value) -> String {
+    match unsafe { caribou::error::Error::from_value(error) } {
+        Some(e) => unsafe { caribou::error::Error::message_str(e) }.to_owned(),
+        None => caribou::bridge::describe(error),
+    }
 }
 
 /// The modules of the frontends under `root` as data, for a build step:

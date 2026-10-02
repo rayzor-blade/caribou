@@ -1,15 +1,11 @@
 //! An import cycle through two languages, Python's module importing a
-//! Wren module that imports it back: the import inside the cycle fails
-//! with an error naming it, where the Python module used to load a second
-//! time inside its first load and leave the process hung.
-//!
-//! An uncaught error in a Python module's body still ends the process
-//! (git-bug cb8d9f10dc2c1d940a61ed6e46978c0f72adcfd02e19e7631716deebb74bb39a),
-//! so the cycle runs in a child process of this test binary.
+//! Wren module that imports it back: the load fails with an error naming
+//! the cycle, where it used to load the Python module a second time
+//! inside its first load and leave the process hung.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use caribou::registry::{self, Namespace};
 use caribou::world::{Config, World};
@@ -19,31 +15,15 @@ use wren_lift::runtime::vm::{VM, VMConfig};
 
 #[test]
 fn a_cycle_through_python_and_wren_names_itself() {
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", "load_the_cycle", "--nocapture"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let started = Instant::now();
-    while child.try_wait().unwrap().is_none() {
-        if started.elapsed() > Duration::from_secs(120) {
-            child.kill().unwrap();
-            panic!("the cyclic import did not return");
+    // A hang is the failure this guards against; end the process instead.
+    let (done, finished) = mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        if finished.recv_timeout(Duration::from_secs(120)).is_err() {
+            eprintln!("the cyclic import did not return");
+            std::process::abort();
         }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let mut stderr = String::new();
-    std::io::Read::read_to_string(&mut child.stderr.take().unwrap(), &mut stderr).unwrap();
-    assert!(
-        stderr.contains("ImportError: import cycle: cyc:py_side -> cyc:wren_side -> cyc:py_side;"),
-        "{stderr}"
-    );
-}
+    });
 
-#[test]
-#[ignore = "run by a_cycle_through_python_and_wren_names_itself in a child process"]
-fn load_the_cycle() {
     caribou_ash::install().expect("ash takes the table in a fresh process");
     caribou_wren::install().expect("wren_lift takes the table in a fresh process");
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/cycle/src");
@@ -74,6 +54,10 @@ fn load_the_cycle() {
     let mut vm = VM::new(config);
     vm.krio_fiber_active = true;
     let loaded = caribou_wren::with_vm(&mut vm, |_| registry::lookup_or_load("cyc", "py_side"));
-    let error = loaded.expect_err("a module that imports itself back does not load");
-    eprintln!("{error}");
+    let error = loaded.err().expect("a module that imports itself back does not load");
+    assert!(
+        error.starts_with("import cycle: cyc:py_side -> cyc:wren_side -> cyc:py_side;"),
+        "{error}"
+    );
+    let _ = done.send(());
 }

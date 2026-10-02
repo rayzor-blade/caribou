@@ -171,6 +171,12 @@ impl Language for Python {
         Some(zyntax_python::ENTRY)
     }
 
+    /// Each module's own description of what it raised: the exception's
+    /// type and text.
+    fn describe(&self) -> Option<&str> {
+        Some(zyntax_python::DESCRIBE)
+    }
+
     /// What `zypy` gives its runtime: the library snapshot, the plugins
     /// the library calls, the entry point. Zyntax's own collector stays
     /// off under the core (see `caribou_zyntax`).
@@ -194,7 +200,9 @@ impl Language for Python {
             let segments: Vec<String> = name.split('.').map(str::to_owned).collect();
             sources.module(&segments, &architectures)
         };
-        zyntax_python::parse_program_with_host(source, file, &module_source, &host_module)
+        // Imported, not run as a program: an exception its body does not
+        // catch fails the import instead of ending the process.
+        zyntax_python::parse_module_with_host(source, file, &module_source, &host_module)
             .map_err(|e| e.render(file, source, false))
     }
 }

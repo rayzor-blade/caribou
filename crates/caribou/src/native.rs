@@ -49,6 +49,14 @@ pub fn signature(params: &[*const hl_type], ret: *const hl_type) -> *const hl_ty
     if let Some(&t) = SIGNATURES.read().unwrap().get(&key) {
         return t as *const hl_type;
     }
+    let t = own_signature(params, ret);
+    *SIGNATURES.write().unwrap().entry(key).or_insert(t as usize) as *const hl_type
+}
+
+/// [`signature`], but a new object every time: for a dispatcher that
+/// keeps what it knows of one function by the address of its signature.
+/// Kept for the process, as every signature is.
+pub fn own_signature(params: &[*const hl_type], ret: *const hl_type) -> *const hl_type {
     let args: Vec<*mut hl_type> = params.iter().map(|&t| t as *mut hl_type).collect();
     let args = Box::leak(args.into_boxed_slice());
     let fun = Box::into_raw(Box::new(hl_type_fun {
@@ -67,14 +75,12 @@ pub fn signature(params: &[*const hl_type], ret: *const hl_type) -> *const hl_ty
             parent: std::ptr::null_mut(),
         },
     }));
-    let t = Box::into_raw(Box::new(hl_type {
+    Box::into_raw(Box::new(hl_type {
         kind: hl::HFUN,
         detail: hl_type_detail { fun },
         vobj_proto: std::ptr::null_mut(),
         mark_bits: std::ptr::null_mut(),
-    }));
-    SIGNATURES.write().unwrap().insert(key, t as usize);
-    t
+    }))
 }
 
 /// The argument types and the result type of an `HFUN` signature.

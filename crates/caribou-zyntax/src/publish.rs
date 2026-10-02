@@ -14,7 +14,7 @@ use caribou::registry::{ClassIface, FieldIface, Interface, MethodIface, TupleFie
 use caribou_abi::LangId;
 use caribou_abi::hl::{self, hl_type};
 use std::collections::HashMap;
-use zyntax_compiler::hir::{HirFunction, HirType};
+use zyntax_compiler::hir::{HirFunction, HirStructType, HirType};
 use zyntax_embed::HirModule;
 
 use zyntax_embed::{ExportedSymbol, SymbolKind};
@@ -50,8 +50,42 @@ pub struct Function {
 pub struct Class {
     pub name: String,
     pub fields: Vec<(String, TypeRef)>,
+    /// Where an object of the class keeps each of `fields`, as its HIR
+    /// struct lays them out; empty when the HIR has no struct for it.
+    pub layout: Vec<Layout>,
     pub methods: Vec<Function>,
     pub ctor: Option<Function>,
+}
+
+/// One field where an object keeps it: offset and size in the object,
+/// its C-boundary kind, and an object field's class.
+pub struct Layout {
+    pub name: String,
+    pub offset: usize,
+    pub size: usize,
+    pub kind: hl::hl_type_kind,
+    pub class: Option<String>,
+}
+
+/// The struct the HIR lays a class's objects out as: the pointee of a
+/// pointer to a struct of that name, wherever a signature has one.
+fn class_struct<'a>(hir: &'a HirModule, class: &str) -> Option<&'a HirStructType> {
+    let named = |ty: &'a HirType| match ty {
+        HirType::Ptr(inner) => match &**inner {
+            HirType::Struct(s) if s.name.and_then(|n| n.resolve_global()).as_deref() == Some(class) => {
+                Some(s)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    hir.functions.values().find_map(|f| {
+        f.signature
+            .params
+            .iter()
+            .find_map(|p| named(&p.ty))
+            .or_else(|| f.signature.returns.iter().find_map(named))
+    })
 }
 
 /// What a module exports: its classes, and the functions the module
@@ -91,8 +125,9 @@ pub fn declared_exports(program: &TypedProgram) -> Vec<ExportedSymbol> {
 }
 
 /// The kind a value of a Zyntax type has at the C boundary, given what
-/// the HIR made of it. An object is `HOBJ`, an array `HARRAY`, a
-/// function `HFUN`: kinds the dispatcher does not pass yet.
+/// the HIR made of it. An object is `HOBJ`, a struct passed by value
+/// `HSTRUCT`, an array `HARRAY`, a function `HFUN`; of these the
+/// dispatcher passes only an object of a published class.
 fn kind_of(ty: &Type, hir: &HirType) -> hl::hl_type_kind {
     match hir {
         HirType::Void => hl::HVOID,
@@ -108,6 +143,16 @@ fn kind_of(ty: &Type, hir: &HirType) -> hl::hl_type_kind {
         HirType::F32 => hl::HF32,
         HirType::F64 => hl::HF64,
         HirType::Ptr(_) if matches!(ty, Type::Primitive(PrimitiveType::String)) => hl::HBYTES,
+        // A struct passed by value, not an object the core can hold.
+        HirType::Struct(_) => hl::HSTRUCT,
+        // A dynamic value, whatever the program typed it as: a function
+        // value is one.
+        HirType::Ptr(inner)
+            if matches!(&**inner, HirType::Opaque(name)
+                if name.resolve_global().as_deref() == Some("DynamicBox")) =>
+        {
+            hl::HDYN
+        }
         _ => match ty {
             Type::Array { .. } => hl::HARRAY,
             Type::Function { .. } => hl::HFUN,
@@ -380,6 +425,7 @@ pub fn declared(
                 classes.push(Class {
                     name,
                     fields: Vec::new(),
+                    layout: Vec::new(),
                     methods: Vec::new(),
                     ctor: None,
                 });
@@ -448,12 +494,27 @@ pub fn declared(
                     continue;
                 }
                 let at = class_at(&mut classes, name.clone());
-                for field in &c.fields {
+                // The struct's fields are the class's, its reserved ones
+                // included, in order.
+                let laid = class_struct(hir, &name)
+                    .filter(|s| s.fields.len() == c.fields.len())
+                    .map(|s| (s, zyntax_compiler::hir_interp::struct_layout(s)));
+                for (i, field) in c.fields.iter().enumerate() {
                     let field_name = name_of(field.name);
                     // Frontends reserve `$` fields for their object layout.
                     // They are not members another language can access.
                     if field_name.starts_with('$') {
                         continue;
+                    }
+                    if let Some((s, layout)) = &laid {
+                        let hir_ty = &s.fields[i];
+                        classes[at].layout.push(Layout {
+                            name: field_name.clone(),
+                            offset: layout.offsets[i],
+                            size: zyntax_compiler::hir_interp::size_of_hir_ty(hir_ty),
+                            kind: kind_of(&field.ty, hir_ty),
+                            class: types.named(&field.ty).map(|n| format!("{lang}.{n}")),
+                        });
                     }
                     classes[at]
                         .fields
@@ -498,14 +559,22 @@ pub fn declared(
 
 /// The interface of a module: each class it exports, and the functions
 /// it exports as the module's own. `func_of` gives a symbol's compiled
-/// reload cell. The cell always holds the current promoted entry.
+/// reload cell, which always holds the current promoted entry. With an
+/// `origin` the module's code is behind it: each function gets a
+/// signature of its own, which the dispatch knows it by, and each class
+/// a class its objects cross out as.
 pub fn interface(
     lang: LangId,
     lang_name: &str,
     module: &str,
     declared: Declared,
     func_of: &dyn Fn(&str) -> Option<*const std::sync::atomic::AtomicUsize>,
+    origin: Option<crate::object::Origin>,
 ) -> Interface {
+    let object_class = |ty: &TypeRef| match ty {
+        TypeRef::Object(name) => Some(name.clone()),
+        _ => None,
+    };
     let method = |f: &Function| -> Option<MethodIface> {
         let cell = func_of(&f.symbol)?;
         let params: Vec<*const hl_type> = f
@@ -513,6 +582,22 @@ pub fn interface(
             .iter()
             .map(|&k| native::kind_type(k) as *const hl_type)
             .collect();
+        let ret = native::kind_type(f.ret_kind);
+        let signature = match origin {
+            Some(origin) => {
+                let signature = native::own_signature(&params, ret);
+                crate::dispatch::register(
+                    signature,
+                    crate::dispatch::Callee {
+                        origin,
+                        params: f.params.iter().map(object_class).collect(),
+                        ret: object_class(&f.ret),
+                    },
+                );
+                signature
+            }
+            None => native::signature(&params, ret),
+        };
         // The receiver is the target's first argument, not a parameter.
         let declared = if f.is_static { 0 } else { 1 };
         Some(MethodIface {
@@ -522,7 +607,7 @@ pub fn interface(
             ret: f.ret.clone(),
             target: Callable::AtomicCell {
                 cell,
-                signature: native::signature(&params, native::kind_type(f.ret_kind)),
+                signature,
                 lang,
             },
         })
@@ -530,22 +615,47 @@ pub fn interface(
     let classes: Vec<ClassIface> = declared
         .classes
         .iter()
-        .map(|c| ClassIface {
-            name: c.name.clone(),
-            type_name: format!("{lang_name}.{}", c.name),
-            superclass: None,
-            fields: c
-                .fields
-                .iter()
-                .map(|(name, ty)| FieldIface {
-                    name: name.clone(),
-                    ty: ty.clone(),
-                })
-                .collect(),
-            statics: Vec::new(),
-            methods: c.methods.iter().filter_map(method).collect(),
-            ctor: c.ctor.as_ref().and_then(method),
-            class_object: caribou_abi::Value::null(),
+        .map(|c| {
+            let type_name = format!("{lang_name}.{}", c.name);
+            let methods: Vec<MethodIface> = c.methods.iter().filter_map(method).collect();
+            if let Some(origin) = origin {
+                let fields = c
+                    .layout
+                    .iter()
+                    .map(|l| crate::object::Field {
+                        name: caribou::symbol::intern(&l.name),
+                        offset: l.offset,
+                        size: l.size,
+                        kind: l.kind,
+                        class: l.class.clone(),
+                    })
+                    .collect();
+                let class = crate::object::publish_class(&type_name, origin, fields);
+                crate::object::set_methods(
+                    class,
+                    methods
+                        .iter()
+                        .filter(|m| !m.is_static)
+                        .map(|m| (m.name.clone(), m.target)),
+                );
+            }
+            ClassIface {
+                name: c.name.clone(),
+                type_name,
+                superclass: None,
+                fields: c
+                    .fields
+                    .iter()
+                    .map(|(name, ty)| FieldIface {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                    })
+                    .collect(),
+                statics: Vec::new(),
+                methods,
+                ctor: c.ctor.as_ref().and_then(method),
+                class_object: caribou_abi::Value::null(),
+            }
         })
         .collect();
     Interface {

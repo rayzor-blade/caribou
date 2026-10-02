@@ -191,6 +191,9 @@ pub fn any_of(v: Value) -> Any {
     if let Some(own) = CROSSINGS.read().unwrap().iter().find_map(|c| c.own(v)) {
         return own;
     }
+    if let Some(f) = crate::object::function_of(v) {
+        return f;
+    }
     match v.as_object() {
         Some(p) => hold_object(p as *mut u8),
         None => foreign::none(),
@@ -203,6 +206,19 @@ pub fn any_of(v: Value) -> Any {
 /// # Safety
 /// `any` is null or a live box.
 pub unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
+    unsafe { value_from(any, None) }
+}
+
+/// [`value_of`] for a value `origin`'s program made, which a function
+/// value keeps to describe what its calls raise; without one, the
+/// running language's last module.
+///
+/// # Safety
+/// `any` is null or a live box.
+pub unsafe fn value_from(
+    any: Any,
+    origin: Option<&crate::object::Origin>,
+) -> Result<(Value, *mut u8), ForeignError> {
     use zyntax_embed::foreign::Value as V;
     let made = |v: Value| {
         (
@@ -240,9 +256,13 @@ pub unsafe fn value_of(any: Any) -> Result<(Value, *mut u8), ForeignError> {
                 .unwrap()
                 .iter()
                 .find_map(|c| c.value_of(any));
-            match crossed {
-                Some(v) => made(v),
-                None => {
+            let origin = origin.copied().or_else(|| crate::origin_of(caller()));
+            match (crossed, origin) {
+                (Some(v), _) => made(v),
+                (None, Some(origin)) if unsafe { foreign::is_function(any) } => {
+                    made(crate::object::function(any, origin))
+                }
+                (None, _) => {
                     return Err(ForeignError::new(
                         "TypeError",
                         "a value of the program's own cannot be passed yet",
