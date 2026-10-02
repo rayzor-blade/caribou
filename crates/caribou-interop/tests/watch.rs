@@ -7,7 +7,9 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 use caribou::world::{Event, EventKind};
 use caribou_ash::Mode;
@@ -34,19 +36,27 @@ fn an_edited_wren_file_reloads_between_haxe_frames() {
     .expect("the program opens");
     let heard = Rc::new(RefCell::new(Vec::new()));
     let sink = Rc::clone(&heard);
+    let count = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&count);
     session.world().on(EventKind::Reload, move |event| {
         sink.borrow_mut().push(event.clone());
+        counted.fetch_add(1, Ordering::Release);
     });
 
     // Two edits from another thread while the program runs its frames: a
-    // broken one first, then the one the program is waiting for.
+    // broken one first, then, once its reload was heard, the one the
+    // program is waiting for. Two writes between two of the watcher's
+    // polls would be seen as one.
     let broken = source.replace("static value() { 1 }", "static value() { 1 +");
     let edited = source.replace("static value() { 1 }", "static value() { 2 }");
     let path = module.clone();
     let editor = std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(300));
         std::fs::write(&path, broken).unwrap();
-        std::thread::sleep(Duration::from_millis(300));
+        let waited = Instant::now();
+        while count.load(Ordering::Acquire) == 0 && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         std::fs::write(&path, edited).unwrap();
     });
     let output = captured(|| session.start().expect("main and its frames run"));
