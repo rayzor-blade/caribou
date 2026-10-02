@@ -93,7 +93,7 @@ pub struct Field {
     pub size: usize,
     pub kind: hl_type_kind,
     /// For an object field, its class's type name.
-    pub class: Option<String>,
+    pub class: Option<Symbol>,
 }
 
 /// A class a module publishes, as its objects' proxies answer for it.
@@ -242,7 +242,8 @@ unsafe extern "C" fn drop_object(obj: *mut u8) {
 /// A value of the core as the word a Zyntax parameter, result or field of
 /// `kind` holds; `class` names an object kind's class. The error says why
 /// it cannot be one.
-pub fn word_in(v: Value, kind: hl_type_kind, class: Option<&str>) -> Result<u64, String> {
+#[inline]
+pub fn word_in(v: Value, kind: hl_type_kind, class: Option<Symbol>) -> Result<u64, String> {
     match kind {
         hl::HDYN => Ok(crate::foreign::any_of(v) as u64),
         hl::HBYTES => match unsafe { Str::text(v) } {
@@ -255,14 +256,12 @@ pub fn word_in(v: Value, kind: hl_type_kind, class: Option<&str>) -> Result<u64,
                 return Ok(0);
             }
             match object_of(v) {
-                Some((found, word))
-                    if class.is_none_or(|name| found.type_name.name() == name) =>
-                {
+                Some((found, word)) if class.is_none_or(|name| found.type_name == name) => {
                     Ok(word as u64)
                 }
                 _ => Err(format!(
                     "must be {}, not {}",
-                    class.unwrap_or("an object of the language"),
+                    class.map_or("an object of the language", |name| name.name()),
                     bridge::describe(v)
                 )),
             }
@@ -277,6 +276,7 @@ pub fn word_in(v: Value, kind: hl_type_kind, class: Option<&str>) -> Result<u64,
 ///
 /// # Safety
 /// `word` is a live value of `kind`.
+#[inline]
 pub unsafe fn value_out(
     word: u64,
     kind: hl_type_kind,
@@ -327,8 +327,7 @@ unsafe extern "C-unwind" fn object_get(obj: *mut u8, name: Symbol, out: *mut Val
     };
     let field_class = field
         .class
-        .as_deref()
-        .and_then(|name| self::class(class.origin.lang, name));
+        .and_then(|name| self::class(class.origin.lang, name.name()));
     match unsafe { value_out(raw, field.kind, field_class, Some(&class.origin)) } {
         Ok(v) => {
             unsafe { *out = v };
@@ -347,7 +346,7 @@ unsafe extern "C-unwind" fn object_set(obj: *mut u8, name: Symbol, value: Value)
     let Some(field) = class.fields.iter().find(|f| f.name == name) else {
         return REPLY_MISSING;
     };
-    let raw = match word_in(value, field.kind, field.class.as_deref()) {
+    let raw = match word_in(value, field.kind, field.class) {
         Ok(raw) => raw,
         Err(m) => {
             return raise(

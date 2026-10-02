@@ -43,6 +43,8 @@ pub struct Callee {
     pub origin: Origin,
     pub params: Vec<Option<String>>,
     pub ret: Option<String>,
+    /// Whether a call can leave an error pending, so the dispatch looks.
+    pub may_raise: bool,
 }
 
 /// Callees by the address of the signature each was published with.
@@ -68,14 +70,16 @@ struct Plan {
     ret_word: u8,
     pattern: u32,
     callee: Option<&'static Callee>,
+    /// The class each object parameter must be, as its type name.
+    param_classes: Box<[Option<caribou::symbol::Symbol>]>,
     /// The class of the object the function returns, found on the first
     /// call that returns one: its module publishes it after the function.
     ret_class: OnceLock<Option<&'static Class>>,
 }
 
 impl Plan {
-    fn param_class(&self, i: usize) -> Option<&str> {
-        self.callee?.params.get(i)?.as_deref()
+    fn param_class(&self, i: usize) -> Option<caribou::symbol::Symbol> {
+        self.param_classes.get(i).copied().flatten()
     }
 
     fn ret_class(&self) -> Option<&'static Class> {
@@ -112,12 +116,16 @@ fn plan(sig: *const hl_type) -> Result<&'static Plan, String> {
     if kinds.len() > native::MAX_ARGS {
         return Err("the function's signature is not one the core can call".to_owned());
     }
+    let n_params = kinds.len();
     let word_kinds: Vec<u8> = kinds.iter().map(|&k| native::word_kind(k)).collect();
     let plan: &'static Plan = Box::leak(Box::new(Plan {
         pattern: native::pattern_of(&word_kinds),
         ret_word: native::word_kind(ret),
         kinds,
         ret,
+        param_classes: (0..n_params)
+            .map(|i| param_class(i).map(|name| caribou::symbol::intern(name)))
+            .collect(),
         callee,
         ret_class: OnceLock::new(),
     }));
@@ -266,7 +274,11 @@ unsafe fn call(plan: &Plan, func: *const c_void, args: *const Value, out: *mut V
         return raise("the function's signature is not one the core can call".to_owned());
     };
     let origin = plan.callee.map(|c| &c.origin);
-    if let Some(error) = origin.and_then(Origin::take_error) {
+    let raised = plan
+        .callee
+        .filter(|c| c.may_raise)
+        .and_then(|c| c.origin.take_error());
+    if let Some(error) = raised {
         bridge::set_pending(error);
         return REPLY_RAISED;
     }

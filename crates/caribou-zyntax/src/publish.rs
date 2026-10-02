@@ -44,6 +44,9 @@ pub struct Function {
     /// HIR: what the dispatcher passes.
     pub kinds: Vec<hl::hl_type_kind>,
     pub ret_kind: hl::hl_type_kind,
+    /// Whether a call can end with an error pending: the HIR marks the
+    /// function `nothrow` when it cannot.
+    pub may_raise: bool,
 }
 
 /// A struct or class as published.
@@ -397,6 +400,7 @@ fn function(
         } else {
             kind_of(sig.ret, hir_ret)
         },
+        may_raise: !f.attributes.nothrow,
     })
 }
 
@@ -592,6 +596,7 @@ pub fn interface(
                         origin,
                         params: f.params.iter().map(object_class).collect(),
                         ret: object_class(&f.ret),
+                        may_raise: f.may_raise,
                     },
                 );
                 signature
@@ -627,7 +632,7 @@ pub fn interface(
                         offset: l.offset,
                         size: l.size,
                         kind: l.kind,
-                        class: l.class.clone(),
+                        class: l.class.as_deref().map(caribou::symbol::intern),
                     })
                     .collect();
                 let class = crate::object::publish_class(&type_name, origin, fields);
