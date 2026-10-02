@@ -1,7 +1,5 @@
 //! The cost of a call across the bridge, beside the same call inside each
-//! language. Python can call all three languages. Calls into Python that
-//! return or retain Python objects are shown as unavailable until Zyntax
-//! objects cross out through the core protocol.
+//! language, for every pair of Haxe, Wren and Python.
 //!
 //! Every cell is one operation looped `n` times inside a function of the
 //! calling language (`fixtures/src/Bench.hx`, `fixtures/src/bench/
@@ -14,7 +12,11 @@
 //!         [--wren interpreter|tiered] [--n 200000] [--runs 5]
 //!         [--only <operation>] [--column <0-8>]
 //!
-//! `--only` and `--column` run one cell, for a profiler to sample.
+//! `--only` and `--column` run one cell, for a profiler to sample. Without
+//! them each cell runs in a process of its own: what one cell leaves in a
+//! heap is not the next cell's cost, and Zyntax's heap is not collected
+//! under the core (git-bug
+//! 0a1ced7817b26944287f3f4c98a2af98e7b15f203ecbb94d5a1fd8362ac607ea).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -77,6 +79,8 @@ struct Args {
     runs: usize,
     only: Option<String>,
     column: Option<usize>,
+    /// Print only the cell's median: a run of one cell for the full table.
+    cell: bool,
 }
 
 fn args() -> Args {
@@ -87,6 +91,7 @@ fn args() -> Args {
         runs: 5,
         only: None,
         column: None,
+        cell: false,
     };
     let mut argv = std::env::args().skip(1);
     while let Some(arg) = argv.next() {
@@ -107,6 +112,7 @@ fn args() -> Args {
             "--runs" => out.runs = argv.next().and_then(|v| v.parse().ok()).unwrap_or(out.runs),
             "--only" => out.only = argv.next(),
             "--column" => out.column = argv.next().and_then(|v| v.parse().ok()),
+            "--cell" => out.cell = true,
             // cargo bench passes its own flags through.
             _ => {}
         }
@@ -114,8 +120,68 @@ fn args() -> Args {
     out
 }
 
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Interp => "interp",
+        Mode::Hybrid => "hybrid",
+    }
+}
+
+fn wren_name(mode: ExecutionMode) -> &'static str {
+    match mode {
+        ExecutionMode::Interpreter => "interpreter",
+        _ => "tiered",
+    }
+}
+
+fn header(args: &Args) {
+    println!(
+        "ash {}, wren_lift {}, {} iterations, median of {} runs, ns per call\n",
+        mode_name(args.mode),
+        wren_name(args.wren_mode),
+        args.n,
+        args.runs
+    );
+    print!("{:<14}", "");
+    for (column, _) in COLUMNS {
+        print!("{column:>15}");
+    }
+    println!();
+}
+
+/// The whole table, each cell measured by a run of this program of its
+/// own.
+fn table(args: &Args) {
+    use std::io::Write;
+    header(args);
+    let me = std::env::current_exe().expect("the bench knows its own path");
+    for (label, _) in OPERATIONS {
+        print!("{label:<14}");
+        for column in 0..COLUMNS.len() {
+            let run = std::process::Command::new(&me)
+                .args(["--column", &column.to_string(), "--only", label, "--cell"])
+                .args(["--n", &args.n.to_string(), "--runs", &args.runs.to_string()])
+                .args(["--mode", mode_name(args.mode), "--wren", wren_name(args.wren_mode)])
+                .output()
+                .expect("the bench runs itself");
+            let median = String::from_utf8_lossy(&run.stdout).trim().to_owned();
+            let shown = if run.status.success() && !median.is_empty() {
+                median
+            } else {
+                "failed".to_owned()
+            };
+            print!("{shown:>15}");
+            let _ = std::io::stdout().flush();
+        }
+        println!();
+    }
+}
+
 fn main() {
     let args = args();
+    if args.column.is_none() && args.only.is_none() {
+        return table(&args);
+    }
     let program = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures/bench.hl");
     let mut session = Session::open(
         &program,
@@ -130,23 +196,9 @@ fn main() {
     .expect("the benchmark program opens");
     session.start().expect("its empty main runs");
 
-    let mode = match args.mode {
-        Mode::Interp => "interp",
-        Mode::Hybrid => "hybrid",
-    };
-    let wren = match args.wren_mode {
-        ExecutionMode::Interpreter => "interpreter",
-        _ => "tiered",
-    };
-    println!(
-        "ash {mode}, wren_lift {wren}, {} iterations, median of {} runs, ns per call\n",
-        args.n, args.runs
-    );
-    print!("{:<14}", "");
-    for (column, _) in COLUMNS {
-        print!("{column:>15}");
+    if !args.cell {
+        header(&args);
     }
-    println!();
 
     for (label, suffix) in OPERATIONS {
         if args
@@ -156,10 +208,14 @@ fn main() {
         {
             continue;
         }
-        print!("{label:<14}");
+        if !args.cell {
+            print!("{label:<14}");
+        }
         for (i, (_, cell)) in COLUMNS.into_iter().enumerate() {
             if args.column.is_some_and(|c| c != i) {
-                print!("{:>15}", "");
+                if !args.cell {
+                    print!("{:>15}", "");
+                }
                 continue;
             }
             let Some((namespace, module, class, prefix, int)) = cell else {
@@ -201,9 +257,15 @@ fn main() {
             let mut samples: Vec<f64> = (0..args.runs).map(|_| call()).collect();
             samples.sort_by(|a, b| a.total_cmp(b));
             let median = samples[samples.len() / 2];
-            print!("{median:>15.1}");
+            if args.cell {
+                print!("{median:.1}");
+            } else {
+                print!("{median:>15.1}");
+            }
         }
-        println!();
+        if !args.cell {
+            println!();
+        }
     }
     // `WLIFT_TIER_STATS=1` and `ASH_TIER_LOG=1` say which tier ran what,
     // and how many collections the run took;
