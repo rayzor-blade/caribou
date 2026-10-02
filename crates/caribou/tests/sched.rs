@@ -347,6 +347,20 @@ fn main_context_parks_and_is_woken_by_a_thread() {
 }
 
 #[test]
+fn an_idle_after_a_turn_drained_the_main_wake_returns() {
+    // A wake for the main context that lands between its status check and
+    // its idle is drained by the turn in between; the idle must not sleep.
+    world_id();
+    let waiter = new_waiter();
+    assert!(wake(waiter));
+    tick(None);
+    let started = Instant::now();
+    scheduler_idle(Some(started + Duration::from_secs(5)));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(park(waiter, None));
+}
+
+#[test]
 #[cfg_attr(
     all(target_family = "wasm", not(target_feature = "atomics")),
     ignore = "needs threads"

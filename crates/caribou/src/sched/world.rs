@@ -121,6 +121,10 @@ pub(super) struct World {
     ready_sources: VecDeque<u64>,
     /// Words watched by id; a handler is out of its slot while it runs.
     watches: HashMap<u64, Watch>,
+    /// A wake for the main context was drained since the last idle. The
+    /// main context reads its own registration, so the drain leaves it
+    /// nothing else to see, and an idle that slept now could sleep forever.
+    main_woken: bool,
 }
 
 /// Runs on a task's world before its first turn, whichever language spawned
@@ -148,6 +152,7 @@ impl World {
             sources: HashMap::new(),
             ready_sources: VecDeque::new(),
             watches: HashMap::new(),
+            main_woken: false,
         }
     }
 
@@ -166,6 +171,7 @@ impl World {
     fn wake_claimed(&mut self, waiter: Waiter) -> bool {
         if !waiter.task().is_task() {
             // The main context polls its own registration.
+            self.main_woken = true;
             return true;
         }
         let Some(record) = self.tasks.get_mut(&waiter.task()) else {
@@ -862,12 +868,17 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
     // Still a registered mutator: rendezvous with a collection another
     // world asked for before sleeping.
     heap::gc_safepoint();
-    let (endpoint, next_timer) =
-        with_world(|world| (Arc::clone(&world.endpoint), world.next_timer()));
+    let (endpoint, next_timer, woken) = with_world(|world| {
+        let woken = std::mem::take(&mut world.main_woken);
+        (Arc::clone(&world.endpoint), world.next_timer(), woken)
+    });
     let wake_at = match (deadline, next_timer) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
+    if woken {
+        return;
+    }
     // Peeked before announcing a blocking section, which costs a world-lock
     // round trip each way; and never announced while holding the queue,
     // since the announcement can park this thread until a collection ends
@@ -903,15 +914,17 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
 #[cfg(all(target_family = "wasm", target_feature = "atomics"))]
 pub fn scheduler_idle(deadline: Option<Instant>) {
     heap::gc_safepoint();
-    let (endpoint, next_timer) =
-        with_world(|world| (Arc::clone(&world.endpoint), world.next_timer()));
+    let (endpoint, next_timer, woken) = with_world(|world| {
+        let woken = std::mem::take(&mut world.main_woken);
+        (Arc::clone(&world.endpoint), world.next_timer(), woken)
+    });
     let wake_at = match (deadline, next_timer) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
     // Read before the checks: a bump after them makes the wait return.
     let seen = endpoint.wake.load(Ordering::SeqCst);
-    if !endpoint.commands.lock().unwrap().is_empty() || watch_changed() {
+    if woken || !endpoint.commands.lock().unwrap().is_empty() || watch_changed() {
         return;
     }
     let timeout = wake_at.map_or(-1, |at| {
@@ -935,13 +948,14 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub fn scheduler_idle(deadline: Option<Instant>) {
     heap::gc_safepoint();
-    let next_timer = with_world(|world| world.next_timer());
+    let (next_timer, woken) =
+        with_world(|world| (world.next_timer(), std::mem::take(&mut world.main_woken)));
     let wake_at = match (deadline, next_timer) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
     };
     // A word the host changed is seen before napping.
-    if watch_changed() {
+    if woken || watch_changed() {
         return;
     }
     // A nap until the reactor gives the host an event source
