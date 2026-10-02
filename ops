@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1790979855,"nonce":"aJcNEwPrijwG5fN7wuVExIcpU+M=","message":"Closing (2026-10-02 review): the web backend runs: examples/browser-gpu draws in Chrome over the generated wire (comment e3cf005, d905e4f); cb_gpu's wasi build uses xgpu_bindgen::web_backend.","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1790979855,"nonce":"kw6tmpl6mcMJeYkKe9J75VSJhWw=","status":2}]}
