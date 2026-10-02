@@ -40,7 +40,10 @@ type Cell = Option<(&'static str, &'static str, &'static str, &'static str, bool
 const COLUMNS: [(&str, Cell); 9] = [
     ("Haxe→Haxe", Some(("bench", "Bench", "Bench", "haxe", true))),
     ("Haxe→Wren", Some(("bench", "Bench", "Bench", "wren", true))),
-    ("Haxe→Python", None),
+    (
+        "Haxe→Python",
+        Some(("bench", "Bench", "Bench", "python", true)),
+    ),
     (
         "Wren→Haxe",
         Some(("bench", "tally", "Tally", "haxe", false)),
@@ -49,7 +52,10 @@ const COLUMNS: [(&str, Cell); 9] = [
         "Wren→Wren",
         Some(("bench", "tally", "Tally", "wren", false)),
     ),
-    ("Wren→Python", None),
+    (
+        "Wren→Python",
+        Some(("bench", "to_python", "ToPython", "python", false)),
+    ),
     (
         "Python→Haxe",
         Some(("bench", "python_tally", "PythonTally", "haxe", true)),
@@ -160,6 +166,13 @@ fn main() {
                 print!("{:>15}", "n/a");
                 continue;
             };
+            // A Python object or function does not cross out of Python yet
+            // (git-bug c5751252b0e8b1e9a019fb93e9db98caf8bc2a9dc5bee7b2f890bfac10344c23),
+            // so another language reaches Python by its static methods only.
+            if prefix == "python" && module != "python_tally" && suffix != "Static" {
+                print!("{:>15}", "n/a");
+                continue;
+            }
             // Each cell starts after both heaps have retired the previous
             // cell's temporaries. Otherwise the later construction columns
             // inherit collection debt from every earlier column and a full

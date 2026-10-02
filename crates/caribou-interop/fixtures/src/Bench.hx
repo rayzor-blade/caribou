@@ -1,3 +1,4 @@
+import bench.python_tally.PythonTally;
 import bench.tally.Tally;
 
 // The interop benchmark's Haxe side. Each static loops `n` times over
@@ -116,6 +117,52 @@ class Bench {
 		for (i in 0...n)
 			t = new Tally(i);
 		return t.total;
+	}
+
+	// Into Python.
+
+	public static function pythonStatic(n:Int):Float {
+		var s = 0.0;
+		for (i in 0...n)
+			s = PythonTally.add(s);
+		return s;
+	}
+
+	public static function pythonMethod(n:Int):Float {
+		var t = new PythonTally(0);
+		for (i in 0...n)
+			t.bump(1);
+		return t.value;
+	}
+
+	public static function pythonGetter(n:Int):Float {
+		var t = new PythonTally(3);
+		var s = 0.0;
+		for (i in 0...n)
+			s += t.value;
+		return s;
+	}
+
+	public static function pythonSetter(n:Int):Float {
+		var t = new PythonTally(0);
+		for (i in 0...n)
+			t.value = i;
+		return t.value;
+	}
+
+	public static function pythonClosure(n:Int):Float {
+		var f = PythonTally.adder();
+		var s = 0.0;
+		for (i in 0...n)
+			s = f(s);
+		return s;
+	}
+
+	public static function pythonNew(n:Int):Float {
+		var t = null;
+		for (i in 0...n)
+			t = new PythonTally(i);
+		return t.value;
 	}
 
 	// Objects, strings and sequences crossing (benches/transfer.rs).
