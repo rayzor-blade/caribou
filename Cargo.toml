@@ -35,9 +35,9 @@ zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "0c7ffa907
 zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "0c7ffa907442baeebbb18ea6526c66740fc61ac7" }
 zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "0c7ffa907442baeebbb18ea6526c66740fc61ac7" }
 zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "0c7ffa907442baeebbb18ea6526c66740fc61ac7" }
-xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "9965a29abec295cc689e49edf7ac792bd9de1f1a" }
-xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "9965a29abec295cc689e49edf7ac792bd9de1f1a" }
-xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "9965a29abec295cc689e49edf7ac792bd9de1f1a" }
+xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "ab97ab0b9bb52a41b5ac5b0490d4d098990a7867" }
+xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "ab97ab0b9bb52a41b5ac5b0490d4d098990a7867" }
+xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "ab97ab0b9bb52a41b5ac5b0490d4d098990a7867" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,
