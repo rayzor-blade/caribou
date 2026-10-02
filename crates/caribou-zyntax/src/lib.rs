@@ -31,6 +31,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::mem::ManuallyDrop;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -492,7 +493,7 @@ impl Frontend {
         ));
         Ok(State {
             language: Rc::from(std::mem::replace(&mut self.language, Box::new(Unprepared))),
-            runtime,
+            runtime: ManuallyDrop::new(runtime),
             staged,
             importing,
             current: None,
@@ -529,8 +530,9 @@ impl Language for Unprepared {
 struct State {
     /// Shared, so parsing and module code run with no borrow of the states held.
     language: Rc<dyn Language>,
-    /// Boxed, so resource snapshots keep a stable pointer as the state moves.
-    runtime: Box<TieredRuntime>,
+    /// Boxed, so resource snapshots keep a stable pointer as the state
+    /// moves; dropped by hand, see `Drop`.
+    runtime: ManuallyDrop<Box<TieredRuntime>>,
     staged: Arc<Staged>,
     /// The namespace of the module being parsed and lowered, for the
     /// import resolver's bare names.
@@ -737,6 +739,18 @@ struct Parsed {
     file: Option<PathBuf>,
 }
 
+impl Drop for State {
+    fn drop(&mut self) {
+        // A state dropped while its thread runs Zyntax code is the process
+        // ending from inside that code (`sys.exit`, an uncaught error):
+        // the runtime is mid-call and holds its own locks, so its shutdown
+        // would wait on itself. The exit reclaims it.
+        if foreign::caller() == world::LANG_CORE {
+            unsafe { ManuallyDrop::drop(&mut self.runtime) };
+        }
+    }
+}
+
 impl State {
     /// The immutable resources used while parsing, compiling, and running a
     /// module. Cloning them lets imports reenter the loader without borrowing
@@ -912,6 +926,29 @@ fn load(lang: LangId, namespace: &str, module: &str) -> Result<bool, String> {
     let Some((name, language, found)) = find_module(lang, namespace, module)? else {
         return Ok(false);
     };
+    // A module exists only once it is compiled and run, so one an import
+    // cycle asks for again before then has nothing to answer with.
+    let key = (lang, name.clone());
+    if LOADING.with(|loading| loading.borrow().contains(&key)) {
+        return Err(registry::import_cycle(namespace, module));
+    }
+    LOADING.with(|loading| loading.borrow_mut().push(key));
+    let loaded = load_found(lang, name, language, found);
+    LOADING.with(|loading| loading.borrow_mut().pop());
+    loaded
+}
+
+thread_local! {
+    /// The modules [`load`] is loading on this thread.
+    static LOADING: RefCell<Vec<(LangId, String)>> = const { RefCell::new(Vec::new()) };
+}
+
+fn load_found(
+    lang: LangId,
+    name: String,
+    language: Rc<dyn Language>,
+    found: Source,
+) -> Result<bool, String> {
     if let Some(run) = foreign::as_caller(lang, || language.run_module(&name, &found.0, &found.1)) {
         let run = run.map_err(|e| format!("`{name}`: {e}"))?;
         let iface = publish::run_interface(lang, &name, run);

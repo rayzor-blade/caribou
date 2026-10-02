@@ -24,7 +24,14 @@
 //! that loads from source registers a loader, and `resolve_or_load` asks
 //! the namespace's languages in turn to load and publish the module before
 //! answering. That is how a program's first use of a module loads it.
+//!
+//! Loading one module can load others, and an import cycle can ask for a
+//! module whose load is still running. A language whose modules exist
+//! before their bodies finish answers with what it has; one that cannot
+//! refuses with [`import_cycle`], and the outermost load reports that
+//! cycle rather than whatever the languages between made of the refusal.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -421,6 +428,15 @@ pub fn resolve(namespace: &str, module: &str) -> Option<(LangId, String)> {
         .then(|| (id, module.to_owned()))
 }
 
+thread_local! {
+    /// The modules this thread's loaders are loading, outermost first, as
+    /// they were asked for.
+    static LOADING: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    /// The first import cycle refused during the outermost load: the
+    /// loads on it, and its error.
+    static CYCLE: RefCell<Option<(Vec<String>, String)>> = const { RefCell::new(None) };
+}
+
 /// [`resolve`], and when nothing answers, the namespace's languages are
 /// asked in turn to load the module; the first that does answers. A
 /// loader's failure is the error.
@@ -428,6 +444,35 @@ pub fn resolve_or_load(namespace: &str, module: &str) -> Result<Option<(LangId, 
     if let Some(found) = resolve(namespace, module) {
         return Ok(Some(found));
     }
+    let name = format!("{namespace}:{module}");
+    let outermost = LOADING.with(|loading| {
+        let mut loading = loading.borrow_mut();
+        loading.push(name.clone());
+        loading.len() == 1
+    });
+    let result = load_with_loaders(namespace, module);
+    LOADING.with(|loading| loading.borrow_mut().pop());
+    // A load on a refused cycle fails because of it, whatever the
+    // languages between made of the refusal.
+    let cycle = CYCLE.with(|cycle| {
+        let mut cycle = cycle.borrow_mut();
+        let message = cycle
+            .as_ref()
+            .filter(|(chain, _)| chain.contains(&name))
+            .map(|(_, message)| message.clone());
+        if outermost {
+            *cycle = None;
+        }
+        message
+    });
+    match (result, cycle) {
+        (Ok(Some(found)), _) => Ok(Some(found)),
+        (_, Some(cycle)) => Err(cycle),
+        (result, None) => result,
+    }
+}
+
+fn load_with_loaders(namespace: &str, module: &str) -> Result<Option<(LangId, String)>, String> {
     for lang in languages_of(namespace) {
         let Some(loader) = loader_of(lang) else {
             continue;
@@ -439,6 +484,33 @@ pub fn resolve_or_load(namespace: &str, module: &str) -> Result<Option<(LangId, 
         }
     }
     Ok(None)
+}
+
+/// The error for a loader that finds `namespace:module` asked for again
+/// while its own load of it is still running on this thread, naming the
+/// chain of loads between; kept for the outermost load to report.
+pub fn import_cycle(namespace: &str, module: &str) -> String {
+    let name = format!("{namespace}:{module}");
+    let (chain, message) = LOADING.with(|loading| {
+        let loading = loading.borrow();
+        // The last entry is this request itself. The chain starts at the
+        // outer request for the same name, or at the outermost when the
+        // outer load asked for the module by another namespace.
+        let outer = loading.split_last().map_or(&[][..], |(_, outer)| outer);
+        let start = outer.iter().position(|entry| *entry == name).unwrap_or(0);
+        let chain = outer[start..].to_vec();
+        let message = format!(
+            "import cycle: {} -> {name}; `{name}` is still loading and cannot be imported until it finishes",
+            chain.join(" -> ")
+        );
+        (chain, message)
+    });
+    CYCLE.with(|cycle| {
+        cycle
+            .borrow_mut()
+            .get_or_insert_with(|| (chain, message.clone()));
+    });
+    message
 }
 
 /// The interface `namespace:module` names.
