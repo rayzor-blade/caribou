@@ -990,7 +990,7 @@ dependencies = [
  "caribou_abi",
  "raw-window-handle",
  "winit",
- "x_idl",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=3435b2905e1804712f3d1b8addfbeb6ee876048f)",
  "xwindow-backend",
  "xwindow-bindgen",
  "xwindow-core",
@@ -7129,6 +7129,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "x_idl"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/x-idl.git?rev=aba14dbfbac89f63bf7458711ea1ea21894d0d02#aba14dbfbac89f63bf7458711ea1ea21894d0d02"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "weedle2",
+]
+
+[[package]]
 name = "xcursor"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7147,7 +7158,7 @@ dependencies = [
  "syn 2.0.119",
  "weedle2",
  "wgpu-types",
- "x_idl",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=aba14dbfbac89f63bf7458711ea1ea21894d0d02)",
 ]
 
 [[package]]
@@ -7189,7 +7200,7 @@ name = "xwindow-bindgen"
 version = "0.1.0"
 source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
 dependencies = [
- "x_idl",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=3435b2905e1804712f3d1b8addfbeb6ee876048f)",
  "xwindow-core",
 ]
 

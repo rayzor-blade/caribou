@@ -34,9 +34,9 @@ zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d1a34cca8
 zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d1a34cca8f6a48e68345865b2367a366508b0782" }
 zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d1a34cca8f6a48e68345865b2367a366508b0782" }
 zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d1a34cca8f6a48e68345865b2367a366508b0782" }
-xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e15b9111c28516da7eeec05646ffa9c1261a1701" }
-xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e15b9111c28516da7eeec05646ffa9c1261a1701" }
-xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e15b9111c28516da7eeec05646ffa9c1261a1701" }
+xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "2284167d3a81ccbc143455835a123865682bc9f4" }
+xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "2284167d3a81ccbc143455835a123865682bc9f4" }
+xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "2284167d3a81ccbc143455835a123865682bc9f4" }
 xwindow-backend = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
 xwindow-bindgen = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
 xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
