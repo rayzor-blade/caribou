@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1791002225,"nonce":"3jnj+t0WFxifteKxAF5itpcC2I4=","status":2}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1791002230,"nonce":"h45Df8GK7b4N436ICODprwuBcJA=","message":"The wasm blocker is git-bug 512a2dbd04f69cf0a85227e82cc91dd4bbf05872625a81e04cc51873412a2111.","files":null}]}
