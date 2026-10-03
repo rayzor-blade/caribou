@@ -110,9 +110,8 @@ fn install_into_sibling_runtime() -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow!("{} has no directory", exe.display()))?
         .join("libhl.dylib");
-    if !path.exists() {
-        native_lib::write_embedded_runtime(&path)
-            .with_context(|| format!("staging {}", path.display()))?;
+    if !path.exists() || stale(&path) {
+        stage_runtime(&path).with_context(|| format!("staging {}", path.display()))?;
     }
     let c_path = CString::new(path.to_string_lossy().as_bytes())?;
     // Never closed: ash opens the same image next and keeps it for the
@@ -129,6 +128,38 @@ fn install_into_sibling_runtime() -> Result<()> {
     };
     let seam = unsafe { crate::Seam::from_lookup(lookup) }?;
     crate::install_into(seam)?;
+    Ok(())
+}
+
+/// Whether the image at `path` predates the ash_std cdylib a later cargo
+/// build left beside it.
+#[cfg(target_os = "macos")]
+fn stale(path: &Path) -> bool {
+    let built = path.with_file_name("libash_std.dylib");
+    let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    matches!((modified(&built), modified(path)), (Some(b), Some(p)) if b > p)
+}
+
+/// Put the runtime image at `path`, beside the executable: the ash_std
+/// cdylib a cargo build left there, or the one ash_core carries. A new
+/// file renamed into place, never a rewrite, since macOS caches a signed
+/// image's signature by inode; and `libhl.1.dylib` linked to it, the name
+/// newer HashLink HDLLs import, so both spellings are one image.
+#[cfg(target_os = "macos")]
+fn stage_runtime(path: &Path) -> Result<()> {
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let staging = dir.join(format!(".libhl.dylib.{}", std::process::id()));
+    let built = dir.join("libash_std.dylib");
+    if built.is_file() {
+        std::fs::copy(&built, &staging)?;
+    } else {
+        native_lib::write_embedded_runtime(&staging)?;
+    }
+    std::fs::rename(&staging, path)?;
+    let versioned = dir.join("libhl.1.dylib");
+    if !versioned.exists() {
+        let _ = std::os::unix::fs::symlink("libhl.dylib", &versioned);
+    }
     Ok(())
 }
 
