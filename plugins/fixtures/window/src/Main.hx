@@ -82,6 +82,8 @@ class Main {
                     Sys.println('Suspended');
                 case MemoryWarning:
                     Sys.println('Memory warning');
+                case Paste:
+                    Sys.println('Paste');
                 case Closed | Destroyed:
                     running = false;
             }

@@ -994,6 +994,7 @@ dependencies = [
  "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=d76721475f92e439dab2888f72a1c05ab41eb832)",
  "xwindow-backend",
  "xwindow-bindgen",
+ "xwindow-clipboard",
  "xwindow-core",
 ]
 
@@ -1033,6 +1034,7 @@ dependencies = [
  "winit",
  "xwindow-backend",
  "xwindow-bindgen",
+ "xwindow-clipboard",
  "xwindow-core",
 ]
 
@@ -1234,6 +1236,15 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "clipboard-win"
+version = "5.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bde03770d3df201d4fb868f2c9c59e66a3e4e2bd06692a0fe701e7103c7e84d4"
+dependencies = [
+ "error-code",
+]
 
 [[package]]
 name = "cobs"
@@ -2144,6 +2155,12 @@ dependencies = [
  "libc",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "error-code"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
 name = "fallible-iterator"
@@ -7120,7 +7137,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x_idl"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/x-idl.git?rev=aba14dbfbac89f63bf7458711ea1ea21894d0d02#aba14dbfbac89f63bf7458711ea1ea21894d0d02"
+source = "git+https://github.com/rayzor-blade/x-idl.git?rev=61f3f9e775d1f2afe2a0573c30dd101eb88b1aed#61f3f9e775d1f2afe2a0573c30dd101eb88b1aed"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7158,7 +7175,7 @@ dependencies = [
  "syn 2.0.119",
  "weedle2",
  "wgpu-types",
- "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=aba14dbfbac89f63bf7458711ea1ea21894d0d02)",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=61f3f9e775d1f2afe2a0573c30dd101eb88b1aed)",
 ]
 
 [[package]]
@@ -7193,21 +7210,39 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 [[package]]
 name = "xwindow-backend"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/xwindow.git?rev=12362a9f367237bc62a231acff59e8e82a0a75ed#12362a9f367237bc62a231acff59e8e82a0a75ed"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=428239ec7b9dd12cdd4df8e2004c33e18f2fabc9#428239ec7b9dd12cdd4df8e2004c33e18f2fabc9"
 
 [[package]]
 name = "xwindow-bindgen"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/xwindow.git?rev=12362a9f367237bc62a231acff59e8e82a0a75ed#12362a9f367237bc62a231acff59e8e82a0a75ed"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=428239ec7b9dd12cdd4df8e2004c33e18f2fabc9#428239ec7b9dd12cdd4df8e2004c33e18f2fabc9"
 dependencies = [
  "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=d76721475f92e439dab2888f72a1c05ab41eb832)",
  "xwindow-core",
 ]
 
 [[package]]
+name = "xwindow-clipboard"
+version = "0.1.0"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=428239ec7b9dd12cdd4df8e2004c33e18f2fabc9#428239ec7b9dd12cdd4df8e2004c33e18f2fabc9"
+dependencies = [
+ "calloop",
+ "clipboard-win",
+ "objc2 0.5.2",
+ "objc2-app-kit",
+ "objc2-foundation 0.2.2",
+ "objc2-uniform-type-identifiers",
+ "raw-window-handle",
+ "rustix 0.38.44",
+ "smithay-client-toolkit",
+ "wayland-backend",
+ "x11rb",
+]
+
+[[package]]
 name = "xwindow-core"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/xwindow.git?rev=12362a9f367237bc62a231acff59e8e82a0a75ed#12362a9f367237bc62a231acff59e8e82a0a75ed"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=428239ec7b9dd12cdd4df8e2004c33e18f2fabc9#428239ec7b9dd12cdd4df8e2004c33e18f2fabc9"
 dependencies = [
  "raw-window-handle",
 ]
