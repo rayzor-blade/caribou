@@ -126,6 +126,7 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 * Distribution within a Caribou bundle: each frontend as a language section (its snapshot, or a name for one built into Caribou), its modules as source (see [bundle.md](bundle.md)).
 * Reload of an edited module through the runtime's own hot reload, with the interface published again (see [world.md](world.md#reload)).
 * Calls of async functions as tasks of the world that return a `caribou.Future` (see [Async Functions](#async-functions)).
+* Effect handler scopes per stack: each stack runs in its own segment of Zyntax's handler stack, entered and left as the scheduler switches stacks (see [scheduler.md](scheduler.md#the-scheduler-loop)).
 
 **Pending Architecture:**
 
@@ -134,5 +135,5 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 * A Lua module another Lua module requires from the world arrives as the world's module, whose functions call back into Lua, rather than as the table its chunk returned.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
 * Awaiting a core future from Python.
-* Effect system and fiber synchronization across the native runtime bridge.
+* ZynML calling other languages' classes, so a ZynML handler can bridge a DSL's effect to its host.
 * Bundled modules in Zyntax's compiled form: the snapshot's lowered HIR with declarations beside it, in place of source.

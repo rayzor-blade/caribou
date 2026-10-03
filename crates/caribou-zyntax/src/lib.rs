@@ -47,6 +47,7 @@ mod dispatch;
 pub mod foreign;
 pub mod object;
 pub mod publish;
+mod segment;
 mod task;
 
 pub use zyntax_embed;
@@ -635,6 +636,7 @@ impl Adapter for Runtime {
                 }
             };
             state.language.assigned(lang);
+            segment::install(&state.runtime);
             STATES.with(|s| s.borrow_mut().insert(lang, state));
             self.langs.push(lang);
             caribou::bridge::set_typed_dispatch(lang, dispatch::for_lang(lang));
@@ -770,6 +772,7 @@ impl Drop for State {
         // ending from inside that code (`sys.exit`, an uncaught error):
         // the runtime is mid-call and holds its own locks, so its shutdown
         // would wait on itself. The exit reclaims it.
+        segment::uninstall(&self.runtime);
         if foreign::caller() == world::LANG_CORE {
             unsafe { ManuallyDrop::drop(&mut self.runtime) };
         }
