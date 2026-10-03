@@ -11,9 +11,9 @@
 //! as one module per class, named after the class, whose methods are the
 //! class's symbols; free functions are the statics of a class named after
 //! the plugin. Every target is `Callable::Typed` with an `hl_type` built
-//! from the tags, and the plugin's language dispatches such a call over
-//! `ash_native_call`: scalars by kind, a `DYN` as the `Value` it is, a
-//! string as the core string's address, and nothing boxed.
+//! from the tags, whose code is the symbol's word thunk: the plugin's
+//! language dispatches a call as words, scalars by kind, a `DYN` as the
+//! `Value` it is, a string as the core string's address, and nothing boxed.
 //!
 //! Each declared enum is a module and class too, named after the enum.
 //! Its instances answer `tag`, `constructor` and their fields; its class
@@ -492,7 +492,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 value_type(desc.ret, desc.ret_class, desc.ret_enum)
             },
             target: Callable::Typed {
-                func: desc.func,
+                func: desc.call as *const c_void,
                 signature: native::signature(
                     &arg_types,
                     arg_type(desc.ret, desc.ret_class, descs, desc.ret_enum),
@@ -924,7 +924,6 @@ unsafe extern "C-unwind" fn dispatch(
         unsafe { std::slice::from_raw_parts(args, nargs) }
     };
     let mut words = Vec::with_capacity(nargs);
-    let mut word_kinds = Vec::with_capacity(nargs);
     let mut made = Made(Vec::new());
     for (i, (&v, &t)) in args.iter().zip(&types).enumerate() {
         // An optional argument left out crosses as a null word; one given,
@@ -932,7 +931,6 @@ unsafe extern "C-unwind" fn dispatch(
         let t = if unsafe { (*t).kind } == hl::HNULL {
             if cell::unwrap(v).is_null() {
                 words.push(0);
-                word_kinds.push(0);
                 continue;
             }
             unsafe { (*t).detail.tparam.cast_const() }
@@ -993,7 +991,6 @@ unsafe extern "C-unwind" fn dispatch(
                     );
                 };
                 words.push(p as u64);
-                word_kinds.push(0);
                 continue;
             }
             let Some(payload) = payload_of(v, desc) else {
@@ -1008,7 +1005,6 @@ unsafe extern "C-unwind" fn dispatch(
                 );
             };
             words.push(payload as u64);
-            word_kinds.push(0);
             continue;
         }
         let kind = unsafe { (*t).kind };
@@ -1023,7 +1019,6 @@ unsafe extern "C-unwind" fn dispatch(
             );
         };
         words.push(word);
-        word_kinds.push(native::word_kind(kind));
     }
     let returns_object = unsafe { heap::is_descriptor(ret_type) };
     let ret_kind = if returns_object {
@@ -1031,12 +1026,9 @@ unsafe extern "C-unwind" fn dispatch(
     } else {
         unsafe { (*ret_type).kind }
     };
-    let Some(word) = (unsafe { native::call(func, &words, &word_kinds, ret_kind) }) else {
-        return raise(
-            lang,
-            "the plugin function's signature is not one the core can call",
-        );
-    };
+    // `func` is the symbol's word thunk, which the table typed it as.
+    let call: caribou_abi::word::Call = unsafe { std::mem::transmute(func) };
+    let word = unsafe { call(words.as_ptr()) } as i64;
     // The plugin raised through the host: its result is nothing.
     if bridge::has_pending() {
         return REPLY_RAISED;

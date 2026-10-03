@@ -1,10 +1,12 @@
 //! Calling native code by a signature known at run time: what a language
 //! whose functions are machine code with HashLink-shaped signatures (a
-//! plugin's, a Zyntax module's) dispatches a `Callable::Typed` through.
-//! The signature is an `hl_type` of kind `HFUN` built from scalar kinds,
-//! one object per distinct signature for the process; a `Value` crosses
-//! as the word of its kind, and the result comes back the same way,
-//! through `ash_native_call`'s generated table. Nothing is boxed.
+//! Zyntax module's) dispatches a `Callable::Typed` through. The signature
+//! is an `hl_type` of kind `HFUN` built from scalar kinds, one object per
+//! distinct signature for the process; a `Value` crosses as the word of
+//! its kind, and the result comes back the same way, through
+//! `ash_native_call`'s generated table. Nothing is boxed. A wasm program
+//! has no such table, since wasm checks an indirect call's signature: a
+//! plugin's symbols are called through their word thunks instead.
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, RwLock};
@@ -184,6 +186,7 @@ pub fn value_of(word: i64, kind: hl::hl_type_kind) -> Value {
 ///
 /// # Safety
 /// `func` takes exactly those arguments by the C convention.
+#[cfg(not(target_family = "wasm"))]
 pub unsafe fn call(
     func: *const std::ffi::c_void,
     words: &[u64],
@@ -215,6 +218,7 @@ pub fn pattern_of(word_kinds: &[u8]) -> u32 {
 ///
 /// # Safety
 /// As [`call`]; `pattern` is the pattern of `func`'s arguments.
+#[cfg(not(target_family = "wasm"))]
 #[inline]
 pub unsafe fn call_pattern(
     func: *const std::ffi::c_void,
@@ -239,6 +243,7 @@ pub unsafe fn call_pattern(
 ///
 /// # Safety
 /// As the bridge calls a `TypedDispatch`: `func` takes what `sig` says.
+#[cfg(not(target_family = "wasm"))]
 pub unsafe extern "C-unwind" fn dispatch(
     func: *const std::ffi::c_void,
     sig: *const hl_type,

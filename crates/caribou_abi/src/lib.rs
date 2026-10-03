@@ -70,7 +70,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 7;
+pub const ABI_VERSION: u32 = 8;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
@@ -81,6 +81,7 @@ pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
 pub const PLUGIN_ENTRY_SYMBOL: &str = "caribou_plugin_entry";
 
 pub mod host;
+pub mod word;
 pub use host::{Future, Kept, Rootable, Rooted, Text};
 pub mod data;
 pub use caribou_abi_derive::{PluginEnum, plugin_link_export};
@@ -785,6 +786,10 @@ pub struct SymbolDesc {
     pub class: Str,
     pub method: Str,
     pub func: *const c_void,
+    /// `func` in one shape: its arguments as words, read as [`word`] reads
+    /// them, and its result as a word. What the core calls, so it needs no
+    /// table of signatures, which a wasm program cannot have.
+    pub call: word::Call,
     pub flags: u32,
     pub param_count: u8,
     pub ret: TypeTag,
@@ -1175,6 +1180,14 @@ macro_rules! plugin {
                     class: $crate::Str::new($crate::plugin!(@class $class)),
                     method: $crate::Str::new($crate::unraw(stringify!($method))),
                     func: $($path)* as *const ::core::ffi::c_void,
+                    call: {
+                        #[allow(unused_mut, unused_variables, unused_unsafe)]
+                        unsafe extern "C" fn call(mut args: *const u64) -> u64 {
+                            let f: extern "C" fn($($ty),*) $(-> $ret)? = $($path)*;
+                            $crate::word::to_word(f($( unsafe { $crate::word::take::<$ty>(&mut args) } ),*))
+                        }
+                        call
+                    },
                     flags: $crate::plugin!(@flags $class; $($ty),*),
                     param_count: $crate::plugin!(@count $($ty)*) as u8,
                     ret: $crate::plugin!(@tag $($ret)?),
@@ -1399,10 +1412,14 @@ mod tests {
 
     #[test]
     fn descriptor_table_is_plain_data() {
+        unsafe extern "C" fn width(_: *const u64) -> u64 {
+            word::to_word(64i32)
+        }
         static SYMS: [SymbolDesc; 1] = [SymbolDesc {
             class: Str::new("Texture"),
             method: Str::new("width"),
             func: core::ptr::null(),
+            call: width,
             flags: 0,
             param_count: 0,
             ret: TypeTag::I32,
@@ -1429,6 +1446,7 @@ mod tests {
         assert_eq!(unsafe { INFO.name.as_str() }, "gpu");
         assert_eq!(unsafe { SYMS[0].class.as_str() }, "Texture");
         assert_eq!(SYMS[0].ret.kind(), HI32);
+        assert_eq!(unsafe { (SYMS[0].call)(core::ptr::null()) }, 64);
         assert_eq!(unsafe { Str::EMPTY.as_str() }, "");
     }
 }

@@ -22,7 +22,7 @@
 // Only a loaded program binds natives; the faces are reached regardless.
 #![cfg_attr(not(feature = "runner"), allow(dead_code))]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::mem::MaybeUninit;
 use std::ptr;
@@ -528,7 +528,7 @@ pub fn attach_types(
 ) -> Result<Vec<*mut hl_type>> {
     let table = SLOT_TABLE.read().unwrap();
     let mut by_class = HashMap::new();
-    let mut drop_roots = HashSet::new();
+    let mut drop_roots = std::collections::HashSet::new();
     for s in table.iter() {
         // An operation of the bridge's own names no class.
         if Kind::operation(&s.name).is_some() {

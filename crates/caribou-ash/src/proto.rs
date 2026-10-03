@@ -847,7 +847,23 @@ unsafe fn direct_call(
     unsafe { call_by_kinds(func, kinds, bound, args, out) }
 }
 
+/// `direct_call` with the signature's kinds already read. On wasm there is
+/// none: an indirect call's signature is checked there, and the program's
+/// own call trampolines, behind `hlp_dyn_call`, are the calls it can make.
+#[cfg(target_family = "wasm")]
+#[inline]
+unsafe fn call_by_kinds(
+    _func: *const c_void,
+    _sig: &Kinds,
+    _bound: Option<*mut c_void>,
+    _args: &[Value],
+    _out: *mut Value,
+) -> Option<Result<(), *mut vdynamic>> {
+    None
+}
+
 /// `direct_call` with the signature's kinds already read.
+#[cfg(not(target_family = "wasm"))]
 #[inline]
 unsafe fn call_by_kinds(
     func: *const c_void,
