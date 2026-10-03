@@ -77,6 +77,8 @@ zyntax_lua_capi = { path = "../zyntax/crates/zyntax_lua/capi" }
 [profile.dev]
 opt-level = 1
 debug = "line-tables-only"
+# No incremental caches under target/: every build compiles a changed crate whole.
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 3
