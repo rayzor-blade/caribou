@@ -55,10 +55,7 @@ static CALLEES: LazyLock<RwLock<HashMap<usize, &'static Callee>>> =
 /// as `callee`.
 pub fn register(signature: *const hl_type, callee: Callee) {
     let callee: &'static Callee = Box::leak(Box::new(callee));
-    CALLEES
-        .write()
-        .unwrap()
-        .insert(signature as usize, callee);
+    CALLEES.write().unwrap().insert(signature as usize, callee);
 }
 
 /// What the calls of one signature need, worked out on the first: each

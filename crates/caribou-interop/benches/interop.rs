@@ -161,7 +161,12 @@ fn table(args: &Args) {
             let run = std::process::Command::new(&me)
                 .args(["--column", &column.to_string(), "--only", label, "--cell"])
                 .args(["--n", &args.n.to_string(), "--runs", &args.runs.to_string()])
-                .args(["--mode", mode_name(args.mode), "--wren", wren_name(args.wren_mode)])
+                .args([
+                    "--mode",
+                    mode_name(args.mode),
+                    "--wren",
+                    wren_name(args.wren_mode),
+                ])
                 .output()
                 .expect("the bench runs itself");
             let median = String::from_utf8_lossy(&run.stdout).trim().to_owned();

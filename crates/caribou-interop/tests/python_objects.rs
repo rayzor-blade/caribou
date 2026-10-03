@@ -68,8 +68,8 @@ fn python_objects_closures_and_errors_cross_to_the_core() {
     // Its methods, through the published target and as the object's own.
     let deposited = call(method("deposit"), &[a, Value::number(2.5)]).expect("deposited");
     assert_eq!(deposited.as_number(), Some(15.0));
-    let sent = bridge::invoke(a, intern("deposit"), &[Value::number(5.0)], LANG_CORE)
-        .expect("deposited");
+    let sent =
+        bridge::invoke(a, intern("deposit"), &[Value::number(5.0)], LANG_CORE).expect("deposited");
     assert_eq!(sent.as_number(), Some(20.0));
 
     // The same object crosses back as the same proxy.

@@ -75,7 +75,9 @@ pub struct Layout {
 fn class_struct<'a>(hir: &'a HirModule, class: &str) -> Option<&'a HirStructType> {
     let named = |ty: &'a HirType| match ty {
         HirType::Ptr(inner) => match &**inner {
-            HirType::Struct(s) if s.name.and_then(|n| n.resolve_global()).as_deref() == Some(class) => {
+            HirType::Struct(s)
+                if s.name.and_then(|n| n.resolve_global()).as_deref() == Some(class) =>
+            {
                 Some(s)
             }
             _ => None,
