@@ -36,7 +36,7 @@ use caribou_abi::LangId;
 
 #[cfg(feature = "runner")]
 pub use program::{
-    Mode, Options, Program, imports_in, imports_of, load, load_bytes, publish_module,
+    Mode, Options, Program, imports_in, imports_of, install_for, load, load_bytes, publish_module,
 };
 pub use proto::{construct, is_constructor, lang, unwrap, wrap};
 pub use wrenref::{

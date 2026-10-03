@@ -19,6 +19,12 @@ fn main() {
     for variable in caribou_wasm_toolchain::CONFIG_ENV {
         println!("cargo:rerun-if-env-changed={variable}");
     }
+    // An HDLL imports `@rpath/libhl.dylib`, or `libhl.1.dylib` from newer
+    // HashLink: both resolve to the runtime image staged beside `caribou`,
+    // as Ash's own command resolves them.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
+        println!("cargo:rustc-link-arg-bin=caribou=-Wl,-rpath,@executable_path");
+    }
     if env::var_os("CARGO_FEATURE_LLVM").is_none() {
         return;
     }

@@ -188,13 +188,21 @@ pub fn imports_of(bytecode: &DecodedBytecode) -> Result<Vec<(String, String)>> {
 /// beside a program that has HDLLs, which ash loads in the same call.
 fn bring_up(path: &Path, install: bool) -> Result<()> {
     if install {
-        if native_lib::choose_std_linkage(path) {
-            crate::install()?;
-        } else {
-            install_into_sibling_runtime()?;
-        }
+        install_for(path)?;
     }
     native_lib::init_std_library()?;
+    Ok(())
+}
+
+/// Install the core's heap and scheduler into the ash_std image the
+/// program at `path` will run through: the linked one, or, for a program
+/// with HDLLs beside it, the shared `libhl` image they import.
+pub fn install_for(path: &Path) -> Result<()> {
+    if native_lib::choose_std_linkage(path) {
+        crate::install()?;
+    } else {
+        install_into_sibling_runtime()?;
+    }
     Ok(())
 }
 

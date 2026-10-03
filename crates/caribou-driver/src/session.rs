@@ -71,8 +71,9 @@ impl Session {
             return Err(anyhow!("{} is not a file", path.display()));
         }
         // Both seams before either runtime allocates: loading the program
-        // makes the heap.
-        caribou_ash::install().map_err(|e| anyhow!("ash: {e}"))?;
+        // makes the heap. Ash's goes into the image the program runs
+        // through, which its HDLLs decide.
+        caribou_ash::install_for(path).map_err(|e| anyhow!("ash: {e}"))?;
         caribou_wren::install().map_err(|e| anyhow!("wren_lift: {e}"))?;
         let ash_options = AshOptions {
             mode: options.mode,
@@ -152,7 +153,7 @@ impl Session {
     /// than found.
     pub fn open_project(project: &Project, options: Options) -> Result<Session> {
         let hl = project.compile_haxe()?;
-        caribou_ash::install().map_err(|e| anyhow!("ash: {e}"))?;
+        caribou_ash::install_for(&hl).map_err(|e| anyhow!("ash: {e}"))?;
         caribou_wren::install().map_err(|e| anyhow!("wren_lift: {e}"))?;
         let ash_options = AshOptions {
             mode: options.mode,
