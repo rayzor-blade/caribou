@@ -1,0 +1,21 @@
+// Async functions of the interop tests: a call returns a caribou.Future,
+// and the function runs on a task of the caller's world.
+async def doubled(x: i64): i64 {
+    await sleep(30)
+    return x * 2
+}
+
+async def half(): f64 {
+    await sleep(5)
+    return 2.5
+}
+
+async def inner(): i64 {
+    await sleep(10)
+    return 20
+}
+
+async def outer(): i64 {
+    let x = await inner()
+    return x + 1
+}

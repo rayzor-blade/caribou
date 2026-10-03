@@ -16,8 +16,8 @@ A world is one OS thread with one scheduler and one reactor. Every language runs
 
 The unit of scheduling is krio-core's `Task`, not the fiber. There are two kinds of task:
 
-* **Stackful tasks** own a krio fiber with its own machine stack. They can suspend from any call depth by switching stacks. Ash threads, Wren fibers, and Zyntax `fiber def` functions are stackful.
-* **Stackless tasks** are compiled state machines. Their `step` function runs to the next suspension point and returns. Zyntax `async` functions and resumable effects, and WrenLift's action-loop and AOT-transformed fibers, are stackless. On wasm, where krio cannot switch stacks, a stackful task runs on a fiber the host lends instead (`sched::host_fiber`). In a linked program that is Ash's fiber: its side stack holds a suspended task's frames, which Ash's link-time transform saves and restores, and the collector scans it as it scans a native fiber's stack. Where no host lends fibers, such a task runs to the end in one step.
+* **Stackful tasks** own a krio fiber with its own machine stack. They can suspend from any call depth by switching stacks. Ash threads, Wren fibers, Zyntax `fiber def` functions, and calls of Zyntax `async` functions are stackful. A Zyntax async function is a state machine, but the code each of its steps runs may call any function of the world, and that function may park, so its task has a stack (see [zyntax.md](zyntax.md#async-functions)).
+* **Stackless tasks** are compiled state machines. Their `step` function runs to the next suspension point and returns. Zyntax resumable effects, and WrenLift's action-loop and AOT-transformed fibers, are stackless. On wasm, where krio cannot switch stacks, a stackful task runs on a fiber the host lends instead (`sched::host_fiber`). In a linked program that is Ash's fiber: its side stack holds a suspended task's frames, which Ash's link-time transform saves and restores, and the collector scans it as it scans a native fiber's stack. Where no host lends fibers, such a task runs to the end in one step.
 
 The scheduler does not distinguish between the two kinds. It calls `step` and inspects the `Suspension` value that comes back.
 
@@ -73,9 +73,9 @@ Every frontend can construct a pending future and sees the same `ready()`,
 first-completion wins and returns whether the call won. `await()` parks
 the current Caribou task and either returns the declared value or raises the
 rejection value. Haxe exposes these methods through `caribou.Future<T>`;
-Wren installs the core-published class on first crossing. Zyntax async and a
-browser Wren `Future` can adapt their syntax to this object while retaining
-the same plugin ABI. A wasm stackless adapter must translate the wait into
+Wren installs the core-published class on first crossing. A call of a Zyntax
+async function returns one. A browser Wren `Future` can adapt its syntax to
+this object while retaining the same plugin ABI. A wasm stackless adapter must translate the wait into
 `request_park`/`Pending` rather than call the blocking `await()` entry directly.
 
 ## Guest Runtime Tasks

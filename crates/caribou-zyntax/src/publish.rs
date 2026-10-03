@@ -43,10 +43,14 @@ pub struct Function {
     /// The C-boundary kind of each parameter and of the result, from the
     /// HIR: what the dispatcher passes.
     pub kinds: Vec<hl::hl_type_kind>,
+    /// The result's kind; for an async function, the kind of what its
+    /// future settles with.
     pub ret_kind: hl::hl_type_kind,
     /// Whether a call can end with an error pending: the HIR marks the
     /// function `nothrow` when it cannot.
     pub may_raise: bool,
+    /// Whether the function is async: a call returns a future of `ret`.
+    pub is_async: bool,
 }
 
 /// A struct or class as published.
@@ -164,6 +168,34 @@ fn kind_of(ty: &Type, hir: &HirType) -> hl::hl_type_kind {
             Type::Any => hl::HDYN,
             _ => hl::HOBJ,
         },
+    }
+}
+
+/// The HIR type the result of an async function crosses as: the poll
+/// function hands the declared result back as a word, a scalar by its
+/// bits and anything else by its address.
+fn settled_hir(ty: &Type) -> HirType {
+    match ty {
+        Type::Primitive(p) => match p {
+            PrimitiveType::Unit => HirType::Void,
+            PrimitiveType::Bool => HirType::Bool,
+            PrimitiveType::I8 => HirType::I8,
+            PrimitiveType::I16 => HirType::I16,
+            PrimitiveType::I32 => HirType::I32,
+            PrimitiveType::I64 => HirType::I64,
+            PrimitiveType::U8 => HirType::U8,
+            PrimitiveType::U16 => HirType::U16,
+            PrimitiveType::U32 | PrimitiveType::Char => HirType::U32,
+            PrimitiveType::U64 => HirType::U64,
+            PrimitiveType::ISize => HirType::ISize,
+            PrimitiveType::USize => HirType::USize,
+            PrimitiveType::F32 => HirType::F32,
+            PrimitiveType::F64 => HirType::F64,
+            PrimitiveType::I128 => HirType::I128,
+            PrimitiveType::U128 => HirType::U128,
+            PrimitiveType::String => HirType::Ptr(Box::new(HirType::U8)),
+        },
+        _ => HirType::Ptr(Box::new(HirType::U8)),
     }
 }
 
@@ -366,6 +398,7 @@ struct Signature<'a> {
     is_static: bool,
     params: Vec<&'a Type>,
     ret: &'a Type,
+    is_async: bool,
 }
 
 /// A declared function or method against its HIR: `None` when the HIR
@@ -390,19 +423,35 @@ fn function(
         refs.push(type_ref(ty, types, lang));
     }
     let hir_ret = f.signature.returns.first().unwrap_or(&HirType::Void);
+    // The lowering makes an async function's entry return its promise;
+    // what the promise settles with is the declared result.
+    let is_async = sig.is_async;
+    let ret = type_ref(sig.ret, types, lang);
     Some(Function {
         name: sig.name,
         symbol: symbol.to_owned(),
         is_static: sig.is_static,
         params: refs,
-        ret: type_ref(sig.ret, types, lang),
+        ret: if is_async {
+            TypeRef::Future(Box::new(ret))
+        } else {
+            ret
+        },
         kinds,
         ret_kind: if tuple_bridge.is_some() {
             hl::HDYN
         } else {
-            kind_of(sig.ret, hir_ret)
+            kind_of(
+                sig.ret,
+                &if is_async {
+                    settled_hir(sig.ret)
+                } else {
+                    hir_ret.clone()
+                },
+            )
         },
         may_raise: !f.attributes.nothrow,
+        is_async,
     })
 }
 
@@ -446,12 +495,15 @@ pub fn declared(
             is_static: !m.params.iter().any(|p| p.is_self),
             params: m.params.iter().map(|p| &p.ty).collect(),
             ret: &m.return_type,
+            is_async: m.is_async,
             name,
         };
         function(sig, hir, types, lang)
     };
     for node in &program.declarations {
         match &node.node {
+            // An extern names the host's function, not one of the module.
+            TypedDeclaration::Function(f) if f.is_external => {}
             TypedDeclaration::Function(f) => {
                 let name = name_of(f.name);
                 // A frontend that lowers a class's methods to functions
@@ -472,6 +524,7 @@ pub fn declared(
                         is_static: !receiver,
                         params: f.params.iter().map(|p| &p.ty).collect(),
                         ret: &f.return_type,
+                        is_async: f.is_async,
                         name: method.to_owned(),
                     };
                     if let Some(function) = function(sig, hir, types, lang) {
@@ -488,6 +541,7 @@ pub fn declared(
                     is_static: true,
                     params: f.params.iter().map(|p| &p.ty).collect(),
                     ret: &f.return_type,
+                    is_async: f.is_async,
                     name,
                 };
                 if let Some(function) = function(sig, hir, types, lang) {
@@ -588,7 +642,16 @@ pub fn interface(
             .iter()
             .map(|&k| native::kind_type(k) as *const hl_type)
             .collect();
-        let ret = native::kind_type(f.ret_kind);
+        // An async function's call returns a core future.
+        let ret = if f.is_async {
+            &caribou::future::FUTURE_DESC as *const caribou::heap::TypeDesc as *const hl_type
+        } else {
+            native::kind_type(f.ret_kind) as *const hl_type
+        };
+        let settled = match &f.ret {
+            TypeRef::Future(t) if f.is_async => &**t,
+            ret => ret,
+        };
         let signature = match origin {
             Some(origin) => {
                 let signature = native::own_signature(&params, ret);
@@ -597,8 +660,9 @@ pub fn interface(
                     crate::dispatch::Callee {
                         origin,
                         params: f.params.iter().map(object_class).collect(),
-                        ret: object_class(&f.ret),
+                        ret: object_class(settled),
                         may_raise: f.may_raise,
+                        settles: f.is_async.then_some(f.ret_kind),
                     },
                 );
                 signature

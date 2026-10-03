@@ -53,6 +53,22 @@ Executable targets are wrapped as `Callable::Typed` instances containing the com
 * **Dynamic values:** A parameter or result of Zyntax's `Any` type (an unannotated Python parameter) is the program's dynamic value. None, booleans, numbers and strings cross as the program's own; any other value of the core crosses as a foreign object (see below).
 * **Complex Types:** Zyntax's own objects, arrays and function references are restricted at the call boundary. Their type signatures publish, but a call fails at dispatch with an error naming the parameter.
 
+## Async Functions
+
+A call of a Zyntax `async` function returns a `caribou.Future` of its declared result at once, and the module's interface types the result that way (`Future(T)`). The function's state machine runs on a task of the caller's world:
+
+* **Stepping:** The task steps the machine through Zyntax's `HostTask`. A step advances the machine as far as it goes without waiting and reports what it waits on next. When that is a timer, the task parks until the timer is due, and the world runs other tasks meanwhile, so calls made together wait together.
+* **Settling:** The future settles with the function's result, read by its declared type, or is rejected with the error the function raised.
+* **The task's stack:** The task is a fiber. The Zyntax code a step runs may call any function of the world, and that function may park, as it may on any task.
+
+The machine waits on what Zyntax provides: another async function it awaits, and `sleep(ms)`, the runtime's own timer. A grammar language's programs get `sleep` as Zyntax's hosts give it to them.
+
+**Limits:**
+
+* A poll result of 0 means pending, so an async function whose result is 0, `false` or null never settles. Zyntax tracks this as git-bug ab01238df74d256eacb6482c2ec879540eec3e04305ba0c8c6f71ff183ff09ff.
+* ZynML has no async methods, and Haxe sees a module's classes but not its functions, so a Haxe program reaches no ZynML async function yet.
+* A Zyntax program cannot await a core future yet.
+
 ## Other Languages from Zyntax Programs
 
 A Lua or Python program reaches the rest of the world through Zyntax's foreign objects (`zyntax_embed::foreign`). The adapter installs itself as the embedder once per process.
@@ -109,6 +125,7 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 * Other languages' modules, classes, objects and plugins in Python programs, as foreign objects; dynamic parameters and results across calls into Zyntax.
 * Distribution within a Caribou bundle: each frontend as a language section (its snapshot, or a name for one built into Caribou), its modules as source (see [bundle.md](bundle.md)).
 * Reload of an edited module through the runtime's own hot reload, with the interface published again (see [world.md](world.md#reload)).
+* Calls of async functions as tasks of the world that return a `caribou.Future` (see [Async Functions](#async-functions)).
 
 **Pending Architecture:**
 

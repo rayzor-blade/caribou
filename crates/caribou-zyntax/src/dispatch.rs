@@ -45,6 +45,9 @@ pub struct Callee {
     pub ret: Option<String>,
     /// Whether a call can leave an error pending, so the dispatch looks.
     pub may_raise: bool,
+    /// For an async function, the kind of what its future settles with:
+    /// a call returns the future, and the function runs on a task.
+    pub settles: Option<hl::hl_type_kind>,
 }
 
 /// Callees by the address of the signature each was published with.
@@ -63,7 +66,10 @@ pub fn register(signature: *const hl_type, callee: Callee) {
 /// dispatches on. Kept for the process, as the signatures are.
 struct Plan {
     kinds: Box<[hl::hl_type_kind]>,
+    /// The result's kind; an async function's settled result's.
     ret: hl::hl_type_kind,
+    /// Whether the call returns a promise the result settles from.
+    settles: bool,
     ret_word: u8,
     pattern: u32,
     callee: Option<&'static Callee>,
@@ -106,7 +112,8 @@ fn plan(sig: *const hl_type) -> Result<&'static Plan, String> {
             i + 1
         ));
     }
-    let ret = unsafe { (*ret_type).kind };
+    let settles = callee.and_then(|c| c.settles);
+    let ret = settles.unwrap_or(unsafe { (*ret_type).kind });
     if !crosses(ret, callee.and_then(|c| c.ret.as_ref())) {
         return Err("the function returns a Zyntax type the core does not pass yet".to_owned());
     }
@@ -117,9 +124,15 @@ fn plan(sig: *const hl_type) -> Result<&'static Plan, String> {
     let word_kinds: Vec<u8> = kinds.iter().map(|&k| native::word_kind(k)).collect();
     let plan: &'static Plan = Box::leak(Box::new(Plan {
         pattern: native::pattern_of(&word_kinds),
-        ret_word: native::word_kind(ret),
+        // A promise is a pointer word.
+        ret_word: if settles.is_some() {
+            native::word_kind(hl::HBYTES)
+        } else {
+            native::word_kind(ret)
+        },
         kinds,
         ret,
+        settles: settles.is_some(),
         param_classes: (0..n_params)
             .map(|i| param_class(i).map(|name| caribou::symbol::intern(name)))
             .collect(),
@@ -281,6 +294,18 @@ unsafe fn call(plan: &Plan, func: *const c_void, args: *const Value, out: *mut V
     }
     if bridge::has_pending() {
         return REPLY_RAISED;
+    }
+    if plan.settles
+        && let Some(callee) = plan.callee
+    {
+        let result = crate::task::Result {
+            kind: plan.ret,
+            class: plan.ret_class(),
+            origin: &callee.origin,
+            may_raise: callee.may_raise,
+        };
+        unsafe { *out = crate::task::start(word as *mut u8, callee.origin.lang, result) };
+        return REPLY_OK;
     }
     match unsafe { object::value_out(word as u64, plan.ret, plan.ret_class(), origin) } {
         Ok(result) => {
