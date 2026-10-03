@@ -8,6 +8,17 @@ description = "Windowing system for Caribou: xwindow's window API"
 [lib]
 crate-type = ["cdylib", "rlib", "staticlib"]
 
+[features]
+# winit on Android runs in one of two activities, which cannot both be on:
+# the NativeActivity by default; a host on a GameActivity turns default
+# features off and enables `android-game-activity`.
+default = ["android-native-activity"]
+android-native-activity = ["winit/android-native-activity"]
+android-game-activity = ["winit/android-game-activity"]
+# Defines android_main for an app that links the plugin from C, which
+# provides xwindow_main; a Rust host defines its own and leaves this off.
+android-main = []
+
 [build-dependencies]
 xwindow-backend = { workspace = true }
 xwindow-bindgen = { workspace = true }

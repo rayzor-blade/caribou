@@ -49,6 +49,32 @@ class Main {
 for one. Both return `None` when there is none. Sizes and positions a window
 reports are in physical pixels; those a program asks for are logical.
 
+## On a phone
+
+By default a program pumps the event loop inside `open`, `poll` and
+`wait`. A host that must build the loop, or run it, hands it over before
+the first window opens, through xwindow's hook, which this crate
+re-exports with the `winit` it is built from:
+
+```rust
+caribou_window::attach(events, caribou_window::Drive::Pump)?;
+caribou_window::attach(events, caribou_window::Drive::Turns(&mut turn))?;
+```
+
+- **Android:** the host builds the loop with the `AndroidApp` its
+  `android_main` receives. Either drive works. The plugin builds winit
+  for a NativeActivity by default; a host on a GameActivity turns default
+  features off and enables `android-game-activity`.
+- **iOS:** winit cannot pump, so the host calls `attach` with
+  `Drive::Turns` from `main`, and it never returns. A window opens only in
+  a turn.
+
+A host in C reaches the same hook through `xwindow_attach_pump` and
+`xwindow_run_turns`. On Android, the `android-main` feature defines
+`android_main`, which keeps the app for the backend and calls the host's
+`xwindow_main`. xwindow's CONTRIBUTING.md, under "The host's hook",
+describes the contract.
+
 ## In a page
 
 Built for `wasm32-wasip1-threads`, the window is the page's canvas. Opening

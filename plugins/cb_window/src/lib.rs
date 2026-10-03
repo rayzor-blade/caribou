@@ -18,6 +18,28 @@
 mod backend {
     include!(concat!(env!("OUT_DIR"), "/xwindow_backend/native.rs"));
 }
+
+/// The host's hook, for a host that builds the event loop (on Android, with
+/// its `AndroidApp`) or runs it and gives the program turns (on iOS), with
+/// the winit it is built from.
+#[cfg(not(target_os = "wasi"))]
+pub use backend::{Drive, attach};
+#[cfg(not(target_os = "wasi"))]
+pub use winit;
+
+/// For an app that links the plugin from C on Android: winit's activity
+/// calls this, which keeps the app for the backend and starts the app's
+/// program, `xwindow_main`.
+#[cfg(all(target_os = "android", feature = "android-main"))]
+#[unsafe(no_mangle)]
+fn android_main(app: winit::platform::android::activity::AndroidApp) {
+    unsafe extern "C" {
+        fn xwindow_main();
+    }
+    backend::android_app(app);
+    unsafe { xwindow_main() }
+}
+
 #[cfg(target_os = "wasi")]
 mod web {
     include!(concat!(env!("OUT_DIR"), "/xwindow_backend/web.rs"));
