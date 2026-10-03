@@ -333,8 +333,63 @@ fn with_values<T>(
     f(&values[..args.len()])
 }
 
+/// A core error kept alive while a program holds its translation.
+struct Raised {
+    message: String,
+    error: Value,
+    handle: Handle,
+}
+
+impl Drop for Raised {
+    fn drop(&mut self) {
+        heap::handle_release(self.handle);
+    }
+}
+
+thread_local! {
+    /// The core error behind the last `ForeignError` handed to a program,
+    /// with that error's message: a program that cannot unwind (ZynML)
+    /// leaves it for `foreign::take_error`, and the call's caller raises
+    /// the core error itself rather than its translation.
+    static RAISED: std::cell::RefCell<Option<Raised>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The error a host call left pending in a program that cannot unwind,
+/// taken: the core error it came from, or one made from what the program
+/// was told when it came from elsewhere.
+pub fn host_error() -> Option<Value> {
+    let error = foreign::take_error()?;
+    let raised = RAISED.with(|r| r.borrow_mut().take());
+    Some(match raised {
+        Some(raised) if raised.message == error.message => raised.error,
+        _ => {
+            let kind = match error.kind {
+                "TypeError" => ErrorKind::Type,
+                "IndexError" => ErrorKind::Index,
+                "AttributeError" => ErrorKind::NullAccess,
+                _ => ErrorKind::Runtime,
+            };
+            Error::value(Error::new(kind, &error.message, LANG_CORE))
+        }
+    })
+}
+
 /// An error the bridge returned, as the library raises it.
 fn error_of(err: Value) -> ForeignError {
+    let error = translate(err);
+    let handle = err
+        .as_object()
+        .map_or(Handle::NULL, |p| heap::handle_new(p.cast()));
+    let raised = Raised {
+        message: error.message.clone(),
+        error: err,
+        handle,
+    };
+    RAISED.with(|r| *r.borrow_mut() = Some(raised));
+    error
+}
+
+fn translate(err: Value) -> ForeignError {
     match unsafe { Error::from_value(err) } {
         Some(e) => {
             let kind = match unsafe { Error::kind(e) } {

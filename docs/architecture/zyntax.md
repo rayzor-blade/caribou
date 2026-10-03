@@ -69,6 +69,24 @@ The machine waits on what Zyntax provides: another async function it awaits, and
 * ZynML has no async methods, and Haxe sees a module's classes but not its functions, so a Haxe program reaches no ZynML async function yet.
 * A Zyntax program cannot await a core future yet.
 
+## Effects Through the Host
+
+A DSL's effect reaches its host through a handler the DSL declares: the handler's operations call the host's classes, which a grammar language's programs import as typed host classes. The runtime asks for a module by its full path (`from game import Prompt` asks for `game.Prompt`) and gets its classes and functions as the registry describes them (`caribou_zyntax::host`, the same answer Python gets). Every call is checked against those types when the program compiles, and runs through the foreign-object protocol (see below).
+
+```
+from game import Prompt
+
+effect Ask { def question(q: String): String }
+
+handler HostAsk for Ask {
+    def question(q: String): String { return Prompt::question(q) }
+}
+```
+
+A ZynML program cannot unwind from a host call that fails: the call gives its type's zero, and the error waits. The adapter raises it when the call into the program returns, as the core error the host raised.
+
+**Handler scopes per stack:** Zyntax keeps one handler stack per thread, and several of the world's stacks run Zyntax code on one thread. Each stack therefore runs in a segment of its own, entered and left as the scheduler switches stacks, so a `with` scope open across a park is not in scope for another stack's code.
+
 ## Other Languages from Zyntax Programs
 
 A Lua or Python program reaches the rest of the world through Zyntax's foreign objects (`zyntax_embed::foreign`). The adapter installs itself as the embedder once per process.
@@ -127,6 +145,7 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 * Reload of an edited module through the runtime's own hot reload, with the interface published again (see [world.md](world.md#reload)).
 * Calls of async functions as tasks of the world that return a `caribou.Future` (see [Async Functions](#async-functions)).
 * Effect handler scopes per stack: each stack runs in its own segment of Zyntax's handler stack, entered and left as the scheduler switches stacks (see [scheduler.md](scheduler.md#the-scheduler-loop)).
+* Grammar languages importing other languages' classes as typed host classes, and a DSL's effects handled by its host through them (see [Effects Through the Host](#effects-through-the-host)).
 
 **Pending Architecture:**
 
@@ -135,5 +154,4 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 * A Lua module another Lua module requires from the world arrives as the world's module, whose functions call back into Lua, rather than as the table its chunk returned.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
 * Awaiting a core future from Python.
-* ZynML calling other languages' classes, so a ZynML handler can bridge a DSL's effect to its host.
 * Bundled modules in Zyntax's compiled form: the snapshot's lowered HIR with declarations beside it, in place of source.

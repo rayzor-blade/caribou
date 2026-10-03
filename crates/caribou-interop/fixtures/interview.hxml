@@ -1,0 +1,9 @@
+# The Haxe program of the effects test: a ZynML module performs an effect
+# whose handler calls back into this program. Rebuild with
+# `haxe interview.hxml` (Haxe 4.3.6) from this directory, with
+# src/zynml.zsnap present (a run of the zyntax tests writes it);
+# interview.hl is checked in.
+-cp src
+-lib caribou
+-main UseInterview
+-hl interview.hl

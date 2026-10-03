@@ -45,6 +45,7 @@ use zyntax_embed::{
 
 mod dispatch;
 pub mod foreign;
+pub mod host;
 pub mod object;
 pub mod publish;
 mod segment;
@@ -271,13 +272,17 @@ fn by_extension(extensions: &[String]) -> Vec<ModuleArchitecture> {
         .collect()
 }
 
-/// The builtins Zyntax's hosts give a grammar's programs: `sleep(ms)`
-/// awaits the runtime's own timer, which the world's task for the call
-/// waits on (see `task`).
-fn host_builtins(runtime: &mut TieredRuntime) {
+/// What a grammar's programs get from their host: `sleep(ms)`, which
+/// awaits the runtime's own timer as Zyntax's hosts give it (the world's
+/// task for the call waits on it, see `task`), and the world's modules to
+/// import, typed (see `host`).
+fn host_builtins(runtime: &mut TieredRuntime) -> Result<(), String> {
     runtime
         .builtin_aliases_mut()
         .insert("sleep".to_owned(), "__zyntax_async_set_timeout".to_owned());
+    runtime
+        .add_host_modules(host::module)
+        .map_err(|e| e.to_string())
 }
 
 /// A language from a `.zyn` grammar alone.
@@ -307,7 +312,7 @@ impl Language for GrammarLanguage {
     }
 
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String> {
-        host_builtins(runtime);
+        host_builtins(runtime)?;
         runtime.register_grammar(&self.name, self.grammar.clone());
         Ok(())
     }
@@ -363,7 +368,7 @@ impl Language for SnapshotLanguage {
     /// The snapshot's grammar is the one the runtime parses with too,
     /// registered under the language by `install_snapshot`.
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String> {
-        host_builtins(runtime);
+        host_builtins(runtime)?;
         runtime
             .install_snapshot(Arc::clone(&self.snapshot))
             .map(drop)

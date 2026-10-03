@@ -1,0 +1,39 @@
+// A DSL's effect handled by its host: `ask` performs `Ask`, and the
+// handler HostAsk answers through the Haxe class game.Prompt.
+from game import Prompt
+
+effect Ask {
+    def question(q: String): String
+}
+
+handler HostAsk for Ask {
+    def question(q: String): String {
+        return Prompt::question(q)
+    }
+}
+
+@effect(Ask)
+def ask(): String {
+    return question("your name?")
+}
+
+// The Haxe driver sees the module's classes, so the entry is a static.
+struct Interview {
+    id: i64
+}
+
+impl Interview {
+    def run(): String {
+        var answer: String = ""
+        with HostAsk {
+            answer = ask()
+        }
+        return answer
+    }
+
+    // A host call that throws: ZynML cannot unwind from it, and the
+    // driver gets the error when the call returns.
+    def refuse(): String {
+        return Prompt::refuse("anything")
+    }
+}

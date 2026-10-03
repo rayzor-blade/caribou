@@ -80,12 +80,16 @@ pub unsafe fn start(promise: *mut u8, lang: LangId, result: Result) -> Value {
     value
 }
 
-/// The error the step left: one Zyntax raised, or one a call out of it
-/// left pending in the core.
+/// The error the step left: a host call's the program could not unwind
+/// from, one Zyntax raised, or one a call out of it left pending in the
+/// core.
 fn raised(result: &Result) -> Option<Value> {
-    result
-        .may_raise
-        .then(|| result.origin.take_error())
-        .flatten()
+    crate::foreign::host_error()
+        .or_else(|| {
+            result
+                .may_raise
+                .then(|| result.origin.take_error())
+                .flatten()
+        })
         .or_else(bridge::take_pending)
 }

@@ -284,10 +284,13 @@ unsafe fn call(plan: &Plan, func: *const c_void, args: *const Value, out: *mut V
         return raise("the function's signature is not one the core can call".to_owned());
     };
     let origin = plan.callee.map(|c| &c.origin);
-    let raised = plan
-        .callee
-        .filter(|c| c.may_raise)
-        .and_then(|c| c.origin.take_error());
+    // A host call the program could not unwind from comes first: the
+    // program went on with its type's zero.
+    let raised = crate::foreign::host_error().or_else(|| {
+        plan.callee
+            .filter(|c| c.may_raise)
+            .and_then(|c| c.origin.take_error())
+    });
     if let Some(error) = raised {
         bridge::set_pending(error);
         return REPLY_RAISED;
