@@ -197,6 +197,10 @@ impl Data {
             _ => -1,
         }
     }
+    /// The event's area, or 0 for none.
+    pub extern "C" fn area_or_zero(event: Option<Enum<Event>>) -> i32 {
+        event.map_or(0, |event| Self::area(event))
+    }
     pub extern "C" fn nested(event: Enum<Event>) -> Enum<Nested> {
         Nested::Event(event.get()).into()
     }
@@ -277,6 +281,7 @@ caribou_abi::plugin! {
         fn event(i32) -> Enum<Event>;
         fn echo_event(Enum<Event>) -> Enum<Event>;
         fn area(Enum<Event>) -> i32;
+        fn area_or_zero(Option<Enum<Event>>) -> i32;
         fn nested(Enum<Event>) -> Enum<Nested>;
         fn pair() -> Enum<Nested>;
         fn rebuild_nested(Enum<Nested>) -> Enum<Nested>;

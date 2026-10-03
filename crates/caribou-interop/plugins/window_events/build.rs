@@ -10,6 +10,8 @@ trait Samples {
     fn event(which: i32) -> Event;
     #[native(samples_sizing)]
     fn sizing(which: i32) -> Enum<ScaleSizing>;
+    #[native(samples_theme)]
+    fn theme(theme: Option<Enum<Theme>>) -> i32;
 }
 "#;
 

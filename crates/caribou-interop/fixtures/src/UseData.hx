@@ -45,6 +45,7 @@ class UseData {
             default: throw "wrong constructor";
         }
         check(Data.area(Resized(7, 9)) == 63, "Haxe enum to Rust");
+        check(Data.area_or_zero(Resized(7, 9)) == 63 && Data.area_or_zero(null) == 0, "optional enum");
         switch (Data.echo_event(Message("from Haxe", b, false, 2.5))) {
             case Message(label, bytes, enabled, ratio):
                 check(label == "from Haxe" && !enabled && ratio == 2.5, "mixed payload");

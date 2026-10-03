@@ -74,6 +74,9 @@ pub enum TypeRef {
     /// tuple (`caribou::data::tuple_new`), which each language takes in
     /// its own form.
     Tuple(Vec<TupleField>),
+    /// A value of the inner type, or null for none: an argument the caller
+    /// may leave out.
+    Optional(Box<TypeRef>),
 }
 
 /// One of the results a [`TypeRef::Tuple`] holds.

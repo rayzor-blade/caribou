@@ -33,6 +33,7 @@ fn host_type(ty: &TypeRef) -> HostType {
             ret: Box::new(host_type(ret)),
         },
         TypeRef::Enum(_)
+        | TypeRef::Optional(_)
         | TypeRef::Future(_)
         | TypeRef::Array(_)
         | TypeRef::Dyn

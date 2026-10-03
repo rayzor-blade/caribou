@@ -173,8 +173,10 @@ pub trait PluginEnum: Sized {
 }
 
 /// The one-word C ABI carrier for a Rust enum implementing PluginEnum.
+/// Never null, so `Option<Enum<T>>` is the same word, null for none: an
+/// argument that may be absent.
 #[repr(transparent)]
-pub struct Enum<T: PluginEnum>(*const EnumData, PhantomData<T>);
+pub struct Enum<T: PluginEnum>(core::ptr::NonNull<EnumData>, PhantomData<T>);
 impl<T: PluginEnum> Copy for Enum<T> {}
 impl<T: PluginEnum> Clone for Enum<T> {
     fn clone(&self) -> Self {
@@ -191,24 +193,24 @@ impl<T: PluginEnum> Enum<T> {
         T::decode(self)
     }
     pub fn value(self) -> Value {
-        Value::object(self.0.cast())
+        Value::object(self.0.as_ptr().cast_const().cast())
     }
     pub fn of(v: Value) -> Option<Self> {
         let p = unsafe { (host().enum_of)(v, T::DESC) };
-        (!p.is_null()).then_some(Self(p, PhantomData))
+        core::ptr::NonNull::new(p.cast_mut()).map(|p| Self(p, PhantomData))
     }
     /// Used by generated constructors. The host validates the tag and fields.
     #[doc(hidden)]
     pub fn new(index: u32, fields: &[Value]) -> Self {
         let p = unsafe { (host().enum_new)(T::DESC, index, fields.as_ptr(), fields.len()) };
-        assert!(!p.is_null(), "invalid plugin enum constructor");
+        let p = core::ptr::NonNull::new(p.cast_mut()).expect("invalid plugin enum constructor");
         Self(p, PhantomData)
     }
     pub fn index(self) -> u32 {
-        unsafe { (*self.0).index }
+        unsafe { self.0.as_ref().index }
     }
     pub fn fields(&self) -> &[Value] {
-        unsafe { core::slice::from_raw_parts(self.0.add(1).cast(), (*self.0).len) }
+        unsafe { core::slice::from_raw_parts(self.0.as_ptr().add(1).cast(), self.0.as_ref().len) }
     }
 }
 impl<T: PluginEnum> Param for Enum<T> {
@@ -217,6 +219,11 @@ impl<T: PluginEnum> Param for Enum<T> {
 }
 impl<T: PluginEnum> Returned for Enum<T> {
     const TAG: TypeTag = TypeTag::ENUM;
+    const ENUM: *const EnumDesc = T::DESC;
+}
+/// An enum argument the caller may leave out: null crosses as `None`.
+impl<T: PluginEnum> Param for Option<Enum<T>> {
+    const TAG: TypeTag = TypeTag::ENUM_OPTIONAL;
     const ENUM: *const EnumDesc = T::DESC;
 }
 

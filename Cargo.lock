@@ -990,7 +990,7 @@ dependencies = [
  "caribou_abi",
  "raw-window-handle",
  "winit",
- "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=3435b2905e1804712f3d1b8addfbeb6ee876048f)",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=d76721475f92e439dab2888f72a1c05ab41eb832)",
  "xwindow-backend",
  "xwindow-bindgen",
  "xwindow-core",
@@ -7119,11 +7119,10 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x_idl"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/x-idl.git?rev=3435b2905e1804712f3d1b8addfbeb6ee876048f#3435b2905e1804712f3d1b8addfbeb6ee876048f"
+source = "git+https://github.com/rayzor-blade/x-idl.git?rev=aba14dbfbac89f63bf7458711ea1ea21894d0d02#aba14dbfbac89f63bf7458711ea1ea21894d0d02"
 dependencies = [
  "proc-macro2",
  "quote",
- "rand 0.8.8",
  "syn 2.0.119",
  "weedle2",
 ]
@@ -7131,7 +7130,7 @@ dependencies = [
 [[package]]
 name = "x_idl"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/x-idl.git?rev=aba14dbfbac89f63bf7458711ea1ea21894d0d02#aba14dbfbac89f63bf7458711ea1ea21894d0d02"
+source = "git+https://github.com/rayzor-blade/x-idl.git?rev=d76721475f92e439dab2888f72a1c05ab41eb832#d76721475f92e439dab2888f72a1c05ab41eb832"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7193,21 +7192,21 @@ checksum = "e450f9b2ed1dff33c94c12589a87338689467b9c4f5d8a5710bd09a847d2c8a7"
 [[package]]
 name = "xwindow-backend"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=12362a9f367237bc62a231acff59e8e82a0a75ed#12362a9f367237bc62a231acff59e8e82a0a75ed"
 
 [[package]]
 name = "xwindow-bindgen"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=12362a9f367237bc62a231acff59e8e82a0a75ed#12362a9f367237bc62a231acff59e8e82a0a75ed"
 dependencies = [
- "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=3435b2905e1804712f3d1b8addfbeb6ee876048f)",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=d76721475f92e439dab2888f72a1c05ab41eb832)",
  "xwindow-core",
 ]
 
 [[package]]
 name = "xwindow-core"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/xwindow.git?rev=7782fe978c232872da1914e7546eaaacce75c4c3#7782fe978c232872da1914e7546eaaacce75c4c3"
+source = "git+https://github.com/rayzor-blade/xwindow.git?rev=12362a9f367237bc62a231acff59e8e82a0a75ed#12362a9f367237bc62a231acff59e8e82a0a75ed"
 dependencies = [
  "raw-window-handle",
 ]

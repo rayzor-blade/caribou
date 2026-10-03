@@ -70,7 +70,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
@@ -743,6 +743,8 @@ impl TypeTag {
     pub const FUTURE: TypeTag = TypeTag(26);
     /// A buffer the function writes: [`data::BufferMut`].
     pub const BUFFER_MUT: TypeTag = TypeTag(27);
+    /// An enum argument that may be absent: `Option<Enum<T>>`.
+    pub const ENUM_OPTIONAL: TypeTag = TypeTag(28);
     pub const ABSTRACT: TypeTag = TypeTag(hl::HABSTRACT as u8);
 
     pub const fn kind(self) -> hl::hl_type_kind {

@@ -23,6 +23,11 @@ mod backend {
         }
         .native()
     }
+
+    /// The theme's native code, or -1 for none.
+    pub unsafe fn samples_theme(theme: Option<i32>) -> i32 {
+        theme.unwrap_or(-1)
+    }
 }
 mod runtime {
     pub use caribou_abi::{Buffer, BufferMut, Enum, ErrorKind, Future, Text, host};

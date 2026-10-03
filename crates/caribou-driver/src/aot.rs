@@ -365,6 +365,14 @@ fn word_of(tag: TypeTag) -> Option<(Word, Option<(&'static str, &'static str)>)>
                 "caribou_plugin_enum_to_haxe",
             )),
         ),
+        // Null for none.
+        TypeTag::ENUM_OPTIONAL => (
+            Word::Ptr,
+            Some((
+                "caribou_plugin_optional_enum_from_haxe",
+                "caribou_plugin_enum_to_haxe",
+            )),
+        ),
         // Any value, as the core's.
         TypeTag::DYN => (
             Word::I64,

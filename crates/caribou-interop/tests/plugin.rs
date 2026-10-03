@@ -140,7 +140,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 37);
+    assert_eq!(math.symbols().len(), 38);
     let hypot = math
         .symbols()
         .iter()
@@ -164,7 +164,7 @@ fn a_plugin_is_a_language_wren_imports() {
         },
         "Vec2"
     );
-    assert_eq!(ABI_VERSION, 6);
+    assert_eq!(ABI_VERSION, 7);
     assert_eq!(math.classes().len(), 4);
 
     let world = World::new(Config::default());

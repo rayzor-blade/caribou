@@ -305,6 +305,10 @@ class Bridge {
 			var name = parts.pop();
 			return TPath({pack: parts, name: name});
 		}
+		if (Reflect.hasField(ty, "Optional")) {
+			var inner = haxeType(Reflect.field(ty, "Optional"), pack, classes);
+			return macro :Null<$inner>;
+		}
 		if (Reflect.hasField(ty, "Future")) {
 			var result = haxeType(Reflect.field(ty, "Future"), pack, classes);
 			return TPath({pack: ["caribou"], name: "Future", params: [TPType(result)]});

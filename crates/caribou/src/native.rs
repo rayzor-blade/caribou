@@ -36,6 +36,27 @@ pub fn kind_type(kind: hl::hl_type_kind) -> *mut hl_type {
     t
 }
 
+/// HashLink's `Null<T>` of `inner`, the same object for the same inner
+/// type: a value of `inner`, or null.
+pub fn nullable(inner: *const hl_type) -> *const hl_type {
+    static NULLABLE: LazyLock<RwLock<HashMap<usize, usize>>> =
+        LazyLock::new(|| RwLock::new(HashMap::new()));
+    if let Some(&t) = NULLABLE.read().unwrap().get(&(inner as usize)) {
+        return t as *const hl_type;
+    }
+    let mut types = NULLABLE.write().unwrap();
+    *types.entry(inner as usize).or_insert_with(|| {
+        Box::into_raw(Box::new(hl_type {
+            kind: hl::HNULL,
+            detail: hl_type_detail {
+                tparam: inner.cast_mut(),
+            },
+            vobj_proto: std::ptr::null_mut(),
+            mark_bits: std::ptr::null_mut(),
+        })) as usize
+    }) as *const hl_type
+}
+
 /// The `HFUN` `hl_type` for `params` and `ret`, the same object for the
 /// same types: what a `Callable::Typed` carries and a dispatcher reads.
 pub fn signature(params: &[*const hl_type], ret: *const hl_type) -> *const hl_type {

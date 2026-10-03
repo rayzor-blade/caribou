@@ -37,10 +37,10 @@ zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = 
 xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "2284167d3a81ccbc143455835a123865682bc9f4" }
 xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "2284167d3a81ccbc143455835a123865682bc9f4" }
 xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "2284167d3a81ccbc143455835a123865682bc9f4" }
-xwindow-backend = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
-xwindow-bindgen = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
-xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "7782fe978c232872da1914e7546eaaacce75c4c3" }
-x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "3435b2905e1804712f3d1b8addfbeb6ee876048f" }
+xwindow-backend = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "12362a9f367237bc62a231acff59e8e82a0a75ed" }
+xwindow-bindgen = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "12362a9f367237bc62a231acff59e8e82a0a75ed" }
+xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "12362a9f367237bc62a231acff59e8e82a0a75ed" }
+x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "d76721475f92e439dab2888f72a1c05ab41eb832" }
 
 # ash from the sibling checkout, at the rev above: ash_core's build script
 # embeds the ash_std cdylib from the checkout's own target directory,

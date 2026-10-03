@@ -434,6 +434,11 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
         if tag == TypeTag::ENUM {
             return TypeRef::Enum(unsafe { (*enumeration).name.as_str() }.to_owned());
         }
+        if tag == TypeTag::ENUM_OPTIONAL {
+            return TypeRef::Optional(Box::new(TypeRef::Enum(
+                unsafe { (*enumeration).name.as_str() }.to_owned(),
+            )));
+        }
         if class == NO_CLASS {
             native::type_ref(tag.kind())
         } else {
@@ -846,9 +851,14 @@ fn arg_type(
     if tag == TypeTag::BUFFER_MUT {
         return &data::BUFFER_MUT_TYPE as *const TypeDesc as *const hl_type;
     }
-    if tag == TypeTag::ENUM {
-        return data::enum_type(unsafe { (*enumeration).name.as_str() }).expect("registered enum")
+    if tag == TypeTag::ENUM || tag == TypeTag::ENUM_OPTIONAL {
+        let t = data::enum_type(unsafe { (*enumeration).name.as_str() }).expect("registered enum")
             as *const TypeDesc as *const hl_type;
+        return if tag == TypeTag::ENUM {
+            t
+        } else {
+            native::nullable(t)
+        };
     }
     if tag == TypeTag::FUTURE {
         return &caribou::future::FUTURE_DESC as *const TypeDesc as *const hl_type;
@@ -917,6 +927,18 @@ unsafe extern "C-unwind" fn dispatch(
     let mut word_kinds = Vec::with_capacity(nargs);
     let mut made = Made(Vec::new());
     for (i, (&v, &t)) in args.iter().zip(&types).enumerate() {
+        // An optional argument left out crosses as a null word; one given,
+        // as its inner type's.
+        let t = if unsafe { (*t).kind } == hl::HNULL {
+            if cell::unwrap(v).is_null() {
+                words.push(0);
+                word_kinds.push(0);
+                continue;
+            }
+            unsafe { (*t).detail.tparam.cast_const() }
+        } else {
+            t
+        };
         // An object's type is its class's descriptor; the payload crosses.
         if unsafe { heap::is_descriptor(t) } {
             let desc = t as *const TypeDesc;

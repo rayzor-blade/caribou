@@ -58,7 +58,8 @@ impl CType {
             | TypeRef::Int64
             | TypeRef::Buffer
             | TypeRef::Enum(_)
-            | TypeRef::Tuple(_) => {
+            | TypeRef::Tuple(_)
+            | TypeRef::Optional(_) => {
                 return None;
             }
         })

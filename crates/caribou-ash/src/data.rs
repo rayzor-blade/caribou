@@ -147,6 +147,11 @@ unsafe fn matches_type(t: *const hl_type, ty: &TypeRef) -> bool {
         TypeRef::Buffer => unsafe { proto::obj_name_is(t, "haxe.io.Bytes") },
         TypeRef::Future(_) => unsafe { proto::obj_name_is(t, "caribou.Future") },
         TypeRef::Enum(n) => kind == hl::HENUM && unsafe { name((*(*t).detail.tenum).name) == *n },
+        // HashLink's Null<T>, or a reference type, which is nullable itself.
+        TypeRef::Optional(inner) if kind == hl::HNULL => unsafe {
+            matches_type((*t).detail.tparam, inner)
+        },
+        TypeRef::Optional(inner) => unsafe { matches_type(t, inner) },
         TypeRef::Dyn => kind == hl::HDYN,
         _ => false,
     }

@@ -345,6 +345,7 @@ fn accepts(ty: &TypeRef, v: Value) -> bool {
         TypeRef::Enum(name) => {
             enum_of(v).is_some_and(|p| unsafe { enum_schema(enum_descriptor(p)).name == *name })
         }
+        TypeRef::Optional(inner) => v.is_null() || accepts(inner, v),
         TypeRef::Dyn => true,
         _ => false,
     }

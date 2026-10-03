@@ -1,6 +1,7 @@
 import window.Samples;
 import window.Event;
 import window.ScaleSizing;
+import window.Theme;
 
 class UseWindowEvents {
     static function check(ok:Bool, message:String) {
@@ -59,6 +60,7 @@ class UseWindowEvents {
         switch (event(9)) { case ThemeChanged(Dark): default: throw "theme"; }
         switch (Samples.sizing(0)) { case Logical: default: throw "logical sizing"; }
         switch (Samples.sizing(1)) { case Physical: default: throw "physical sizing"; }
+        check(Samples.theme(Dark) == 1 && Samples.theme(null) == -1, "optional theme");
         Sys.println("window events ok");
     }
 }

@@ -574,12 +574,14 @@ pub unsafe extern "C" fn caribou_haxe_set_index(seq: *mut vdynamic, i: i32, valu
 }
 
 /// A Haxe enum value of the program's enum type `t` as the core's, once
-/// the enum it declares is registered; null when it is not.
+/// the enum it declares is registered. Raises for null, or a value of
+/// another type.
 ///
 /// # Safety
 /// `e` is null or a live value of type `t`.
 pub unsafe fn enum_to_core(e: *mut vdynamic, t: *mut hl_type) -> *mut u8 {
     if e.is_null() {
+        raise("the enum argument is null", proto::lang());
         return core::ptr::null_mut();
     }
     if unsafe { (*e).t } != t
