@@ -27,13 +27,13 @@ ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a
 ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2", default-features = false }
 ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "eca0254cfde790e781903ff2ddb8de639be0673f", default-features = false }
-zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785" }
-zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785", default-features = false }
-zyntax_typed_ast = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785" }
-zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785", default-features = false }
-zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785" }
-zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785" }
-zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9638a568cc29a7d10b6ad643ab31286bc3a90785" }
+zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf" }
+zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf", default-features = false }
+zyntax_typed_ast = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf" }
+zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf", default-features = false }
+zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf" }
+zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf" }
+zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "9d6d49e85ec79d1089efa2712feca062c035cfbf" }
 xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
 xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
 xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }

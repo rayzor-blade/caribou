@@ -1041,9 +1041,10 @@ fn load_found(
     });
     let parsed = resources.parse_source(&name, found)?;
     // SAFETY: the runtime is stable and this thread serializes compilation.
-    unsafe { &mut *resources.runtime }
-        .compile_module(parsed.hir)
-        .map_err(|e| format!("`{name}`: {e}"))?;
+    object::compiling(lang, || {
+        unsafe { &mut *resources.runtime }.compile_module(parsed.hir)
+    })
+    .map_err(|e| format!("`{name}`: {e}"))?;
     // Taken before the body runs: a module the body loads is compiled
     // after this one, and a name asked for then is that module's.
     let origin = resources.origin(lang);
@@ -1115,9 +1116,10 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
         return Err(format!("`{name}` has no source to reload from"));
     };
     // SAFETY: the runtime is stable and this thread serializes compilation.
-    let report = unsafe { &mut *resources.runtime }
-        .reload_typed_program(parsed.program)
-        .map_err(|e| format!("`{name}`: {e}"))?;
+    let report = object::compiling(lang, || {
+        unsafe { &mut *resources.runtime }.reload_typed_program(parsed.program)
+    })
+    .map_err(|e| format!("`{name}`: {e}"))?;
     if let Some((function, error)) = report.failed.first() {
         return Err(format!("`{name}`: {function}: {error}"));
     }

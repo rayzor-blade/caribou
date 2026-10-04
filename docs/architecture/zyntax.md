@@ -51,7 +51,8 @@ Executable targets are wrapped as `Callable::Typed` instances containing the com
 * **Scalars:** Passed directly by machine kind.
 * **Strings:** Converted to Zyntax's own string (the ZRTL string, a 16-byte header then the bytes) through `zyntax_embed::ZyntaxString`, allocated as Zyntax allocates its strings. Return values are read in place and copied into standard host-managed strings.
 * **Dynamic values:** A parameter or result of Zyntax's `Any` type (an unannotated Python parameter) is the program's dynamic value. None, booleans, numbers and strings cross as the program's own; any other value of the core crosses as a foreign object (see below).
-* **Complex Types:** Zyntax's own objects, arrays and function references are restricted at the call boundary. Their type signatures publish, but a call fails at dispatch with an error naming the parameter.
+* **Objects:** An object of a reference type (a Python class's instance, a ZynML `@reference` struct) is a core object itself. Its first word is the core's descriptor for its type, which the core gives the runtime when the module compiles (the host heap's `type_header` slot). It crosses as itself, its fields read and written where the runtime laid them out, and its methods the class's published functions. An object made without that word crosses as a proxy holding its address.
+* **Complex Types:** Arrays, and function references not passed as dynamic values, are restricted at the call boundary. Their type signatures publish, but a call fails at dispatch with an error naming the parameter.
 
 ## Async Functions
 
@@ -119,7 +120,7 @@ A Zyntax runtime allocates from the core heap. Zyntax exposes its heap as a seam
 
 Zyntax's own collector stays off. Lua's weak tables and `__gc` finalizers hook into that collector, so under Caribou they do not run yet.
 
-The blocks carry no type descriptor yet, so a Zyntax object still crosses to other languages as a proxy (see [Native Call Dispatch](#native-call-dispatch)).
+A reference type's objects carry the core's descriptor for their type at word 0, so they are core objects (see [Native Call Dispatch](#native-call-dispatch)). The collector still scans them conservatively; a precise trace needs Zyntax to say which words are pointers.
 
 ## Current Implementation Boundaries
 
@@ -153,7 +154,7 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 
 **Pending Architecture:**
 
-* Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
+* Array and closure passing across the native call boundary.
 * A Lua module another Lua module requires from the world arrives as the world's module, whose functions call back into Lua, rather than as the table its chunk returned.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.
 * Awaiting a core future from Python.

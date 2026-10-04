@@ -555,10 +555,15 @@ pub fn declared(
                 }
                 let at = class_at(&mut classes, name.clone());
                 // The struct's fields are the class's, its reserved ones
-                // included, in order.
-                let laid = class_struct(hir, &name)
-                    .filter(|s| s.fields.len() == c.fields.len())
-                    .map(|s| (s, zyntax_compiler::hir_interp::struct_layout(s)));
+                // included, in order, after the header word a reference
+                // type's objects start with.
+                let laid = class_struct(hir, &name).and_then(|s| {
+                    let header = usize::from(
+                        s.fields.first() == Some(&zyntax_compiler::object_header::header_field()),
+                    );
+                    (s.fields.len() == c.fields.len() + header)
+                        .then(|| (s, header, zyntax_compiler::hir_interp::struct_layout(s)))
+                });
                 for (i, field) in c.fields.iter().enumerate() {
                     let field_name = name_of(field.name);
                     // Frontends reserve `$` fields for their object layout.
@@ -566,11 +571,11 @@ pub fn declared(
                     if field_name.starts_with('$') {
                         continue;
                     }
-                    if let Some((s, layout)) = &laid {
-                        let hir_ty = &s.fields[i];
+                    if let Some((s, header, layout)) = &laid {
+                        let hir_ty = &s.fields[header + i];
                         classes[at].layout.push(Layout {
                             name: field_name.clone(),
-                            offset: layout.offsets[i],
+                            offset: layout.offsets[header + i],
                             size: zyntax_compiler::hir_interp::size_of_hir_ty(hir_ty),
                             kind: kind_of(&field.ty, hir_ty),
                             class: types.named(&field.ty).map(|n| format!("{lang}.{n}")),

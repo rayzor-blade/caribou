@@ -59,6 +59,8 @@ fn python_objects_closures_and_errors_cross_to_the_core() {
     let ctor = account.ctor.as_ref().expect("Account constructs").target;
     let owner = Str::value(Str::new("ada"));
     let a = call(ctor, &[owner, Value::number(10.0)]).expect("constructed");
+    // Under the core heap the object is the core's itself, not a proxy.
+    assert!(caribou_zyntax::object::is_direct(a), "a direct object");
     let get = |name: &str| bridge::get(a, intern(name), LANG_CORE).expect("a field");
     assert_eq!(get("balance").as_number(), Some(10.0));
     assert_eq!(unsafe { Str::text(get("owner")) }, Some("ada"));

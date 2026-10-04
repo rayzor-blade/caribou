@@ -1,24 +1,23 @@
 //! Zyntax values standing in the core as its objects: an object of a
 //! class a module publishes, and a function value.
 //!
-//! An object crosses as a proxy holding its address, one proxy per object
-//! for as long as the proxy lives, so what crosses again meanwhile is the
-//! same proxy. Its fields are read and written where the class's HIR
-//! struct lays them out, and its methods are the class's published
-//! functions, called with the object first. A function value crosses as a
-//! proxy whose call is the value's own call through its record.
+//! An object of a reference type is a core object itself: its first word
+//! is the descriptor the core gave its type when the module was compiled
+//! (`type_header`), so it crosses as itself, its fields read and written
+//! in place where the runtime laid them out, and its methods the class's
+//! published functions, called with the object first. An object made
+//! without that word (before the core's heap was Zyntax's) crosses as a
+//! proxy holding its address, one proxy per object for as long as the
+//! proxy lives. A function value crosses as a proxy whose call is the
+//! value's own call through its record.
 //!
 //! An error a call leaves pending in the runtime is taken after the call
 //! and raised in the core, described by the module that raised it
 //! (`Origin`).
-//!
-//! Nothing here releases what it holds: under the core, Zyntax's
-//! collector is off, and a value that escaped its compiler's release lives
-//! for the process (git-bug
-//! 0a1ced7817b26944287f3f4c98a2af98e7b15f203ecbb94d5a1fd8362ac607ea).
 
+use std::cell::Cell;
 use std::collections::HashMap;
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{LazyLock, OnceLock, RwLock};
 
@@ -34,6 +33,7 @@ use caribou::world::LANG_CORE;
 use caribou_abi::hl::{self, hl_type, hl_type_detail, hl_type_kind};
 use caribou_abi::mem::{KIND_DYNAMIC, TRACED};
 use caribou_abi::{ErrorKind, LangId, Value};
+use zyntax_compiler::host_heap::{HostFieldKind, HostTypeInfo};
 use zyntax_embed::foreign::{self, Any};
 use zyntax_embed::{TieredRuntime, ZyntaxString};
 
@@ -103,6 +103,9 @@ pub struct Class {
     pub origin: Origin,
     fields: Vec<Field>,
     methods: RwLock<HashMap<Symbol, Callable>>,
+    /// The descriptors its type's objects carry at word 0, one per layout
+    /// the runtime compiled it with.
+    directs: RwLock<Vec<usize>>,
 }
 
 unsafe impl Send for Class {}
@@ -132,12 +135,19 @@ pub fn publish_class(type_name: &str, origin: Origin, fields: Vec<Field>) -> &'s
     desc.name = name.as_ptr();
     desc.name_len = name.len();
     desc.lang = origin.lang;
+    let directs = DIRECTS
+        .read()
+        .unwrap()
+        .get(&(origin.lang, type_name.to_owned()))
+        .cloned()
+        .unwrap_or_default();
     let class: &'static mut Class = Box::leak(Box::new(Class {
         desc,
         type_name: symbol::intern(type_name),
         origin,
         fields,
         methods: RwLock::new(HashMap::new()),
+        directs: RwLock::new(directs),
     }));
     class.desc.ext = class as *mut Class as *mut ();
     let class: &'static Class = class;
@@ -222,9 +232,12 @@ pub fn object(word: usize, class: &'static Class) -> Value {
     Value::object(kept as *const c_void)
 }
 
-/// The object `v` stands for, when it is a proxy: its class and address.
+/// The object `v` is, or stands for as a proxy: its class and address.
 pub fn object_of(v: Value) -> Option<(&'static Class, usize)> {
     let p = v.as_object()? as *const u8;
+    if let Some(direct) = unsafe { direct_of(p) } {
+        return Some((direct.class()?, p as usize));
+    }
     let class = unsafe { class_of(p) }?;
     Some((class, unsafe { (*(p as *const ObjectProxy)).word }))
 }
@@ -293,6 +306,10 @@ pub unsafe fn value_out(
             None => Value::null(),
         },
         hl::HOBJ => match class {
+            // An object that carries its type's descriptor is the core's.
+            Some(class) if word != 0 && class.carries(word as usize) => {
+                Value::object(word as *const c_void)
+            }
             Some(class) => object(word as usize, class),
             None if word == 0 => Value::null(),
             None => return Err("an object of a class no module publishes".to_owned()),
@@ -313,7 +330,26 @@ fn raise(kind: ErrorKind, message: &str, lang: LangId) -> u8 {
 
 unsafe extern "C-unwind" fn object_get(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
     let (class, word) = unsafe { proxy(obj) };
-    let Some(field) = class.fields.iter().find(|f| f.name == name) else {
+    unsafe { get_field(&class.fields, &class.origin, word, name, out) }
+}
+
+unsafe extern "C-unwind" fn object_set(obj: *mut u8, name: Symbol, value: Value) -> u8 {
+    let (class, word) = unsafe { proxy(obj) };
+    unsafe { set_field(&class.fields, class.origin.lang, word, name, value) }
+}
+
+/// Field `name` of the object at `word`, laid out as `fields` say.
+///
+/// # Safety
+/// `word` is a live object those fields describe.
+unsafe fn get_field(
+    fields: &[Field],
+    origin: &Origin,
+    word: usize,
+    name: Symbol,
+    out: *mut Value,
+) -> u8 {
+    let Some(field) = fields.iter().find(|f| f.name == name) else {
         return REPLY_MISSING;
     };
     let at = (word + field.offset) as *const u8;
@@ -327,8 +363,8 @@ unsafe extern "C-unwind" fn object_get(obj: *mut u8, name: Symbol, out: *mut Val
     };
     let field_class = field
         .class
-        .and_then(|name| self::class(class.origin.lang, name.name()));
-    match unsafe { value_out(raw, field.kind, field_class, Some(&class.origin)) } {
+        .and_then(|name| self::class(origin.lang, name.name()));
+    match unsafe { value_out(raw, field.kind, field_class, Some(origin)) } {
         Ok(v) => {
             unsafe { *out = v };
             REPLY_OK
@@ -336,14 +372,17 @@ unsafe extern "C-unwind" fn object_get(obj: *mut u8, name: Symbol, out: *mut Val
         Err(m) => raise(
             ErrorKind::Type,
             &format!("field `{}`: {m}", name.name()),
-            class.origin.lang,
+            origin.lang,
         ),
     }
 }
 
-unsafe extern "C-unwind" fn object_set(obj: *mut u8, name: Symbol, value: Value) -> u8 {
-    let (class, word) = unsafe { proxy(obj) };
-    let Some(field) = class.fields.iter().find(|f| f.name == name) else {
+/// Set field `name` of the object at `word`, laid out as `fields` say.
+///
+/// # Safety
+/// `word` is a live object those fields describe.
+unsafe fn set_field(fields: &[Field], lang: LangId, word: usize, name: Symbol, value: Value) -> u8 {
+    let Some(field) = fields.iter().find(|f| f.name == name) else {
         return REPLY_MISSING;
     };
     let raw = match word_in(value, field.kind, field.class) {
@@ -352,7 +391,7 @@ unsafe extern "C-unwind" fn object_set(obj: *mut u8, name: Symbol, value: Value)
             return raise(
                 ErrorKind::Type,
                 &format!("field `{}` {m}", name.name()),
-                class.origin.lang,
+                lang,
             );
         }
     };
@@ -376,6 +415,21 @@ unsafe extern "C-unwind" fn object_invoke(
     out: *mut Value,
 ) -> u8 {
     let (class, _) = unsafe { proxy(obj) };
+    unsafe { invoke_method(class, obj, name, args, n, out) }
+}
+
+/// Method `name` of `class` on the object `obj` is to the core.
+///
+/// # Safety
+/// `args` holds `n` values.
+unsafe fn invoke_method(
+    class: &Class,
+    obj: *mut u8,
+    name: Symbol,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
     let Some(target) = class.methods.read().unwrap().get(&name).copied() else {
         return REPLY_MISSING;
     };
@@ -407,6 +461,218 @@ static OBJECT_PROTO: Protocol = Protocol {
     set_member: Some(object_set),
     invoke: Some(object_invoke),
     type_name: Some(object_type_name),
+    ..Protocol::NONE
+};
+
+// ---------------------------------------------------------------------------
+// Objects that are the core's: a reference type's word 0
+// ---------------------------------------------------------------------------
+
+/// A reference type as the core sees its objects: each carries this at
+/// word 0, so the object is a core object, its fields where the runtime
+/// laid them out.
+struct Direct {
+    desc: TypeDesc,
+    lang: LangId,
+    type_name: Symbol,
+    fields: Vec<Field>,
+}
+
+impl Direct {
+    /// The published class of the type, for its methods and origin.
+    fn class(&self) -> Option<&'static Class> {
+        class(self.lang, self.type_name.name())
+    }
+}
+
+impl Class {
+    /// Whether the object at `word` carries one of this class's
+    /// descriptors: compared, not read through, so any word is safe.
+    #[inline]
+    fn carries(&self, word: usize) -> bool {
+        // SAFETY: a published class's objects start with their header.
+        let header = unsafe { *(word as *const usize) };
+        header != 0 && self.directs.read().unwrap().contains(&header)
+    }
+}
+
+/// Descriptor addresses by language and type name.
+type Directs = HashMap<(LangId, String), Vec<usize>>;
+
+/// The descriptors made for each type, which a class published later
+/// takes up.
+static DIRECTS: LazyLock<RwLock<Directs>> = LazyLock::new(|| RwLock::new(HashMap::new()));
+
+thread_local! {
+    /// The language whose module this thread is compiling: whose types the
+    /// runtime describes to `type_header`.
+    static COMPILING: Cell<Option<LangId>> = const { Cell::new(None) };
+}
+
+/// `f`, with the types the runtime describes meanwhile `lang`'s.
+pub fn compiling<T>(lang: LangId, f: impl FnOnce() -> T) -> T {
+    let previous = COMPILING.with(|c| c.replace(Some(lang)));
+    let result = f();
+    COMPILING.with(|c| c.set(previous));
+    result
+}
+
+/// The direct type at `p`'s word 0, when `p` is one of its objects.
+///
+/// # Safety
+/// `p` must be null or a live object of the core.
+unsafe fn direct_of(p: *const u8) -> Option<&'static Direct> {
+    if p.is_null() {
+        return None;
+    }
+    let desc = unsafe { protocol::desc_of(p) };
+    if desc.is_null() || !std::ptr::eq(unsafe { (*desc).protocol }, &DIRECT_PROTO) {
+        return None;
+    }
+    Some(unsafe { &*((*desc).ext as *const Direct) })
+}
+
+/// Whether `v` is a Zyntax object itself, carrying its type's descriptor,
+/// rather than a proxy of one.
+pub fn is_direct(v: Value) -> bool {
+    v.as_object()
+        .is_some_and(|p| unsafe { direct_of(p as *const u8) }.is_some())
+}
+
+/// The class name a qualified Zyntax type (`module.Name`) publishes as.
+fn class_name(lang: LangId, qualified: &str) -> String {
+    let name = qualified.rsplit('.').next().unwrap_or(qualified);
+    format!("{}.{name}", caribou::world::language_name(lang))
+}
+
+/// The host heap's `type_header` slot: a descriptor for a type the module
+/// being compiled allocates, which its objects carry at word 0. Null, and
+/// so no header, for a type compiled outside a module load.
+///
+/// # Safety
+/// `info` is valid for the call, as the runtime promises.
+pub unsafe extern "C" fn type_header(_cx: *mut c_void, info: *const HostTypeInfo) -> *const c_void {
+    let Some(lang) = COMPILING.with(Cell::get) else {
+        return std::ptr::null();
+    };
+    let info = unsafe { &*info };
+    let text = |p: *const std::ffi::c_char| {
+        (!p.is_null()).then(|| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned())
+    };
+    let Some(qualified) = text(info.name) else {
+        return std::ptr::null();
+    };
+    let type_name = class_name(lang, &qualified);
+    let infos = if info.field_count == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(info.fields, info.field_count as usize) }
+    };
+    let fields = infos
+        .iter()
+        .filter_map(|f| {
+            let name = text(f.name)?;
+            // Frontends reserve `$` fields for their object layout.
+            if name.starts_with('$') {
+                return None;
+            }
+            let kind = match (f.kind, f.size) {
+                (HostFieldKind::Int | HostFieldKind::UInt, 1) => hl::HUI8,
+                (HostFieldKind::Int | HostFieldKind::UInt, 2) => hl::HUI16,
+                (HostFieldKind::Int | HostFieldKind::UInt, 4) => hl::HI32,
+                (HostFieldKind::Int | HostFieldKind::UInt, _) => hl::HI64,
+                (HostFieldKind::Float, 4) => hl::HF32,
+                (HostFieldKind::Float, _) => hl::HF64,
+                (HostFieldKind::Bool, _) => hl::HBOOL,
+                (HostFieldKind::Str, _) => hl::HBYTES,
+                (HostFieldKind::Object, _) => hl::HOBJ,
+                (HostFieldKind::Any, _) => hl::HDYN,
+                // A raw pointer or bytes are the program's own.
+                _ => return None,
+            };
+            Some(Field {
+                name: symbol::intern(&name),
+                offset: f.offset as usize,
+                size: f.size as usize,
+                kind,
+                class: text(f.type_name).map(|t| symbol::intern(&class_name(lang, &t))),
+            })
+        })
+        .collect();
+    let mut desc = TypeDesc::new(hl_type {
+        kind: hl::HABSTRACT,
+        detail: hl_type_detail {
+            abs_name: std::ptr::null(),
+        },
+        vobj_proto: std::ptr::null_mut(),
+        mark_bits: std::ptr::null_mut(),
+    });
+    let name: &'static str = Box::leak(type_name.clone().into_boxed_str());
+    desc.trace = Some(trace_nothing);
+    desc.protocol = &DIRECT_PROTO;
+    desc.name = name.as_ptr();
+    desc.name_len = name.len();
+    desc.lang = lang;
+    // Kept for the process: an object compiled with this layout carries it
+    // for as long as it lives, across reloads.
+    let direct: &'static mut Direct = Box::leak(Box::new(Direct {
+        desc,
+        lang,
+        type_name: symbol::intern(&type_name),
+        fields,
+    }));
+    direct.desc.ext = direct as *mut Direct as *mut ();
+    let header = &direct.desc as *const TypeDesc as usize;
+    DIRECTS
+        .write()
+        .unwrap()
+        .entry((lang, type_name.clone()))
+        .or_default()
+        .push(header);
+    if let Some(class) = class(lang, &type_name) {
+        class.directs.write().unwrap().push(header);
+    }
+    header as *const c_void
+}
+
+unsafe extern "C-unwind" fn direct_get(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    let direct = unsafe { direct_of(obj) }.expect("a direct object");
+    let Some(class) = direct.class() else {
+        return REPLY_MISSING;
+    };
+    unsafe { get_field(&direct.fields, &class.origin, obj as usize, name, out) }
+}
+
+unsafe extern "C-unwind" fn direct_set(obj: *mut u8, name: Symbol, value: Value) -> u8 {
+    let direct = unsafe { direct_of(obj) }.expect("a direct object");
+    unsafe { set_field(&direct.fields, direct.lang, obj as usize, name, value) }
+}
+
+unsafe extern "C-unwind" fn direct_invoke(
+    obj: *mut u8,
+    name: Symbol,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    let direct = unsafe { direct_of(obj) }.expect("a direct object");
+    let Some(class) = direct.class() else {
+        return REPLY_MISSING;
+    };
+    unsafe { invoke_method(class, obj, name, args, n, out) }
+}
+
+unsafe extern "C-unwind" fn direct_type_name(obj: *mut u8, out: *mut Symbol) -> u8 {
+    let direct = unsafe { direct_of(obj) }.expect("a direct object");
+    unsafe { *out = direct.type_name };
+    REPLY_OK
+}
+
+static DIRECT_PROTO: Protocol = Protocol {
+    get_member: Some(direct_get),
+    set_member: Some(direct_set),
+    invoke: Some(direct_invoke),
+    type_name: Some(direct_type_name),
     ..Protocol::NONE
 };
 

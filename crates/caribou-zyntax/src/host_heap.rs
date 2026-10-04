@@ -3,7 +3,8 @@
 //! program allocates comes from the core heap and the core's collector
 //! reclaims what drop insertion does not free; what the runtime keeps from
 //! its own tables is held, rooted until the runtime frees it; Zyntax's
-//! roots and threads are the core collector's.
+//! roots and threads are the core collector's; and a reference type's
+//! objects carry the core's descriptor for it (`object::type_header`).
 
 use std::collections::HashMap;
 use std::ffi::c_void;
@@ -104,6 +105,7 @@ pub fn install() {
             remove_root_range,
             thread_enter,
             thread_leave,
+            type_header: Some(crate::object::type_header),
         };
         // SAFETY: every slot is callable from any thread for the rest of
         // the process, and there is no context to outlive.
