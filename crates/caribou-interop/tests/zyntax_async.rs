@@ -20,7 +20,8 @@ var b = doubled.call(4)
 System.print(a.ready())
 System.print(a.await())
 System.print(b.await())
-System.print(System.clock - start < 0.055)
+// Two 250 ms waits, overlapped: well under the 500 ms of one after the other.
+System.print(System.clock - start < 0.45)
 System.print(half.call().await())
 System.print(outer.call().await())
 "#;
