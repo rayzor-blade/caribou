@@ -20,7 +20,7 @@ use std::path::Path;
 
 use caribou_abi::LangId;
 use caribou_zyntax::zyntax_embed::{
-    Collector, ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
+    ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
 };
 use caribou_zyntax::{Language, RunModule, Sources};
 
@@ -95,12 +95,11 @@ impl Language for Lua {
     }
 
     /// What `zylua` gives its runtime: the library snapshot and the
-    /// plugins the library calls. Zyntax's own collector stays off under
-    /// the core (see `caribou_zyntax`). Then the state opens for the
-    /// host: chunks compile into this runtime, which keeps its address.
+    /// plugins the library calls; its heap is the core's (see
+    /// `caribou_zyntax`). Then the state opens for the host: chunks
+    /// compile into this runtime, which keeps its address.
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String> {
         zyntax_lua::register_runtime(runtime).map_err(|e| e.to_string())?;
-        runtime.set_collector(Collector::None);
         host::open(runtime)
     }
 

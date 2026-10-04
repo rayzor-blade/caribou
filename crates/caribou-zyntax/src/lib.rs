@@ -46,6 +46,7 @@ use zyntax_embed::{
 mod dispatch;
 pub mod foreign;
 pub mod host;
+mod host_heap;
 pub mod object;
 pub mod publish;
 mod segment;
@@ -501,6 +502,7 @@ impl Frontend {
     /// The runtime for this language, its plugins opened, the language
     /// prepared on it and its imports resolved from the world's sources.
     fn bring_up(&mut self) -> Result<State, String> {
+        host_heap::install();
         let mut runtime =
             Box::new(TieredRuntime::new(TieredConfig::default()).map_err(|e| e.to_string())?);
         if let Some(dir) = &self.plugin_dir

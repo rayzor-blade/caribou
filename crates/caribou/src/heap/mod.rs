@@ -27,8 +27,12 @@ pub use immix::{
     SITE_SAFEPOINT_WORLD_LOCK,
     SITE_SCHEDULER_IDLE,
     SITE_TLAB_REFILL,
+    SpanReader,
+    SpanVisit,
     Tracer,
     // Roots.
+    add_root_range,
+    add_root_spans,
     add_scan_root,
     // Allocation.
     alloc_gen,
@@ -93,6 +97,7 @@ pub use immix::{
     register_root_range,
     register_thread,
     registered_threads,
+    remove_root,
     safepoint,
     scan_roots_done,
     scans_current_stack,

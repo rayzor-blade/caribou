@@ -488,6 +488,8 @@ fn thread_self_fast() -> u64 {
 struct MutatorSnapshot {
     thread: u64,
     stack_top: usize,
+    /// The low end of the thread's own stack, 0 when unknown.
+    stack_low: usize,
     stack_sp: usize,
     saved_regs: [usize; CALLEE_SAVED_WORDS],
     scan_ranges: Vec<(usize, usize)>,
@@ -498,6 +500,9 @@ struct MutatorRecord {
     /// How this thread became a mutator; reported when a world stop is slow.
     role: &'static str,
     stack_top: usize,
+    /// The low end of the thread's own stack, from the platform, when
+    /// `stack_top` is that stack's; 0 otherwise.
+    stack_low: usize,
     stopped_sp: usize,
     saved_regs: [usize; CALLEE_SAVED_WORDS],
     /// A range to scan beside the stack while blocking: registers a
@@ -551,6 +556,99 @@ const STOP_THE_WORLD_DEADLINE: std::time::Duration = std::time::Duration::from_m
 static GC_STOP_ASKED_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GC_EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
 
+/// The low end of the calling thread's own stack, when `stack_top` lies
+/// within it; 0 when the platform does not say, or `stack_top` is another
+/// stack's.
+fn own_stack_low(stack_top: usize) -> usize {
+    #[cfg(target_os = "macos")]
+    let (low, high) = unsafe {
+        let this = libc::pthread_self();
+        let high = libc::pthread_get_stackaddr_np(this) as usize;
+        (high - libc::pthread_get_stacksize_np(this), high)
+    };
+    #[cfg(target_os = "linux")]
+    let (low, high) = unsafe {
+        let mut attr: libc::pthread_attr_t = mem::zeroed();
+        let mut bounds = (0, 0);
+        if libc::pthread_getattr_np(libc::pthread_self(), &mut attr) == 0 {
+            let mut base: *mut c_void = ptr::null_mut();
+            let mut size: libc::size_t = 0;
+            if libc::pthread_attr_getstack(&attr, &mut base, &mut size) == 0 && !base.is_null() {
+                bounds = (base as usize, base as usize + size);
+            }
+            libc::pthread_attr_destroy(&mut attr);
+        }
+        bounds
+    };
+    #[cfg(windows)]
+    let (low, high) = unsafe {
+        let mut low = 0usize;
+        let mut high = 0usize;
+        windows_sys::Win32::System::Threading::GetCurrentThreadStackLimits(&mut low, &mut high);
+        (low, high)
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    let (low, high) = (0usize, 0usize);
+    if low != 0 && low < stack_top && stack_top <= high {
+        low
+    } else {
+        0
+    }
+}
+
+/// The lowest address of a stopped thread's own stack, `[low, top)`, that
+/// can be read: on Linux the stack's mapping so far, which grows down on
+/// demand; on Windows its committed pages, above the guard page; elsewhere
+/// `low`, the whole stack being mapped.
+fn readable_stack_low(low: usize, top: usize) -> usize {
+    #[cfg(target_os = "linux")]
+    {
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap_or_default();
+        for line in maps.lines() {
+            let range = line.split_whitespace().next().unwrap_or("");
+            let Some((a, b)) = range.split_once('-') else {
+                continue;
+            };
+            let (Ok(a), Ok(b)) = (usize::from_str_radix(a, 16), usize::from_str_radix(b, 16))
+            else {
+                continue;
+            };
+            if a < top && top <= b {
+                return a.max(low);
+            }
+        }
+        top
+    }
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Memory::{
+            MEM_COMMIT, MEMORY_BASIC_INFORMATION, PAGE_GUARD, VirtualQuery,
+        };
+        let mut lowest = top;
+        let mut probe = top - 1;
+        while probe >= low {
+            let mut info: MEMORY_BASIC_INFORMATION = mem::zeroed();
+            if VirtualQuery(probe as *const c_void, &mut info, mem::size_of_val(&info)) == 0 {
+                break;
+            }
+            if info.State != MEM_COMMIT || info.Protect & PAGE_GUARD != 0 {
+                break;
+            }
+            lowest = info.BaseAddress as usize;
+            if lowest == 0 {
+                break;
+            }
+            probe = lowest - 1;
+        }
+        lowest.max(low)
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
+    {
+        let _ = top;
+        low
+    }
+}
+
 fn register_current_mutator(stack_top: usize, role: &'static str) {
     if stack_top == 0 {
         return;
@@ -560,13 +658,16 @@ fn register_current_mutator(stack_top: usize, role: &'static str) {
     while world.stop_requested && world.collector != thread {
         world = MUTATOR_WORLD.changed.wait(world).unwrap();
     }
+    let stack_low = own_stack_low(stack_top);
     if let Some(record) = world.mutators.iter_mut().find(|m| m.thread == thread) {
         record.stack_top = stack_top;
+        record.stack_low = stack_low;
     } else {
         world.mutators.push(MutatorRecord {
             thread,
             role,
             stack_top,
+            stack_low,
             stopped_sp: 0,
             saved_regs: [0; CALLEE_SAVED_WORDS],
             extra: (0, 0),
@@ -1233,6 +1334,7 @@ fn stop_mutator_world() -> StoppedWorld {
             MutatorSnapshot {
                 thread: m.thread,
                 stack_top: m.stack_top,
+                stack_low: m.stack_low,
                 stack_sp: m.stopped_sp,
                 saved_regs: m.saved_regs,
                 scan_ranges: with_kept(m, with_extra(m.extra, ranges)),
@@ -2556,6 +2658,9 @@ pub struct ImmixAllocator {
     /// Address ranges scanned conservatively at every collection, as
     /// `(start, len)`: data sections of linked spokes, module variable arrays.
     root_ranges: Vec<(usize, usize)>,
+    /// Roots whose spans a reader gives at each collection: `(start, len,
+    /// reader)`.
+    span_roots: Vec<(usize, usize, SpanReader)>,
     /// Handles plugins and adapters hold across calls; every live slot is a
     /// root.
     handles: HandleTable,
@@ -3132,6 +3237,7 @@ impl ImmixAllocator {
             fiber_stacks: Vec::new(),
             globals_range: None,
             root_ranges: Vec::new(),
+            span_roots: Vec::new(),
             handles: HandleTable::default(),
             finalizables: HashSet::new(),
         }
@@ -4117,6 +4223,35 @@ impl ImmixAllocator {
             all_newly_marked.extend(newly_marked);
         }
 
+        // Roots read at this collection: each reader hands back the spans
+        // to scan, which are scanned before it moves on.
+        struct Visit {
+            gc: *mut ImmixAllocator,
+            marked: *mut Vec<(usize, usize)>,
+        }
+        unsafe extern "C" fn visit(cx: *mut c_void, lo: usize, hi: usize) {
+            let v = unsafe { &mut *(cx as *mut Visit) };
+            if lo < hi {
+                let marked = unsafe { (*v.gc).conservative_scan_range(word_align_up(lo), hi) };
+                unsafe { (*v.marked).extend(marked) };
+            }
+        }
+        for i in 0..self.span_roots.len() {
+            let (start, len, reader) = self.span_roots[i];
+            let mut v = Visit {
+                gc: self,
+                marked: &mut all_newly_marked,
+            };
+            unsafe {
+                reader(
+                    start as *const u8,
+                    len,
+                    visit,
+                    &mut v as *mut Visit as *mut c_void,
+                )
+            };
+        }
+
         // Conservative scan of interpreter-provided ranges
         for mutator in mutators {
             for &(start, size) in &mutator.scan_ranges {
@@ -4192,9 +4327,17 @@ impl ImmixAllocator {
                     all_newly_marked.extend(self.conservative_scan_range(sp, top));
                 }
                 None => {
-                    if mutator.stack_top > 0 && sp < mutator.stack_top {
+                    let on_own = mutator.stack_low == 0 || sp >= mutator.stack_low;
+                    if mutator.stack_top > 0 && sp < mutator.stack_top && on_own {
                         all_newly_marked
                             .extend(self.conservative_scan_range(sp, mutator.stack_top));
+                    } else if mutator.stack_low != 0 {
+                        // Stopped on a stack the heap does not know (a hosted
+                        // runtime's own fiber, which roots itself): its own
+                        // stack is live from wherever it left it, so all of it.
+                        let low = readable_stack_low(mutator.stack_low, mutator.stack_top);
+                        all_newly_marked
+                            .extend(self.conservative_scan_range(low, mutator.stack_top));
                     }
                 }
             }
@@ -4965,6 +5108,22 @@ impl ImmixAllocator {
         }
     }
 
+    /// A root whose spans `reader` gives at every collection until
+    /// unregistered.
+    pub fn register_root_spans(&mut self, start: *const u8, len: usize, reader: SpanReader) {
+        self.span_roots.push((start as usize, len, reader));
+    }
+
+    /// Remove the root registered at `start`, range or spans.
+    pub fn unregister_root_at(&mut self, start: *const u8) {
+        let start = start as usize;
+        if let Some(i) = self.root_ranges.iter().position(|r| r.0 == start) {
+            self.root_ranges.swap_remove(i);
+        } else if let Some(i) = self.span_roots.iter().position(|r| r.0 == start) {
+            self.span_roots.swap_remove(i);
+        }
+    }
+
     /// Remove one registration of exactly `(start, len)`.
     pub fn unregister_root_range(&mut self, start: *const u8, len: usize) {
         let range = (start as usize, len);
@@ -5204,6 +5363,37 @@ pub unsafe fn register_thread(stack_top: *mut c_void) {
     // A thread a native library started reaches a safepoint only by calling
     // back into the runtime or marking itself blocking.
     register_current_mutator(stack_top as usize, "hdll");
+}
+
+/// Called by a span reader for each span `[lo, hi)` to scan.
+pub type SpanVisit = unsafe extern "C" fn(cx: *mut c_void, lo: usize, hi: usize);
+
+/// Hands `visit` the spans to scan for the root at `start`, `len` bytes, as
+/// they are when the collector runs. It runs with the world stopped and the
+/// heap locked, so it may neither allocate nor wait on a stopped thread.
+pub type SpanReader =
+    unsafe extern "C" fn(start: *const u8, len: usize, visit: SpanVisit, cx: *mut c_void);
+
+/// Scan `len` bytes from `start` at every collection until [`remove_root`].
+///
+/// # Safety
+/// The memory must stay readable while registered.
+pub unsafe fn add_root_range(start: *const u8, len: usize) {
+    gc_locked_init().register_root_range(start, len);
+}
+
+/// Scan what `reader` gives for the root at `start` at every collection
+/// until [`remove_root`].
+///
+/// # Safety
+/// `reader` must behave as [`SpanReader`] says while registered.
+pub unsafe fn add_root_spans(start: *const u8, len: usize, reader: SpanReader) {
+    gc_locked_init().register_root_spans(start, len, reader);
+}
+
+/// Forget the root registered at `start`, of either kind.
+pub fn remove_root(start: *const u8) {
+    gc_locked_init().unregister_root_at(start);
 }
 
 pub fn unregister_thread() {

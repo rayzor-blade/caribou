@@ -108,15 +108,18 @@ Describing a module runs none of its code. `caribou_zyntax::describe` loads each
 * A module that declares its exports is parsed and lowered, and published from its declarations with no code behind them. Nothing is compiled, and a Python module's body does not run.
 * A Lua module is described from the types its chunk gets when `load` compiles it (`zyntax_lua::exports`). Its top level may require modules of other languages that are not there yet, since nothing runs it.
 
-## Memory Architecture & Runtime Constraints
+## Memory
 
-Zyntax manages dynamic memory using size-class allocation pools. Automatic memory management relies on compile-time drop analysis for deterministic cleanup, backed by a conservative mark-sweep garbage collector for remaining allocations.
+A Zyntax runtime allocates from the core heap. Zyntax exposes its heap as a seam, a table its allocation entry points delegate to (`zyntax_compiler::host_heap`), and the adapter fills it with the core heap's before the first runtime starts (`caribou_zyntax::host_heap`). Zyntax names Caribou nowhere.
 
-Under Caribou, the conservative mark-sweep collector is intentionally disabled:
+* **A program's allocations** come from the core heap. The core's collector reclaims what nothing reaches, and Zyntax's drop insertion still frees what it proves dead, as an explicit free of the block.
+* **What the runtime keeps in its own tables** (parked futures, state machines, handler state, closure environments) is held: rooted until the runtime frees it, and scanned.
+* **Roots:** the ranges and spans Zyntax registers (compiled globals, the interpreter's live registers, its tables, each fiber's stack) are the core collector's roots, and every thread Zyntax starts registers its stack.
+* **Fibers:** a thread stopped on a stack the core does not know, one of Zyntax's own fibers, has its own stack scanned whole, since it is live from wherever the thread left it.
 
-* **Thread Model Incompatibility:** The Zyntax collector assumes a single mutator thread with predictable thread-local stack boundaries. This assumption conflicts with Caribou's task-scheduled runtime architecture.
-* **Current Lifecycle Behavior:** Allocations that cannot be proven dead by static drop analysis—including strings passed across call boundaries—remain allocated for the duration of the execution context.
-* **Future Work:** The target memory architecture requires migrating dynamic allocations to Caribou's host heap. Under this design, allocated blocks receive host descriptor words, allowing escape analysis and garbage collection tracing to be handled entirely by the host core.
+Zyntax's own collector stays off. Lua's weak tables and `__gc` finalizers hook into that collector, so under Caribou they do not run yet.
+
+The blocks carry no type descriptor yet, so a Zyntax object still crosses to other languages as a proxy (see [Native Call Dispatch](#native-call-dispatch)).
 
 ## Current Implementation Boundaries
 
@@ -144,12 +147,12 @@ Haxe writes `new Counter(3)`, `c.bump(4)`, `c.n` and `Counter.LIMIT`, and calls 
 * Distribution within a Caribou bundle: each frontend as a language section (its snapshot, or a name for one built into Caribou), its modules as source (see [bundle.md](bundle.md)).
 * Reload of an edited module through the runtime's own hot reload, with the interface published again (see [world.md](world.md#reload)).
 * Calls of async functions as tasks of the world that return a `caribou.Future` (see [Async Functions](#async-functions)).
+* The core heap as Zyntax's: allocation, explicit frees, roots and threads through Zyntax's host-heap seam (see [Memory](#memory)).
 * Effect handler scopes per stack: each stack runs in its own segment of Zyntax's handler stack, entered and left as the scheduler switches stacks (see [scheduler.md](scheduler.md#the-scheduler-loop)).
 * Grammar languages importing other languages' classes as typed host classes, and a DSL's effects handled by its host through them (see [Effects Through the Host](#effects-through-the-host)).
 
 **Pending Architecture:**
 
-* Host-heap memory integration and unified garbage collection.
 * Object, array, and closure passing across the native FFI boundary (mapping Zyntax instances to host core objects via `TypeMeta` and `TypeDesc`).
 * A Lua module another Lua module requires from the world arrives as the world's module, whose functions call back into Lua, rather than as the table its chunk returned.
 * Python's typed externs: other languages' classes with their declared signatures, checked when the program compiles.

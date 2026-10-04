@@ -13,7 +13,7 @@
 use std::path::Path;
 
 use caribou_zyntax::zyntax_embed::{
-    Collector, ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
+    ExportedSymbol, ModuleArchitecture, TieredRuntime, TypedProgram,
 };
 use caribou_zyntax::{Language, Sources};
 
@@ -85,12 +85,10 @@ impl Language for Python {
     }
 
     /// What `zypy` gives its runtime: the library snapshot, the plugins
-    /// the library calls, the entry point. Zyntax's own collector stays
-    /// off under the core (see `caribou_zyntax`).
+    /// the library calls, the entry point. Its heap is the core's (see
+    /// `caribou_zyntax`).
     fn prepare(&mut self, runtime: &mut TieredRuntime) -> Result<(), String> {
-        zyntax_python::register_runtime(runtime).map_err(|e| e.to_string())?;
-        runtime.set_collector(Collector::None);
-        Ok(())
+        zyntax_python::register_runtime(runtime).map_err(|e| e.to_string())
     }
 
     /// The modules this one imports (`import game.util`) come from
