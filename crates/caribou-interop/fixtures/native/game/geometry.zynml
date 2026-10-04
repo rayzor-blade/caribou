@@ -1,0 +1,34 @@
+// A plugin used in place: its functions and methods called directly, its
+// declared fields read and written in the object.
+from math import Vec2
+from math import Math
+
+def length(): f64 {
+    let v = Vec2::new(3.0, 4.0)
+    return v.len()
+}
+
+def fields(): f64 {
+    let v = Vec2::new(3.0, 4.0)
+    v.set_x(6.0)
+    v.scale(0.5)
+    return v.x() * 10.0 + v.y()
+}
+
+def dots(): f64 {
+    let a = Vec2::new(1.0, 2.0)
+    let b = Vec2::new(3.0, 4.0)
+    return a.dot(b)
+}
+
+def counted(): i64 {
+    return Math::twice(21) + Math::hypot(5.0, 12.0) as i64
+}
+
+def starred(): String {
+    return Math::stars(3)
+}
+
+def divided(a: f64, b: f64): f64 {
+    return Math::quotient(a, b)
+}

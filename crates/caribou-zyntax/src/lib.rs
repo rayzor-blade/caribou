@@ -503,6 +503,7 @@ impl Frontend {
     /// prepared on it and its imports resolved from the world's sources.
     fn bring_up(&mut self) -> Result<State, String> {
         host_heap::install();
+        host::install();
         let mut runtime =
             Box::new(TieredRuntime::new(TieredConfig::default()).map_err(|e| e.to_string())?);
         if let Some(dir) = &self.plugin_dir

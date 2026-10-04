@@ -1,0 +1,67 @@
+// The native bench's ZynML side (benches/native.rs): each function does
+// one operation on the math plugin `n` times.
+from math import Vec2
+from math import Math
+
+def baseline(n: i64): f64 {
+    let mut s: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+        s = s + 1.0
+        i = i + 1
+    }
+    return s
+}
+
+def statics(n: i64): f64 {
+    let mut s: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+        s = s + Math::hypot(3.0, 4.0)
+        i = i + 1
+    }
+    return s
+}
+
+def methods(n: i64): f64 {
+    let v = Vec2::new(3.0, 4.0)
+    let mut s: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+        s = s + v.len()
+        i = i + 1
+    }
+    return s
+}
+
+def getter(n: i64): f64 {
+    let v = Vec2::new(3.0, 4.0)
+    let mut s: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+        s = s + v.x()
+        i = i + 1
+    }
+    return s
+}
+
+def setter(n: i64): f64 {
+    let v = Vec2::new(3.0, 4.0)
+    let mut i: i64 = 0
+    while i < n {
+        v.set_x(1.0)
+        i = i + 1
+    }
+    return v.x()
+}
+
+def strings(n: i64): f64 {
+    let mut s: f64 = 0.0
+    let mut i: i64 = 0
+    while i < n {
+        let t = Math::stars(1)
+        s = s + 1.0
+        i = i + 1
+    }
+    return s
+}

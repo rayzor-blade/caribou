@@ -50,6 +50,10 @@ harness = false
 name = "transfer"
 harness = false
 
+[[bench]]
+name = "native"
+harness = false
+
 # Needs the `llvm` feature, which builds ahead of time.
 [[bench]]
 name = "interop_wasm"

@@ -12,8 +12,9 @@
 //! value of the core crosses as a foreign object.
 
 use std::cell::Cell;
+use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, LazyLock, Mutex, RwLock};
 
 use caribou::bridge;
 use caribou::error::{Error, Int64, Str};
@@ -112,31 +113,54 @@ pub fn caller() -> LangId {
     CALLER.with(Cell::get)
 }
 
-/// Object words use their low alignment bit to carry a core handle directly.
-/// Metadata values remain aligned pointers to [`Held`].
-const OBJECT_WORD: usize = 1;
+/// A core object's word is its address, so code that reaches into the
+/// object (a native binding's `Indirect` operand) reads it as it is. A
+/// [`Held`] is a pointer to it with this bit set, which no object's
+/// address has.
+const HELD_WORD: usize = 1;
+
+/// The objects a program holds, each rooted while it holds a claim on it.
+static ROOTS: LazyLock<Mutex<HashMap<usize, (Handle, usize)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 fn hold(held: Held) -> Any {
     let word = Box::into_raw(Box::new(held)) as usize;
-    debug_assert_eq!(word & OBJECT_WORD, 0);
-    foreign::boxed(word)
+    debug_assert_eq!(word & HELD_WORD, 0);
+    foreign::boxed(word | HELD_WORD)
 }
 
+/// One more claim on `object`, as its word.
 fn root_object(object: *mut u8) -> usize {
-    let handle = heap::handle_new(object);
-    ((handle.as_raw() as usize) << 1) | OBJECT_WORD
+    ROOTS
+        .lock()
+        .unwrap()
+        .entry(object as usize)
+        .and_modify(|(_, claims)| *claims += 1)
+        .or_insert_with(|| (heap::handle_new(object), 1));
+    object as usize
+}
+
+/// One claim on the object at `word` given up.
+fn release_object(word: usize) {
+    let mut roots = ROOTS.lock().unwrap();
+    let Some((handle, claims)) = roots.get_mut(&word) else {
+        return;
+    };
+    *claims -= 1;
+    if *claims == 0 {
+        let handle = *handle;
+        roots.remove(&word);
+        drop(roots);
+        heap::handle_release(handle);
+    }
 }
 
 fn hold_object(object: *mut u8) -> Any {
     foreign::boxed(root_object(object))
 }
 
-fn object_handle(word: usize) -> Option<Handle> {
-    (word & OBJECT_WORD != 0).then(|| Handle::from_raw((word >> 1) as u32))
-}
-
 fn direct_object(word: usize) -> Option<Value> {
-    object_handle(word).map(|handle| Value::object(heap::handle_get(handle) as *const c_void))
+    (word & HELD_WORD == 0).then(|| Value::object(word as *const c_void))
 }
 
 fn object_of(word: usize) -> Option<Value> {
@@ -146,7 +170,7 @@ fn object_of(word: usize) -> Option<Value> {
 /// # Safety
 /// `word` is a live foreign object's.
 unsafe fn held<'a>(word: usize) -> &'a Held {
-    unsafe { &*(word as *const Held) }
+    unsafe { &*((word & !HELD_WORD) as *const Held) }
 }
 
 /// How a language's own values cross, for a language whose values other
@@ -372,6 +396,11 @@ pub fn host_error() -> Option<Value> {
             Error::value(Error::new(kind, &error.message, LANG_CORE))
         }
     })
+}
+
+/// Leave `err` pending for the program, as a failed host call does.
+pub(crate) fn report(err: Value) {
+    foreign::report(error_of(err));
 }
 
 /// An error the bridge returned, as the library raises it.
@@ -730,14 +759,13 @@ impl Foreign for World {
     }
 
     fn retain(&self, word: usize) -> Result<usize, ForeignError> {
-        let Some(handle) = object_handle(word) else {
+        if word & HELD_WORD != 0 {
             return Err(ForeignError::new(
                 "TypeError",
                 "only host objects can be retained",
             ));
-        };
-        heap::handle_retain(handle);
-        Ok(word)
+        }
+        Ok(root_object(word as *mut u8))
     }
 
     fn invoke(&self, word: usize, name: &str, args: &[Any]) -> Result<Any, ForeignError> {
@@ -954,10 +982,10 @@ impl Foreign for World {
     }
 
     fn release(&self, word: usize) {
-        if let Some(handle) = object_handle(word) {
-            heap::handle_release(handle);
+        if word & HELD_WORD == 0 {
+            release_object(word);
         } else {
-            unsafe { drop(Box::from_raw(word as *mut Held)) };
+            unsafe { drop(Box::from_raw((word & !HELD_WORD) as *mut Held)) };
         }
     }
 

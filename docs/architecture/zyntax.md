@@ -95,16 +95,29 @@ A Lua or Python program reaches the rest of the world through Zyntax's foreign o
 * **Imports:** Lua's `require("haxe.ScaleValues")` and Python's `from haxe.ScaleValues import ScaleValues` import the world's module `haxe:ScaleValues`. The first dotted segment is the namespace; the rest is the module, with its dots kept, as Haxe names modules. Each frontend asks the embedder only for a module it does not have itself: Lua after `package.path`, Python for a module that is neither the program's own nor a standard one.
 * **Members:** A module's members are its classes and functions. A class's are its statics and static methods, and calling the class constructs one. An object's are the fields and getters its language answers, and the methods its published class declares.
 * **Methods:** A method of an object is called through its class's target, which takes the receiver first, and through the object's protocol when the class does not publish it. Read as a value, a method takes its receiver first, so Lua's `o:m()` is the read and the call.
-* **Lifetime:** A dynamic foreign object roots its core object with a handle, which the program's release of the box drops. A Python value whose host class is known carries that rooted handle directly as an opaque machine word; construction, locals, loop phis, and OSR live-ins remain unboxed, and Zyntax inserts the handle release from explicit ownership metadata. Widening it to Python's dynamic `object` retains the handle and creates the ordinary foreign box.
+* **Lifetime:** A core object crosses as its address, its word, so code that reaches into it reads it as it is. The adapter roots it while the program holds a claim on it, and the program's release of the claim drops one. A value whose host class is known is held as the word itself (`HostClass::word`); construction, locals, loop phis, and OSR live-ins remain unboxed, and Zyntax inserts the release from explicit ownership metadata. Widening it to Python's dynamic `object` retains it and creates the ordinary foreign box.
 * **Errors:** An error the bridge returns is raised in the program as a library error: `TypeError`, `IndexError`, `AttributeError` or `RuntimeError` by the error's kind, with its message.
 
 A language whose modules run, as Python's do, names the function that runs a module's body (`Language::entry`). Loading the module runs it once, after compiling, so the names its imports bind are set before any of its functions is called.
+
+## Plugins in Place
+
+A member of a host class that the registry gives code or storage for (see [plugins.md](plugins.md#objects)) is part of the program, not a call over the protocol. The adapter describes it to Zyntax as a native binding (`zyntax_embed::host::NativeBinding`, `NativeField`):
+
+* **Calls:** A function or method is one direct call to the plugin's function, made by address. Zyntax enters the address under the member's name (`math.Vec2.len`) as it expands the import, so a plugin loaded by the program's own import is callable from the code that import compiles. The receiver and object arguments are the payload, read from the object's word.
+* **Fields:** A declared field is a load or a store at its offset in the payload.
+* **Errors:** A plugin function that raises leaves the error pending. After the call, the program reads the thread's pending flag (`$Host$pending_flag`), and when the flag is set, takes the error (`$Host$raise_pending`) and raises it as it raises any host error.
+* **Strings:** A string result is the core string the plugin made, which becomes a Zyntax string (`$Host$text_to_string`).
+
+Python takes the direct path only where every object operand's static type is the class; any other call stays on the protocol. A constructor stays on the protocol, since the core wraps the object it makes. So does a function that takes a string, until the ABI has a borrowed string parameter.
+
+`benches/native.rs` in `caribou-interop` measures these against a loop alone.
 
 ## Haxe Integration
 
 Build macros inspect the host environment via `caribou describe <root>`. This tool outputs the structure of both native Wren source files and published Zyntax modules with their associated namespace paths. The compiler emits declarations such as `game.scorer.Scorer` directly against these structures, ensuring compile-time Haxe definitions mirror the symbols bound dynamically at runtime.
 
-Describing a module runs none of its code. `caribou_zyntax::describe` loads each module into a world whose loader reads interfaces from source alone:
+Describing a module runs none of its code. `caribou_zyntax::describe` loads each module into a world whose loader reads interfaces from source alone. That world has no plugins, so a ZynML module that imports one does not describe yet (git-bug 13808715599a8f5fdcaad69da5cf98f6b6cc83b9eccc56c3a083b081f8fcce10):
 
 * A module that declares its exports is parsed and lowered, and published from its declarations with no code behind them. Nothing is compiled, and a Python module's body does not run.
 * A Lua module is described from the types its chunk gets when `load` compiles it (`zyntax_lua::exports`). Its top level may require modules of other languages that are not there yet, since nothing runs it.
