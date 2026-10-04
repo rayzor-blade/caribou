@@ -535,6 +535,7 @@ fn members(class: &ClassIface) -> Vec<(String, Target)> {
             params,
             ret,
             target,
+            ..
         } = method;
         let sig = signature(name, params.len());
         members.push((
@@ -1322,15 +1323,18 @@ mod tests {
                 FieldIface {
                     name: "hp".to_owned(),
                     ty: TypeRef::Int,
+                    native: None,
                 },
                 FieldIface {
                     name: "name".to_owned(),
                     ty: TypeRef::Str,
+                    native: None,
                 },
             ],
             statics: vec![FieldIface {
                 name: "spawned".to_owned(),
                 ty: TypeRef::Int,
+                native: None,
             }],
             methods: vec![
                 MethodIface {
@@ -1339,6 +1343,7 @@ mod tests {
                     params: vec![TypeRef::Int],
                     ret: TypeRef::Bool,
                     target: Callable::Dynamic(Value::null()),
+                    native: None,
                 },
                 MethodIface {
                     name: "spawnAt".to_owned(),
@@ -1346,6 +1351,7 @@ mod tests {
                     params: vec![TypeRef::Float, TypeRef::Float],
                     ret: TypeRef::Object("game.Player".to_owned()),
                     target: Callable::Dynamic(Value::null()),
+                    native: None,
                 },
             ],
             ctor: Some(MethodIface {
@@ -1354,6 +1360,7 @@ mod tests {
                 params: vec![TypeRef::Str],
                 ret: TypeRef::Object("game.Player".to_owned()),
                 target: Callable::Dynamic(Value::null()),
+                native: None,
             }),
             class_object: Value::null(),
         };

@@ -70,7 +70,7 @@ use core::ffi::{c_char, c_int, c_uint, c_void};
 /// Bumped on any change to a layout, a discriminant, a signature or the
 /// meaning of a flag defined in this crate. The core compares its own copy
 /// against a plugin's before binding a single symbol.
-pub const ABI_VERSION: u32 = 8;
+pub const ABI_VERSION: u32 = 9;
 
 /// Every plugin exports `extern "C" fn caribou_abi_version() -> u32`.
 pub const ABI_VERSION_SYMBOL: &str = "caribou_abi_version";
@@ -815,6 +815,49 @@ unsafe impl Send for SymbolDesc {}
 pub struct ClassDesc {
     pub name: Str,
     pub drop: Option<unsafe extern "C" fn(*mut c_void)>,
+    /// The fields of the payload a runtime may read and write in place,
+    /// where the class's struct keeps them; none when the class declares
+    /// none.
+    pub fields: *const FieldDesc,
+    pub field_count: usize,
+}
+
+/// A field of a class's payload, as the class declares it: a scalar at
+/// `offset` bytes into the payload, of the kind `tag` says.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FieldDesc {
+    pub name: Str,
+    pub offset: u32,
+    pub tag: TypeTag,
+}
+
+unsafe impl Sync for FieldDesc {}
+unsafe impl Send for FieldDesc {}
+
+/// A field type a class may declare: a scalar read and written in place.
+pub trait PluginField {
+    const TAG: TypeTag;
+}
+
+macro_rules! plugin_fields {
+    ($($ty:ty => $tag:expr),* $(,)?) => {
+        $(
+            impl PluginField for $ty {
+                const TAG: TypeTag = $tag;
+            }
+        )*
+    };
+}
+
+plugin_fields! {
+    u8 => TypeTag::UI8,
+    u16 => TypeTag::UI16,
+    i32 => TypeTag::I32,
+    i64 => TypeTag::I64,
+    f32 => TypeTag::F32,
+    f64 => TypeTag::F64,
+    bool => TypeTag::BOOL,
 }
 
 unsafe impl Sync for ClassDesc {}
@@ -1125,14 +1168,16 @@ macro_rules! plugin {
     ) => {
         $crate::plugin!(@munch $name [$($acc)* { "" [$method] $method ( $($ty),* ) [$($ret)?] }] [$($classes)*] [$($enums)*] $($rest)*);
     };
-    // A class: its type, and the associated functions that hang in it.
+    // A class: its type, the fields of it another runtime may read and
+    // write in place, and the associated functions that hang in it.
     (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]
         class $class:ident {
+            $( field $field:ident : $fty:ty ; )*
             $( fn $method:ident ( $($ty:ty),* $(,)? ) $(-> $ret:ty)? ; )*
         }
         $($rest:tt)*
     ) => {
-        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] [$($classes)* $class] [$($enums)*] $($rest)*);
+        $crate::plugin!(@munch $name [$($acc)* $( { $class [$class :: $method] $method ( $($ty),* ) [$($ret)?] } )*] [$($classes)* { $class [$( $field : $fty ),*] }] [$($enums)*] $($rest)*);
     };
     // An enum declared separately, e.g. by a plugin's mapping macro.
     (@munch $name:literal [$($acc:tt)*] [$($classes:tt)*] [$($enums:ident)*]
@@ -1150,13 +1195,19 @@ macro_rules! plugin {
         $crate::plugin!(@munch $name [$($acc)*] [$($classes)*] [$($enums)* $enum] $($rest)*);
     };
     // Everything gathered: the checks, the tables, the entry.
-    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*] [$($declared:ident)*] [$($enums:ident)*]) => {
+    (@munch $name:literal [$( { $class:tt [$($path:tt)*] $method:ident ( $($ty:ty),* ) [$($ret:ty)?] } )*] [$( { $declared:ident [$( $field:ident : $fty:ty ),*] } )*] [$($enums:ident)*]) => {
         $(
             impl $crate::PluginClass for $declared {
                 const NAME: &'static str = stringify!($declared);
                 const TYPE_NAME: &'static str = concat!($name, ".", stringify!($declared));
             }
         )*
+
+        $( $(
+            // The field is the struct's, of the declared type, or this
+            // does not compile.
+            const _: for<'a> fn(&'a $declared) -> &'a $fty = |v| &v.$field;
+        )* )*
 
         $(
             // The item is what the declaration says, or this does not compile.
@@ -1170,6 +1221,17 @@ macro_rules! plugin {
                 $crate::ClassDesc {
                     name: $crate::Str::new(stringify!($declared)),
                     drop: Some($crate::drop_boxed::<$declared>),
+                    fields: {
+                        static FIELDS: [$crate::FieldDesc; $crate::plugin!(@count $($field)*)] = [
+                            $( $crate::FieldDesc {
+                                name: $crate::Str::new(stringify!($field)),
+                                offset: ::core::mem::offset_of!($declared, $field) as u32,
+                                tag: <$fty as $crate::PluginField>::TAG,
+                            } ),*
+                        ];
+                        FIELDS.as_ptr()
+                    },
+                    field_count: $crate::plugin!(@count $($field)*),
                 }
             ),*
         ];

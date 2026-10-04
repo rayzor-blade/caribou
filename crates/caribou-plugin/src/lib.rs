@@ -42,8 +42,11 @@ use std::sync::{LazyLock, RwLock};
 
 use caribou::error::Error as CoreError;
 use caribou::heap::{self, TypeDesc};
-use caribou::protocol::{CallSite, Callable, Protocol, REPLY_OK, REPLY_RAISED};
-use caribou::registry::{self, ClassIface, Interface, MethodIface, TypeRef};
+use caribou::protocol::{CallSite, Callable, Protocol, REPLY_MISSING, REPLY_OK, REPLY_RAISED};
+use caribou::registry::{
+    self, ClassIface, FieldIface, Interface, MethodIface, NativeFn, NativePass, NativeSlot,
+    NativeType, TypeRef,
+};
 use caribou::symbol::{Symbol, intern};
 use caribou::world::Adapter;
 use caribou::{bridge, cell};
@@ -499,6 +502,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 ),
                 lang,
             },
+            native: native_fn(desc, descs),
         };
         let at = match by_class.iter().position(|(c, _, _)| *c == class) {
             Some(i) => i,
@@ -526,7 +530,25 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 name: class.clone(),
                 type_name: format!("{}.{class}", plugin.name),
                 superclass: None,
-                fields: Vec::new(),
+                fields: plugin
+                    .classes
+                    .iter()
+                    .find(|c| unsafe { c.name.as_str() } == class)
+                    .map_or(Vec::new(), |c| {
+                        declared_fields(c)
+                            .iter()
+                            .map(|f| FieldIface {
+                                name: unsafe { f.name.as_str() }.to_owned(),
+                                ty: native::type_ref(f.tag.kind()),
+                                native: native_type(f.tag, NO_CLASS, descs).map(|ty| NativeSlot {
+                                    offset: f.offset,
+                                    pass: PAYLOAD,
+                                    ty,
+                                    writable: true,
+                                }),
+                            })
+                            .collect()
+                    }),
                 statics: Vec::new(),
                 methods,
                 ctor,
@@ -541,10 +563,12 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
             registry::FieldIface {
                 name: "tag".into(),
                 ty: TypeRef::Int,
+                native: None,
             },
             registry::FieldIface {
                 name: "constructor".into(),
                 ty: TypeRef::Str,
+                native: None,
             },
         ];
         for field in schema.variants.iter().flat_map(|v| &v.fields) {
@@ -556,6 +580,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 fields.push(registry::FieldIface {
                     name: field.name.clone(),
                     ty: field.ty.clone(),
+                    native: None,
                 });
             }
         }
@@ -570,6 +595,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                 statics.push(registry::FieldIface {
                     name: variant.name.clone(),
                     ty: own.clone(),
+                    native: None,
                 });
             } else {
                 methods.push(registry::MethodIface {
@@ -578,6 +604,7 @@ fn interfaces(plugin: &Plugin, lang: LangId, descs: &[&'static TypeDesc]) -> Vec
                     params: variant.fields.iter().map(|f| f.ty.clone()).collect(),
                     ret: own.clone(),
                     target: Callable::Dynamic(data::enum_constructor(desc, i as u32)),
+                    native: None,
                 });
             }
         }
@@ -612,11 +639,133 @@ struct Object {
     payload: *mut c_void,
 }
 
-/// What a class descriptor keeps in `ext`: the plugin's finalizer and the
-/// class's type name.
+/// What a class descriptor keeps in `ext`: the plugin's finalizer, the
+/// class's type name and its declared fields.
 struct Class {
     drop: Option<unsafe extern "C" fn(*mut c_void)>,
     type_name: Symbol,
+    fields: Vec<Field>,
+}
+
+/// A declared field: a scalar of `kind` at `offset` bytes into the payload.
+struct Field {
+    name: Symbol,
+    offset: usize,
+    kind: hl::hl_type_kind,
+}
+
+/// Where an object's word reaches its payload.
+const PAYLOAD: NativePass = NativePass::Indirect(std::mem::offset_of!(Object, payload) as u32);
+
+fn declared_fields(c: &ClassDesc) -> &[caribou_abi::FieldDesc] {
+    if c.field_count == 0 {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(c.fields, c.field_count) }
+    }
+}
+
+/// The field `name` of the object at `obj`, and where it is.
+fn field_at(obj: *mut u8, name: Symbol) -> Option<(&'static Field, *mut u8)> {
+    let o = unsafe { &*(obj as *const Object) };
+    let field = class_of(unsafe { &*o.desc })
+        .fields
+        .iter()
+        .find(|f| f.name == name)?;
+    Some((field, unsafe { o.payload.cast::<u8>().add(field.offset) }))
+}
+
+unsafe extern "C-unwind" fn object_get_member(obj: *mut u8, name: Symbol, out: *mut Value) -> u8 {
+    let Some((field, at)) = field_at(obj, name) else {
+        return REPLY_MISSING;
+    };
+    let word = unsafe {
+        match field.kind {
+            hl::HUI8 | hl::HBOOL => i64::from(*at),
+            hl::HUI16 => i64::from(*at.cast::<u16>()),
+            hl::HI32 | hl::HF32 => i64::from(*at.cast::<u32>()),
+            _ => *at.cast::<i64>(),
+        }
+    };
+    unsafe { *out = native::value_of(word, field.kind) };
+    REPLY_OK
+}
+
+unsafe extern "C-unwind" fn object_set_member(obj: *mut u8, name: Symbol, value: Value) -> u8 {
+    let Some((field, at)) = field_at(obj, name) else {
+        return REPLY_MISSING;
+    };
+    let Some(word) = native::word_of(value, field.kind) else {
+        let o = unsafe { &*(obj as *const Object) };
+        let message = format!("field {} takes a {}", name.name(), kind_name(field.kind));
+        return raise(unsafe { (*o.desc).lang }, &message);
+    };
+    unsafe {
+        match field.kind {
+            hl::HUI8 | hl::HBOOL => *at = word as u8,
+            hl::HUI16 => *at.cast::<u16>() = word as u16,
+            hl::HI32 | hl::HF32 => *at.cast::<u32>() = word as u32,
+            _ => *at.cast::<u64>() = word,
+        }
+    }
+    REPLY_OK
+}
+
+fn kind_name(kind: hl::hl_type_kind) -> &'static str {
+    match kind {
+        hl::HBOOL => "Bool",
+        hl::HF32 | hl::HF64 => "Float",
+        _ => "Int",
+    }
+}
+
+/// How a direct call carries a value of `tag`; `None` for one it cannot.
+fn native_type(tag: TypeTag, class: u8, descs: &[&'static TypeDesc]) -> Option<NativeType> {
+    Some(match tag {
+        TypeTag::VOID => NativeType::Void,
+        TypeTag::BOOL => NativeType::Bool,
+        TypeTag::UI8 => NativeType::U8,
+        TypeTag::UI16 => NativeType::U16,
+        TypeTag::I32 => NativeType::I32,
+        TypeTag::I64 => NativeType::I64,
+        TypeTag::F32 => NativeType::F32,
+        TypeTag::F64 => NativeType::F64,
+        TypeTag::BYTES => NativeType::Text,
+        TypeTag::OBJ if class != NO_CLASS => NativeType::Object {
+            type_name: type_name_of(descs[class as usize]).to_owned(),
+            pass: PAYLOAD,
+        },
+        _ => return None,
+    })
+}
+
+/// The symbol's function as a direct call: its receiver and parameters
+/// reach the payload, as the function takes them. `None` for one the
+/// bridge must carry: a dynamic, variadic or effectful symbol, a value no
+/// direct call carries, and a new object, which the core must wrap.
+fn native_fn(desc: &SymbolDesc, descs: &[&'static TypeDesc]) -> Option<NativeFn> {
+    if desc.flags & (sym::DYNAMIC | sym::VARIADIC | sym::EFFECTFUL) != 0 || desc.ret == TypeTag::OBJ
+    {
+        return None;
+    }
+    let n = desc.param_count as usize;
+    let mut params = desc.params[..n]
+        .iter()
+        .zip(&desc.param_classes[..n])
+        .map(|(&tag, &class)| native_type(tag, class, descs));
+    let receiver = if desc.flags & sym::STATIC != 0 {
+        None
+    } else {
+        params.next()??;
+        Some(PAYLOAD)
+    };
+    Some(NativeFn {
+        func: desc.func,
+        receiver,
+        params: params.collect::<Option<_>>()?,
+        ret: native_type(desc.ret, desc.ret_class, descs)?,
+        may_raise: true,
+    })
 }
 
 static CLASS_TYPES: LazyLock<RwLock<HashMap<String, &'static TypeDesc>>> =
@@ -747,6 +896,14 @@ fn class_descriptor(plugin: &str, c: &ClassDesc, lang: LangId) -> &'static TypeD
     d.ext = Box::into_raw(Box::new(Class {
         drop: c.drop,
         type_name: intern(&type_name),
+        fields: declared_fields(c)
+            .iter()
+            .map(|f| Field {
+                name: intern(unsafe { f.name.as_str() }),
+                offset: f.offset as usize,
+                kind: f.tag.kind(),
+            })
+            .collect(),
     })) as *mut ();
     Box::leak(Box::new(d))
 }
@@ -820,6 +977,8 @@ unsafe extern "C-unwind" fn object_hash(obj: *mut u8, out: *mut u64) -> u8 {
 }
 
 static OBJECT_PROTO: Protocol = Protocol {
+    get_member: Some(object_get_member),
+    set_member: Some(object_set_member),
     type_name: Some(object_type_name),
     unwrap_native: Some(object_unwrap_native),
     equals: Some(object_equals),

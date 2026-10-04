@@ -732,6 +732,7 @@ pub(crate) fn publish() {
                     params: vec![crate::registry::TypeRef::Int],
                     ret: crate::registry::TypeRef::Buffer,
                     target: crate::protocol::Callable::Core(construct),
+                    native: None,
                 }),
                 class_object: Value::null(),
             }],

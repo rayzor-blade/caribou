@@ -253,6 +253,7 @@ mod tests {
                 params: vec![],
                 ret: crate::registry::TypeRef::Int,
                 target,
+                native: None,
             }],
         }
     }

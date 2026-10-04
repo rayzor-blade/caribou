@@ -226,6 +226,7 @@ pub(crate) fn publish() {
             target: Callable::ProtocolMethod {
                 name: symbol::intern(name),
             },
+            native: None,
         };
         fn construct(args: &[Value]) -> Result<Value, Value> {
             debug_assert!(args.is_empty());
@@ -251,6 +252,7 @@ pub(crate) fn publish() {
                         target: Callable::ProtocolMethod {
                             name: symbol::intern("resolve"),
                         },
+                        native: None,
                     },
                     MethodIface {
                         name: "reject".to_owned(),
@@ -260,6 +262,7 @@ pub(crate) fn publish() {
                         target: Callable::ProtocolMethod {
                             name: symbol::intern("reject"),
                         },
+                        native: None,
                     },
                 ],
                 ctor: Some(MethodIface {
@@ -268,6 +271,7 @@ pub(crate) fn publish() {
                     params: Vec::new(),
                     ret: TypeRef::Object("caribou.Future".to_owned()),
                     target: Callable::Core(construct),
+                    native: None,
                 }),
                 class_object: Value::null(),
             }],

@@ -238,6 +238,7 @@ mod tests {
             params,
             ret,
             target: Callable::Dynamic(Value::null()),
+            native: None,
         }
     }
 

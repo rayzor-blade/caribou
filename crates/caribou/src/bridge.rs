@@ -51,6 +51,21 @@ thread_local! {
     /// A task never leaves the world that made it, so this thread's map
     /// holds exactly one slot per task of this world.
     static PENDING: RefCell<HashMap<TaskId, Pending>> = RefCell::new(HashMap::new());
+
+    /// Nonzero while `PENDING` holds a slot: what code that calls a
+    /// plugin directly loads after the call, rather than asking.
+    static PENDING_FLAG: Cell<u8> = const { Cell::new(0) };
+}
+
+/// The address of the thread's pending flag, fixed for the thread's life:
+/// nonzero when an error may be pending for the current task, and then
+/// [`take_pending`] says whether one is.
+pub fn pending_flag() -> *const u8 {
+    PENDING_FLAG.with(|flag| flag.as_ptr().cast_const())
+}
+
+fn mark(slots: &HashMap<TaskId, Pending>) {
+    PENDING_FLAG.with(|flag| flag.set(u8::from(!slots.is_empty())));
 }
 
 /// Past this many slots an insert first drops the entries of tasks that
@@ -70,7 +85,9 @@ pub fn set_pending(err: Value) {
         if slots.len() >= PENDING_SWEEP_AT {
             slots.retain(|id, _| sched::task_exists(*id));
         }
-        slots.insert(task, Pending { value: err, root })
+        let previous = slots.insert(task, Pending { value: err, root });
+        mark(&slots);
+        previous
     });
     drop(previous);
 }
@@ -96,7 +113,16 @@ fn take_pending_rooted() -> Option<Rooted> {
         return None;
     }
     let task = sched::current_task();
-    let pending = PENDING.with(|slots| slots.borrow_mut().remove(&task))?;
+    let pending = PENDING.with(|slots| {
+        let mut slots = slots.borrow_mut();
+        let pending = slots.remove(&task);
+        if pending.is_none() {
+            // The flag stays up only for a slot a live task may still take.
+            slots.retain(|id, _| sched::task_exists(*id));
+        }
+        mark(&slots);
+        pending
+    })?;
     let pending = ManuallyDrop::new(pending);
     Some(Rooted::from_parts(pending.value, pending.root))
 }
@@ -1471,12 +1497,16 @@ mod tests {
         assert!(!has_pending());
         assert_eq!(take_pending(), None);
         let e = Error::new_rooted(ErrorKind::User, "first", LANG_A);
+        let flag = pending_flag();
+        assert_eq!(unsafe { *flag }, 0);
         set_pending(e.value());
         assert!(has_pending());
+        assert_eq!(unsafe { *flag }, 1, "the flag is up while an error waits");
         let again = Error::new_rooted(ErrorKind::User, "second", LANG_A);
         set_pending(again.value());
         assert_eq!(take_pending(), Some(again.value()));
         assert!(!has_pending());
+        assert_eq!(unsafe { *flag }, 0, "and down once it is taken");
         assert_eq!(take_pending(), None);
     }
 

@@ -34,6 +34,11 @@ pub extern "C" fn shout(s: Text) -> Text {
     Text::new(&format!("{}!", s.to_uppercase()))
 }
 
+/// `n` stars, as a new string.
+pub extern "C" fn stars(n: i32) -> Text {
+    Text::new(&"*".repeat(n.max(0) as usize))
+}
+
 pub extern "C" fn width(s: Text) -> i32 {
     s.chars().count() as i32
 }
@@ -295,11 +300,14 @@ caribou_abi::plugin! {
     fn same(Value) -> Value;
     fn shout(Text) -> Text;
     fn width(Text) -> i32;
+    fn stars(i32) -> Text;
     fn quotient(f64, f64) -> f64;
     class Vec {
         fn len3(f64, f64, f64) -> f64;
     }
     class Vec2 {
+        field x: f64;
+        field y: f64;
         fn new(f64, f64) -> Box<Vec2>;
         fn len(&Vec2) -> f64;
         fn scale(&mut Vec2, f64);

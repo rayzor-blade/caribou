@@ -91,6 +91,55 @@ pub struct TupleField {
 pub struct FieldIface {
     pub name: String,
     pub ty: TypeRef,
+    /// The field's storage, for a language that reads it in place.
+    pub native: Option<NativeSlot>,
+}
+
+/// How a direct call or field access reaches an object's storage from
+/// the object's word: the word itself, or the pointer `k` bytes into the
+/// object.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativePass {
+    Word,
+    Indirect(u32),
+}
+
+/// A value as a direct call or field access carries it: a scalar as
+/// itself, a [`NativeType::Text`] as a core string's address, an object
+/// as its [`NativePass`] says.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeType {
+    Void,
+    Bool,
+    U8,
+    U16,
+    I32,
+    I64,
+    F32,
+    F64,
+    Text,
+    Object { type_name: String, pass: NativePass },
+}
+
+/// A member's code, callable without the bridge: `func` takes the
+/// receiver first when there is one, then `params`, by the C convention.
+/// A call that raises leaves the error pending ([`crate::bridge::set_pending`]).
+#[derive(Clone, Debug)]
+pub struct NativeFn {
+    pub func: *const std::ffi::c_void,
+    pub receiver: Option<NativePass>,
+    pub params: Vec<NativeType>,
+    pub ret: NativeType,
+    pub may_raise: bool,
+}
+
+/// A field's storage: `ty` at `offset` bytes into what `pass` reaches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NativeSlot {
+    pub offset: u32,
+    pub pass: NativePass,
+    pub ty: NativeType,
+    pub writable: bool,
 }
 
 /// A method and how to call it. An instance method's `target` takes the
@@ -103,6 +152,8 @@ pub struct MethodIface {
     pub params: Vec<TypeRef>,
     pub ret: TypeRef,
     pub target: Callable,
+    /// The member's code, for a language that calls it directly.
+    pub native: Option<NativeFn>,
 }
 
 /// What a member of [`ClassIface::methods`] is to its class. A getter or
@@ -588,6 +639,7 @@ mod tests {
                     params: vec![TypeRef::Int],
                     ret: TypeRef::Bool,
                     target: Callable::Dynamic(Value::null()),
+                    native: None,
                 }],
                 ctor: None,
                 class_object: Value::null(),
@@ -732,6 +784,7 @@ mod tests {
                 signature: crate::symbol::intern(sig),
                 is_static: false,
             },
+            native: None,
         };
         assert_eq!(wren("hp").kind(), MethodKind::Getter);
         assert_eq!(wren("hp=(_)").kind(), MethodKind::Setter);

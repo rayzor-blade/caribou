@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use caribou::registry;
+use caribou::registry::{NativePass, NativeSlot, NativeType};
 use caribou::world::{Config, World};
 use caribou_abi::{ABI_VERSION, TypeTag};
 use wren_lift::runtime::engine::{ExecutionMode, InterpretResult};
@@ -60,7 +61,8 @@ System.print(Fiber.new { t.add(1) }.try())
 "#;
 
 /// A class with instances: constructed, sent to, passed to another of
-/// its own, compared, and refused where another class is expected.
+/// its own, compared, refused where another class is expected, and its
+/// declared fields read and written in place.
 const OBJECTS: &str = r#"
 import "math:Vec2" for Vec2
 var v = Vec2.new(3, 4)
@@ -72,6 +74,10 @@ System.print(v.unit().len())
 System.print(v is Vec2)
 System.print(v == v)
 System.print(Fiber.new { v.dot(5) }.try())
+System.print(v.x)
+v.y = 0.5
+System.print(v.y)
+System.print(Fiber.new { v.x = "east" }.try())
 for (i in 0...100) Vec2.new(i, i)
 System.print(Vec2.live() >= 2)
 "#;
@@ -140,7 +146,7 @@ fn a_plugin_is_a_language_wren_imports() {
     assert_eq!(plugins.len(), 1, "{:?}", plugin_dir());
     let math = &plugins[0];
     assert_eq!(math.name(), "math");
-    assert_eq!(math.symbols().len(), 38);
+    assert_eq!(math.symbols().len(), 39);
     let hypot = math
         .symbols()
         .iter()
@@ -164,7 +170,7 @@ fn a_plugin_is_a_language_wren_imports() {
         },
         "Vec2"
     );
-    assert_eq!(ABI_VERSION, 8);
+    assert_eq!(ABI_VERSION, 9);
     assert_eq!(math.classes().len(), 4);
 
     let world = World::new(Config::default());
@@ -188,6 +194,51 @@ fn a_plugin_is_a_language_wren_imports() {
         "new is the constructor"
     );
     assert_eq!(iface.classes[index].type_name, "math.Vec2");
+    // Its declared fields and its scalar methods are reachable in place.
+    let vec2 = &iface.classes[index];
+    let payload = NativePass::Indirect(8);
+    assert_eq!(
+        vec2.fields
+            .iter()
+            .map(|f| (f.name.as_str(), f.native.clone()))
+            .collect::<Vec<_>>(),
+        [0, 8]
+            .map(|offset| NativeSlot {
+                offset,
+                pass: payload,
+                ty: NativeType::F64,
+                writable: true,
+            })
+            .into_iter()
+            .zip(["x", "y"])
+            .map(|(slot, name)| (name, Some(slot)))
+            .collect::<Vec<_>>()
+    );
+    let method = |name: &str| vec2.methods.iter().find(|m| m.name == name).unwrap();
+    let len = method("len")
+        .native
+        .as_ref()
+        .expect("len is called in place");
+    assert_eq!(len.receiver, Some(payload));
+    assert_eq!(
+        (len.params.as_slice(), &len.ret),
+        (&[][..], &NativeType::F64)
+    );
+    let dot = method("dot")
+        .native
+        .as_ref()
+        .expect("dot is called in place");
+    assert_eq!(
+        dot.params,
+        [NativeType::Object {
+            type_name: "math.Vec2".into(),
+            pass: payload,
+        }]
+    );
+    assert!(
+        method("unit").native.is_none(),
+        "a new object is the core's to wrap"
+    );
     let (data, data_index) = registry::lookup_class("math", "Data", "Data").expect("published");
     let later_vec = data.classes[data_index]
         .methods
@@ -245,7 +296,8 @@ fn a_plugin_is_a_language_wren_imports() {
     );
     assert_eq!(
         output,
-        "5\n10\n6\n1\ntrue\ntrue\nargument 2 of the plugin function must be a math.Vec2, not a number\ntrue\n"
+        "5\n10\n6\n1\ntrue\ntrue\nargument 2 of the plugin function must be a math.Vec2, not a number\n\
+         6\n0.5\nfield x takes a Float\ntrue\n"
     );
     vm.output_buffer = Some(String::new());
     let result = caribou_wren::with_vm(&mut vm, |vm| vm.interpret("data", DATA));

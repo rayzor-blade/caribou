@@ -32,6 +32,8 @@ caribou_abi::plugin! {
     fn hypot(f64, f64) -> f64;
     fn same(Value) -> Value;
     class Vec2 {
+        field x: f64;
+        field y: f64;
         fn new(f64, f64) -> Box<Vec2>;
         fn len(&Vec2) -> f64;
         fn scale(&mut Vec2, f64);
@@ -46,6 +48,7 @@ caribou_abi::plugin! {
 * Each declaration is checked against the item it names by coercing the item to the declared function pointer type. A signature that does not match the item does not compile.
 * The macro reads each type's tag from the `Param` and `Returned` traits. `u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`, `()`, and `Value` map to their tags. `Text` is a string. `&T` and `&mut T` of a declared class are an object of that class, borrowed for the call; when such a parameter comes first, the function is an instance method. `Box<T>` is a new object of the class, owned by the core from then on.
 * A static `new` that returns its own class is the class's constructor.
+* `field x: f64;` declares a field of the class's struct that other languages read and write in place. It must name a field of the struct, of that type, or the declaration does not compile. The type is a scalar (`u8`, `u16`, `i32`, `i64`, `f32`, `f64`, `bool`), and the class table records each field's offset (`FieldDesc`).
 
 **Generated code:** The macro writes the `SymbolDesc` table, the class table with one finalizer per class (which drops the `Box`), the `PluginInfo`, and the two symbols every plugin exports: `caribou_abi_version`, which a core compares with its own version before binding anything, and `caribou_plugin_entry`, which receives the core's table (see below) and returns the plugin's.
 
@@ -70,7 +73,15 @@ An instance of a plugin class is a core object with the class's descriptor. It i
 
 * **Identity:** The descriptor, one per class per process, is the class's identity. It carries the class's type name (`math.Vec2`), so a language installs its class for the object the same way it does for any published type. In Wren, `Vec2.new(3, 4)` produces an instance that adopts the object, and `v is Vec2` is true.
 * **Lifetime:** The descriptor's drop hook runs the plugin's finalizer when the object dies, during the sweep. The payload therefore lives exactly as long as something holds the object.
-* **Protocol:** The object answers its type name, uses identity for `equals` and `hash`, and returns the payload from `unwrap_native`. The plugin's own functions are what operate on it, through the classes the languages installed.
+* **Protocol:** The object answers its type name, uses identity for `equals` and `hash`, and returns the payload from `unwrap_native`. It reads and writes its declared fields through `get_member` and `set_member`, at their offsets in the payload. The plugin's own functions are what operate on it, through the classes the languages installed.
+
+**In place:** The class's interface describes, beside each target, what a language may use without the bridge (`registry::NativeFn`, `registry::NativeSlot`):
+
+* A function that takes and returns scalars, strings and borrowed objects is its own code. A language that compiles its calls calls it directly. Its receiver and object parameters are the payload, the pointer one word into the object (`NativePass::Indirect(8)`).
+* A declared field is its offset into the payload.
+* A function the bridge must carry has none: one that is dynamic, variadic or effectful, one that takes a `Value`, a buffer, an enum or a future, and one that returns a new object, which the core must wrap.
+
+Zyntax's languages use these (see [zyntax.md](zyntax.md#plugins-in-place)).
 
 **Typed object parameters:** In a signature, an object parameter or result is typed by the descriptor itself, which is an `hl_type` at word zero. When the dispatcher sees a descriptor where a scalar kind would be, it takes the argument's object (through the cell another language holds it by), checks that the object's descriptor matches, and passes the payload. An object of another class, or a non-object, produces a `Type` error that names the expected class. A result typed by a descriptor is wrapped as a new object, or becomes null for a null pointer. A plugin therefore never reads memory that is not its own, and never sees the core's object.
 
@@ -190,7 +201,7 @@ A project's Wren modules depend on hatch packages in the project file's `[depend
 
 * The header macro, loading, and the adapter.
 * Scalar, `DYN`, string, buffer, and enum parameters and results.
-* Classes with instances.
+* Classes with instances, and declared fields.
 * The host table: kept values, calls, and errors.
 * Discovery next to the program, and plugins shipped in a bundle.
 * Wren and Haxe calling into a plugin.
@@ -199,3 +210,4 @@ A project's Wren modules depend on hatch packages in the project file's `[depend
 **Not yet implemented:**
 
 * Native object, buffer, and enum conversion in the Zyntax adapter.
+* A borrowed string parameter, so that a function taking a string can be called in place (git-bug 8db12b8e3d28b75e50fc58c089746831a2fd57af6374a612f3333e7f3d524add).

@@ -733,6 +733,7 @@ fn shapes(bytecode: &DecodedBytecode) -> Vec<Shape<'_>> {
                     fields.push(FieldIface {
                         name: field.name.clone(),
                         ty: type_ref(types, &field.type_),
+                        native: None,
                     });
                 }
             }
@@ -758,6 +759,7 @@ fn shapes(bytecode: &DecodedBytecode) -> Vec<Shape<'_>> {
                     statics.push(FieldIface {
                         name: field.name.clone(),
                         ty: type_ref(types, &field.type_),
+                        native: None,
                     });
                 }
             }
@@ -854,6 +856,7 @@ pub fn publish_module(
                 params,
                 ret,
                 target,
+                native: None,
             });
         }
         let ctor = shape.ctor.and_then(|findex| {
@@ -871,6 +874,7 @@ pub fn publish_module(
                 params,
                 ret: TypeRef::Object(obj.name.clone()),
                 target: Callable::Dynamic(proto::constructor(t, cell, signature)),
+                native: None,
             })
         });
         let iface = Interface {

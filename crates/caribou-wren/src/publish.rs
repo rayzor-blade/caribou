@@ -290,6 +290,7 @@ fn describe(vm: &VM, class: *mut ObjClass, module: &str, classes: &Classes<'_>) 
                 .map(|f| FieldIface {
                     name: f.clone(),
                     ty: TypeRef::Dyn,
+                    native: None,
                 })
                 .collect()
         })
@@ -340,6 +341,7 @@ fn describe(vm: &VM, class: *mut ObjClass, module: &str, classes: &Classes<'_>) 
                 signature: symbol::intern(sig),
                 is_static,
             },
+            native: None,
         };
         if is_constructor {
             ctors.push(member);

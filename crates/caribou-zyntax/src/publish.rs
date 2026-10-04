@@ -686,6 +686,7 @@ pub fn interface(
                 signature,
                 lang,
             },
+            native: None,
         })
     };
     let classes: Vec<ClassIface> = declared
@@ -725,6 +726,7 @@ pub fn interface(
                     .map(|(name, ty)| FieldIface {
                         name: name.clone(),
                         ty: ty.clone(),
+                        native: None,
                     })
                     .collect(),
                 statics: Vec::new(),
@@ -759,9 +761,14 @@ pub fn run_interface(lang: LangId, module: &str, run: crate::RunModule) -> Inter
             params: f.params,
             ret: f.ret,
             target: Callable::Dynamic(f.value),
+            native: None,
         }
     };
-    let field = |(name, ty): (String, TypeRef)| FieldIface { name, ty };
+    let field = |(name, ty): (String, TypeRef)| FieldIface {
+        name,
+        ty,
+        native: None,
+    };
     Interface {
         lang,
         module: module.to_owned(),
