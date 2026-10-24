@@ -93,6 +93,15 @@ xgpu's `GpuInstance.surface` takes as it takes a desktop window's codes.
 - In a page, `platform()` is 7. The previous plugin reported 5, which xgpu
   reads as Android.
 
+## From hlwindow
+
+A program written for hlwindow, xwindow's Ash/HashLink adapter, reads the
+same API with one difference: the API's enums are Haxe enums here, such as
+`window.CursorIcon`, where hlwindow has abstracts over `Int`. A value
+without fields compares with `==` to its constructor
+(`cursor == CursorIcon.Default`); one with fields compares by reference, as
+any Haxe enum value does, so use `switch` or `Type.enumEq` for those.
+
 ## Checks
 
 ```sh
