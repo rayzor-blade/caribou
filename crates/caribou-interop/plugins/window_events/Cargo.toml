@@ -18,4 +18,6 @@ caribou_abi = { workspace = true }
 xwindow-core = { workspace = true }
 winit = "0.30"
 raw-window-handle = "0.6"
+xwindow-appicon = { workspace = true }
 xwindow-clipboard = { workspace = true }
+xwindow-gamepad = { workspace = true }

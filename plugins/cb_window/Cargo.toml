@@ -26,9 +26,11 @@ xwindow-bindgen = { workspace = true }
 [dependencies]
 caribou_abi = { workspace = true }
 xwindow-core = { workspace = true }
+xwindow-gamepad = { workspace = true }
 
 # A desktop's windows.
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
 winit = "0.30"
 raw-window-handle = "0.6"
+xwindow-appicon = { workspace = true }
 xwindow-clipboard = { workspace = true }

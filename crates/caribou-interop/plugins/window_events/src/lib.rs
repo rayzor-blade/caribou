@@ -6,6 +6,8 @@
 // xwindow lints.
 #![allow(clippy::all)]
 
+// The external-pump hooks wait for the world's loop to drive them.
+#[allow(dead_code)]
 mod backend {
     include!(concat!(env!("OUT_DIR"), "/xwindow_backend/native.rs"));
 

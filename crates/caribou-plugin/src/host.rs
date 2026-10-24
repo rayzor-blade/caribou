@@ -41,6 +41,7 @@ pub static HOST: Host = Host {
     raise_value,
     agent,
     watch,
+    blocking,
 };
 
 unsafe extern "C" fn future_new() -> caribou_abi::Future {
@@ -184,6 +185,14 @@ unsafe extern "C" fn agent(name: *const u8, len: usize, address: usize) -> bool 
     {
         let _ = (name, len, address);
         false
+    }
+}
+
+unsafe extern "C" fn blocking(waiting: bool) {
+    if waiting {
+        caribou::sched::enter_blocking();
+    } else {
+        caribou::sched::leave_blocking();
     }
 }
 

@@ -72,6 +72,10 @@ pub struct Host {
         unsafe extern "C" fn(*mut c_void),
         *mut c_void,
     ) -> *const u32,
+    /// `true` before the calling thread waits outside the program (a window
+    /// system's pump), `false` after: the collector may run meanwhile.
+    /// Nothing between the two touches the heap or calls the program.
+    pub blocking: unsafe extern "C" fn(bool),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(core::ptr::null_mut());
@@ -117,6 +121,12 @@ pub fn call(f: Value, args: &[Value]) -> Result<Value, Value> {
 /// function returns after this; what it returns is ignored.
 pub fn raise(kind: ErrorKind, message: &str) {
     unsafe { (host().raise)(kind, message.as_ptr(), message.len()) }
+}
+
+/// Say the calling thread waits outside the program until the matching
+/// `blocking(false)`; see [`Host::blocking`].
+pub fn blocking(waiting: bool) {
+    unsafe { (host().blocking)(waiting) }
 }
 
 /// Raise `err`, an error value a call handed back, on to the caller.

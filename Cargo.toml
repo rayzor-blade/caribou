@@ -34,19 +34,16 @@ zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717a
 zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
 zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
 zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
-xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
-xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
-xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
-xwindow-backend = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "428239ec7b9dd12cdd4df8e2004c33e18f2fabc9" }
-xwindow-bindgen = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "428239ec7b9dd12cdd4df8e2004c33e18f2fabc9" }
-xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "428239ec7b9dd12cdd4df8e2004c33e18f2fabc9" }
-xwindow-clipboard = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "428239ec7b9dd12cdd4df8e2004c33e18f2fabc9" }
-x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "d76721475f92e439dab2888f72a1c05ab41eb832" }
-
-[patch."https://github.com/rayzor-blade/xgpu.git"]
-xgpu-backend = { path = "../xgpu/crates/xgpu-backend" }
-xgpu-bindgen = { path = "../xgpu/crates/xgpu-bindgen" }
-xgpu-core = { path = "../xgpu/crates/xgpu-core" }
+xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "6f8823db7fd24709fa4225f849133ccc6dc0e283" }
+xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "6f8823db7fd24709fa4225f849133ccc6dc0e283" }
+xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "6f8823db7fd24709fa4225f849133ccc6dc0e283" }
+xwindow-backend = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
+xwindow-bindgen = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
+xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
+xwindow-clipboard = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
+xwindow-gamepad = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
+xwindow-appicon = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
+x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "753610fd220dcfb5cce358e9418eadc48cb4562d" }
 
 # Zyntax from the sibling checkout: zyntax_compiler's build script reads the
 # workspace's Cargo.lock, which zyntax does not track, so it does not build

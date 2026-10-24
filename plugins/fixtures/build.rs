@@ -72,12 +72,6 @@ fn main() {
                 .join(format!("{}.hxml", fixture.name)),
         );
     }
-    let xgpu = root.join("../xgpu");
-    watch(xgpu.join("Cargo.toml"));
-    watch(xgpu.join("api"));
-    watch(xgpu.join("crates/xgpu-backend"));
-    watch(xgpu.join("crates/xgpu-bindgen"));
-    watch(xgpu.join("crates/xgpu-core"));
 
     // Cargo holds the outer target directory's lock. Build both plugins and
     // the descriptor command in our own target directory to avoid re-entry
