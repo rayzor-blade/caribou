@@ -1,0 +1,8 @@
+# The Haxe program of the systems test: game.Systems keeps the functions
+# other languages register and calls them each step with a buffer. Rebuild
+# with `haxe systems.hxml` (Haxe 4.3.6) from this directory; systems.hl is
+# checked in.
+-cp src
+-lib caribou
+-main UseSystems
+-hl systems.hl

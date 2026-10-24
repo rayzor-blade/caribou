@@ -212,11 +212,125 @@ unsafe extern "C-unwind" fn buffer_iterate(p: *mut u8, state: *mut Value, out: *
     }
     reply
 }
+/// The typed reads and writes every language calls on a buffer by name,
+/// `getF32(offset)` and `setF32(offset, value)`: little-endian, at a byte
+/// offset, the width of the type in bounds.
+const ACCESSORS: [(&str, &str, usize, TypeRef); 4] = [
+    ("getU8", "setU8", 1, TypeRef::Int),
+    ("getI32", "setI32", 4, TypeRef::Int),
+    ("getF32", "setF32", 4, TypeRef::Float),
+    ("getF64", "setF64", 8, TypeRef::Float),
+];
+
+fn buffer_fault(kind: caribou_abi::ErrorKind, message: &str) -> u8 {
+    crate::bridge::raise(crate::error::Error::new(
+        kind,
+        message,
+        crate::world::LANG_CORE,
+    ))
+}
+
+unsafe extern "C-unwind" fn buffer_invoke(
+    p: *mut u8,
+    name: crate::symbol::Symbol,
+    args: *const Value,
+    n: usize,
+    out: *mut Value,
+) -> u8 {
+    use caribou_abi::ErrorKind;
+    let name = name.name();
+    let Some(&(get, _, width, _)) = ACCESSORS
+        .iter()
+        .find(|(get, set, ..)| *get == name || *set == name)
+    else {
+        return REPLY_MISSING;
+    };
+    let args = if n == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(args, n) }
+    };
+    let reading = name == get;
+    if args.len() != if reading { 1 } else { 2 } {
+        return buffer_fault(
+            ErrorKind::Type,
+            &format!(
+                "`{name}` takes {}",
+                if reading {
+                    "an offset"
+                } else {
+                    "an offset and a value"
+                }
+            ),
+        );
+    }
+    let b = unsafe { &*p.cast::<BufferData>() };
+    let Some(offset) =
+        index(args[0]).filter(|o| o.checked_add(width).is_some_and(|end| end <= b.len))
+    else {
+        return buffer_fault(
+            ErrorKind::Index,
+            &format!(
+                "`{name}` at {} is outside a buffer of {} bytes",
+                crate::bridge::describe(args[0]),
+                b.len
+            ),
+        );
+    };
+    let at = unsafe { b.bytes.add(offset) };
+    if reading {
+        let value = unsafe {
+            match name {
+                "getU8" => Value::int(i32::from(*at)),
+                "getI32" => Value::int(i32::from_le_bytes(at.cast::<[u8; 4]>().read_unaligned())),
+                "getF32" => Value::number(f64::from(f32::from_le_bytes(
+                    at.cast::<[u8; 4]>().read_unaligned(),
+                ))),
+                _ => Value::number(f64::from_le_bytes(at.cast::<[u8; 8]>().read_unaligned())),
+            }
+        };
+        unsafe { *out = value };
+        return REPLY_OK;
+    }
+    if b.flags & caribou_abi::data::READ_ONLY != 0 {
+        return buffer_fault(ErrorKind::Type, "the buffer is read-only");
+    }
+    let value = args[1];
+    let number = value.as_number().or_else(|| value.as_int().map(f64::from));
+    let integer = value
+        .as_int()
+        .map(i64::from)
+        .or_else(|| crate::error::Int64::of(value))
+        .or_else(|| number.filter(|n| n.fract() == 0.0).map(|n| n as i64));
+    let written = unsafe {
+        match name {
+            "setU8" => integer.and_then(|n| u8::try_from(n).ok()).map(|n| *at = n),
+            "setI32" => integer
+                .and_then(|n| i32::try_from(n).ok())
+                .map(|n| at.cast::<[u8; 4]>().write_unaligned(n.to_le_bytes())),
+            "setF32" => number.map(|n| {
+                at.cast::<[u8; 4]>()
+                    .write_unaligned((n as f32).to_le_bytes())
+            }),
+            _ => number.map(|n| at.cast::<[u8; 8]>().write_unaligned(n.to_le_bytes())),
+        }
+    };
+    if written.is_none() {
+        return buffer_fault(
+            ErrorKind::Type,
+            &format!("`{name}` cannot write {}", crate::bridge::describe(value)),
+        );
+    }
+    unsafe { *out = Value::null() };
+    REPLY_OK
+}
+
 static BUFFER_PROTO: Protocol = Protocol {
     len: Some(buffer_len),
     index: Some(buffer_index),
     set_index: Some(buffer_set),
     iterate: Some(buffer_iterate),
+    invoke: Some(buffer_invoke),
     ..Protocol::NONE
 };
 
@@ -702,7 +816,8 @@ static TUPLE_PROTO: Protocol = Protocol {
 
 /// Publish the core's `Buffer` class, `core:Buffer`, for a language with
 /// no mutable byte storage of its own to make one (Lua): constructed by
-/// its size, zeroed, read and written as a sequence of bytes.
+/// its size, zeroed, read and written as a sequence of bytes and by the
+/// typed accessors, which a buffer from anywhere answers.
 pub(crate) fn publish() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -725,7 +840,7 @@ pub(crate) fn publish() {
                 superclass: None,
                 fields: Vec::new(),
                 statics: Vec::new(),
-                methods: Vec::new(),
+                methods: accessor_methods(),
                 ctor: Some(crate::registry::MethodIface {
                     name: "new".to_owned(),
                     is_static: true,
@@ -740,6 +855,30 @@ pub(crate) fn publish() {
         })
         .expect("the core Buffer interface is unique");
     });
+}
+
+/// The accessors as methods of a published class, each sent to the
+/// buffer's protocol.
+pub fn accessor_methods() -> Vec<crate::registry::MethodIface> {
+    let method = |name: &str, params: Vec<TypeRef>, ret: TypeRef| crate::registry::MethodIface {
+        name: name.to_owned(),
+        is_static: false,
+        params,
+        ret,
+        target: crate::protocol::Callable::ProtocolMethod {
+            name: crate::symbol::intern(name),
+        },
+        native: None,
+    };
+    ACCESSORS
+        .iter()
+        .flat_map(|(get, set, _, ty)| {
+            [
+                method(get, vec![TypeRef::Int], ty.clone()),
+                method(set, vec![TypeRef::Int, ty.clone()], TypeRef::Void),
+            ]
+        })
+        .collect()
 }
 
 #[cfg(test)]

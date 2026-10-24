@@ -556,8 +556,13 @@ fn call_float_method_at(
 /// The method `name` of `v`'s published class, rather than a field or a
 /// getter: its target takes the receiver first.
 fn method_of(v: Value, name: &str) -> Option<Callable> {
-    let lang = bridge::language_of(v)?;
-    let (iface, i) = registry::class_for_type(lang, &bridge::type_name(v)?)?;
+    // A buffer names no type, since each language takes it as its own
+    // byte storage; its methods are the core `Buffer` class's.
+    let (iface, i) = if caribou::data::buffer_of(v).is_some() {
+        registry::class_for_type(LANG_CORE, "caribou.Buffer")?
+    } else {
+        registry::class_for_type(bridge::language_of(v)?, &bridge::type_name(v)?)?
+    };
     iface.classes[i]
         .methods
         .iter()

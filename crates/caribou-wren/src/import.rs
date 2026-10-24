@@ -752,8 +752,9 @@ fn function_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
 /// The class a foreign sequence is an instance of: `Sequence`, in the
 /// bridge's own module, answering Wren's own sequence protocol through
 /// the bridge's: `[_]`, `[_]=(_)`, `count`, and `iterate(_)` with
-/// `iteratorValue(_)`, the iterator being the position. Installed on
-/// first need.
+/// `iteratorValue(_)`, the iterator being the position; and a buffer's
+/// typed accessors, `getF32(_)` and `setF32(_,_)`. Installed on first
+/// need.
 pub const SEQUENCE_CLASS: &str = "Sequence";
 const SEQUENCE_MODULE: &str = "caribou:Sequence";
 
@@ -797,13 +798,29 @@ fn sequence_class(vm: &mut VM) -> Result<*mut ObjClass, ImportError> {
             ),
         )
     };
-    let members = vec![
+    let mut members = vec![
         member("[_]", Kind::Index, "[]"),
         member("[_]=(_)", Kind::SetIndex, "[]="),
         member("count", Kind::Count, "count"),
         member("iterate(_)", Kind::Iterate, "iterate"),
         member("iteratorValue(_)", Kind::IteratorValue, "iteratorValue"),
     ];
+    // A buffer's typed reads and writes, sent to its protocol.
+    for method in caribou::data::accessor_methods() {
+        let sig = format!(
+            "{}({})",
+            method.name,
+            vec!["_"; method.params.len()].join(",")
+        );
+        members.push((
+            sig,
+            Target::new(
+                Kind::Method,
+                format!("{SEQUENCE_CLASS}.{}", method.name),
+                method.target,
+            ),
+        ));
+    }
     let binding = bind_members(vm, ptr, SEQUENCE_CLASS, members)?;
     let mut imports = rec.imports().borrow_mut();
     imports.classes.insert(ptr as usize, Rc::new(binding));
