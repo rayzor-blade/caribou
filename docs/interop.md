@@ -261,7 +261,7 @@ System.print(score.call(7, 2))   // 64
 import game.tally.Tally;         // the class, under the module as its package
 ```
 
-Types come from the module's declarations: Python annotations and ZynML signatures. Numbers, booleans, and strings cross; an instance of a Python or ZynML class does not cross yet, so a call that takes or returns one fails with an error that says so.
+Types come from the module's declarations: Python annotations and ZynML signatures. Numbers, booleans, strings and instances cross. An instance of a Python or ZynML class is a core object: Haxe makes one with `new`, keeps it, calls its methods and reads its fields, and it comes back to Python as the same object.
 
 ## Lua Modules
 
@@ -368,6 +368,21 @@ Clock.advance(1 / 60);        // once per fixed step
 ```
 
 Wren imports it as `import "core:Clock" for Clock`, Lua as `require("core.Clock").Clock`, and Python as `from core.Clock import Clock`. `Clock.now()` is the world's time in seconds, and `Clock.wall()` returns to wall time. The main thread's own `Sys.sleep` keeps wall time: it is the program's frame pacing. See [the scheduler](architecture/scheduler.md#the-worlds-clock).
+
+## Hearing a Reload
+
+A host that keeps what a module registered with it (its systems, its listeners) drops it before the module's new body runs and registers again:
+
+```haxe
+import core.Modules;
+
+Modules.onReload((namespace, module, before, error) -> {
+	if (before) removeAllOf(namespace + ":" + module);
+	else if (error != null) warn('$namespace:$module did not reload: $error');
+});
+```
+
+The `before` call comes once the new source has compiled, immediately before its body runs. A source that does not compile is heard only after, with its error, and the module stays as it was with what it registered. Wren, Lua and Python modules are heard the same way.
 
 ## Cancelling What a Program Started
 

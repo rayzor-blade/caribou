@@ -115,14 +115,14 @@ impl Adapter for Runtime {
     }
 
     /// Reload `module` in the VM entered on this thread.
-    fn reload(&self, _lang: LangId, module: &str) -> Result<(), String> {
+    fn reload(&self, _lang: LangId, module: &str, ready: &mut dyn FnMut()) -> Result<(), String> {
         let vm = proto::current_vm();
         if vm.is_null() {
             return Err(format!(
                 "`{module}` cannot reload: no Wren VM is entered on this thread"
             ));
         }
-        project::reload(unsafe { &mut *vm }, module)
+        project::reload(unsafe { &mut *vm }, module, ready)
     }
 }
 

@@ -66,9 +66,9 @@ fn an_edited_wren_file_reloads_between_haxe_frames() {
     let heard = heard.borrow();
     let reloads: Vec<(&str, bool)> = heard
         .iter()
-        .map(|event| {
-            let Event::Reload { module, error, .. } = event;
-            (module.as_str(), error.is_some())
+        .filter_map(|event| match event {
+            Event::Reload { module, error, .. } => Some((module.as_str(), error.is_some())),
+            Event::Reloading { .. } => None,
         })
         .collect();
     assert_eq!(reloads, [("game/tune", true), ("game/tune", false)]);

@@ -212,10 +212,22 @@ pub fn load(namespace: &str, module: &str) -> Result<bool, String> {
 /// re-runs it with its classes' identity kept and its compiled bodies
 /// dropped, the registry gets its interface again, and the program's
 /// `Hatch.onReload` callbacks hear of it. The module must be loaded.
-pub fn reload(vm: &mut VM, name: &str) -> Result<(), String> {
+/// `ready` is called once the new source compiles, before it runs.
+pub fn reload(vm: &mut VM, name: &str, ready: &mut dyn FnMut()) -> Result<(), String> {
     if !vm.engine.modules.contains_key(name) {
         return Err(format!("`{name}` is not loaded"));
     }
+    // Compiled once on its own first, so a source that does not compile
+    // leaves the module, and what it registered, as they were.
+    let source = vm
+        .config
+        .load_module_fn
+        .as_ref()
+        .and_then(|load| load(name, ""))
+        .ok_or_else(|| format!("`{name}`: no source to reload from"))?;
+    vm.compile_source_to_blob(&source)
+        .map_err(|_| format!("`{name}` does not compile"))?;
+    ready();
     vm.reload_module(name)?;
     publish_module(vm, name).map_err(|e| format!("`{name}`: {e}"))?;
     vm.notify_reloaded(name);

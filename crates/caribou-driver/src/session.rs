@@ -362,7 +362,10 @@ impl Session {
                 lang,
                 module,
                 error,
-            } = event;
+            } = event
+            else {
+                return;
+            };
             let lang = caribou::world::language_name(*lang);
             match error {
                 None => eprintln!("[caribou] reloaded {lang} {module}"),

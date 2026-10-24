@@ -300,6 +300,32 @@ fn import_names(ns: &Namespace, module: &str) -> Vec<String> {
     names
 }
 
+/// The namespace and name a program imports `lang`'s module `module` by:
+/// the configured namespace its path begins with (`game/door` is
+/// `game:door`), else the first other one that holds it, else the
+/// language's own. `core` names only the core's modules.
+pub fn import_name(lang: LangId, module: &str) -> (String, String) {
+    let lang_name = world::language_name(lang);
+    let core = world::language_name(LANG_CORE);
+    let namespaces = NAMESPACES.read().unwrap();
+    let mut held = None;
+    for ns in namespaces
+        .iter()
+        .filter(|ns| ns.langs.contains(&lang_name) && (lang == LANG_CORE || ns.name != core))
+    {
+        let mut names = import_names(ns, module);
+        if names.len() > 1 {
+            return (ns.name.clone(), names.pop().unwrap());
+        }
+        if held.is_none()
+            && let Some(name) = names.pop()
+        {
+            held = Some((ns.name.clone(), name));
+        }
+    }
+    held.unwrap_or((lang_name, module.to_owned()))
+}
+
 /// The spellings a module named `module` in namespace `namespace` may
 /// have been published under.
 fn candidates(namespace: &str, module: &str) -> [String; 3] {

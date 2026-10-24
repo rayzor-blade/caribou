@@ -25,6 +25,7 @@ pub mod future;
 pub mod hash;
 pub mod heap;
 pub mod link;
+pub mod modules;
 pub mod native;
 pub mod protocol;
 pub mod registry;

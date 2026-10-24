@@ -1,0 +1,7 @@
+# The Haxe program of the behaviour test: it keeps a Python object per
+# entity and steps each. Rebuild with `haxe behaviour.hxml` (Haxe 4.3.6)
+# from this directory; behaviour.hl is checked in.
+-cp src
+-lib caribou
+-main UseBehaviour
+-hl behaviour.hl

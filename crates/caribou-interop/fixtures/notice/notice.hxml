@@ -1,0 +1,7 @@
+# The Haxe program of the reload-notice test: it subscribes to module
+# reloads. Rebuild with `haxe notice.hxml` (Haxe 4.3.6) from this
+# directory; notice.hl is checked in.
+-cp src
+-lib caribou
+-main UseNotice
+-hl notice.hl

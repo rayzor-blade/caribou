@@ -27,10 +27,12 @@ pub trait Adapter: 'static {
     /// Load the module `module` of `lang` afresh in place: its classes
     /// keep their identity and get the new bodies, its interface is
     /// published again. On the world's thread, with whatever the adapter
-    /// needs entered. `Err` when the language does not reload, or the
+    /// needs entered. `ready` is called once the new source is known to
+    /// compile and before any of it runs, never for a source that does
+    /// not compile. `Err` when the language does not reload, or the
     /// reload failed.
-    fn reload(&self, lang: LangId, module: &str) -> Result<(), String> {
-        let _ = module;
+    fn reload(&self, lang: LangId, module: &str, ready: &mut dyn FnMut()) -> Result<(), String> {
+        let _ = (module, ready);
         Err(format!("{} does not reload", language_name(lang)))
     }
     /// Take a module of `lang` from a bundle, or the source of one:
@@ -50,9 +52,14 @@ pub trait Adapter: 'static {
 /// What a world tells its subscribers.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
+    /// A module's new source compiled and is about to replace it: what
+    /// the module registered with others may be dropped now, before its
+    /// body runs again and registers anew. A source that does not
+    /// compile raises no `Reloading`.
+    Reloading { lang: LangId, module: String },
     /// A module was loaded afresh: its classes are the ones they were,
     /// with new bodies, and every call site fills again. With `error`,
-    /// the load failed and the module is as it was.
+    /// the load failed: before `Reloading`, the module is as it was.
     Reload {
         lang: LangId,
         module: String,
@@ -63,12 +70,14 @@ pub enum Event {
 /// The kind of event a subscriber asks for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EventKind {
+    Reloading,
     Reload,
 }
 
 impl Event {
     pub fn kind(&self) -> EventKind {
         match self {
+            Event::Reloading { .. } => EventKind::Reloading,
             Event::Reload { .. } => EventKind::Reload,
         }
     }
@@ -104,6 +113,10 @@ pub struct Config {
 #[derive(Clone)]
 pub struct World {
     inner: Rc<RefCell<Inner>>,
+}
+
+thread_local! {
+    static CURRENT: RefCell<std::rc::Weak<RefCell<Inner>>> = const { RefCell::new(std::rc::Weak::new()) };
 }
 
 struct Inner {
@@ -182,11 +195,12 @@ impl World {
         crate::data::publish();
         crate::clock::publish();
         crate::scope::publish();
+        crate::modules::publish();
         // Materialise this thread's scheduler and install the heap's poll hook.
         let _ = sched::world_id();
         registry::set_namespaces(config.namespaces);
         *ROOTS.write().unwrap() = config.roots;
-        World {
+        let world = World {
             inner: Rc::new(RefCell::new(Inner {
                 adapters: Vec::new(),
                 languages: Vec::new(),
@@ -196,7 +210,15 @@ impl World {
                 watch: None,
                 name: config.name,
             })),
-        }
+        };
+        CURRENT.with(|current| *current.borrow_mut() = Rc::downgrade(&world.inner));
+        world
+    }
+
+    /// The world made on this thread last, while it lives: what a core
+    /// class a program calls reaches the world by.
+    pub fn current() -> Option<World> {
+        CURRENT.with(|current| current.borrow().upgrade().map(|inner| World { inner }))
     }
 
     /// Register an adapter and assign its languages. A name already taken by
@@ -318,8 +340,15 @@ impl World {
             .ok_or_else(|| format!("no adapter serves {}", language_name(lang)))?;
         // Between turns on this world; the worker worlds park between
         // theirs while the module's code and tables change.
+        let mut ready = || {
+            self.raise(Event::Reloading {
+                lang,
+                module: module.to_owned(),
+            });
+            self.deliver();
+        };
         let result = sched::quiesce(|| {
-            let result = adapter.reload(lang, module);
+            let result = adapter.reload(lang, module, &mut ready);
             if result.is_ok() {
                 crate::protocol::bump_epoch();
             }

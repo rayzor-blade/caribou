@@ -91,13 +91,15 @@ impl Adapter for Runtime {
     /// returns from a native call, which is before any Haxe code runs
     /// again on a program parked in one. Every published callable reads
     /// its function's slot per call, so it follows without republishing.
-    fn reload(&self, _lang: LangId, _module: &str) -> Result<(), String> {
+    fn reload(&self, _lang: LangId, _module: &str, ready: &mut dyn FnMut()) -> Result<(), String> {
         #[cfg(feature = "runner")]
         {
-            ash_core::reload::stage_reload().map(drop)
+            // Staged is checked: a Haxe program has no body to run again.
+            ash_core::reload::stage_reload().map(|_| ready())
         }
         #[cfg(not(feature = "runner"))]
         {
+            let _ = ready;
             Err("this build of caribou-ash runs no program to reload".to_owned())
         }
     }

@@ -653,8 +653,8 @@ impl Adapter for Runtime {
         }
     }
 
-    fn reload(&self, lang: LangId, module: &str) -> Result<(), String> {
-        reload(lang, module)
+    fn reload(&self, lang: LangId, module: &str, ready: &mut dyn FnMut()) -> Result<(), String> {
+        reload(lang, module, ready)
     }
 
     /// A bundle's module of one of these languages: its source, staged
@@ -1079,7 +1079,7 @@ fn load_found(
 /// fails the reload. The runtime diffs an edit against the module it
 /// compiled last, so only that module reloads; see git-bug
 /// 5bcf0d678e3b10197a5554df0fea80caaac84522e7921e6aabca4449011fdc98.
-fn reload(lang: LangId, name: &str) -> Result<(), String> {
+fn reload(lang: LangId, name: &str, ready: &mut dyn FnMut()) -> Result<(), String> {
     let resources = STATES.with(|states| {
         let states = states.borrow();
         let state = states.get(&lang).ok_or_else(|| {
@@ -1090,7 +1090,14 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
     let found = resources
         .source(name)?
         .map(|found| (Rc::clone(&resources.language), found));
-    // A module a language runs is run again, and published over itself.
+    // A module a language runs is run again, and published over itself,
+    // once its new source reads without error.
+    if let Some((language, found)) = &found
+        && let Some(checked) = language.describe_module(name, &found.0, &found.1)
+    {
+        checked.map_err(|e| format!("`{name}`: {e}"))?;
+        ready();
+    }
     if let Some((language, found)) = &found
         && let Some(run) =
             foreign::as_caller(lang, || language.run_module(name, &found.0, &found.1))
@@ -1124,6 +1131,8 @@ fn reload(lang: LangId, name: &str) -> Result<(), String> {
     if let Some((function, error)) = report.failed.first() {
         return Err(format!("`{name}`: {function}: {error}"));
     }
+    // A module that is not run has no body to run again: compiled is ready.
+    ready();
     let origin = resources.origin(lang);
     resources.publish(lang, name, parsed.declared, origin)
 }
