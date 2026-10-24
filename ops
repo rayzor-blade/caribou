@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1792838912,"nonce":"XqbusUIoxgP+fTHoA1T5XhhnFkY=","message":"Done in fe159d3f: getU8/getI32/getF32/getF64 and setters on every buffer, from Wren, Lua, Python and plugins; index syntax column[0] from Lua/Python would need an index operation on Zyntax's Foreign trait.","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1792838912,"nonce":"I//v4t1LXBN5UPDcuXtr8E3Alhg=","status":2}]}
