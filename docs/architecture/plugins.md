@@ -158,6 +158,8 @@ Wren sees a published class for the enum, with `tag`, `constructor`, and named p
 
 The window plugin's enums are generated. `plugins/cb_window` is xwindow's adapter: its build generates the `window` model from xwindow's declaration and installs xwindow's winit and page backends, so `Event` covers all 28 winit 0.30 window events, the raw device events and the application lifecycle, with typed keyboard, IME, modifier, touch-force, path and device payloads. `None` means the queue is empty. See [the window plugin](../../plugins/cb_window/README.md) and xwindow's README for the API. `plugins/fixtures/window` matches every event in Haxe.
 
+`plugins/cb_avi` is xavi's adapter in the same way: its build generates the `media` model (video frames, PCM audio, encoders and decoders, demuxing, MP4 muxing, a player and an equalizer) from xavi's declaration and installs xavi's native and page backends. See [the media plugin](../../plugins/cb_avi/README.md).
+
 The non-window interop fixture `UseData.hx` covers shared storage, mixed and nested payloads, and GC retention. The window-event test plugin generates the same model with a class of probes appended to the declaration, and makes the events a window reports without opening one, so Haxe and Wren read every payload across a collection without a GUI.
 
 These additions change the host and plugin tables. ABI version **2** requires rebuilding existing plugins; the loader rejects version 1 before reading the new layouts.

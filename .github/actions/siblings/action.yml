@@ -1,11 +1,11 @@
-# The sibling checkouts caribou's `[patch]` table points at, each at the
-# rev caribou's Cargo.toml names for it, so CI builds what the manifest
-# declares and nothing floats. Expects caribou checked out at `caribou/`.
-# ash_core's build script embeds the ash_std cdylib from the ash
-# checkout's target directory, so a job that builds caribou-ash builds
-# `ash_std` in `ash/` first, after its cache is restored.
+# The sibling checkouts beside caribou, each at the rev caribou's
+# Cargo.toml names for it, so CI builds what the manifest declares and
+# nothing floats. Expects caribou checked out at `caribou/`. zyntax and
+# xavi are what caribou's `[patch]` tables point at; x-idl is the path
+# xavi's bindgen takes it by; ash gives the wasm job its runner and the
+# nightly its runtime image.
 name: Sibling checkouts
-description: Clone ash, wren_lift, zyntax and xgpu beside caribou at the revs its manifest pins.
+description: Clone ash, wren_lift, zyntax, xavi and x-idl beside caribou at the revs its manifest pins.
 runs:
   using: composite
   steps:
@@ -17,7 +17,8 @@ runs:
         echo "ash=$(rev ash_std)" >> "$GITHUB_OUTPUT"
         echo "wren_lift=$(rev wren_lift)" >> "$GITHUB_OUTPUT"
         echo "zyntax=$(rev zyntax_embed)" >> "$GITHUB_OUTPUT"
-        echo "xgpu=$(rev xgpu-core)" >> "$GITHUB_OUTPUT"
+        echo "xavi=$(rev xavi-core)" >> "$GITHUB_OUTPUT"
+        echo "x_idl=$(rev x_idl)" >> "$GITHUB_OUTPUT"
     - uses: actions/checkout@v4
       with:
         repository: rayzor-blade/ash
@@ -35,6 +36,11 @@ runs:
         path: zyntax
     - uses: actions/checkout@v4
       with:
-        repository: rayzor-blade/xgpu
-        ref: ${{ steps.revs.outputs.xgpu }}
-        path: xgpu
+        repository: rayzor-blade/xavi
+        ref: ${{ steps.revs.outputs.xavi }}
+        path: xavi
+    - uses: actions/checkout@v4
+      with:
+        repository: rayzor-blade/x-idl
+        ref: ${{ steps.revs.outputs.x_idl }}
+        path: x-idl

@@ -1,0 +1,18 @@
+[package]
+name = "caribou-avi"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+description = "Audio and video for Caribou: xavi's media API"
+
+[lib]
+crate-type = ["cdylib", "rlib", "staticlib"]
+
+[build-dependencies]
+xavi-backend = { workspace = true }
+xavi-bindgen = { workspace = true }
+
+[dependencies]
+caribou_abi = { workspace = true }
+xavi-backend = { workspace = true }
+xavi-core = { workspace = true }

@@ -915,6 +915,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "caribou-avi"
+version = "0.1.0"
+dependencies = [
+ "caribou_abi",
+ "xavi-backend",
+ "xavi-bindgen",
+ "xavi-core",
+]
+
+[[package]]
 name = "caribou-driver"
 version = "0.1.0"
 dependencies = [
@@ -1017,7 +1027,7 @@ dependencies = [
  "caribou_abi",
  "raw-window-handle",
  "winit",
- "x_idl",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d)",
  "xwindow-appicon",
  "xwindow-backend",
  "xwindow-bindgen",
@@ -3579,6 +3589,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mp4"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9ef834d5ed55e494a2ae350220314dc4aacd1c43a9498b00e320e0ea352a5c3"
+dependencies = [
+ "byteorder",
+ "bytes",
+ "num-rational",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "multiversion_no_op"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3681,6 +3705,37 @@ dependencies = [
  "log",
  "pattern_engine",
  "zyntax_typed_ast",
+]
+
+[[package]]
+name = "num-bigint"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c89e69e7e0f03bea5ef08013795c25018e101932225a656383bd384495ecc367"
+dependencies = [
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "num-integer"
+version = "0.1.47"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ce2d95d4b3734dc35aa2f45e1aa22cd416814592a4f9d9205e11affd5b8e10b"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "num-rational"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f83d14da390562dca69fc84082e73e548e1ad308d24accdedd2720017cb37824"
+dependencies = [
+ "num-bigint",
+ "num-integer",
+ "num-traits",
+ "serde",
 ]
 
 [[package]]
@@ -7260,12 +7315,55 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x_idl"
 version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+ "weedle2",
+]
+
+[[package]]
+name = "x_idl"
+version = "0.1.0"
 source = "git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d#753610fd220dcfb5cce358e9418eadc48cb4562d"
 dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
  "weedle2",
+]
+
+[[package]]
+name = "xavi-backend"
+version = "0.1.0"
+dependencies = [
+ "mp4",
+ "xavi-core",
+ "xavi-platform",
+]
+
+[[package]]
+name = "xavi-bindgen"
+version = "0.1.0"
+dependencies = [
+ "x_idl 0.1.0",
+]
+
+[[package]]
+name = "xavi-core"
+version = "0.1.0"
+
+[[package]]
+name = "xavi-platform"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "libloading",
+ "ndk",
+ "ndk-sys",
+ "windows",
+ "windows-core",
+ "xavi-core",
 ]
 
 [[package]]
@@ -7289,7 +7387,7 @@ dependencies = [
  "syn 2.0.119",
  "weedle2",
  "wgpu-types",
- "x_idl",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d)",
 ]
 
 [[package]]
@@ -7342,7 +7440,7 @@ name = "xwindow-bindgen"
 version = "0.1.0"
 source = "git+https://github.com/rayzor-blade/xwindow.git?rev=3be8f63ae997fc40b5f10c55801c18132a6050c2#3be8f63ae997fc40b5f10c55801c18132a6050c2"
 dependencies = [
- "x_idl",
+ "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d)",
  "xwindow-core",
 ]
 

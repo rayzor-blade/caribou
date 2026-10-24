@@ -44,6 +44,17 @@ xwindow-clipboard = { git = "https://github.com/rayzor-blade/xwindow.git", rev =
 xwindow-gamepad = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
 xwindow-appicon = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
 x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "753610fd220dcfb5cce358e9418eadc48cb4562d" }
+xavi-backend = { git = "https://github.com/rayzor-blade/xavi.git", rev = "01621a57ba91a21cf525d1e76ec0a3c41ce3b541" }
+xavi-bindgen = { git = "https://github.com/rayzor-blade/xavi.git", rev = "01621a57ba91a21cf525d1e76ec0a3c41ce3b541" }
+xavi-core = { git = "https://github.com/rayzor-blade/xavi.git", rev = "01621a57ba91a21cf525d1e76ec0a3c41ce3b541" }
+
+# xavi from the sibling checkout, at the rev above: its bindgen takes x-idl
+# by a path beside the checkout, which a cargo git checkout of xavi does not
+# have. The patch goes once xavi takes x-idl by its git rev.
+[patch."https://github.com/rayzor-blade/xavi.git"]
+xavi-backend = { path = "../xavi/crates/xavi-backend" }
+xavi-bindgen = { path = "../xavi/crates/xavi-bindgen" }
+xavi-core = { path = "../xavi/crates/xavi-core" }
 
 # Zyntax from the sibling checkout: zyntax_compiler's build script reads the
 # workspace's Cargo.lock, which zyntax does not track, so it does not build

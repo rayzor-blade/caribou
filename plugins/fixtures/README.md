@@ -8,12 +8,15 @@ cargo build -p caribou-plugin-fixtures --bins
 cargo run -p caribou-plugin-fixtures --bin gpu
 cargo run -p caribou-plugin-fixtures --bin window
 cargo run -p caribou-plugin-fixtures --bin window_gpu
+cargo run -p caribou-plugin-fixtures --bin media
 ```
 
 The GPU runner executes the compute/readback checks and needs access to a
 native GPU. The window runner opens an interactive window and logs events
 until the window closes. The `window_gpu` runner uses both plugins to render
-a triangle into a Caribou window. Pass a frame count to make that example
+a triangle into a Caribou window. The media runner makes a video frame from
+RGBA bytes and filters PCM audio through the media plugin, and prints
+`media ok`. Pass a frame count to make that example
 exit automatically, for example `cargo run -p caribou-plugin-fixtures --bin
 window_gpu -- 3`. All three use the hybrid runtime mode.
 

@@ -19,6 +19,10 @@ const FIXTURES: &[Fixture] = &[
         plugins: &[("caribou-window", "caribou_window")],
     },
     Fixture {
+        name: "media",
+        plugins: &[("caribou-avi", "caribou_avi")],
+    },
+    Fixture {
         name: "window_gpu",
         plugins: &[
             ("caribou-gpu", "caribou_gpu"),
