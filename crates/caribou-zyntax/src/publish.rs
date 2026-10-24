@@ -193,9 +193,9 @@ fn settled_hir(ty: &Type) -> HirType {
             PrimitiveType::F64 => HirType::F64,
             PrimitiveType::I128 => HirType::I128,
             PrimitiveType::U128 => HirType::U128,
-            PrimitiveType::String => HirType::Ptr(Box::new(HirType::U8)),
+            PrimitiveType::String => HirType::Ptr(std::sync::Arc::new(HirType::U8)),
         },
-        _ => HirType::Ptr(Box::new(HirType::U8)),
+        _ => HirType::Ptr(std::sync::Arc::new(HirType::U8)),
     }
 }
 

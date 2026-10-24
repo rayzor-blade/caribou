@@ -423,13 +423,16 @@ fn load_with(
             }
             Err(_) => TierMode::default(),
         };
+        // Under reload the tiers enable it themselves, before they compile
+        // anything, and a body compiled from the program before a reload
+        // goes back to the interpreter.
         let cfg = TieredConfig {
             tier_mode,
+            hot_reload: options.reload,
             ..TierPreset::Application.to_config()
         };
         interpreter.enable_tiered(path, &resolver, &bytecode, cfg)?;
-    }
-    if options.reload {
+    } else if options.reload {
         interpreter.enable_reload(path, &resolver)?;
     }
     Ok(Program {

@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use caribou::sched::{
     DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter,
-    attach_host_state, current_task, has_worker_pool, is_pool_worker, live_tasks, new_waiter, park,
-    quiesce, request_park, resume_cause, scheduler_idle, set_switch_hook, sleep_until, spawn,
-    spawn_fiber, spawn_fiber_on_pool, suspended_sp, tick, unwatch, wake, wake as wake_waiter,
-    watch, world_id, yield_now,
+    attach_host_state, current_task, has_worker_pool, host_resumed, host_wait, is_pool_worker,
+    live_tasks, new_waiter, park, quiesce, request_park, resume_cause, scheduler_idle,
+    set_switch_hook, sleep_until, spawn, spawn_fiber, spawn_fiber_on_pool, suspended_sp, tick,
+    unwatch, wake, wake as wake_waiter, watch, world_id, yield_now,
 };
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
@@ -290,6 +290,67 @@ fn wake_from_another_thread_reaches_an_idle_world() {
     run_to_completion();
     assert!(waker.join().unwrap());
     assert_eq!(notified.get(), Some(true));
+}
+
+/// A native host that waits on its own event source: told not to wait while
+/// a turn ran, to wait no longer than the next timer, and woken by a command
+/// another thread pushes until it says the wait is over.
+#[test]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_feature = "atomics")),
+    ignore = "needs threads"
+)]
+fn a_native_host_waits_by_the_world_and_is_woken() {
+    static WOKEN: AtomicU32 = AtomicU32::new(0);
+    unsafe extern "C" fn wake_host() {
+        WOKEN.fetch_add(1, Ordering::SeqCst);
+    }
+    let long = Duration::from_secs(3);
+    assert_eq!(host_wait(Some(long), wake_host), Some(long));
+    assert_eq!(host_wait(None, wake_host), None);
+    host_resumed();
+
+    spawn_fiber(DEFAULT_STACK_SIZE, || {
+        sleep_until(Instant::now() + Duration::from_millis(200));
+    });
+    assert_eq!(
+        host_wait(Some(long), wake_host),
+        Some(Duration::ZERO),
+        "a turn ran the task"
+    );
+    let wait = host_wait(Some(long), wake_host).unwrap();
+    assert!(
+        wait > Duration::ZERO && wait <= Duration::from_millis(200),
+        "{wait:?}"
+    );
+    host_resumed();
+
+    let slots = Arc::new(Mutex::new(Vec::new()));
+    for _ in 0..2 {
+        let slots = Arc::clone(&slots);
+        spawn_fiber(DEFAULT_STACK_SIZE, move || {
+            let waiter = new_waiter();
+            slots.lock().unwrap().push(waiter);
+            park(waiter, Some(Instant::now() + Duration::from_secs(5)));
+        });
+    }
+    host_wait(Some(long), wake_host);
+    let wake_one = |slots: &Arc<Mutex<Vec<Waiter>>>| {
+        let waiter = slots.lock().unwrap().pop().expect("a task parked");
+        std::thread::spawn(move || wake_waiter(waiter))
+            .join()
+            .unwrap()
+    };
+    assert!(wake_one(&slots));
+    assert_eq!(WOKEN.load(Ordering::SeqCst), 1, "the push woke the host");
+    host_resumed();
+    assert!(wake_one(&slots));
+    assert_eq!(
+        WOKEN.load(Ordering::SeqCst),
+        1,
+        "not once the wait was over"
+    );
+    run_to_completion();
 }
 
 /// A word changed by another thread runs its handler at the world's next

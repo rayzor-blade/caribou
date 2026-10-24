@@ -18,22 +18,22 @@ beadie = { git = "https://github.com/darmie/beadie", rev = "c403f29c8dd66635b545
 libc = "0.2"
 # The runtimes, each at one rev: what the seams here are built against,
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
-# needs lands there first; while it is not pushed, `[patch]` below points
-# the source at the checkout.
-ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2" }
-ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2" }
-ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2", default-features = false }
-ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2", default-features = false }
-ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2", default-features = false }
-ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "555af2d7a063ddd4697c48869ea2dad11c4326a2" }
+# needs lands there first; while it is not pushed, a `[patch]` table points
+# the source at the checkout, and the patch goes once it is pushed.
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe", default-features = false }
+ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe", default-features = false }
+ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "eca0254cfde790e781903ff2ddb8de639be0673f", default-features = false }
-zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918" }
-zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918", default-features = false }
-zyntax_typed_ast = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918" }
-zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918", default-features = false }
-zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918" }
-zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918" }
-zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "d04fb58cfb0d7ef0838a3da5de61b2190fc87918" }
+zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
+zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39", default-features = false }
+zyntax_typed_ast = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
+zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39", default-features = false }
+zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
+zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
+zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
 xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
 xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
 xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "e473fafd0ccf77d8ee22d3103c5b0e07192e4591" }
@@ -43,28 +43,14 @@ xwindow-core = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "428
 xwindow-clipboard = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "428239ec7b9dd12cdd4df8e2004c33e18f2fabc9" }
 x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "d76721475f92e439dab2888f72a1c05ab41eb832" }
 
-# ash from the sibling checkout, at the rev above: ash_core's build script
-# embeds the ash_std cdylib from the checkout's own target directory,
-# which a cargo git checkout never has (`cargo build -p ash_std` there
-# first; ash issue a1355d46ae62456f956985d148a68c99c9aa5394ecf50c3f699da13d692024b5).
-# Until ash's build makes that cdylib itself, the git source is patched
-# here. A runtime change not yet pushed is patched the same way while it
-# waits, and the patch goes once it is pushed.
-[patch."https://github.com/rayzor-blade/ash.git"]
-ash_std = { path = "../ash/std" }
-ash_native_call = { path = "../ash/crates/ash_native_call" }
-ash_core = { path = "../ash/crates/ash" }
-ash_interp = { path = "../ash/crates/ash_interp" }
-ash_wasm_runtime = { path = "../ash/crates/ash_wasm_runtime" }
-ash_page = { path = "../ash/crates/ash_page" }
-
 [patch."https://github.com/rayzor-blade/xgpu.git"]
 xgpu-backend = { path = "../xgpu/crates/xgpu-backend" }
 xgpu-bindgen = { path = "../xgpu/crates/xgpu-bindgen" }
 xgpu-core = { path = "../xgpu/crates/xgpu-core" }
 
-# Zyntax from the sibling checkout at the revision above. CI's sibling action
-# checks out that exact commit, so local and hosted builds use the same source.
+# Zyntax from the sibling checkout: zyntax_compiler's build script reads the
+# workspace's Cargo.lock, which zyntax does not track, so it does not build
+# from a git checkout. The patch goes once it does.
 [patch."https://github.com/zyntax-project/zyntax.git"]
 zyntax_embed = { path = "../zyntax/crates/zyntax_embed" }
 zyntax_compiler = { path = "../zyntax/crates/compiler" }

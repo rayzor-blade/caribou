@@ -99,6 +99,7 @@ When no task is ready, the main context blocks in `scheduler_idle` on the world'
 * **Sources:** A *source* is a handler that the world runs on its main context, between turns, each time its signal is raised (`add_source`, `Signal::raise`, `remove_source`).
 * **Cross-thread signaling:** A raise can come from any thread, including one the runtime never created. It reaches the world as a `Ready` command through the endpoint, which wakes the idle wait. The handler runs at the start of the next turn, when no task is in the middle of a resume. Raises that arrive while a handler is running are folded into one additional run.
 * **Hot reload:** The world's source watch for hot reload is the first registered source (see [world.md](world.md#reload)).
+* **A native host's own wait:** A host whose thread must wait on its own event source, such as a window system's loop, calls `host_wait(timeout, wake)` instead of `scheduler_idle`. It runs one turn and answers how long the host may wait: no longer than `timeout` or the next timer, and zero if work is already waiting. Until the host calls `host_resumed`, every command pushed to the world also calls `wake`, which interrupts the host's wait from any thread. Ash's runtime seam slot of the same name is this call.
 
 A task waiting for external input is a separate case. It parks on a token, and whoever notices the input wakes the token, from any thread. The poller that would own socket readiness on the world's behalf does not exist yet, so a blocking socket read in any language still blocks the OS thread.
 

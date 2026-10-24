@@ -67,12 +67,7 @@ jobs:
           haxe-version: ${{ env.HAXE_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            caribou
-            ash
-      - name: ash_std, which ash_core's build script embeds
-        working-directory: ash
-        run: cargo build -p ash_std
+          workspaces: caribou
       - name: Tests
         working-directory: caribou
         run: cargo test --workspace --no-fail-fast
@@ -100,15 +95,10 @@ jobs:
           haxe-version: ${{ env.HAXE_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            caribou
-            ash
+          workspaces: caribou
       - name: Formatting
         working-directory: caribou
         run: cargo fmt --all --check
-      - name: ash_std, which ash_core's build script embeds
-        working-directory: ash
-        run: cargo build -p ash_std
       - name: Clippy
         working-directory: caribou
         run: cargo clippy --workspace --all-targets -- -D warnings

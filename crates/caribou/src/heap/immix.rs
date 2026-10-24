@@ -3456,6 +3456,17 @@ impl ImmixAllocator {
         Some(p)
     }
 
+    /// [`Self::allocate_immortal`] for a table that holds no heap pointer:
+    /// kept for the process and never scanned.
+    pub fn allocate_immortal_noptr(&mut self, size: usize) -> Option<NonNull<u8>> {
+        let p = self.allocate_noptr(size)?;
+        self.roots
+            .borrow_mut()
+            .persistent_roots
+            .insert(p.as_ptr() as *mut hl::vdynamic);
+        Some(p)
+    }
+
     /// [`Self::allocate`] for memory that never holds a heap pointer: the
     /// collector keeps it reachable and never scans it.
     pub fn allocate_noptr(&mut self, size: usize) -> Option<NonNull<u8>> {

@@ -6,9 +6,9 @@ use std::any::Any;
 use std::cell::{Cell, RefCell};
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex, Weak};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use krio_core::{Task, TaskId};
 
@@ -50,6 +50,9 @@ pub(super) struct WorldEndpoint {
     /// Tasks assigned to this world, parked ones included. A krio stack is
     /// `!Send`, so this is read before a task is placed and never after.
     pub(super) assigned: AtomicUsize,
+    /// While a native host waits on its own event source (`host_wait`), what
+    /// wakes that source: called after each command is pushed.
+    host_wake: AtomicPtr<()>,
 }
 
 impl WorldEndpoint {
@@ -59,6 +62,7 @@ impl WorldEndpoint {
             changed: Condvar::new(),
             wake: AtomicU32::new(0),
             assigned: AtomicUsize::new(0),
+            host_wake: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
 
@@ -68,6 +72,11 @@ impl WorldEndpoint {
         self.changed.notify_one();
         self.wake.fetch_add(1, Ordering::SeqCst);
         notify_word(&self.wake);
+        let host_wake = self.host_wake.load(Ordering::Acquire);
+        if !host_wake.is_null() {
+            let host_wake: HostWake = unsafe { std::mem::transmute(host_wake) };
+            unsafe { host_wake() };
+        }
     }
 }
 
@@ -813,6 +822,54 @@ fn resume_task(id: TaskId) -> bool {
         drop(record);
     }
     true
+}
+
+/// What wakes a native host's event source from another thread. It must be
+/// thread-safe, must not enter the world, and must stay callable for the
+/// process's life: a pusher may have loaded it just before `host_resumed`.
+pub type HostWake = unsafe extern "C" fn();
+
+/// For a native host about to wait on its own event source (a window
+/// system's loop) instead of in `scheduler_idle`: run one turn, then answer
+/// how long the host may wait, `timeout` or less if a timer is due sooner,
+/// zero if work is already waiting, `None` for no deadline. From here until
+/// [`host_resumed`], a command pushed to this world calls `wake`.
+pub fn host_wait(timeout: Option<Duration>, wake: HostWake) -> Option<Duration> {
+    // Registered before the turn: a command pushed after it either is seen
+    // below or wakes the host's source.
+    with_world(|world| {
+        world
+            .endpoint
+            .host_wake
+            .store(wake as *mut (), Ordering::Release)
+    });
+    let ran = schedule_step();
+    let (pending, next_timer) = with_world(|world| {
+        let pending = ran
+            || !world.ready.is_empty()
+            || !world.ready_sources.is_empty()
+            || world.main_woken
+            || !world.endpoint.commands.lock().unwrap().is_empty();
+        (pending, world.next_timer())
+    });
+    if pending {
+        return Some(Duration::ZERO);
+    }
+    let until_timer = next_timer.map(|at| at.saturating_duration_since(Instant::now()));
+    match (timeout, until_timer) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// The host's wait is over: pushes no longer call its wake.
+pub fn host_resumed() {
+    with_world(|world| {
+        world
+            .endpoint
+            .host_wake
+            .store(std::ptr::null_mut(), Ordering::Release)
+    });
 }
 
 /// One turn: resume each task that was ready when the turn began. Tasks

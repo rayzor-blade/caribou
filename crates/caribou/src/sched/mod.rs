@@ -50,11 +50,11 @@ pub use wait::{
     waiter_for, wake, wake_token,
 };
 pub use world::{
-    add_task_hook, attach_host_state, block_yield, current_stack, current_task, enter_blocking,
-    has_world, is_blocking, is_on_task, leave_blocking, live_tasks, park_pending, poll,
-    resume_cause, schedule_step, scheduler_idle, set_switch_hook, spawn, spawn_fiber,
-    spawn_fiber_on_pool, spawn_task, spawn_task_on_pool, suspended_sp, task_exists, tick,
-    with_host_state, world_id, yield_now,
+    HostWake, add_task_hook, attach_host_state, block_yield, current_stack, current_task,
+    enter_blocking, has_world, host_resumed, host_wait, is_blocking, is_on_task, leave_blocking,
+    live_tasks, park_pending, poll, resume_cause, schedule_step, scheduler_idle, set_switch_hook,
+    spawn, spawn_fiber, spawn_fiber_on_pool, spawn_task, spawn_task_on_pool, suspended_sp,
+    task_exists, tick, with_host_state, world_id, yield_now,
 };
 
 /// `CARIBOU_SCHED_TRACE`: one line per scheduler event on stderr. Safe to

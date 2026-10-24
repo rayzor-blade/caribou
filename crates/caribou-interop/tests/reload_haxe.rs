@@ -1,7 +1,8 @@
 //! A Haxe program reloads under the world: its file is rebuilt with a body
 //! changed, the session reloads it, and the next call from outside reaches
 //! the new body, through the code the tier had compiled for the old one. A
-//! rebuild that changes the program's shape is refused and changes nothing.
+//! rebuild that changes how live objects are laid out is refused and
+//! changes nothing.
 //! The rebuild here is the fixture's bytecode with one constant edited, so
 //! the test needs no Haxe compiler.
 
@@ -101,16 +102,22 @@ fn a_haxe_program_reloads_under_the_world() {
     );
     assert_eq!(call(&mut session, "answer", &[]), Some(52));
 
-    // A rebuild of another shape is refused, and the program stays.
+    // A rebuild that lays out live objects another way is refused, and the
+    // program stays: here a class loses a field.
     let mut reshaped = BytecodeDecoder::decode(&program).unwrap();
-    reshaped.globals.push(reshaped.globals[0].clone());
+    let class = reshaped
+        .types
+        .iter_mut()
+        .filter_map(|t| t.obj.as_mut())
+        .find(|obj| !obj.fields.is_empty())
+        .expect("a class with fields");
+    let field = class.fields.pop().unwrap().name;
+    let lost = format!("{} lost {field}", class.name);
     rebuild(&program, &reshaped);
     let refused = session.reload("haxe", "UseReload");
     assert!(refused.is_err(), "{refused:?}");
-    assert!(
-        format!("{:#}", refused.unwrap_err()).contains("globals count"),
-        "names the change"
-    );
+    let why = format!("{:#}", refused.unwrap_err());
+    assert!(why.contains(&lost), "names the change: {why}");
     assert_eq!(call(&mut session, "answer", &[]), Some(52));
     let _ = std::fs::remove_dir_all(&dir);
 }

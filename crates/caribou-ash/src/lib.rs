@@ -240,6 +240,7 @@ fn table() -> RuntimeVTable {
         alloc_locked: Some(heap::alloc_locked),
         alloc_locked_noptr: Some(heap::alloc_locked_noptr),
         alloc_immortal: Some(heap::alloc_immortal),
+        alloc_immortal_noptr: Some(heap::alloc_immortal_noptr),
         alloc_with_finalizer: Some(heap::alloc_with_finalizer),
         allocation_size: Some(heap::allocation_size),
         is_gc_ptr: Some(heap::is_gc_ptr),
@@ -307,6 +308,8 @@ fn table() -> RuntimeVTable {
         mark_main_thread: Some(sched::mark_main_thread),
         is_main_thread: Some(sched::is_main_thread),
         foreign_threads_seen: Some(sched::foreign_threads_seen),
+        host_wait: Some(sched::host_wait),
+        host_resumed: Some(sched::host_resumed),
         // Program.
         program_start: Some(program_start),
     }

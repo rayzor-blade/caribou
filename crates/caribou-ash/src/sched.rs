@@ -226,6 +226,16 @@ pub unsafe extern "C" fn schedule_step() -> bool {
     sched::schedule_step()
 }
 
+/// A negative time is no deadline, either way.
+pub unsafe extern "C" fn host_wait(timeout: f64, wake: unsafe extern "C" fn()) -> f64 {
+    let timeout = (timeout >= 0.0).then(|| Duration::from_secs_f64(timeout));
+    sched::host_wait(timeout, wake).map_or(-1.0, |wait| wait.as_secs_f64())
+}
+
+pub unsafe extern "C" fn host_resumed() {
+    sched::host_resumed();
+}
+
 /// A compiled body goes to the pool; anything else, or a pool with no
 /// worker to take it, runs on the calling world and gets one turn at once,
 /// ash's rule that a thread reaches its first blocking point before

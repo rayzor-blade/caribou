@@ -38,12 +38,7 @@ jobs:
       - uses: ./caribou/.github/actions/siblings
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            caribou
-            ash
-      - name: ash_std, which ash_core's build script embeds
-        working-directory: ash
-        run: cargo build --release -p ash_std
+          workspaces: caribou
       # `shell: bash` for pipefail: a bench that fails to build must fail
       # the step through the tee.
       - name: Benches
