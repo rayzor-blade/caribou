@@ -134,6 +134,16 @@ pub(super) struct World {
     /// main context reads its own registration, so the drain leaves it
     /// nothing else to see, and an idle that slept now could sleep forever.
     main_woken: bool,
+    /// The world's time when its host steps it; `None` for wall time.
+    clock: Option<Stepped>,
+}
+
+/// A stepped clock: wall time when stepping began, plus what the host has
+/// advanced it by since.
+#[derive(Clone, Copy)]
+struct Stepped {
+    origin: Instant,
+    at: Duration,
 }
 
 /// Runs on a task's world before its first turn, whichever language spawned
@@ -162,7 +172,13 @@ impl World {
             ready_sources: VecDeque::new(),
             watches: HashMap::new(),
             main_woken: false,
+            clock: None,
         }
+    }
+
+    fn now(&self) -> Instant {
+        self.clock
+            .map_or_else(Instant::now, |clock| clock.origin + clock.at)
     }
 
     fn enqueue_ready(&mut self, id: TaskId) {
@@ -199,7 +215,7 @@ impl World {
     }
 
     fn wake_due_timers(&mut self) {
-        let now = Instant::now();
+        let now = self.now();
         loop {
             let Some(Reverse((deadline, token, id))) = self.timers.peek().copied() else {
                 return;
@@ -850,7 +866,10 @@ pub fn host_wait(timeout: Option<Duration>, wake: HostWake) -> Option<Duration> 
             || !world.ready_sources.is_empty()
             || world.main_woken
             || !world.endpoint.commands.lock().unwrap().is_empty();
-        (pending, world.next_timer())
+        // A stepped clock's timers come due when the host advances it, not
+        // while it waits.
+        let next_timer = world.next_timer().filter(|_| world.clock.is_none());
+        (pending, next_timer)
     });
     if pending {
         return Some(Duration::ZERO);
@@ -870,6 +889,66 @@ pub fn host_resumed() {
             .host_wake
             .store(std::ptr::null_mut(), Ordering::Release)
     });
+}
+
+/// The world's time: wall time, or the time its host has stepped it to
+/// ([`step_clock`]). Every timed wait on the world counts from this. Off a
+/// world, wall time.
+pub fn now() -> Instant {
+    try_with_world(|world| world.now()).unwrap_or_else(Instant::now)
+}
+
+/// Step this world's clock from now on: its time stands still until the
+/// host advances it ([`advance_clock`]), and its tasks' timed waits come
+/// due by it. Waits with the same deadline end in the order they began.
+/// The main context's own waits keep wall time: they are the host's.
+pub fn step_clock() {
+    with_world(|world| {
+        if world.clock.is_none() {
+            world.clock = Some(Stepped {
+                origin: Instant::now(),
+                at: Duration::ZERO,
+            });
+        }
+    });
+}
+
+/// Move a stepped clock on by `by`; the waits it passes end at the next
+/// turn. `false` on wall time, which the host does not move.
+pub fn advance_clock(by: Duration) -> bool {
+    with_world(|world| match world.clock.as_mut() {
+        Some(clock) => {
+            clock.at += by;
+            true
+        }
+        None => false,
+    })
+}
+
+/// Back to wall time. A wait under way keeps what it had left to wait.
+pub fn wall_clock() {
+    with_world(|world| {
+        let Some(clock) = world.clock.take() else {
+            return;
+        };
+        let stepped = clock.origin + clock.at;
+        let wall = Instant::now();
+        let timers = std::mem::take(&mut world.timers);
+        world.timers = timers
+            .into_iter()
+            .map(|Reverse((deadline, token, id))| {
+                Reverse((
+                    wall + deadline.saturating_duration_since(stepped),
+                    token,
+                    id,
+                ))
+            })
+            .collect();
+    });
+}
+
+pub fn clock_is_stepped() -> bool {
+    try_with_world(|world| world.clock.is_some()).unwrap_or(false)
 }
 
 /// One turn: resume each task that was ready when the turn began. Tasks
@@ -917,9 +996,10 @@ pub fn tick(deadline: Option<Instant>) -> bool {
     live_tasks() != 0
 }
 
-/// Block until a command arrives, the next timer is due or `deadline`
-/// passes. The main context's wait when nothing is ready; the reactor's
-/// seam.
+/// Block until a command arrives, the next timer is due or `deadline`, a
+/// wall time, passes. The main context's wait when nothing is ready; the
+/// reactor's seam. A stepped clock's timers do not end it: they come due
+/// when the host advances the clock.
 #[cfg(not(target_family = "wasm"))]
 pub fn scheduler_idle(deadline: Option<Instant>) {
     // Still a registered mutator: rendezvous with a collection another
@@ -927,7 +1007,8 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
     heap::gc_safepoint();
     let (endpoint, next_timer, woken) = with_world(|world| {
         let woken = std::mem::take(&mut world.main_woken);
-        (Arc::clone(&world.endpoint), world.next_timer(), woken)
+        let next_timer = world.next_timer().filter(|_| world.clock.is_none());
+        (Arc::clone(&world.endpoint), next_timer, woken)
     });
     let wake_at = match (deadline, next_timer) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -973,7 +1054,8 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
     heap::gc_safepoint();
     let (endpoint, next_timer, woken) = with_world(|world| {
         let woken = std::mem::take(&mut world.main_woken);
-        (Arc::clone(&world.endpoint), world.next_timer(), woken)
+        let next_timer = world.next_timer().filter(|_| world.clock.is_none());
+        (Arc::clone(&world.endpoint), next_timer, woken)
     });
     let wake_at = match (deadline, next_timer) {
         (Some(a), Some(b)) => Some(a.min(b)),
@@ -1005,8 +1087,10 @@ pub fn scheduler_idle(deadline: Option<Instant>) {
 #[cfg(all(target_family = "wasm", not(target_feature = "atomics")))]
 pub fn scheduler_idle(deadline: Option<Instant>) {
     heap::gc_safepoint();
-    let (next_timer, woken) =
-        with_world(|world| (world.next_timer(), std::mem::take(&mut world.main_woken)));
+    let (next_timer, woken) = with_world(|world| {
+        let next_timer = world.next_timer().filter(|_| world.clock.is_none());
+        (next_timer, std::mem::take(&mut world.main_woken))
+    });
     let wake_at = match (deadline, next_timer) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),

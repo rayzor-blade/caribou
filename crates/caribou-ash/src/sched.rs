@@ -72,7 +72,7 @@ fn to_core(waiter: Waiter) -> sched::Waiter {
 }
 
 fn deadline_from(timeout_ns: u64) -> Option<Instant> {
-    (timeout_ns != RT_NO_TIMEOUT).then(|| Instant::now() + Duration::from_nanos(timeout_ns))
+    (timeout_ns != RT_NO_TIMEOUT).then(|| sched::now() + Duration::from_nanos(timeout_ns))
 }
 
 // ── Per-stack and per-task state ────────────────────────────────────────
@@ -215,7 +215,7 @@ pub unsafe extern "C" fn park(waiter: Waiter, timeout_ns: u64) -> bool {
 }
 
 pub unsafe extern "C" fn sleep_ns(ns: u64) {
-    sched::sleep_until(Instant::now() + Duration::from_nanos(ns));
+    sched::sleep_until(sched::now() + Duration::from_nanos(ns));
 }
 
 pub unsafe extern "C" fn block_yield() {

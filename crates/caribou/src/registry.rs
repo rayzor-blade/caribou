@@ -40,7 +40,7 @@ use std::sync::{Arc, LazyLock, RwLock};
 use caribou_abi::{LangId, Value};
 
 use crate::protocol::Callable;
-use crate::world::{self, RegisterError};
+use crate::world::{self, LANG_CORE, RegisterError};
 
 /// A type at a module's boundary, in terms every language can map to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -455,6 +455,15 @@ pub fn interfaces_of(lang: LangId) -> Vec<Arc<Interface>> {
 pub fn resolve(namespace: &str, module: &str) -> Option<(LangId, String)> {
     let namespaces = NAMESPACES.read().unwrap();
     let table = TABLE.read().unwrap();
+    // `core:` names the core's own modules first, whatever else a project
+    // puts under the name: a Haxe package `core` holds their faces.
+    if namespace == world::language_name(LANG_CORE)
+        && table
+            .interfaces
+            .contains_key(&(LANG_CORE, module.to_owned()))
+    {
+        return Some((LANG_CORE, module.to_owned()));
+    }
     if let Some(ns) = namespaces.iter().find(|ns| ns.name == namespace) {
         for lang in &ns.langs {
             let Some(id) = world::language_id(lang) else {

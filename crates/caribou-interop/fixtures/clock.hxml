@@ -1,0 +1,7 @@
+# The Haxe program of the clock test: it steps the world's clock. Rebuild
+# with `haxe clock.hxml` (Haxe 4.3.6) from this directory; clock.hl is
+# checked in.
+-cp src
+-lib caribou
+-main UseClock
+-hl clock.hl

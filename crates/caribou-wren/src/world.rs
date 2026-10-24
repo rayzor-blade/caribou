@@ -205,7 +205,7 @@ pub unsafe extern "C" fn host_poll(on: bool) {
 // ── The world ────────────────────────────────────────────────────────────
 
 fn deadline(ns: u64) -> Option<Instant> {
-    (ns != NO_DEADLINE).then(|| Instant::now() + Duration::from_nanos(ns))
+    (ns != NO_DEADLINE).then(|| sched::now() + Duration::from_nanos(ns))
 }
 
 /// A Wren task on the core's world: the context wren_lift steps.

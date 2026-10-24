@@ -10,11 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use caribou::sched::{
-    DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter,
+    DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter, advance_clock,
     attach_host_state, current_task, has_worker_pool, host_resumed, host_wait, is_pool_worker,
-    live_tasks, new_waiter, park, quiesce, request_park, resume_cause, scheduler_idle,
-    set_switch_hook, sleep_until, spawn, spawn_fiber, spawn_fiber_on_pool, suspended_sp, tick,
-    unwatch, wake, wake as wake_waiter, watch, world_id, yield_now,
+    live_tasks, new_waiter, now, park, quiesce, request_park, resume_cause, scheduler_idle,
+    set_switch_hook, sleep_until, spawn, spawn_fiber, spawn_fiber_on_pool, step_clock,
+    suspended_sp, tick, unwatch, wake, wake as wake_waiter, wall_clock, watch, world_id, yield_now,
 };
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
@@ -290,6 +290,55 @@ fn wake_from_another_thread_reaches_an_idle_world() {
     run_to_completion();
     assert!(waker.join().unwrap());
     assert_eq!(notified.get(), Some(true));
+}
+
+/// A stepped clock: tasks' sleeps end when the host moves it on, however
+/// long the wall clock runs, those with one deadline in the order they
+/// began; the main context's own sleep keeps wall time; and back on wall
+/// time a sleep under way keeps what it had left.
+#[test]
+fn a_stepped_clock_ends_task_sleeps_when_the_host_moves_it() {
+    let woke = log::<&str>();
+    step_clock();
+    let start = now();
+    for (name, ms) in [("late", 1000), ("first", 500), ("second", 500)] {
+        let woke = Rc::clone(&woke);
+        spawn_fiber(DEFAULT_STACK_SIZE, move || {
+            sleep_until(now() + Duration::from_millis(ms));
+            woke.borrow_mut().push(name);
+        });
+    }
+    tick(None);
+    std::thread::sleep(Duration::from_millis(30));
+    tick(None);
+    assert!(woke.borrow().is_empty(), "wall time does not end them");
+    assert_eq!(now(), start, "the clock stands still");
+
+    assert!(advance_clock(Duration::from_millis(500)));
+    tick(None);
+    assert_eq!(*woke.borrow(), ["first", "second"]);
+
+    // The main context's sleep is the host's: wall time, the clock unmoved.
+    let before = Instant::now();
+    sleep_until(now() + Duration::from_millis(20));
+    assert!(before.elapsed() >= Duration::from_millis(20));
+    assert_eq!(now(), start + Duration::from_millis(500));
+    assert_eq!(*woke.borrow(), ["first", "second"]);
+
+    // Half a second left on the stepped clock is half a second of wall time.
+    wall_clock();
+    assert!(
+        !advance_clock(Duration::from_secs(1)),
+        "wall time is not moved"
+    );
+    let back = Instant::now();
+    run_to_completion();
+    assert_eq!(*woke.borrow(), ["first", "second", "late"]);
+    assert!(
+        back.elapsed() >= Duration::from_millis(400),
+        "{:?}",
+        back.elapsed()
+    );
 }
 
 /// A native host that waits on its own event source: told not to wait while

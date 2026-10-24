@@ -353,6 +353,22 @@ Hud.twice(function(x:Float):Float return x + 1, 1);
 * A Wren function belongs to its VM. If it is called on another VM, or after its VM is gone, it raises "belongs to another Wren VM" instead of running. A Haxe static that holds a Wren callback must be cleared before that VM goes away. In a project there is one VM for the program's lifetime.
 * `#export = "onTick(cb: Fn)"` maps to `Dynamic` in Haxe. `cb: Fn(Num)` maps to `Float -> Void`.
 
+## The World's Clock
+
+A program that runs a fixed-step simulation steps the world's clock. Its threads' and fibers' timed waits, in every language, then end when it moves the clock on, rather than as wall time passes:
+
+```haxe
+import core.Clock;
+
+Clock.step();                 // the clock stands still from here
+sys.thread.Thread.create(() -> {
+	Sys.sleep(0.5);           // ends once the clock has moved on 0.5 s
+});
+Clock.advance(1 / 60);        // once per fixed step
+```
+
+Wren imports it as `import "core:Clock" for Clock`, Lua as `require("core.Clock").Clock`, and Python as `from core.Clock import Clock`. `Clock.now()` is the world's time in seconds, and `Clock.wall()` returns to wall time. The main thread's own `Sys.sleep` keeps wall time: it is the program's frame pacing. See [the scheduler](architecture/scheduler.md#the-worlds-clock).
+
 ## Static State
 
 State that a class keeps for itself is shared by reference and never copied. Every access goes through the owner, so a read sees the latest write from either language, and a write lands in the owner's storage.

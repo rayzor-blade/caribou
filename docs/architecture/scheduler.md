@@ -45,6 +45,17 @@ Each world keeps a ready queue of task ids, a timer heap keyed by deadline, and 
 
 The switch hook (`set_switch_hook`, one per world) runs only after the stack pointer has been published, because a hook that publishes interpreter roots may trigger a pending collection. A task's record stays in the world while the task runs; only its body is taken out. A running task can therefore attach state to itself.
 
+## The World's Clock
+
+Every timed wait on a world counts from the world's clock (`sched::now`). The clock runs on wall time unless the host steps it:
+
+* **Stepping:** `step_clock` stops the clock where it is, and `advance_clock(dt)` moves it on, once per fixed step of a simulation. A task's wait ends at the first turn after the clock passes its deadline, however long the wall clock runs. Waits with the same deadline end in the order they began, so a replay wakes them in the same order.
+* **Every language:** A Haxe thread's `Sys.sleep`, a Wren `Timer.sleep`, and a Zyntax `sleep` in Python, Lua or ZynML all compute their deadlines from the world's clock. A program reaches it as `core:Clock` (`step`, `advance`, `now`, `wall`, `stepped`); Haxe's face is `core.Clock`.
+* **The host's own waits:** The main context's waits keep wall time, as do waits on a thread that cannot switch stacks. They are the host's own frame pacing, and the clock cannot move while its host is blocked.
+* **Back to wall time:** `wall_clock` returns to wall time. A wait under way keeps what it had left to wait.
+
+The clock belongs to a world. A task a pool worker runs follows that worker's clock, so a stepped simulation keeps its tasks on its own world.
+
 ## Parking & Wait Tokens
 
 `park(waiter, deadline)` is the only blocking primitive. A waiter is a wait token. `wake(token)` marks the token as notified and moves the task to the ready queue. What `park` does depends on who calls it:

@@ -252,6 +252,9 @@ pub fn request_park(waiter: Waiter, deadline: Option<Instant>) -> bool {
 
 fn park_main(waiter: Waiter, deadline: Option<Instant>) -> bool {
     trace("park-main", waiter.token, deadline.is_some() as u64);
+    // The main context's wait is the host's own and keeps wall time: what
+    // it had left to wait on the world's clock, waited now.
+    let deadline = deadline.map(|at| Instant::now() + at.saturating_duration_since(world::now()));
     loop {
         // A registered mutator that never reaches a safepoint holds up
         // every world stop for as long as it waits.
@@ -285,6 +288,8 @@ fn park_foreign(waiter: Waiter, deadline: Option<Instant>) -> bool {
 /// Poll the registration until it resolves: for a thread with no fiber to
 /// yield, and a task that could not switch away.
 fn park_polling(waiter: Waiter, deadline: Option<Instant>) -> bool {
+    // Blocking the thread, as the main context's wait does: wall time.
+    let deadline = deadline.map(|at| Instant::now() + at.saturating_duration_since(world::now()));
     loop {
         heap::gc_safepoint();
         match wait_status(waiter.token) {

@@ -67,7 +67,11 @@ pub unsafe fn start(promise: *mut u8, lang: LangId, result: Result) -> Value {
                     };
                     return;
                 }
-                HostTaskStep::Timer(deadline) => sched::sleep_until(deadline),
+                // Zyntax's deadline is wall time; what is left of it
+                // counts on the world's clock.
+                HostTaskStep::Timer(deadline) => sched::sleep_until(
+                    sched::now() + deadline.saturating_duration_since(std::time::Instant::now()),
+                ),
                 // Waits to be woken: a bridge that parks a future wakes
                 // the task when it resolves it.
                 HostTaskStep::Parked => {
