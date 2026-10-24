@@ -13,6 +13,9 @@ use std::path::{Path, PathBuf};
 #[path = "src/wasm_toolchain.rs"]
 mod wasm_toolchain;
 
+#[path = "../caribou-ash/runtime_exports.rs"]
+mod runtime_exports;
+
 const TARGET: &str = "wasm32-wasip1";
 
 fn main() {
@@ -25,6 +28,10 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") {
         println!("cargo:rustc-link-arg-bin=caribou=-Wl,-rpath,@executable_path");
     }
+    runtime_exports::hide(
+        &PathBuf::from(env::var_os("OUT_DIR").unwrap()),
+        &["bins", "tests"],
+    );
     if env::var_os("CARGO_FEATURE_LLVM").is_none() {
         return;
     }

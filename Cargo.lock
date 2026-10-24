@@ -941,6 +941,7 @@ dependencies = [
  "caribou-wren",
  "caribou-zyntax",
  "caribou_abi",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
@@ -1027,7 +1028,7 @@ dependencies = [
  "caribou_abi",
  "raw-window-handle",
  "winit",
- "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d)",
+ "x_idl",
  "xwindow-appicon",
  "xwindow-backend",
  "xwindow-bindgen",
@@ -7315,16 +7316,6 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 [[package]]
 name = "x_idl"
 version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
- "weedle2",
-]
-
-[[package]]
-name = "x_idl"
-version = "0.1.0"
 source = "git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d#753610fd220dcfb5cce358e9418eadc48cb4562d"
 dependencies = [
  "proc-macro2",
@@ -7346,7 +7337,7 @@ dependencies = [
 name = "xavi-bindgen"
 version = "0.1.0"
 dependencies = [
- "x_idl 0.1.0",
+ "x_idl",
 ]
 
 [[package]]
@@ -7387,7 +7378,7 @@ dependencies = [
  "syn 2.0.119",
  "weedle2",
  "wgpu-types",
- "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d)",
+ "x_idl",
 ]
 
 [[package]]
@@ -7440,7 +7431,7 @@ name = "xwindow-bindgen"
 version = "0.1.0"
 source = "git+https://github.com/rayzor-blade/xwindow.git?rev=3be8f63ae997fc40b5f10c55801c18132a6050c2#3be8f63ae997fc40b5f10c55801c18132a6050c2"
 dependencies = [
- "x_idl 0.1.0 (git+https://github.com/rayzor-blade/x-idl.git?rev=753610fd220dcfb5cce358e9418eadc48cb4562d)",
+ "x_idl",
  "xwindow-core",
 ]
 

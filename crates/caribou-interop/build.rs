@@ -6,9 +6,13 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "../caribou-ash/runtime_exports.rs"]
+mod runtime_exports;
+
 fn main() {
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    runtime_exports::hide(&out_dir, &["tests", "benches"]);
     let plugins = manifest_dir.join("plugins");
     println!("cargo:rerun-if-changed={}", plugins.display());
     println!(

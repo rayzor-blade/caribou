@@ -39,6 +39,12 @@ Ash's dispatcher is described under [typed dispatch](bridge.md#typed-dispatch). 
 
 **Guard Supply:** Haxe leaves its code with a long jump, so Ash provides the bridge's guard (`bridge::set_guard`). The guard is the same trap, armed once around a whole run of another language's code. A throw from any Haxe call inside that run lands at the guard. Under a guard, a call into Haxe does not arm a trap of its own; it only marks the run's entry site as one that calls back (see [guards](bridge.md#guards)).
 
+### Programs with HDLLs
+
+A Haxe program can load HashLink native libraries (HDLLs) from beside it, as under `hl` or `ash`. An HDLL resolves the runtime's functions (`hl_*`, `hlp_*`, `ash_*`) from the process. So caribou stages one runtime image, `libhl.dylib`, beside its binary, and installs its heap and scheduler into that image before the program starts. Ash then runs its own standard library through the same image, so the program and its HDLLs share one heap and one scheduler.
+
+The binary links a copy of ash_std of its own, and its symbols are exported for hatch packages' Wren plugins. Its build hides ash_std's exports (`crates/caribou-ash/runtime_exports.rs`), so an HDLL never binds to that copy. If it did, a call such as resolving an `ash.Future` from a native thread would run on Ash's own scheduler, and the waiter caribou parked would never wake.
+
 ## Wren Objects
 
 A Wren object crosses the bridge as its core address: the start of the prefixed allocation, sixteen bytes before the address WrenLift itself holds. Word zero is the descriptor of the VM's heap record, which is how a protocol message finds the VM that owns the object. Word one is the bridge word. It holds the object from another language that represents this one (the protocol's shadow, described below) plus three flag bits the adapter uses. `caribou_wren::wrap` and `unwrap` convert between the two addresses, and every protocol entry adds the prefix back before touching the object.
