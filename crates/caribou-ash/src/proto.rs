@@ -1354,7 +1354,7 @@ pub(crate) fn field_hash(name: Symbol) -> i32 {
 
 /// A declared field of an object type: its byte offset and type, found
 /// up the class chain in the runtime's lookup tables.
-unsafe fn field_of(t: *mut hl_type, hfield: i32) -> Option<(usize, *mut hl_type)> {
+pub(crate) unsafe fn field_of(t: *mut hl_type, hfield: i32) -> Option<(usize, *mut hl_type)> {
     if !matches!(unsafe { (*t).kind }, hl::HOBJ | hl::HSTRUCT) {
         return None;
     }

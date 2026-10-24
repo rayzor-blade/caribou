@@ -265,6 +265,11 @@ pub(crate) unsafe fn enum_to_haxe(p: *mut EnumData) -> Result<*mut vdynamic, Str
         as *mut hl_type;
     let index = unsafe { (*p).index };
     let c = unsafe { &*(*(*t).detail.tenum).constructs.add(index as usize) };
+    if c.nparams == 0
+        && let Some(value) = unsafe { shared_value(t, index as usize) }
+    {
+        return Ok(value);
+    }
     let obj = unsafe { ash_std::types::hlp_alloc_enum(t.cast(), index as i32) }.cast::<u8>();
     if obj.is_null() {
         return Err("could not allocate Haxe enum".into());
@@ -281,6 +286,34 @@ pub(crate) unsafe fn enum_to_haxe(p: *mut EnumData) -> Result<*mut vdynamic, Str
         .ok_or("invalid enum payload type")??;
     }
     Ok(obj.cast())
+}
+
+/// The program's own value of the constructor `index` of `t`, one without
+/// fields: Haxe keeps one per such constructor in its enum's `__evalues__`,
+/// the value `Type.createEnumIndex` answers, and `==` compares by it.
+/// `None` before the program has set its enums up.
+unsafe fn shared_value(t: *mut hl_type, index: usize) -> Option<*mut vdynamic> {
+    let global = unsafe { (*(*t).detail.tenum).global_value };
+    if global.is_null() {
+        return None;
+    }
+    let enumeration = unsafe { *global }.cast::<vdynamic>();
+    if enumeration.is_null() {
+        return None;
+    }
+    let hfield = proto::field_hash(caribou::symbol::intern("__evalues__"));
+    let (offset, _) = unsafe { proto::field_of((*enumeration).t, hfield) }?;
+    let values = unsafe {
+        *enumeration
+            .cast::<u8>()
+            .add(offset)
+            .cast::<*mut hl::varray>()
+    };
+    if values.is_null() || index >= unsafe { (*values).size } as usize {
+        return None;
+    }
+    let value = unsafe { *hl::aptr::<*mut vdynamic>(values).add(index) };
+    (!value.is_null()).then_some(value)
 }
 
 /// A tuple as a Haxe anonymous object, `{count: 3, label: "count"}`: each
