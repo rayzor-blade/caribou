@@ -46,7 +46,11 @@ class Main {
 ```
 
 `poll()` returns the next event without waiting, and `wait(seconds)` waits
-for one. Both return `None` when there is none. Sizes and positions a window
+for one. Both return `None` when there is none. A wait joins the world's
+scheduler: the world's ready tasks run first, the wait lasts no longer than
+the world's next timer, and work queued for the world from another thread
+ends it, returning `None`, so a loop around `wait` keeps the program's
+fibers and timers running. Sizes and positions a window
 reports are in physical pixels; those a program asks for are logical.
 
 ## On a phone

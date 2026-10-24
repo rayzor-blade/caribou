@@ -170,7 +170,7 @@ fn a_plugin_is_a_language_wren_imports() {
         },
         "Vec2"
     );
-    assert_eq!(ABI_VERSION, 10);
+    assert_eq!(ABI_VERSION, 11);
     assert_eq!(math.classes().len(), 4);
 
     let world = World::new(Config::default());

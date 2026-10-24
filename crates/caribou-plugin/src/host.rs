@@ -42,6 +42,8 @@ pub static HOST: Host = Host {
     agent,
     watch,
     blocking,
+    host_wait,
+    host_resumed,
 };
 
 unsafe extern "C" fn future_new() -> caribou_abi::Future {
@@ -185,6 +187,21 @@ unsafe extern "C" fn agent(name: *const u8, len: usize, address: usize) -> bool 
     {
         let _ = (name, len, address);
         false
+    }
+}
+
+/// A thread with no world has nothing to run, and waits as it asked.
+unsafe extern "C" fn host_wait(timeout: f64, wake: unsafe extern "C" fn()) -> f64 {
+    if !caribou::sched::has_world() {
+        return timeout;
+    }
+    let timeout = (timeout >= 0.0).then(|| std::time::Duration::from_secs_f64(timeout));
+    caribou::sched::host_wait(timeout, wake).map_or(-1.0, |wait| wait.as_secs_f64())
+}
+
+unsafe extern "C" fn host_resumed() {
+    if caribou::sched::has_world() {
+        caribou::sched::host_resumed();
     }
 }
 

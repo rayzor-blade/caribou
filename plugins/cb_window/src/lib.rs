@@ -14,11 +14,35 @@
     feature(stdarch_wasm_atomic_wait)
 )]
 
-// The external-pump hooks wait for the world's loop to drive them.
 #[cfg(not(target_os = "wasi"))]
-#[allow(dead_code)]
 mod backend {
-    include!(concat!(env!("OUT_DIR"), "/xwindow_backend/native.rs"));
+    // The external-pump hooks are for a host that owns the loop; a window's
+    // own wait joins the world's scheduler instead (`window_wait`).
+    #[allow(dead_code)]
+    mod native {
+        include!(concat!(env!("OUT_DIR"), "/xwindow_backend/native.rs"));
+    }
+    pub use native::*;
+
+    /// A window's blocking wait, joined to the world's scheduler: the
+    /// world's ready tasks run first, the wait lasts no longer than its
+    /// next timer, and work queued for the world meanwhile wakes it.
+    pub unsafe fn window_wait(handle: i32, timeout: f64) -> crate::Event {
+        unsafe extern "C" fn wake() {
+            unsafe { native::window_wake() };
+        }
+        struct Resumed;
+        impl Drop for Resumed {
+            fn drop(&mut self) {
+                caribou_abi::host::host_resumed();
+            }
+        }
+        // Prepared before the backend borrows its loop: a task the turn
+        // runs may itself call a window's API.
+        let timeout = caribou_abi::host::host_wait(timeout, wake);
+        let _resumed = Resumed;
+        unsafe { native::window_wait(handle, timeout) }
+    }
 }
 
 /// The host's hook, for a host that builds the event loop (on Android, with

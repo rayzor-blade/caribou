@@ -76,6 +76,15 @@ pub struct Host {
     /// system's pump), `false` after: the collector may run meanwhile.
     /// Nothing between the two touches the heap or calls the program.
     pub blocking: unsafe extern "C" fn(bool),
+    /// Before a wait on the caller's own event source (a window system's
+    /// loop): run one turn of the world, and answer how long the wait may
+    /// last, `timeout` or less, zero when work is already waiting;
+    /// negative is no deadline, either way. Until `host_resumed`, work
+    /// queued for the world calls `wake`, which must be thread-safe and
+    /// must not enter the program.
+    pub host_wait: unsafe extern "C" fn(f64, unsafe extern "C" fn()) -> f64,
+    /// The wait [`Host::host_wait`] prepared is over.
+    pub host_resumed: unsafe extern "C" fn(),
 }
 
 static HOST: AtomicPtr<Host> = AtomicPtr::new(core::ptr::null_mut());
@@ -127,6 +136,16 @@ pub fn raise(kind: ErrorKind, message: &str) {
 /// `blocking(false)`; see [`Host::blocking`].
 pub fn blocking(waiting: bool) {
     unsafe { (host().blocking)(waiting) }
+}
+
+/// Prepare a wait on the caller's own event source; see [`Host::host_wait`].
+pub fn host_wait(timeout: f64, wake: unsafe extern "C" fn()) -> f64 {
+    unsafe { (host().host_wait)(timeout, wake) }
+}
+
+/// The wait [`host_wait`] prepared is over.
+pub fn host_resumed() {
+    unsafe { (host().host_resumed)() }
 }
 
 /// Raise `err`, an error value a call handed back, on to the caller.
