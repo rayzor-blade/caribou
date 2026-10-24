@@ -1,6 +1,6 @@
 //! The caribou command.
 //!
-//!     caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]
+//!     caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]
 //!     caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]
 //!     caribou serve [--port <port>] [--lan] [<project.cbproj>]
 //!     caribou describe <module.wren | plugin library | root directory>...
@@ -31,7 +31,7 @@ use caribou_ash::Mode;
 use caribou_driver::cbproj::{self, Project};
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -58,6 +58,18 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                         return Err(format!("--wren takes interpreter or tiered, not {other:?}"));
                     }
                 };
+            }
+            "--preset" => {
+                let name = argv.next();
+                options.preset = name
+                    .as_deref()
+                    .and_then(caribou_ash::TierPreset::parse)
+                    .ok_or_else(|| {
+                        format!(
+                            "--preset takes one of {}, not {name:?}",
+                            caribou_ash::TierPreset::names().join(", ")
+                        )
+                    })?;
             }
             "--report" => options.report = true,
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}")),

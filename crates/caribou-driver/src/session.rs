@@ -10,7 +10,7 @@ use caribou::registry;
 use caribou::report::Report;
 use caribou::world::{Config, Event, EventKind, LANG_CORE, World};
 use caribou_abi::{ErrorKind, Value};
-use caribou_ash::{Mode, Options as AshOptions, Program};
+use caribou_ash::{Mode, Options as AshOptions, Program, TierPreset};
 use wren_lift::runtime::engine::ExecutionMode;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
@@ -35,6 +35,8 @@ pub struct Options {
     /// walks without inlining and enters no interpreted loop by OSR, so a
     /// measurement of the program itself turns this off.
     pub reload: bool,
+    /// Ash's tier thresholds in hybrid mode (`--preset`).
+    pub preset: TierPreset,
 }
 
 impl Default for Options {
@@ -46,6 +48,7 @@ impl Default for Options {
             args: Vec::new(),
             report: false,
             reload: true,
+            preset: TierPreset::Application,
         }
     }
 }
@@ -79,6 +82,7 @@ impl Session {
             mode: options.mode,
             args: options.args,
             reload: options.reload,
+            preset: options.preset.clone(),
             ..AshOptions::default()
         };
         let bytes = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
@@ -159,6 +163,7 @@ impl Session {
             mode: options.mode,
             args: options.args,
             reload: options.reload,
+            preset: options.preset.clone(),
             ..AshOptions::default()
         };
         let plugins = project.load_plugins()?;

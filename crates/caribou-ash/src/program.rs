@@ -58,6 +58,8 @@ pub struct Options {
     /// is not entered by OSR: the trade Ash makes under `--hot-reload`.
     /// Off for a program loaded from bytes, which has no file.
     pub reload: bool,
+    /// The tier thresholds in hybrid mode, as `ash --preset` names them.
+    pub preset: TierPreset,
 }
 
 impl Default for Options {
@@ -67,6 +69,7 @@ impl Default for Options {
             install: true,
             args: Vec::new(),
             reload: true,
+            preset: TierPreset::Application,
         }
     }
 }
@@ -416,7 +419,7 @@ fn load_with(
         unsafe { set(object_drops.as_ptr(), object_drops.len()) };
     }
     if options.mode == Mode::Hybrid {
-        // ash's CLI defaults: the Application preset, tier from ASH_TIER.
+        // As ash's CLI takes them: the preset's thresholds, tier from ASH_TIER.
         let tier_mode = match std::env::var("ASH_TIER") {
             Ok(spec) => {
                 TierMode::parse(&spec).ok_or_else(|| anyhow!("invalid ASH_TIER value {spec:?}"))?
@@ -429,7 +432,7 @@ fn load_with(
         let cfg = TieredConfig {
             tier_mode,
             hot_reload: options.reload,
-            ..TierPreset::Application.to_config()
+            ..options.preset.clone().to_config()
         };
         interpreter.enable_tiered(path, &resolver, &bytecode, cfg)?;
     } else if options.reload {
