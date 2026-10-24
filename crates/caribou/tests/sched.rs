@@ -293,6 +293,24 @@ fn wake_from_another_thread_reaches_an_idle_world() {
     assert_eq!(notified.get(), Some(true));
 }
 
+/// A thread that ends with a task still parked on its world takes the task
+/// down with the world, after the thread's other tables are gone.
+#[test]
+#[cfg_attr(
+    all(target_family = "wasm", not(target_feature = "atomics")),
+    ignore = "needs threads"
+)]
+fn a_thread_ends_with_a_task_still_parked() {
+    std::thread::spawn(|| {
+        spawn_fiber(DEFAULT_STACK_SIZE, || {
+            park(new_waiter(), None);
+        });
+        tick(None);
+    })
+    .join()
+    .expect("the thread ends cleanly");
+}
+
 /// Cancelling a scope ends the waits of its tasks at once, a child's that
 /// joined it from its parent's too, and a wait one starts afterwards; a
 /// task outside the scope runs as it would.

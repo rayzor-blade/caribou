@@ -184,7 +184,8 @@ pub(crate) fn switch_runs(from: u64, to: u64) {
 
 /// The stack `id` is gone, its runs with it.
 pub(crate) fn forget_runs(id: u64) {
-    RUNS.with(|r| {
+    // Gone already when the thread's world drops its tasks at the end.
+    let _ = RUNS.try_with(|r| {
         r.others.borrow_mut().remove(&id);
     });
 }

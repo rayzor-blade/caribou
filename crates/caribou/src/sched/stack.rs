@@ -123,5 +123,7 @@ fn put_back(stack: u64, mut states: Vec<Box<dyn HostState>>) {
 /// The stack `id` is gone: its states with it.
 pub fn forget_stack(id: u64) {
     crate::bridge::forget_runs(id);
-    STACKS.with(|stacks| stacks.borrow_mut().remove(&id));
+    // A task the thread still held when it ended goes with the thread's
+    // world, which may outlive this table.
+    let _ = STACKS.try_with(|stacks| stacks.borrow_mut().remove(&id));
 }
