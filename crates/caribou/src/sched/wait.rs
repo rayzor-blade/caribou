@@ -221,6 +221,10 @@ pub fn park(waiter: Waiter, deadline: Option<Instant>) -> bool {
 }
 
 fn park_task(waiter: Waiter, deadline: Option<Instant>) -> bool {
+    if world::cancelled() {
+        finish_wait(waiter.token);
+        return false;
+    }
     if wait_status(waiter.token) == Some(WaitStatus::Notified) {
         finish_wait(waiter.token);
         return true;

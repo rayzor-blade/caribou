@@ -11,10 +11,11 @@ use std::time::{Duration, Instant};
 
 use caribou::sched::{
     DEFAULT_STACK_SIZE, HostState, ResumeCause, Suspension, Task, TaskId, Waiter, advance_clock,
-    attach_host_state, current_task, has_worker_pool, host_resumed, host_wait, is_pool_worker,
-    live_tasks, new_waiter, now, park, quiesce, request_park, resume_cause, scheduler_idle,
-    set_switch_hook, sleep_until, spawn, spawn_fiber, spawn_fiber_on_pool, step_clock,
-    suspended_sp, tick, unwatch, wake, wake as wake_waiter, wall_clock, watch, world_id, yield_now,
+    attach_host_state, cancel_scope, cancelled, current_task, enter_scope, has_worker_pool,
+    host_resumed, host_wait, is_pool_worker, live_tasks, new_scope, new_waiter, now, park, quiesce,
+    request_park, resume_cause, scheduler_idle, set_switch_hook, sleep_until, spawn, spawn_fiber,
+    spawn_fiber_on_pool, step_clock, suspended_sp, tick, unwatch, wake, wake as wake_waiter,
+    wall_clock, watch, world_id, yield_now,
 };
 
 type Log<T> = Rc<RefCell<Vec<T>>>;
@@ -290,6 +291,70 @@ fn wake_from_another_thread_reaches_an_idle_world() {
     run_to_completion();
     assert!(waker.join().unwrap());
     assert_eq!(notified.get(), Some(true));
+}
+
+/// Cancelling a scope ends the waits of its tasks at once, a child's that
+/// joined it from its parent's too, and a wait one starts afterwards; a
+/// task outside the scope runs as it would.
+#[test]
+fn cancelling_a_scope_ends_its_tasks_waits() {
+    let log = log::<(&str, bool, bool)>();
+    let scope = new_scope();
+    let outer = enter_scope(scope);
+    let note = |log: &Log<(&'static str, bool, bool)>, name, woken| {
+        log.borrow_mut().push((name, woken, cancelled()));
+    };
+    {
+        let log = Rc::clone(&log);
+        spawn_fiber(DEFAULT_STACK_SIZE, move || {
+            let child_log = Rc::clone(&log);
+            spawn_fiber(DEFAULT_STACK_SIZE, move || {
+                let woken = park(new_waiter(), None);
+                note(&child_log, "child", woken);
+            });
+            let woken = park(new_waiter(), Some(now() + Duration::from_secs(10)));
+            note(&log, "sleeper", woken);
+            let again = park(new_waiter(), Some(now() + Duration::from_secs(10)));
+            note(&log, "again", again);
+        });
+    }
+    {
+        let log = Rc::clone(&log);
+        spawn_fiber(DEFAULT_STACK_SIZE, move || {
+            let woken = park(new_waiter(), None);
+            note(&log, "parked", woken);
+        });
+    }
+    enter_scope(outer);
+    {
+        let log = Rc::clone(&log);
+        spawn_fiber(DEFAULT_STACK_SIZE, move || {
+            sleep_until(now() + Duration::from_millis(20));
+            note(&log, "outside", true);
+        });
+    }
+    tick(None);
+    tick(None);
+    assert_eq!(cancel_scope(scope), 3);
+    let start = Instant::now();
+    run_to_completion();
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+    let mut seen = log.borrow().clone();
+    seen.sort();
+    assert_eq!(
+        seen,
+        [
+            ("again", false, true),
+            ("child", false, true),
+            ("outside", true, false),
+            ("parked", false, true),
+            ("sleeper", false, true),
+        ]
+    );
 }
 
 /// A stepped clock: tasks' sleeps end when the host moves it on, however

@@ -40,6 +40,13 @@ pub unsafe fn start(promise: *mut u8, lang: LangId, result: Result) -> Value {
         let _kept = kept;
         let mut task = HostTask::new(promise);
         loop {
+            // A cancelled scope's task steps no further: the future is
+            // rejected, and the machine dropped with the task.
+            if sched::cancelled() {
+                let error = Error::new(ErrorKind::Runtime, "the task was cancelled", lang);
+                unsafe { future::settle(settled, Error::value(error), true) };
+                return;
+            }
             let step = crate::foreign::as_caller(lang, || task.step());
             if let Some(error) = raised(&result) {
                 unsafe { future::settle(settled, error, true) };

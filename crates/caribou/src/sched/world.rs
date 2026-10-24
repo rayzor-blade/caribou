@@ -362,10 +362,96 @@ fn install(id: TaskId, record: TaskRecord) {
     });
 }
 
-fn spawn_local(id: TaskId, record: TaskRecord) -> TaskId {
+fn spawn_local(id: TaskId, mut record: TaskRecord) -> TaskId {
+    record.scope = current_scope();
     with_world(|world| world.endpoint.assigned.fetch_add(1, Ordering::AcqRel));
     install(id, record);
     id
+}
+
+static NEXT_SCOPE: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// The scope the main context spawns into.
+    static MAIN_SCOPE: Cell<u64> = const { Cell::new(0) };
+}
+
+fn running_task() -> Option<TaskId> {
+    ACTIVE.with(|active| active.get().map(|task| task.id))
+}
+
+/// A new scope: a set of tasks the host can cancel together, such as
+/// everything a module started ([`enter_scope`], [`cancel_scope`]).
+pub fn new_scope() -> u64 {
+    NEXT_SCOPE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// The scope the running context's tasks join: a task's own, which its
+/// children inherit, or the main context's; 0 for none.
+pub fn current_scope() -> u64 {
+    match running_task() {
+        Some(id) => with_world(|world| world.tasks.get(&id).map_or(0, |record| record.scope)),
+        None => MAIN_SCOPE.with(Cell::get),
+    }
+}
+
+/// Make `scope` the running context's: what the tasks it spawns from now
+/// on join, and, for a task, the scope it belongs to itself. Returns the
+/// scope it replaces.
+pub fn enter_scope(scope: u64) -> u64 {
+    match running_task() {
+        Some(id) => with_world(|world| {
+            world
+                .tasks
+                .get_mut(&id)
+                .map_or(0, |record| std::mem::replace(&mut record.scope, scope))
+        }),
+        None => MAIN_SCOPE.with(|main| main.replace(scope)),
+    }
+}
+
+/// Cancel the tasks of `scope` on this world: each waiting one wakes with
+/// [`ResumeCause::Cancelled`], and a wait any of them starts from now on
+/// ends at once. A task's code learns of it from [`cancelled`] and leaves
+/// the way its language leaves, raising through its frames; nothing is
+/// torn down under it. Returns how many tasks it reached.
+pub fn cancel_scope(scope: u64) -> usize {
+    if scope == 0 {
+        return 0;
+    }
+    with_world(|world| {
+        let mut reached = 0;
+        let mut woken = Vec::new();
+        for (&id, record) in world.tasks.iter_mut() {
+            if record.scope != scope || record.cancelled {
+                continue;
+            }
+            record.cancelled = true;
+            reached += 1;
+            // Claimed as a timeout would be, so no waker races the cancel;
+            // the cause says why.
+            if let RunState::Waiting(token) = record.run_state
+                && claim_timeout(token)
+            {
+                record.run_state = RunState::Runnable;
+                record.resume_cause = ResumeCause::Cancelled;
+                finish_wait(token);
+                woken.push(id);
+            }
+        }
+        for id in woken {
+            world.enqueue_ready(id);
+        }
+        reached
+    })
+}
+
+/// Whether the running task's scope was cancelled; false on the main
+/// context.
+pub fn cancelled() -> bool {
+    running_task().is_some_and(|id| {
+        with_world(|world| world.tasks.get(&id).is_some_and(|record| record.cancelled))
+    })
 }
 
 /// A stackful task on this world: a krio fiber with its own stack, which
@@ -815,6 +901,16 @@ fn resume_task(id: TaskId) -> bool {
         // A recorded wait parks the task whatever it returned; without
         // one, `Pending` is a yield, since nothing could wake it.
         match active.pending_park {
+            // A cancelled task's wait ends at once, as a due timer's does.
+            Some(request) if record.cancelled => {
+                let token = request.waiter.token();
+                if claim_timeout(token) {
+                    finish_wait(token);
+                }
+                record.run_state = RunState::Runnable;
+                record.resume_cause = ResumeCause::Cancelled;
+                world.enqueue_ready(id);
+            }
             Some(request) => {
                 debug_assert_eq!(request.waiter.task(), id);
                 record.run_state = RunState::Waiting(request.waiter.token());

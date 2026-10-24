@@ -56,6 +56,17 @@ Every timed wait on a world counts from the world's clock (`sched::now`). The cl
 
 The clock belongs to a world. A task a pool worker runs follows that worker's clock, so a stepped simulation keeps its tasks on its own world.
 
+## Scopes & Cancellation
+
+A scope is a set of tasks the host cancels together, such as everything a module started (`new_scope`, `enter_scope`, `cancel_scope`):
+
+* **Membership:** A task joins the scope current where it was spawned: its parent task's, or the main context's (`enter_scope`). A task's children join its scope.
+* **Cancelling:** `cancel_scope` marks the scope's tasks on the world. A waiting task wakes with `ResumeCause::Cancelled`, and any wait a cancelled task starts afterwards ends at once.
+* **Unwinding:** Cancelling tears nothing down. The task's code asks `cancelled` after a wait and leaves the way its language leaves. A Haxe engine's wait throws, and the bridge carries the throw through any Wren, Lua or Python frames above it, as it carries any error. A Zyntax async task stops stepping, and its future is rejected.
+* **Programs:** A program reaches scopes as `core:Scope` (`open`, `enter`, `current`, `cancel`, `cancelled`); Haxe's face is `core.Scope`.
+
+A scope covers the tasks of the world it is cancelled on. A task a pool worker runs is not part of it.
+
 ## Parking & Wait Tokens
 
 `park(waiter, deadline)` is the only blocking primitive. A waiter is a wait token. `wake(token)` marks the token as notified and moves the task to the ready queue. What `park` does depends on who calls it:

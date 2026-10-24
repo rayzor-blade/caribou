@@ -1,0 +1,7 @@
+# The Haxe program of the scope test: it cancels the threads it started in
+# a scope. Rebuild with `haxe scope.hxml` (Haxe 4.3.6) from this
+# directory; scope.hl is checked in.
+-cp src
+-lib caribou
+-main UseScope
+-hl scope.hl

@@ -181,6 +181,7 @@ impl World {
         crate::future::publish();
         crate::data::publish();
         crate::clock::publish();
+        crate::scope::publish();
         // Materialise this thread's scheduler and install the heap's poll hook.
         let _ = sched::world_id();
         registry::set_namespaces(config.namespaces);

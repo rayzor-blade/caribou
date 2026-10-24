@@ -35,6 +35,8 @@ pub enum ResumeCause {
     Scheduled,
     Notified,
     TimedOut,
+    /// Its scope was cancelled ([`super::cancel_scope`]).
+    Cancelled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -265,6 +267,10 @@ pub(super) struct TaskRecord {
     pub(super) fresh: bool,
     /// A stackless body's own way of suspending from inside its step.
     pub(super) suspend: Option<Suspend>,
+    /// The scope the task belongs to; 0 for none.
+    pub(super) scope: u64,
+    /// Its scope was cancelled: a wait it starts ends at once.
+    pub(super) cancelled: bool,
 }
 
 impl TaskRecord {
@@ -277,6 +283,8 @@ impl TaskRecord {
             host: Vec::new(),
             fresh: true,
             suspend: None,
+            scope: 0,
+            cancelled: false,
         }
     }
 }

@@ -30,6 +30,7 @@ pub mod protocol;
 pub mod registry;
 pub mod report;
 pub mod sched;
+pub mod scope;
 pub mod spin;
 pub mod symbol;
 pub mod world;

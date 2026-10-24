@@ -369,6 +369,25 @@ Clock.advance(1 / 60);        // once per fixed step
 
 Wren imports it as `import "core:Clock" for Clock`, Lua as `require("core.Clock").Clock`, and Python as `from core.Clock import Clock`. `Clock.now()` is the world's time in seconds, and `Clock.wall()` returns to wall time. The main thread's own `Sys.sleep` keeps wall time: it is the program's frame pacing. See [the scheduler](architecture/scheduler.md#the-worlds-clock).
 
+## Cancelling What a Program Started
+
+A host that starts tasks for a module (an editor previewing a game, say) opens a scope, starts them in it, and cancels them together:
+
+```haxe
+import core.Scope;
+
+var scope = Scope.open();
+var before = Scope.enter(scope);   // threads and fibers started now join it
+sys.thread.Thread.create(() -> {
+	Sys.sleep(10);                 // ends at once when the scope is cancelled
+	if (Scope.cancelled()) return;
+});
+Scope.enter(before);
+Scope.cancel(scope);
+```
+
+A cancelled task's waits end at once, and its code leaves by asking `Scope.cancelled()`, usually by throwing from the wait that noticed. A Python, Lua or ZynML async call started in the scope is stopped, and its future rejected.
+
 ## Static State
 
 State that a class keeps for itself is shared by reference and never copied. Every access goes through the owner, so a read sees the latest write from either language, and a write lands in the owner's storage.
