@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1792899965,"nonce":"ZN5sGXZ82vQHEDGZqUH9UrauT5A=","message":"Landed in 67e77cb6 (libudev) and 4a074fffb0871305e7a0f1d7558ec77b08289b0a (version script); CI run 40157215427 green on every job.","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1792899965,"nonce":"pRITrizg//G3LwTO0wLDzMWOlz8=","status":2}]}
