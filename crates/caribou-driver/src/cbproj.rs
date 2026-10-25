@@ -20,6 +20,10 @@
 //! [dependencies.lua]
 //! penlight = "1.13.1"
 //!
+//! [haxe]
+//! class-paths = ["../engine/haxe"]
+//! defines = { editor = true, level = "2" }
+//!
 //! [plugins]
 //! gpu = { path = "../plugins/cb_gpu" }
 //! window = { path = "../plugins/cb_window", link = "side" }
@@ -38,15 +42,17 @@
 //! built for this machine for a hosted run, and for a program built ahead
 //! of time it is linked in, or with `link = "side"` built as a side module
 //! beside the program ([`crate::linked`]); a library is loaded as it is.
-//! Paths are relative to the file. What the project builds goes to
-//! `target/` beside it.
+//! `[haxe]` takes rayzor.toml's keys: `class-paths` are Haxe libraries
+//! beyond the sources, compiled as far as the program reaches, and
+//! `defines` are `-D` flags. Paths are relative to the file. What the
+//! project builds goes to `target/` beside it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// The extension a project file has.
 pub const EXTENSION: &str = "cbproj";
@@ -61,7 +67,19 @@ struct File {
     #[serde(default)]
     dependencies: Dependencies,
     #[serde(default)]
+    haxe: HaxeSection,
+    #[serde(default)]
     plugins: BTreeMap<String, PluginEntry>,
+}
+
+/// Haxe's own settings, with rayzor.toml's keys.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
+struct HaxeSection {
+    #[serde(default)]
+    class_paths: Vec<PathBuf>,
+    #[serde(default)]
+    defines: BTreeMap<String, toml::Value>,
 }
 
 #[derive(Deserialize)]
@@ -139,6 +157,12 @@ pub struct Project {
     pub plugins: BTreeMap<String, PathBuf>,
     /// The plugins built as side modules for a program built ahead of time.
     pub side_modules: Vec<PathBuf>,
+    /// Haxe class paths beyond the sources: libraries.
+    pub haxe_class_paths: Vec<PathBuf>,
+    /// `-D` flags, `name` or `name=value`.
+    pub haxe_defines: Vec<String>,
+    /// The file's `[dependencies]` as it declares them.
+    pub declared: toml::Table,
 }
 
 impl Project {
@@ -147,11 +171,26 @@ impl Project {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let file: File = toml::from_str(&text).with_context(|| path.display().to_string())?;
-        let dir = path
-            .parent()
-            .filter(|d| !d.as_os_str().is_empty())
-            .unwrap_or(Path::new("."))
-            .to_path_buf();
+        let declared = toml::from_str::<toml::Table>(&text)?
+            .remove("dependencies")
+            .and_then(|d| d.as_table().cloned())
+            .unwrap_or_default();
+        let path = &normal(&std::path::absolute(path)?);
+        let dir = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let mut haxe_defines = Vec::new();
+        for (name, value) in &file.haxe.defines {
+            match value {
+                toml::Value::Boolean(true) => haxe_defines.push(name.clone()),
+                toml::Value::Boolean(false) => {}
+                toml::Value::String(s) => haxe_defines.push(format!("{name}={s}")),
+                toml::Value::Integer(n) => haxe_defines.push(format!("{name}={n}")),
+                toml::Value::Float(n) => haxe_defines.push(format!("{name}={n}")),
+                _ => bail!(
+                    "{}: define `{name}` takes a string, a number or a boolean",
+                    path.display()
+                ),
+            }
+        }
         let header = file.project;
         let (lang, module) = header.entry.split_once(':').ok_or_else(|| {
             anyhow!(
@@ -179,7 +218,7 @@ impl Project {
                 module: module.to_owned(),
             },
             languages: header.languages,
-            sources: sources.iter().map(|s| dir.join(s)).collect(),
+            sources: sources.iter().map(|s| normal(&dir.join(s))).collect(),
             haxelibs: file.dependencies.haxe,
             packages: file.dependencies.wren,
             python: file.dependencies.python,
@@ -188,13 +227,21 @@ impl Project {
                 .plugins
                 .values()
                 .filter(|p| p.link == Link::Side)
-                .map(|p| dir.join(&p.path))
+                .map(|p| normal(&dir.join(&p.path)))
                 .collect(),
             plugins: file
                 .plugins
                 .into_iter()
-                .map(|(name, p)| (name, dir.join(p.path)))
+                .map(|(name, p)| (name, normal(&dir.join(p.path))))
                 .collect(),
+            haxe_class_paths: file
+                .haxe
+                .class_paths
+                .iter()
+                .map(|c| normal(&dir.join(c)))
+                .collect(),
+            haxe_defines,
+            declared,
             dir,
         })
     }
@@ -226,64 +273,91 @@ impl Project {
         self.dir.join("target")
     }
 
-    /// Compile the Haxe entry to HashLink bytecode in the target
-    /// directory, with caribou's library and the declared haxelibs, and
-    /// every Haxe module in the sources with it.
-    pub fn compile_haxe(&self) -> Result<PathBuf> {
+    /// The program `compile_haxe` writes.
+    pub fn haxe_output(&self) -> PathBuf {
+        self.target_dir().join(format!("{}.hl", self.name))
+    }
+
+    /// The arguments `haxe` runs with, from [`Self::dir`], for the plugin
+    /// libraries `plugins`. The sources are relative class paths: caribou's
+    /// library describes the relative ones, the project's own, and the
+    /// include takes every module in them, since another language may
+    /// import any. The `[haxe]` class paths are absolute, as libraries'
+    /// are, and compiled as far as the program reaches.
+    pub fn haxe_args(&self, plugins: &[PathBuf]) -> Result<Vec<String>> {
         if self.entry.lang != "haxe" {
             bail!(
                 "the entry is {}; only a Haxe entry starts a program so far",
                 self.entry.lang
             );
         }
-        let out = self.target_dir().join(format!("{}.hl", self.name));
-        std::fs::create_dir_all(self.target_dir())?;
-        let mut command = Command::new("haxe");
-        // Relative to the project, where the compiler runs: the library
-        // takes an absolute class path for the standard library's.
-        let sources: Vec<&Path> = self
+        let sources: Vec<String> = self
             .sources
             .iter()
-            .map(|s| s.strip_prefix(&self.dir).unwrap_or(s))
+            .map(|s| s.strip_prefix(&self.dir).unwrap_or(s).display().to_string())
             .collect();
+        let mut args = Vec::new();
         for source in &sources {
-            command.arg("-cp").arg(source);
+            args.extend(["-cp".to_owned(), source.clone()]);
         }
-        command.args(["-lib", "caribou"]);
+        for class_path in &self.haxe_class_paths {
+            args.extend(["-cp".to_owned(), class_path.display().to_string()]);
+        }
+        args.extend(["-L".to_owned(), "caribou".to_owned()]);
         // The declared plugins, which the library gives Haxe faces in place
         // of any it would find beside the output.
-        let plugins = self.plugin_libraries()?;
         if !plugins.is_empty() {
-            let list = std::env::join_paths(&plugins)?;
-            command
-                .arg("-D")
-                .arg(format!("caribou_plugins={}", list.to_string_lossy()));
+            let list = std::env::join_paths(plugins)?;
+            args.extend([
+                "-D".to_owned(),
+                format!("caribou_plugins={}", list.to_string_lossy()),
+            ]);
+        }
+        for define in &self.haxe_defines {
+            args.extend(["-D".to_owned(), define.clone()]);
         }
         for (lib, version) in &self.haxelibs {
-            match version.as_str() {
-                "*" | "" => command.args(["-lib", lib]),
-                version => command.args(["-lib", &format!("{lib}:{version}")]),
+            let lib = match version.as_str() {
+                "*" | "" => lib.clone(),
+                version => format!("{lib}:{version}"),
             };
+            args.extend(["-L".to_owned(), lib]);
         }
-        // Every module in the sources, not only what the entry reaches:
-        // another language may import any of them.
-        let sources: Vec<String> = sources
-            .iter()
-            .map(|s| format!("'{}'", s.display()))
-            .collect();
-        command
-            .arg("--macro")
-            .arg(format!("include('', true, null, [{}])", sources.join(", ")))
-            .args(["-main", &self.entry.module, "-hl"])
-            .arg(&out)
-            .current_dir(&self.dir);
-        let status = command
+        let included: Vec<String> = sources.iter().map(|s| format!("'{s}'")).collect();
+        args.extend([
+            "--macro".to_owned(),
+            format!("include('', true, null, [{}])", included.join(", ")),
+            "-main".to_owned(),
+            self.entry.module.clone(),
+            "-hl".to_owned(),
+            self.haxe_output().display().to_string(),
+        ]);
+        Ok(args)
+    }
+
+    /// Compile the Haxe entry to HashLink bytecode in the target
+    /// directory, with caribou's library and the declared haxelibs, and
+    /// every Haxe module in the sources with it.
+    pub fn compile_haxe(&self) -> Result<PathBuf> {
+        if let Some(missing) = self.haxe_class_paths.iter().find(|c| !c.is_dir()) {
+            bail!(
+                "{}: haxe.class-paths names {}, which is not a directory",
+                self.path.display(),
+                missing.display()
+            );
+        }
+        let plugins = self.plugin_libraries()?;
+        let args = self.haxe_args(&plugins)?;
+        std::fs::create_dir_all(self.target_dir())?;
+        let status = Command::new("haxe")
+            .args(&args)
+            .current_dir(&self.dir)
             .status()
             .context("running the Haxe compiler, `haxe`")?;
         if !status.success() {
             bail!("the Haxe compiler failed on {}", self.entry.module);
         }
-        Ok(out)
+        Ok(self.haxe_output())
     }
 
     /// The listed Zyntax languages, as frontends: one caribou builds in by
@@ -328,12 +402,243 @@ impl Project {
             .collect()
     }
 
+    /// The project resolved for a tool: every path absolute, and what
+    /// caribou runs `haxe` with. Read only: nothing is built or written, and a
+    /// plugin crate not built yet is a problem with the library it will be.
+    pub fn resolved(&self) -> Resolved {
+        let mut problems = Vec::new();
+        for source in &self.sources {
+            if !source.is_dir() {
+                problems.push(Problem::new(
+                    "project.sources",
+                    format!("{} is not a directory", source.display()),
+                ));
+            }
+        }
+        for class_path in &self.haxe_class_paths {
+            if !class_path.is_dir() {
+                problems.push(Problem::new(
+                    "haxe.class-paths",
+                    format!("{} is not a directory", class_path.display()),
+                ));
+            }
+        }
+        let mut plugins = Vec::new();
+        for (name, path) in &self.plugins {
+            let key = format!("plugins.{name}");
+            let is_crate = crate::linked::is_crate(path);
+            let library = if is_crate {
+                match crate::linked::host_library_path(path, &self.target_dir()) {
+                    Ok(library) => Some(library),
+                    Err(e) => {
+                        problems.push(Problem::new(&key, format!("{e:#}")));
+                        None
+                    }
+                }
+            } else if path.is_file() {
+                Some(path.clone())
+            } else {
+                problems.push(Problem::new(
+                    &key,
+                    format!("{} is neither a plugin crate nor a library", path.display()),
+                ));
+                None
+            };
+            let built = library.as_ref().is_some_and(|l| l.is_file());
+            if is_crate && library.is_some() && !built {
+                problems.push(Problem::new(
+                    &key,
+                    "not built yet: `caribou run` builds it".to_owned(),
+                ));
+            }
+            plugins.push(ResolvedPlugin {
+                name: name.clone(),
+                path: path.clone(),
+                kind: if is_crate { "crate" } else { "library" },
+                library,
+                built,
+                link: if self.side_modules.contains(path) {
+                    "side"
+                } else {
+                    "static"
+                },
+            });
+        }
+        let libraries: Vec<PathBuf> = plugins.iter().filter_map(|p| p.library.clone()).collect();
+        let args = match self.haxe_args(&libraries) {
+            Ok(args) => args,
+            Err(e) => {
+                problems.push(Problem::new("project.entry", format!("{e:#}")));
+                Vec::new()
+            }
+        };
+        for (lang, declared) in [("python", &self.python), ("lua", &self.lua)] {
+            if !declared.is_empty() {
+                problems.push(Problem::new(
+                    &format!("dependencies.{lang}"),
+                    "found, not installed: Zyntax has no package installer yet".to_owned(),
+                ));
+            }
+        }
+        let roots = self
+            .sources
+            .iter()
+            .map(|path| {
+                let mut namespaces: Vec<String> = std::fs::read_dir(path)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_dir())
+                    .filter_map(|e| e.file_name().into_string().ok())
+                    .filter(|n| !n.starts_with('.'))
+                    .collect();
+                namespaces.sort();
+                Root {
+                    path: path.clone(),
+                    namespaces,
+                }
+            })
+            .collect();
+        let target = self.target_dir();
+        Resolved {
+            file: self.path.clone(),
+            dir: self.dir.clone(),
+            name: self.name.clone(),
+            entry: ResolvedEntry {
+                language: self.entry.lang.clone(),
+                module: self.entry.module.clone(),
+            },
+            languages: self.languages.clone(),
+            roots,
+            plugins,
+            dependencies: ResolvedDependencies {
+                declared: self.declared.clone(),
+                manifests: crate::deps::manifests(self),
+            },
+            outputs: Outputs {
+                hl: self.haxe_output(),
+                bundle: target.join(format!("{}.cb", self.name)),
+                wasm: target.join(format!("{}.wasm", self.name)),
+            },
+            haxe: HaxeCommand {
+                cwd: self.dir.clone(),
+                args,
+            },
+            target,
+            problems,
+        }
+    }
+
     /// The declared native plugins, loaded.
     pub fn load_plugins(&self) -> Result<Vec<caribou_plugin::Plugin>> {
         self.plugin_libraries()?
             .iter()
             .map(|library| caribou_plugin::load(library).map_err(|e| anyhow!("{e}")))
             .collect()
+    }
+}
+
+/// `path` with its `.` and `..` components taken out, by its text alone:
+/// nothing is resolved on disk, so paths compare as they are written.
+fn normal(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// A project as [`Project::resolved`] gives it, the JSON `caribou project
+/// --json` prints. Paths are absolute but for `haxe.args`, which `haxe`
+/// runs with from `haxe.cwd`.
+#[derive(Serialize)]
+pub struct Resolved {
+    pub file: PathBuf,
+    pub dir: PathBuf,
+    pub name: String,
+    pub entry: ResolvedEntry,
+    pub languages: Vec<String>,
+    pub target: PathBuf,
+    pub roots: Vec<Root>,
+    pub plugins: Vec<ResolvedPlugin>,
+    pub dependencies: ResolvedDependencies,
+    pub outputs: Outputs,
+    pub haxe: HaxeCommand,
+    pub problems: Vec<Problem>,
+}
+
+#[derive(Serialize)]
+pub struct ResolvedEntry {
+    pub language: String,
+    pub module: String,
+}
+
+/// A source root and the namespaces its directories give.
+#[derive(Serialize)]
+pub struct Root {
+    pub path: PathBuf,
+    pub namespaces: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ResolvedPlugin {
+    pub name: String,
+    pub path: PathBuf,
+    /// `crate`, built for this machine, or `library`, loaded as it is.
+    pub kind: &'static str,
+    /// The library a hosted run loads, built or not.
+    pub library: Option<PathBuf>,
+    pub built: bool,
+    /// `static` or `side`, for a program built ahead of time.
+    pub link: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct ResolvedDependencies {
+    /// The file's `[dependencies]`, as declared.
+    pub declared: toml::Table,
+    /// Each language's own manifests beside the project or at a root.
+    pub manifests: Vec<PathBuf>,
+}
+
+/// What `run` and `build` write.
+#[derive(Serialize)]
+pub struct Outputs {
+    pub hl: PathBuf,
+    pub bundle: PathBuf,
+    pub wasm: PathBuf,
+}
+
+/// The `haxe` command `caribou run` compiles with.
+#[derive(Serialize)]
+pub struct HaxeCommand {
+    pub cwd: PathBuf,
+    pub args: Vec<String>,
+}
+
+/// What in the file caribou rejects, ignores or cannot do yet, under the
+/// key it is about.
+#[derive(Serialize)]
+pub struct Problem {
+    pub key: String,
+    pub message: String,
+}
+
+impl Problem {
+    fn new(key: &str, message: String) -> Problem {
+        Problem {
+            key: key.to_owned(),
+            message,
+        }
     }
 }
 
@@ -402,5 +707,112 @@ window = { path = "plugins/cb_window", link = "side" }
         let err = Project::load(&file).err().expect("refused").to_string();
         std::fs::remove_dir_all(&dir).ok();
         assert!(err.contains("does not list"), "{err}");
+    }
+
+    #[test]
+    fn haxe_runs_with_relative_sources_absolute_libraries_and_the_defines() {
+        let (dir, file) = written(
+            "args",
+            r#"
+[project]
+name = "args"
+entry = "haxe:Main"
+languages = ["haxe"]
+
+[haxe]
+class-paths = ["../engine/haxe"]
+defines = { editor = true, quiet = false, level = "2", count = 3 }
+
+[dependencies.haxe]
+heaps = "*"
+format = "1.0.0"
+"#,
+        );
+        let project = Project::load(&file).unwrap();
+        let args = project.haxe_args(&[]).unwrap();
+        let engine = dir.parent().unwrap().join("engine/haxe");
+        let out = dir.join("target/args.hl");
+        std::fs::remove_dir_all(&dir).ok();
+        let expected = [
+            "-cp",
+            "src",
+            "-cp",
+            engine.to_str().unwrap(),
+            "-L",
+            "caribou",
+            "-D",
+            "count=3",
+            "-D",
+            "editor",
+            "-D",
+            "level=2",
+            "-L",
+            "format:1.0.0",
+            "-L",
+            "heaps",
+            "--macro",
+            "include('', true, null, ['src'])",
+            "-main",
+            "Main",
+            "-hl",
+            out.to_str().unwrap(),
+        ];
+        assert_eq!(args, expected);
+    }
+
+    #[test]
+    fn the_resolved_project_builds_nothing_and_names_an_unbuilt_plugin() {
+        let (dir, file) = written(
+            "resolved",
+            r#"
+[project]
+name = "resolved"
+entry = "haxe:Main"
+languages = ["haxe", "python"]
+
+[dependencies.python]
+requests = ">=2.31"
+
+[plugins]
+tool = { path = "tool" }
+"#,
+        );
+        std::fs::create_dir_all(dir.join("src/game")).unwrap();
+        std::fs::create_dir_all(dir.join("tool/src")).unwrap();
+        std::fs::write(
+            dir.join("tool/Cargo.toml"),
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\n[lib]\ncrate-type = [\"cdylib\"]\n",
+        )
+        .unwrap();
+        let resolved = Project::load(&file).unwrap().resolved();
+        let target_written = dir.join("target").exists();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!target_written, "resolving writes nothing");
+        assert_eq!(resolved.file, file);
+        assert_eq!(resolved.roots.len(), 1);
+        assert_eq!(resolved.roots[0].namespaces, ["game"]);
+        let tool = &resolved.plugins[0];
+        assert_eq!((tool.kind, tool.built), ("crate", false));
+        let library = tool.library.as_ref().expect("the library it will be");
+        assert!(library.starts_with(dir.join("target/plugins/release")));
+        let keys: Vec<&str> = resolved.problems.iter().map(|p| p.key.as_str()).collect();
+        assert!(keys.contains(&"plugins.tool"), "{keys:?}");
+        assert!(keys.contains(&"dependencies.python"), "{keys:?}");
+        assert_eq!(resolved.haxe.cwd, dir);
+        assert_eq!(
+            resolved.dependencies.declared["python"]["requests"].as_str(),
+            Some(">=2.31")
+        );
+    }
+
+    #[test]
+    fn a_define_takes_a_string_a_number_or_a_boolean() {
+        let (dir, file) = written(
+            "define",
+            "[project]\nname = \"define\"\nentry = \"haxe:Main\"\nlanguages = [\"haxe\"]\n[haxe]\ndefines = { list = [1] }\n",
+        );
+        let err = Project::load(&file).err().expect("refused").to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(err.contains("define `list`"), "{err}");
     }
 }

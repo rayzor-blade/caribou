@@ -29,6 +29,30 @@ pub fn hatch(project: &Project) -> Result<Vec<caribou_wren::hatch::Package>> {
     Ok(packages)
 }
 
+/// Each language's own manifests the project has: a `hatchfile` beside
+/// the project file or at a source root, then `requirements.txt` and the
+/// `*.rockspec` files beside the project file.
+pub fn manifests(project: &Project) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = std::iter::once(&project.dir)
+        .chain(&project.sources)
+        .map(|dir| dir.join("hatchfile"))
+        .filter(|f| f.is_file())
+        .collect();
+    let requirements = project.dir.join("requirements.txt");
+    if requirements.is_file() {
+        out.push(requirements);
+    }
+    let mut rockspecs: Vec<PathBuf> = std::fs::read_dir(&project.dir)
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e == "rockspec"))
+        .collect();
+    rockspecs.sort();
+    out.extend(rockspecs);
+    out
+}
+
 /// Python's and Lua's dependencies the project has, declared or in
 /// their manifests, which nothing installs yet: what a run says it
 /// leaves out.

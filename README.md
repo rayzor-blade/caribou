@@ -106,9 +106,15 @@ heaps = "*"
 [dependencies.wren]
 "@hatch:greet" = { path = "../greet" }
 
+[haxe]
+class-paths = ["../engine/haxe"]
+defines = { editor = true }
+
 [plugins]
 gpu = { path = "plugins/libcaribou_gpu.dylib" }
 ```
+
+`[haxe]` takes rayzor.toml's keys. `class-paths` names Haxe libraries outside the project, which are compiled only as far as the program uses them. `defines` sets `-D` flags.
 
 Each language's own manifest counts without being declared. A `hatchfile` beside the project file or in `src/` brings its Wren packages. A `requirements.txt` or `*.rockspec` is found as well, but not installed yet: Zyntax has no package support for Python's or Lua's ecosystems, and a run says what it left out.
 
@@ -118,6 +124,8 @@ From the project's directory, Caribou compiles the Haxe entry itself, with `-lib
 caribou run
 
 ```
+
+`caribou project --json` prints the resolved project for an IDE or a build tool: its roots and namespaces, plugins, dependencies and outputs, the `haxe` command Caribou compiles with, and any problems with the file. It builds nothing and writes nothing.
 
 `caribou build` packages the program, its modules and its plugins into one archive in `target/`. `caribou build --target wasm32-wasip1` builds it ahead of time instead: a WebAssembly module compiled against Caribou's runtime, with nothing interpreted. That needs a `caribou` built with its `llvm` feature, and for now a Haxe program that imports no other language's modules:
 

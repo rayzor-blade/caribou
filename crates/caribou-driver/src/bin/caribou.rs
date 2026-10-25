@@ -4,6 +4,7 @@
 //!     caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]
 //!     caribou serve [--port <port>] [--lan] [<project.cbproj>]
 //!     caribou describe <module.wren | plugin library | root directory>...
+//!     caribou project --json [<project.cbproj | directory>]
 //!
 //! With no program named, both act on the project file in the current
 //! directory (`cbproj`): its Haxe entry compiled, its declared languages,
@@ -31,7 +32,7 @@ use caribou_ash::Mode;
 use caribou_driver::cbproj::{self, Project};
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...\n       caribou project --json [<project.cbproj | directory>]";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -271,6 +272,33 @@ fn serve_project(_: &Project, _: u16, _: bool) -> Result<(), String> {
     )
 }
 
+/// The project resolved, as JSON, for a tool: read only, nothing built.
+fn resolve(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
+    let mut json = false;
+    let mut at = None;
+    for arg in argv {
+        match arg.as_str() {
+            "--json" => json = true,
+            _ if at.is_none() => at = Some(PathBuf::from(arg)),
+            _ => return Err(USAGE.to_owned()),
+        }
+    }
+    if !json {
+        return Err("caribou project prints the resolved project with --json".to_owned());
+    }
+    let at = at.unwrap_or_else(|| PathBuf::from("."));
+    let project = if at.is_dir() {
+        Project::find(&at)
+            .map_err(|e| format!("{e:#}"))?
+            .ok_or_else(|| format!("{} holds no project file", at.display()))?
+    } else {
+        Project::load(&at).map_err(|e| format!("{e:#}"))?
+    };
+    let text = serde_json::to_string_pretty(&project.resolved()).map_err(|e| e.to_string())?;
+    println!("{text}");
+    Ok(())
+}
+
 fn describe(files: &[String]) -> Result<(), String> {
     if files.is_empty() {
         return Err(USAGE.to_owned());
@@ -341,6 +369,7 @@ fn main() {
         Some("build") => build(&mut argv),
         Some("serve") => serve(&mut argv),
         Some("describe") => describe(&argv.collect::<Vec<_>>()),
+        Some("project") => resolve(&mut argv),
         _ => Err(USAGE.to_owned()),
     };
     if let Err(e) = result {

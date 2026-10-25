@@ -66,7 +66,7 @@ pub fn host_library(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
     let root = source_root()?;
     // Cargo runs from the source root.
     let (dir, target_dir) = (std::path::absolute(dir)?, std::path::absolute(target_dir)?);
-    let (_, lib) = names(&dir)?;
+    let library = host_library_path(&dir, &target_dir)?;
     let build_dir = target_dir.join("plugins");
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let status = std::process::Command::new(cargo)
@@ -80,12 +80,6 @@ pub fn host_library(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
     if !status.success() {
         bail!("building the plugin crate {}: {status}", dir.display());
     }
-    let file = format!(
-        "{}{lib}{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    );
-    let library = build_dir.join("release").join(file);
     if !library.is_file() {
         bail!(
             "{} built no {}: a plugin crate's crate-type lists cdylib, for hosted runs, and \
@@ -95,6 +89,19 @@ pub fn host_library(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
         );
     }
     Ok(library)
+}
+
+/// Where [`host_library`] builds the plugin crate at `dir`, from its
+/// manifest alone: nothing is built.
+pub fn host_library_path(dir: &Path, target_dir: &Path) -> Result<PathBuf> {
+    let (dir, target_dir) = (std::path::absolute(dir)?, std::path::absolute(target_dir)?);
+    let (_, lib) = names(&dir)?;
+    let file = format!(
+        "{}{lib}{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    );
+    Ok(target_dir.join("plugins").join("release").join(file))
 }
 
 /// The plugin crate at `dir` built as a wasm side module for `triple`,
