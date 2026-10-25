@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":5,"timestamp":1792935403,"nonce":"i9UBCpxCOI6c5M6tVQBuRXfGR1g=","added":["bug","area:ash","area:bridge","priority:high"],"removed":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1792935404,"nonce":"sxzEO3Nwrgfz5YSHq7iU2YBnH1c=","message":"Landed in 8279e729b90bb98f808e1a020f93ab9f763aa1e8: typed closures for function-typed places. A Dynamic place still waits on Ash's interpreter fix.","files":null}]}
