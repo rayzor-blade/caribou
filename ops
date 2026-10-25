@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1792888826,"nonce":"XHrMxfj0zxvZNYvssDQ3pHiyjrc=","message":"Landed in af061eb4af11e24fdf6c3142c0240c469af55605. Probe on the new binary: burst 350 MB, dropped 68 MB, quiet 68 MB (Ash: 353, 72, 72). With ASH_GC_IDLE=0: 622, 622, 590 (one heartbeat chunk).","files":null}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1792888826,"nonce":"yWF+91WWC2AuYmTMASFVCxniSJc=","status":2}]}
