@@ -1,1 +1,1 @@
-{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":4,"timestamp":1792923418,"nonce":"QDfuLsMSB2eNsBpIZGRbAPyMi2s=","status":2}]}
+{"author":{"id":"3f8bad4585cb0f07c6570d9e31f06264af3b0abf48efbc5a44f56df5e7a9cd45"},"ops":[{"type":3,"timestamp":1792923692,"nonce":"D49gvFLJhsCZYgkWeQN3CkiblZQ=","message":"Verified by ChimpMonk in example/guests on 73c861d: three runs, each reloads python game/pulse with Lua and Wren; the old system stops and the new body's system runs once per step.","files":null}]}
