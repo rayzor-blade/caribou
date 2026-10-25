@@ -9,4 +9,8 @@ class SystemWren {
       column.setF32(4, dt)
     })
   }
+
+  static installFailing() {
+    Systems.registerFailing(Fn.new {|column, dt| Fiber.abort("wren failed") })
+  }
 }

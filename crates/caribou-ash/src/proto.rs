@@ -554,6 +554,18 @@ unsafe fn box_f64(n: f64) -> *mut vdynamic {
 /// take for a slot of kind `kind`; the runtime casts the box to the slot's
 /// exact type. A core `Str` becomes a `String`; an object of another
 /// language becomes its face (`import.rs`).
+/// [`value_to_dyn`] into a place of type `t`: a function of another language
+/// bound for a function type becomes a record closure of that type, which a
+/// call site reaches by its signature and the interpreter calls under a trap,
+/// so what the function raises reaches the caller's catch.
+pub(crate) unsafe fn value_to_dyn_as(v: Value, t: *const hl_type) -> Result<*mut vdynamic, String> {
+    let kind = unsafe { (*t).kind };
+    if kind == hl::HFUN && unwrap(v).is_none() && bridge::arity(v).is_some() {
+        return Ok(callback::function_for_typed(v, t));
+    }
+    unsafe { value_to_dyn(v, kind) }
+}
+
 pub(crate) unsafe fn value_to_dyn(v: Value, kind: hl_type_kind) -> Result<*mut vdynamic, String> {
     let _kept = heap::keep_value(v);
     let int = || {
@@ -662,8 +674,8 @@ unsafe fn call_closure(closure: *mut vclosure, args: &[Value], out: *mut Value) 
     let mut boxed: [*mut vdynamic; MAX_ARGS] = [ptr::null_mut(); MAX_ARGS];
     let mut _boxed_kept: [Option<heap::Kept>; MAX_ARGS] = std::array::from_fn(|_| None);
     for (i, &arg) in args.iter().enumerate() {
-        let kind = unsafe { (**(*fun).args.add(i)).kind };
-        boxed[i] = match unsafe { value_to_dyn(arg, kind) } {
+        let t = unsafe { *(*fun).args.add(i) };
+        boxed[i] = match unsafe { value_to_dyn_as(arg, t) } {
             Ok(d) => d,
             Err(message) => {
                 return raise_core(ErrorKind::Type, &format!("argument {i}: {message}"));
@@ -721,6 +733,9 @@ unsafe fn code_of(fun: usize) -> Option<*const c_void> {
 struct Kinds {
     n: usize,
     arg: [hl_type_kind; MAX_ARGS],
+    /// Each argument's `hl_type`, by address: a function argument becomes a
+    /// closure of its type.
+    types: [usize; MAX_ARGS],
     /// `ash_native_call`'s codes per argument, 0 integer, 1 `f32`, 2
     /// `f64`, folded into the pattern its table is keyed by.
     pattern: u32,
@@ -738,14 +753,17 @@ unsafe fn kinds_of(fun: *const hl_type_fun) -> Option<Kinds> {
     let mut kinds = Kinds {
         n,
         arg: [hl::HVOID; MAX_ARGS],
+        types: [0; MAX_ARGS],
         pattern: 0,
         ret: unsafe { (*(*fun).ret).kind },
         ret_code: 0,
     };
     let mut codes = [0u8; MAX_ARGS];
     for a in 0..n {
-        let kind = unsafe { (**(*fun).args.add(a)).kind };
+        let t = unsafe { *(*fun).args.add(a) };
+        let kind = unsafe { (*t).kind };
         kinds.arg[a] = kind;
+        kinds.types[a] = t as usize;
         codes[a] = match kind {
             hl::HF64 => 2,
             hl::HF32 => 1,
@@ -925,7 +943,7 @@ unsafe fn call_by_kinds(
             | hl::HREF
             | hl::HNULL
             | hl::HTYPE => {
-                let p = unsafe { value_to_dyn(arg, kind) }.ok()?;
+                let p = unsafe { value_to_dyn_as(arg, sig.types[a] as *const hl_type) }.ok()?;
                 if !p.is_null()
                     && kind != hl::HDYN
                     && kind != hl::HNULL

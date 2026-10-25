@@ -17,6 +17,28 @@ class Systems {
 		return systems.length;
 	}
 
+	static var failing:Array<(Bytes, Float) -> Void> = [];
+
+	public static function registerFailing(system:(Bytes, Float) -> Void):Void {
+		failing.push(system);
+	}
+
+	/** Calls each failing system once inside a catch, as an engine keeps a
+		system's error from stopping the step, and answers what each raised,
+		comma-separated. **/
+	public static function faults():String {
+		var column = Bytes.alloc(8);
+		var raised = [];
+		for (system in failing)
+			try {
+				system(column, 0.5);
+				raised.push("nothing");
+			} catch (e:Dynamic) {
+				raised.push(Std.string(e));
+			}
+		return raised.join(",");
+	}
+
 	/** Steps every system `steps` times, collecting after each step, and
 		answers what each wrote to its column, its step count at byte 0 and
 		the step's time as an f32 at byte 4, as `count:dt`, comma-separated. **/

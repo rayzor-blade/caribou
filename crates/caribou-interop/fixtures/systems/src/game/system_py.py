@@ -10,3 +10,11 @@ def step(column, dt: float):
 
 def install():
     Systems.register(step)
+
+
+def fail(column, dt: float):
+    raise ValueError("python failed")
+
+
+def installFailing():
+    Systems.registerFailing(fail)

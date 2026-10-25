@@ -11,4 +11,10 @@ function M.install()
   end)
 end
 
+function M.installFailing()
+  Systems.registerFailing(function(column, dt)
+    error("lua failed")
+  end)
+end
+
 return M
