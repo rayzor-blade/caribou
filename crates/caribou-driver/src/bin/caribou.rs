@@ -36,6 +36,7 @@ const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--preset <preset
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
+    let mut preset_given = false;
     let mut program = None;
     let mut args = Vec::new();
     while let Some(arg) = argv.next() {
@@ -61,6 +62,7 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                 };
             }
             "--preset" => {
+                preset_given = true;
                 let name = argv.next();
                 options.preset = name
                     .as_deref()
@@ -90,7 +92,17 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
         process::exit(run_module(module, &options.args)?);
     }
     match project(program.as_deref())? {
-        Some(project) => caribou_driver::run_project(&project, options),
+        Some(project) => {
+            // The project's [run] applies where the command line says nothing.
+            if !preset_given && let Some(preset) = &project.run_preset {
+                options.preset =
+                    caribou_ash::TierPreset::parse(preset).expect("checked when the file loaded");
+            }
+            if options.args.is_empty() {
+                options.args = project.run_args.clone();
+            }
+            caribou_driver::run_project(&project, options)
+        }
         None => caribou_driver::run(&program.expect("named"), options),
     }
     .map_err(|e| format!("{e:#}"))
@@ -340,14 +352,23 @@ fn resolve(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
         return Err("caribou project prints the resolved project with --json".to_owned());
     }
     let at = at.unwrap_or_else(|| PathBuf::from("."));
-    let project = if at.is_dir() {
-        Project::find(&at)
+    let file = if at.is_dir() {
+        Project::file_in(&at)
             .map_err(|e| format!("{e:#}"))?
             .ok_or_else(|| format!("{} holds no project file", at.display()))?
     } else {
-        Project::load(&at).map_err(|e| format!("{e:#}"))?
+        at
     };
-    let text = serde_json::to_string_pretty(&project.resolved()).map_err(|e| e.to_string())?;
+    // A workspace prints its members; a project file prints itself.
+    let text = match cbproj::Workspace::load(&file).map_err(|e| format!("{e:#}"))? {
+        Some(workspace) => serde_json::to_string_pretty(&workspace.resolved()),
+        None => serde_json::to_string_pretty(
+            &Project::load(&file)
+                .map_err(|e| format!("{e:#}"))?
+                .resolved(),
+        ),
+    }
+    .map_err(|e| e.to_string())?;
     println!("{text}");
     Ok(())
 }

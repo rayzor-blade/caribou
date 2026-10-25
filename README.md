@@ -116,6 +116,10 @@ gpu = { path = "plugins/libcaribou_gpu.dylib" }
 
 `[haxe]` takes rayzor.toml's keys. `class-paths` names Haxe libraries outside the project, which are compiled only as far as the program uses them. `defines` sets `-D` flags.
 
+`[run]` sets what `caribou run` uses when its command line does not say: `preset`, one of the tier presets `--preset` takes, and `args`, the program's arguments. A flag or arguments on the command line take precedence.
+
+Several projects can form a workspace, as in rayzor.toml. A root file holds `[workspace] members = ["game", "tools/editor"]`, with or without a `[project]` of its own, and each member is a directory holding one `.cbproj`, or the path of one. `caribou project --json` on the root resolves every member.
+
 Each language's own manifest counts without being declared. A `hatchfile` beside the project file or in `src/` brings its Wren packages. A `requirements.txt` or `*.rockspec` is found as well, but not installed yet: Zyntax has no package support for Python's or Lua's ecosystems, and a run says what it left out.
 
 From the project's directory, Caribou compiles the Haxe entry itself, with `-lib caribou`, and runs it with every declared language:

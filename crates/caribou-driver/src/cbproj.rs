@@ -65,13 +65,32 @@ const SOURCES: &str = "src";
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct File {
-    project: Header,
+    project: Option<Header>,
     #[serde(default)]
     dependencies: Dependencies,
     #[serde(default)]
     haxe: HaxeSection,
     #[serde(default)]
+    run: RunSection,
+    #[serde(default)]
     plugins: BTreeMap<String, PluginEntry>,
+    workspace: Option<WorkspaceSection>,
+}
+
+/// How `caribou run` runs the project when its command line does not say.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct RunSection {
+    preset: Option<String>,
+    #[serde(default)]
+    args: Vec<String>,
+}
+
+/// The projects a workspace holds, as rayzor.toml's `[workspace]`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WorkspaceSection {
+    members: Vec<PathBuf>,
 }
 
 /// Haxe's own settings, with rayzor.toml's keys.
@@ -165,6 +184,10 @@ pub struct Project {
     pub haxe_defines: Vec<String>,
     /// The file's `[dependencies]` as it declares them.
     pub declared: toml::Table,
+    /// `[run] preset`, a tier preset's name, when the file sets one.
+    pub run_preset: Option<String>,
+    /// `[run] args`: the program's arguments when the command line has none.
+    pub run_args: Vec<String>,
 }
 
 impl Project {
@@ -193,7 +216,21 @@ impl Project {
                 ),
             }
         }
-        let header = file.project;
+        let Some(header) = file.project else {
+            bail!(
+                "{} is a workspace with no [project] of its own: name one of its members",
+                path.display()
+            );
+        };
+        if let Some(preset) = &file.run.preset
+            && caribou_ash::TierPreset::parse(preset).is_none()
+        {
+            bail!(
+                "{}: [run] preset `{preset}` is not one of {}",
+                path.display(),
+                caribou_ash::TierPreset::names().join(", ")
+            );
+        }
         let (lang, module) = header.entry.split_once(':').ok_or_else(|| {
             anyhow!(
                 "{}: entry `{}` is not `language:module`",
@@ -244,12 +281,14 @@ impl Project {
                 .collect(),
             haxe_defines,
             declared,
+            run_preset: file.run.preset,
+            run_args: file.run.args,
             dir,
         })
     }
 
-    /// The one project file in `dir`, if there is one.
-    pub fn find(dir: &Path) -> Result<Option<Project>> {
+    /// The one project file in `dir`, if there is one, unloaded.
+    pub fn file_in(dir: &Path) -> Result<Option<PathBuf>> {
         let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
             .with_context(|| format!("reading {}", dir.display()))?
             .filter_map(|e| e.ok().map(|e| e.path()))
@@ -257,7 +296,7 @@ impl Project {
             .collect();
         match files.len() {
             0 => Ok(None),
-            1 => Project::load(&files.remove(0)).map(Some),
+            1 => Ok(Some(files.remove(0))),
             _ => {
                 files.sort();
                 let names: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
@@ -268,6 +307,13 @@ impl Project {
                 )
             }
         }
+    }
+
+    /// The one project file in `dir`, if there is one.
+    pub fn find(dir: &Path) -> Result<Option<Project>> {
+        Project::file_in(dir)?
+            .map(|file| Project::load(&file))
+            .transpose()
     }
 
     /// Where the project's builds go.
@@ -550,6 +596,10 @@ impl Project {
                 cwd: self.dir.clone(),
                 args,
             },
+            run: RunSettings {
+                preset: self.run_preset.clone(),
+                args: self.run_args.clone(),
+            },
             target,
             problems,
         }
@@ -611,6 +661,112 @@ pub struct Resolved {
     pub dependencies: ResolvedDependencies,
     pub outputs: Outputs,
     pub haxe: HaxeCommand,
+    pub run: RunSettings,
+    pub problems: Vec<Problem>,
+}
+
+/// `[run]`: what `caribou run` applies when its command line does not say.
+#[derive(Serialize)]
+pub struct RunSettings {
+    pub preset: Option<String>,
+    pub args: Vec<String>,
+}
+
+/// A `[workspace]` and the project files its members name: a directory
+/// holding exactly one, or a project file's own path.
+pub struct Workspace {
+    pub path: PathBuf,
+    pub dir: PathBuf,
+    pub members: Vec<PathBuf>,
+    /// A member that names no project file, or several.
+    pub problems: Vec<Problem>,
+}
+
+impl Workspace {
+    /// The workspace the file at `path` declares, if it declares one.
+    pub fn load(path: &Path) -> Result<Option<Workspace>> {
+        let text =
+            std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+        let file: File = toml::from_str(&text).with_context(|| path.display().to_string())?;
+        let Some(section) = file.workspace else {
+            return Ok(None);
+        };
+        let path = normal(&std::path::absolute(path)?);
+        let dir = path.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let mut members = Vec::new();
+        let mut problems = Vec::new();
+        for member in &section.members {
+            let at = normal(&dir.join(member));
+            let key = format!("workspace.members.{}", member.display());
+            if at.extension().is_some_and(|e| e == EXTENSION) && at.is_file() {
+                members.push(at);
+            } else if at.is_dir() {
+                match Project::file_in(&at) {
+                    Ok(Some(file)) => members.push(file),
+                    Ok(None) => problems.push(Problem::new(
+                        &key,
+                        format!("{} holds no .{EXTENSION}", at.display()),
+                    )),
+                    Err(e) => problems.push(Problem::new(&key, format!("{e:#}"))),
+                }
+            } else {
+                problems.push(Problem::new(
+                    &key,
+                    format!("{} is neither a directory nor a .{EXTENSION}", at.display()),
+                ));
+            }
+        }
+        Ok(Some(Workspace {
+            path,
+            dir,
+            members,
+            problems,
+        }))
+    }
+
+    /// The workspace resolved for a tool: each member as
+    /// [`Project::resolved`] gives it, and the root's own project when the
+    /// file declares one. A member that does not load is a problem.
+    pub fn resolved(&self) -> ResolvedWorkspace {
+        let mut problems = self.problems.clone();
+        let mut members = Vec::new();
+        for file in &self.members {
+            match Project::load(file) {
+                Ok(project) => members.push(project.resolved()),
+                Err(e) => problems.push(Problem::new(
+                    &format!("workspace.members.{}", file.display()),
+                    format!("{e:#}"),
+                )),
+            }
+        }
+        let project = Project::load(&self.path).ok().map(|p| p.resolved());
+        ResolvedWorkspace {
+            workspace: WorkspaceInfo {
+                file: self.path.clone(),
+                dir: self.dir.clone(),
+                members: self.members.clone(),
+                problems,
+            },
+            members,
+            project,
+        }
+    }
+}
+
+/// A workspace as `caribou project --json` prints it.
+#[derive(Serialize)]
+pub struct ResolvedWorkspace {
+    pub workspace: WorkspaceInfo,
+    pub members: Vec<Resolved>,
+    /// The root's own project, when its file has a `[project]`.
+    pub project: Option<Resolved>,
+}
+
+#[derive(Serialize)]
+pub struct WorkspaceInfo {
+    pub file: PathBuf,
+    pub dir: PathBuf,
+    pub members: Vec<PathBuf>,
     pub problems: Vec<Problem>,
 }
 
@@ -665,7 +821,7 @@ pub struct HaxeCommand {
 
 /// What in the file caribou rejects, ignores or cannot do yet, under the
 /// key it is about.
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Problem {
     pub key: String,
     pub message: String,
@@ -852,5 +1008,61 @@ tool = { path = "tool" }
         let err = Project::load(&file).err().expect("refused").to_string();
         std::fs::remove_dir_all(&dir).ok();
         assert!(err.contains("define `list`"), "{err}");
+    }
+
+    #[test]
+    fn run_settings_come_from_the_file_and_a_preset_must_be_known() {
+        let (dir, file) = written(
+            "runs",
+            "[project]\nname = \"runs\"\nentry = \"haxe:Main\"\nlanguages = [\"haxe\"]\n[run]\npreset = \"game\"\nargs = [\"--level\", \"1\"]\n",
+        );
+        let project = Project::load(&file).unwrap();
+        assert_eq!(project.run_preset.as_deref(), Some("game"));
+        assert_eq!(project.run_args, ["--level", "1"]);
+        assert_eq!(project.resolved().run.args, ["--level", "1"]);
+        std::fs::write(
+            &file,
+            "[project]\nname = \"runs\"\nentry = \"haxe:Main\"\nlanguages = [\"haxe\"]\n[run]\npreset = \"fastest\"\n",
+        )
+        .unwrap();
+        let err = Project::load(&file).err().expect("refused").to_string();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(err.contains("preset `fastest`"), "{err}");
+    }
+
+    #[test]
+    fn a_workspace_resolves_its_members_and_names_what_it_cannot() {
+        let (dir, root) = written(
+            "workspace",
+            "[workspace]\nmembers = [\"game\", \"tools/editor.cbproj\", \"empty\"]\n",
+        );
+        for (at, name) in [("game", "game"), ("tools", "editor")] {
+            std::fs::create_dir_all(dir.join(at).join("src")).unwrap();
+            std::fs::write(
+                dir.join(at).join(format!("{name}.cbproj")),
+                format!(
+                    "[project]\nname = \"{name}\"\nentry = \"haxe:Main\"\nlanguages = [\"haxe\"]\n"
+                ),
+            )
+            .unwrap();
+        }
+        std::fs::create_dir_all(dir.join("empty")).unwrap();
+        let workspace = Workspace::load(&root).unwrap().expect("a workspace");
+        let not_a_project = Project::load(&root).err().expect("refused").to_string();
+        let resolved = workspace.resolved();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            workspace.members,
+            [
+                dir.join("game/game.cbproj"),
+                dir.join("tools/editor.cbproj")
+            ]
+        );
+        assert_eq!(workspace.problems.len(), 1);
+        assert_eq!(workspace.problems[0].key, "workspace.members.empty");
+        let names: Vec<&str> = resolved.members.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["game", "editor"]);
+        assert!(resolved.project.is_none());
+        assert!(not_a_project.contains("is a workspace"), "{not_a_project}");
     }
 }
