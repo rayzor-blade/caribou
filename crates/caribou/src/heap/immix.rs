@@ -1784,7 +1784,8 @@ fn trace_freed() -> bool {
     *V.get_or_init(|| std::env::var("ASH_GC_TRACE_FREED").is_ok())
 }
 
-/// `ASH_GC_DEBUG_ROOTS`: name every root a collection marks from. Safe;
+/// `ASH_GC_DEBUG_ROOTS`: name every root a collection marks from, and how
+/// many bytes each root group kept alive that no earlier group had. Safe;
 /// verbose. Read once.
 fn debug_roots() -> bool {
     static V: OnceLock<bool> = OnceLock::new();
@@ -2936,6 +2937,9 @@ fn allocation_at(
     }
 }
 
+/// Bytes of objects claimed so far; counted only under `ASH_GC_DEBUG_ROOTS`.
+static CLAIMED_BYTES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 /// Claim the allocation containing `offset` for the open cycle: its object
 /// bit and its lines. `Some((start, size))` for the claimer, `None` when it
 /// was already claimed or `offset` is in no allocation.
@@ -2954,6 +2958,9 @@ fn claim_allocation(
     }
     for line in start / LINE_SIZE..=(start + size - 1) / LINE_SIZE {
         claim_line(&blocks[line / LINES_PER_BLOCK], line % LINES_PER_BLOCK);
+    }
+    if debug_roots() {
+        CLAIMED_BYTES.fetch_add(size, Ordering::Relaxed);
     }
     Some((start, size))
 }
@@ -4073,6 +4080,24 @@ impl ImmixAllocator {
         newly_marked
     }
 
+    /// `ASH_GC_DEBUG_ROOTS`: trace what `pending` reaches now and say how many
+    /// bytes it kept alive that no earlier root had, if that is `min_kb` or
+    /// more. A root group is credited with what it reaches first, so the
+    /// report depends on the order `mark_roots` scans them in.
+    fn attribute_roots(&mut self, label: &str, pending: &mut Vec<(usize, usize)>, min_kb: usize) {
+        if !debug_roots() {
+            return;
+        }
+        let before = CLAIMED_BYTES.load(Ordering::Relaxed);
+        let t0 = Instant::now();
+        self.conservative_trace(mem::take(pending));
+        let kb = (CLAIMED_BYTES.load(Ordering::Relaxed) - before) / 1024;
+        if kb >= min_kb {
+            let ms = t0.elapsed().as_secs_f64() * 1000.0;
+            eprintln!("[gc-roots]   {label}: keeps {kb} KB alive, traced in {ms:.2} ms");
+        }
+    }
+
     /// Transitively scan newly-marked allocations. Line bits only control
     /// recycling; the worklist and duplicate suppression are object-granular.
     fn conservative_trace(&mut self, initial: Vec<(usize, usize)>) {
@@ -4287,6 +4312,7 @@ impl ImmixAllocator {
         let heap_start = self.heap.memory.as_ptr() as usize;
         let heap_end = heap_start + self.heap.memory.len;
         let mut all_newly_marked = Vec::new();
+        let dbg = debug_roots();
 
         for &global_ptr in &root_set.globals {
             let addr = global_ptr as usize;
@@ -4294,23 +4320,31 @@ impl ImmixAllocator {
                 self.mark_allocation(addr - heap_start, &mut all_newly_marked);
             }
         }
+        self.attribute_roots("registered globals", &mut all_newly_marked, 0);
         for &stack_ptr in &root_set.stack_roots {
             let addr = stack_ptr as usize;
             if addr >= heap_start && addr < heap_end {
                 self.mark_allocation(addr - heap_start, &mut all_newly_marked);
             }
         }
+        self.attribute_roots("stack roots", &mut all_newly_marked, 0);
         for &persistent_ptr in &root_set.persistent_roots {
             let addr = persistent_ptr as usize;
             if addr >= heap_start && addr < heap_end {
                 self.mark_allocation(addr - heap_start, &mut all_newly_marked);
+                if dbg {
+                    let label = format!("persistent root {addr:#x}");
+                    self.attribute_roots(&label, &mut all_newly_marked, 1024);
+                }
             }
         }
+        self.attribute_roots("persistent roots", &mut all_newly_marked, 0);
         for slot in self.handles.slots.iter().filter(|s| s.refs != 0) {
             if slot.ptr >= heap_start && slot.ptr < heap_end {
                 self.mark_allocation(slot.ptr - heap_start, &mut all_newly_marked);
             }
         }
+        self.attribute_roots("handles", &mut all_newly_marked, 0);
         // A native root is a slot, so read through it rather than marking its
         // address: the slot is usually malloc'd and outside the heap. Reading it
         // once per collection is upstream's semantics: a slot the library
@@ -4324,9 +4358,9 @@ impl ImmixAllocator {
             let newly = self.conservative_scan_range(slot, slot + std::mem::size_of::<usize>());
             all_newly_marked.extend(newly);
         }
+        self.attribute_roots("root slots", &mut all_newly_marked, 0);
 
         // Conservative scan of globals_data
-        let dbg = debug_roots();
         if let Some((globals_ptr, count)) = self.globals_range {
             let start = globals_ptr as usize;
             let end = start + count * std::mem::size_of::<usize>();
@@ -4336,6 +4370,7 @@ impl ImmixAllocator {
             }
             all_newly_marked.extend(newly_marked);
         }
+        self.attribute_roots("globals", &mut all_newly_marked, 0);
         // Registered root ranges. A data section need not start on a word.
         for i in 0..self.root_ranges.len() {
             let (start, len) = self.root_ranges[i];
@@ -4347,7 +4382,12 @@ impl ImmixAllocator {
                 );
             }
             all_newly_marked.extend(newly_marked);
+            if dbg {
+                let label = format!("root range {start:#x}+{len}");
+                self.attribute_roots(&label, &mut all_newly_marked, 256);
+            }
         }
+        self.attribute_roots("root ranges", &mut all_newly_marked, 0);
 
         // Roots read at this collection: each reader hands back the spans
         // to scan, which are scanned before it moves on.
@@ -4376,7 +4416,12 @@ impl ImmixAllocator {
                     &mut v as *mut Visit as *mut c_void,
                 )
             };
+            if dbg {
+                let label = format!("span root {start:#x}+{len}");
+                self.attribute_roots(&label, &mut all_newly_marked, 256);
+            }
         }
+        self.attribute_roots("span roots", &mut all_newly_marked, 0);
 
         // Conservative scan of interpreter-provided ranges
         for mutator in mutators {
@@ -4397,6 +4442,7 @@ impl ImmixAllocator {
                 }
             }
         }
+        self.attribute_roots("interpreter ranges", &mut all_newly_marked, 0);
 
         // Conservative scan of execution stacks. Collection runs on the allocating
         // context's stack, main thread or fiber, so the live probe SP is resolved
@@ -4467,6 +4513,10 @@ impl ImmixAllocator {
                     }
                 }
             }
+            if dbg {
+                let label = format!("thread {:#x} stack", mutator.thread);
+                self.attribute_roots(&label, &mut all_newly_marked, 0);
+            }
 
             // All OTHER stacks owned by this mutator scan from their saved
             // switch-out SP. The id-0 descriptor is its suspended main stack.
@@ -4497,6 +4547,10 @@ impl ImmixAllocator {
                     all_newly_marked.extend(self.conservative_scan_range(start, top));
                 }
             }
+            if dbg {
+                let label = format!("thread {:#x} other stacks", mutator.thread);
+                self.attribute_roots(&label, &mut all_newly_marked, 0);
+            }
 
             // Parked/blocked mutators copied their callee-saved registers
             // into registry-owned storage. The collector's registers are in
@@ -4505,6 +4559,10 @@ impl ImmixAllocator {
                 let start = mutator.saved_regs.as_ptr() as usize;
                 let end = start + std::mem::size_of_val(&mutator.saved_regs);
                 all_newly_marked.extend(self.conservative_scan_range(start, end));
+                if dbg {
+                    let label = format!("thread {:#x} registers", mutator.thread);
+                    self.attribute_roots(&label, &mut all_newly_marked, 0);
+                }
             }
         }
 
