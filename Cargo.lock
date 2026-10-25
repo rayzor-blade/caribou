@@ -93,7 +93,7 @@ dependencies = [
 [[package]]
 name = "air"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "anyhow",
 ]
@@ -282,13 +282,13 @@ dependencies = [
 [[package]]
 name = "ash_core"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "air",
  "anyhow",
  "ash_macro",
  "ash_std",
- "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6)",
+ "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9)",
  "beadie",
  "bindgen",
  "byteorder",
@@ -315,7 +315,7 @@ dependencies = [
 [[package]]
 name = "ash_interp"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "air",
  "anyhow",
@@ -331,7 +331,7 @@ dependencies = [
 [[package]]
 name = "ash_macro"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -341,12 +341,12 @@ dependencies = [
 [[package]]
 name = "ash_native_call"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 
 [[package]]
 name = "ash_page"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "wasm-bindgen-cli-support",
 ]
@@ -354,17 +354,17 @@ dependencies = [
 [[package]]
 name = "ash_simd"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 
 [[package]]
 name = "ash_std"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "anyhow",
  "ash_simd",
  "ash_trace",
- "ash_wasm_runtime 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6)",
+ "ash_wasm_runtime 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9)",
  "bindgen",
  "cc",
  "chrono",
@@ -381,7 +381,7 @@ dependencies = [
 [[package]]
 name = "ash_trace"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "ariadne",
 ]
@@ -399,7 +399,7 @@ dependencies = [
 [[package]]
 name = "ash_wasm_link"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "anyhow",
  "wasm-encoder 0.258.0",
@@ -424,10 +424,10 @@ dependencies = [
 [[package]]
 name = "ash_wasm_runtime"
 version = "0.1.0"
-source = "git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6#f18086887670b68594f6e9f96c142adc33a4fcd6"
+source = "git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9#40894c76149c286e3d1430f7c436f63a769cd0e9"
 dependencies = [
  "anyhow",
- "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6)",
+ "ash_wasm_link 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9)",
  "clap",
  "libc",
  "tokio",
@@ -932,7 +932,7 @@ dependencies = [
  "anyhow",
  "ash_core",
  "ash_page",
- "ash_wasm_runtime 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6)",
+ "ash_wasm_runtime 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9)",
  "caribou",
  "caribou-ash",
  "caribou-lua",
@@ -1052,7 +1052,7 @@ name = "caribou-runtime"
 version = "0.1.0"
 dependencies = [
  "ash_std",
- "ash_wasm_runtime 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=f18086887670b68594f6e9f96c142adc33a4fcd6)",
+ "ash_wasm_runtime 0.1.0 (git+https://github.com/rayzor-blade/ash.git?rev=40894c76149c286e3d1430f7c436f63a769cd0e9)",
  "caribou",
  "caribou-ash",
  "caribou-plugin",
