@@ -38,7 +38,8 @@ use caribou_abi::LangId;
 pub use ash_interp::interpreter::TierPreset;
 #[cfg(feature = "runner")]
 pub use program::{
-    Mode, Options, Program, imports_in, imports_of, install_for, load, load_bytes, publish_module,
+    Mode, Options, Program, Uncaught, UncaughtFrame, imports_in, imports_of, install_for, load,
+    load_bytes, publish_module, uncaught,
 };
 pub use proto::{construct, is_constructor, lang, unwrap, wrap};
 pub use wrenref::{

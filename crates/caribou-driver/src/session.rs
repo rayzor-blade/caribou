@@ -14,7 +14,8 @@ use caribou_ash::{Mode, Options as AshOptions, Program, TierPreset};
 use wren_lift::runtime::engine::ExecutionMode;
 use wren_lift::runtime::vm::{VM, VMConfig};
 
-use crate::cbproj::Project;
+use crate::cbproj::{HaxeFailed, Project};
+use crate::findings::{self, Finding, Findings};
 use crate::project;
 
 /// What a session is opened with.
@@ -37,6 +38,9 @@ pub struct Options {
     pub reload: bool,
     /// Ash's tier thresholds in hybrid mode (`--preset`).
     pub preset: TierPreset,
+    /// Where to record what the run finds wrong, as JSON lines
+    /// (`--diagnostics`; see [`crate::findings`]).
+    pub diagnostics: Option<PathBuf>,
 }
 
 impl Default for Options {
@@ -49,6 +53,7 @@ impl Default for Options {
             report: false,
             reload: true,
             preset: TierPreset::Application,
+            diagnostics: None,
         }
     }
 }
@@ -61,6 +66,10 @@ pub struct Session {
     program: Program,
     vm: VM,
     report_wanted: bool,
+    findings: Option<std::sync::Arc<Findings>>,
+    /// Where the program's own source files are named from: the project's
+    /// directory, then its roots.
+    source_dirs: Vec<PathBuf>,
 }
 
 impl Session {
@@ -70,6 +79,47 @@ impl Session {
     /// modules, publish its classes, and make the Wren VM its modules
     /// load into.
     pub fn open(path: &Path, options: Options) -> Result<Session> {
+        let findings = findings_for(&options)?;
+        let base = std::env::current_dir().unwrap_or_default();
+        Self::opened(Self::open_program(path, options), findings, vec![base])
+    }
+
+    /// Open the project a project file declares: its Haxe entry compiled,
+    /// and its roots, languages, plugins and packages as declared rather
+    /// than found.
+    pub fn open_project(project: &Project, options: Options) -> Result<Session> {
+        let findings = findings_for(&options)?;
+        let opened = Self::open_declared(project, options, findings.as_deref());
+        let mut dirs = vec![project.dir.clone()];
+        dirs.extend(project.sources.iter().cloned());
+        Self::opened(opened, findings, dirs)
+    }
+
+    /// A session opened, given what it records findings in; a failure to
+    /// open is a finding too, unless the compiler's own are recorded.
+    fn opened(
+        opened: Result<Session>,
+        findings: Option<std::sync::Arc<Findings>>,
+        source_dirs: Vec<PathBuf>,
+    ) -> Result<Session> {
+        match opened {
+            Ok(mut session) => {
+                session.findings = findings;
+                session.source_dirs = source_dirs;
+                Ok(session)
+            }
+            Err(e) => {
+                if let Some(findings) = &findings
+                    && e.downcast_ref::<HaxeFailed>().is_none()
+                {
+                    findings.record(&error_finding("compile", &e));
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn open_program(path: &Path, options: Options) -> Result<Session> {
         if !path.is_file() {
             return Err(anyhow!("{} is not a file", path.display()));
         }
@@ -152,11 +202,12 @@ impl Session {
         )
     }
 
-    /// Open the project a project file declares: its Haxe entry compiled,
-    /// and its roots, languages, plugins and packages as declared rather
-    /// than found.
-    pub fn open_project(project: &Project, options: Options) -> Result<Session> {
-        let hl = project.compile_haxe()?;
+    fn open_declared(
+        project: &Project,
+        options: Options,
+        findings: Option<&Findings>,
+    ) -> Result<Session> {
+        let hl = project.compile_haxe_into(findings)?;
         caribou_ash::install_for(&hl).map_err(|e| anyhow!("ash: {e}"))?;
         caribou_wren::install().map_err(|e| anyhow!("wren_lift: {e}"))?;
         let ash_options = AshOptions {
@@ -272,6 +323,8 @@ impl Session {
             program,
             vm,
             report_wanted: report,
+            findings: None,
+            source_dirs: Vec::new(),
         })
     }
 
@@ -357,7 +410,8 @@ impl Session {
     /// saying on stderr what reloads meanwhile. With `Options::report`,
     /// print the report after.
     pub fn run(mut self) -> Result<()> {
-        self.world.on(EventKind::Reload, |event| {
+        let findings = self.findings.clone();
+        self.world.on(EventKind::Reload, move |event| {
             let Event::Reload {
                 lang,
                 module,
@@ -366,19 +420,133 @@ impl Session {
             else {
                 return;
             };
-            let lang = caribou::world::language_name(*lang);
+            let name = caribou::world::language_name(*lang);
             match error {
-                None => eprintln!("[caribou] reloaded {lang} {module}"),
-                Some(error) => eprintln!("[caribou] {lang} {module} did not reload: {error}"),
+                None => eprintln!("[caribou] reloaded {name} {module}"),
+                Some(error) => {
+                    eprintln!("[caribou] {name} {module} did not reload: {error}");
+                    if let Some(findings) = &findings {
+                        findings.record(&reload_finding(*lang, module, error));
+                    }
+                }
             }
         });
         let result = self.start();
+        if let (Err(e), Some(findings)) = (&result, &self.findings) {
+            findings.record(&runtime_finding(e, &self.source_dirs));
+        }
         if self.report_wanted {
             eprint!("{}", self.report());
         }
         self.program.finish();
         result
     }
+}
+
+/// The findings file `options` names, opened.
+fn findings_for(options: &Options) -> Result<Option<std::sync::Arc<Findings>>> {
+    options
+        .diagnostics
+        .as_deref()
+        .map(|path| Findings::open(path).map(std::sync::Arc::new))
+        .transpose()
+}
+
+/// An error as one finding: its first line the message, the rest notes.
+fn error_finding(source: &'static str, error: &anyhow::Error) -> Finding {
+    let text = format!("{error:#}");
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let mut finding = Finding::new(findings::ERROR, source, lines.next().unwrap_or("").trim());
+    finding.notes = lines.map(|l| l.trim().to_owned()).collect();
+    finding
+}
+
+/// A reload that failed: the module's file, and the position its error's
+/// rendering names (`[ path:line:column ]`) when it names one.
+fn reload_finding(lang: caribou_abi::LangId, module: &str, error: &str) -> Finding {
+    let mut lines = error.lines().filter(|l| !l.trim().is_empty());
+    let mut finding = Finding::new(findings::ERROR, "reload", lines.next().unwrap_or("").trim());
+    finding.language = Some(caribou::world::language_name(lang).to_owned());
+    finding.module = Some(module.to_owned());
+    finding.file = registry::sources()
+        .into_iter()
+        .find(|(l, m, _)| *l == lang && m == module)
+        .and_then(|(_, _, path)| std::path::absolute(path).ok());
+    if let Some((file, line, column)) = rendered_position(error) {
+        if finding.file.is_none() {
+            finding.file = std::path::absolute(file).ok();
+        }
+        finding.range = Some(findings::Range {
+            start: findings::Position { line, column },
+            end: findings::Position {
+                line,
+                column: column + 1,
+            },
+        });
+    }
+    finding
+}
+
+/// The `path:line:column` a rendered error's header names, `─[ path:3:7 ]`.
+fn rendered_position(text: &str) -> Option<(PathBuf, u32, u32)> {
+    let start = text.find("[ ")? + 2;
+    let end = start + text[start..].find(" ]")?;
+    let (rest, column) = text[start..end].rsplit_once(':')?;
+    let (path, line) = rest.rsplit_once(':')?;
+    Some((
+        PathBuf::from(path),
+        line.parse().ok()?,
+        column.parse().ok()?,
+    ))
+}
+
+/// The error a run ended with: an exception the Haxe program did not catch
+/// with its stack, the innermost frame with a file its position; anything
+/// else as text.
+fn runtime_finding(error: &anyhow::Error, dirs: &[PathBuf]) -> Finding {
+    let Some(uncaught) = caribou_ash::uncaught(error) else {
+        return error_finding("runtime", error);
+    };
+    let mut finding = Finding::new(findings::ERROR, "runtime", uncaught.message);
+    finding.language = Some("haxe".to_owned());
+    finding.stack = uncaught
+        .stack
+        .iter()
+        .map(|frame| findings::Frame {
+            function: frame.function.clone(),
+            file: frame.file.as_deref().map(|f| source_file(f, dirs)),
+            line: u32::try_from(frame.line).ok().filter(|l| *l > 0),
+        })
+        .collect();
+    if let Some(frame) = finding
+        .stack
+        .iter()
+        .find(|f| f.file.is_some() && f.line.is_some())
+    {
+        let line = frame.line.unwrap_or(1);
+        finding.file = frame.file.clone();
+        finding.range = Some(findings::Range {
+            start: findings::Position { line, column: 1 },
+            end: findings::Position {
+                line: line + 1,
+                column: 1,
+            },
+        });
+    }
+    finding
+}
+
+/// The absolute path of a source file the program names as it was
+/// compiled: as it is when absolute, else the first of `dirs` that holds it.
+fn source_file(name: &str, dirs: &[PathBuf]) -> PathBuf {
+    let path = Path::new(name);
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    dirs.iter()
+        .map(|dir| dir.join(path))
+        .find(|candidate| candidate.is_file())
+        .unwrap_or_else(|| dirs.first().map(|d| d.join(path)).unwrap_or(path.into()))
 }
 
 /// Open and run the program at `path`.
@@ -389,4 +557,19 @@ pub fn run(path: &Path, options: Options) -> Result<()> {
 /// Open and run the project `project` declares, in one call.
 pub fn run_project(project: &Project, options: Options) -> Result<()> {
     Session::open_project(project, options)?.run()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_rendered_error_names_its_position_in_its_header() {
+        let text = "Error: expected '}'\n   ╭─[ ./src/game/hello.lua:10:26 ]\n   │\n";
+        assert_eq!(
+            rendered_position(text),
+            Some((PathBuf::from("./src/game/hello.lua"), 10, 26))
+        );
+        assert_eq!(rendered_position("no position here"), None);
+    }
 }

@@ -127,6 +127,8 @@ caribou run
 
 `caribou project --json` prints the resolved project for an IDE or a build tool: its roots and namespaces, plugins, dependencies and outputs, the `haxe` command Caribou compiles with, and any problems with the file. It builds nothing and writes nothing.
 
+`--diagnostics <path>` on `run`, `build` and `serve` appends what the command finds wrong to a file, one JSON object per line, for an IDE to read while the command runs: compile errors, reloads that failed, and an error the program did not catch, with its stack. Each finding has an LSP severity (1 error, 2 warning), a source (`compile`, `reload` or `runtime`), a message, and, when it has a position, an absolute `file` and a `range` of 1-based lines and columns counted in code points. `serve` also records the address it listens on, as `{"serving": url}`.
+
 `caribou build` packages the program, its modules and its plugins into one archive in `target/`. `caribou build --target wasm32-wasip1` builds it ahead of time instead: a WebAssembly module compiled against Caribou's runtime, with nothing interpreted. That needs a `caribou` built with its `llvm` feature, and for now a Haxe program that imports no other language's modules:
 
 ```sh

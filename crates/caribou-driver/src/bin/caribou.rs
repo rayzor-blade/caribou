@@ -1,8 +1,8 @@
 //! The caribou command.
 //!
-//!     caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]
-//!     caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]
-//!     caribou serve [--port <port>] [--lan] [<project.cbproj>]
+//!     caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [--diagnostics <path>] [<project.cbproj | program | module.wasm>] [args...]
+//!     caribou build [--target <triple>] [--diagnostics <path>] [<project.cbproj | program.hl>] [-o <out>]
+//!     caribou serve [--port <port>] [--lan] [--diagnostics <path>] [<project.cbproj>]
 //!     caribou describe <module.wren | plugin library | root directory>...
 //!     caribou project --json [<project.cbproj | directory>]
 //!
@@ -32,7 +32,7 @@ use caribou_ash::Mode;
 use caribou_driver::cbproj::{self, Project};
 use wren_lift::runtime::engine::ExecutionMode;
 
-const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...\n       caribou project --json [<project.cbproj | directory>]";
+const USAGE: &str = "usage: caribou run [--mode interp|hybrid] [--preset <preset>] [--wren interpreter|tiered] [--report] [--diagnostics <path>] [<project.cbproj | program | module.wasm>] [args...]\n       caribou build [--target <triple>] [--diagnostics <path>] [<project.cbproj | program.hl>] [-o <out>]\n       caribou serve [--port <port>] [--lan] [--diagnostics <path>] [<project.cbproj>]\n       caribou describe <module.wren | plugin library | root directory>...\n       caribou project --json [<project.cbproj | directory>]";
 
 fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut options = caribou_driver::Options::default();
@@ -73,6 +73,11 @@ fn run(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
                     })?;
             }
             "--report" => options.report = true,
+            "--diagnostics" => {
+                options.diagnostics = Some(PathBuf::from(
+                    argv.next().ok_or("--diagnostics takes a path")?,
+                ));
+            }
             _ if arg.starts_with("--") => return Err(format!("unknown flag {arg}")),
             _ => program = Some(PathBuf::from(arg)),
         }
@@ -95,18 +100,55 @@ fn build(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut program = None;
     let mut out = None;
     let mut target = None;
+    let mut diagnostics = None;
     while let Some(arg) = argv.next() {
         match arg.as_str() {
             "-o" => out = Some(PathBuf::from(argv.next().ok_or("-o takes a path")?)),
             "--target" => target = Some(argv.next().ok_or("--target takes a triple")?),
+            "--diagnostics" => {
+                diagnostics = Some(PathBuf::from(
+                    argv.next().ok_or("--diagnostics takes a path")?,
+                ));
+            }
             _ if arg.starts_with('-') => return Err(format!("unknown flag {arg}")),
             _ if program.is_some() => return Err(USAGE.to_owned()),
             _ => program = Some(PathBuf::from(arg)),
         }
     }
+    let findings = diagnostics
+        .as_deref()
+        .map(caribou_driver::findings::Findings::open)
+        .transpose()
+        .map_err(|e| format!("{e:#}"))?;
+    // What the build fails on is a finding, unless the compiler's own are.
+    let mut recorded = false;
+    let result = build_with(program, out, target, findings.as_ref(), &mut recorded);
+    if let (Err(message), Some(findings), false) = (&result, &findings, recorded) {
+        let mut lines = message.lines().filter(|l| !l.trim().is_empty());
+        let mut finding = caribou_driver::findings::Finding::new(
+            caribou_driver::findings::ERROR,
+            "compile",
+            lines.next().unwrap_or("").trim(),
+        );
+        finding.notes = lines.map(|l| l.trim().to_owned()).collect();
+        findings.record(&finding);
+    }
+    result
+}
+
+fn build_with(
+    program: Option<PathBuf>,
+    out: Option<PathBuf>,
+    target: Option<String>,
+    findings: Option<&caribou_driver::findings::Findings>,
+    recorded: &mut bool,
+) -> Result<(), String> {
     let written = match project(program.as_deref())? {
         Some(project) => {
-            let hl = project.compile_haxe().map_err(|e| format!("{e:#}"))?;
+            let hl = project.compile_haxe_into(findings).map_err(|e| {
+                *recorded = e.downcast_ref::<cbproj::HaxeFailed>().is_some();
+                format!("{e:#}")
+            })?;
             let target_dir = project.target_dir();
             match target {
                 Some(triple) => {
@@ -238,8 +280,14 @@ fn serve(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let mut program = None;
     let mut port = 8080;
     let mut lan = false;
+    let mut diagnostics = None;
     while let Some(arg) = argv.next() {
         match arg.as_str() {
+            "--diagnostics" => {
+                diagnostics = Some(PathBuf::from(
+                    argv.next().ok_or("--diagnostics takes a path")?,
+                ));
+            }
             "--port" => {
                 port = argv
                     .next()
@@ -255,16 +303,21 @@ fn serve(argv: &mut impl Iterator<Item = String>) -> Result<(), String> {
     let Some(project) = project(program.as_deref())? else {
         return Err("`serve` serves a project: name its .cbproj, or run it beside one".to_owned());
     };
-    serve_project(&project, port, lan)
+    serve_project(&project, port, lan, diagnostics.as_deref())
 }
 
 #[cfg(feature = "llvm")]
-fn serve_project(project: &Project, port: u16, lan: bool) -> Result<(), String> {
-    caribou_driver::serve::serve(project, port, lan).map_err(|e| format!("{e:#}"))
+fn serve_project(
+    project: &Project,
+    port: u16,
+    lan: bool,
+    diagnostics: Option<&Path>,
+) -> Result<(), String> {
+    caribou_driver::serve::serve(project, port, lan, diagnostics).map_err(|e| format!("{e:#}"))
 }
 
 #[cfg(not(feature = "llvm"))]
-fn serve_project(_: &Project, _: u16, _: bool) -> Result<(), String> {
+fn serve_project(_: &Project, _: u16, _: bool, _: Option<&Path>) -> Result<(), String> {
     Err(
         "`serve` builds the program ahead of time, which this caribou was built without: \
          its `llvm` feature"

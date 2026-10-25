@@ -21,6 +21,7 @@ pub mod aot_languages;
 pub mod bundle;
 pub mod cbproj;
 pub mod deps;
+pub mod findings;
 #[cfg(feature = "llvm")]
 pub mod foreign;
 pub mod linked;

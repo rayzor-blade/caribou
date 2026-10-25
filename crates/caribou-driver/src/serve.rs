@@ -37,10 +37,14 @@ const RELOAD: &str =
 /// Build the project for the browser: the module in its `target/`, with
 /// the page that runs it beside it, by `caribou build` in a process of its
 /// own, so no state of one build's compilers reaches the next.
-pub fn build(project: &Project) -> Result<()> {
+pub fn build(project: &Project, diagnostics: Option<&Path>) -> Result<()> {
     let caribou = std::env::current_exe().context("finding the caribou binary")?;
-    let status = std::process::Command::new(caribou)
-        .args(["build", "--target", TARGET])
+    let mut command = std::process::Command::new(caribou);
+    command.args(["build", "--target", TARGET]);
+    if let Some(path) = diagnostics {
+        command.arg("--diagnostics").arg(path);
+    }
+    let status = command
         .arg(&project.path)
         .status()
         .context("running caribou build")?;
@@ -52,16 +56,22 @@ pub fn build(project: &Project) -> Result<()> {
 
 /// Build the project and serve it on `port`, on every interface when
 /// `lan`, else on localhost; rebuild on every change until interrupted.
-pub fn serve(project: &Project, port: u16, lan: bool) -> Result<()> {
+pub fn serve(project: &Project, port: u16, lan: bool, diagnostics: Option<&Path>) -> Result<()> {
+    let findings = diagnostics
+        .map(crate::findings::Findings::open)
+        .transpose()?;
     let root = project.target_dir();
     std::fs::create_dir_all(&root)?;
-    if let Err(e) = build(project) {
+    if let Err(e) = build(project, diagnostics) {
         eprintln!("caribou: {e:#}");
     }
     let host = if lan { "0.0.0.0" } else { "127.0.0.1" };
     let listener = TcpListener::bind((host, port))
         .with_context(|| format!("listening on port {port}; pass --port to pick another"))?;
     println!("serving {} at http://localhost:{port}/", project.name);
+    if let Some(findings) = &findings {
+        findings.serving(&format!("http://localhost:{port}/"));
+    }
     if lan && let Some(address) = lan_address() {
         println!(
             "  and at http://{address}:{port}/ for other devices, whose browser must treat \
@@ -89,7 +99,7 @@ pub fn serve(project: &Project, port: u16, lan: bool) -> Result<()> {
             continue;
         }
         println!("caribou: a source changed; building");
-        match build(project) {
+        match build(project, diagnostics) {
             Ok(_) => {
                 println!("caribou: built; reloading the page");
                 // A page whose stream is gone is dropped.

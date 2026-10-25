@@ -54,6 +54,8 @@ use std::process::Command;
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::findings::Findings;
+
 /// The extension a project file has.
 pub const EXTENSION: &str = "cbproj";
 
@@ -339,6 +341,13 @@ impl Project {
     /// directory, with caribou's library and the declared haxelibs, and
     /// every Haxe module in the sources with it.
     pub fn compile_haxe(&self) -> Result<PathBuf> {
+        self.compile_haxe_into(None)
+    }
+
+    /// [`Self::compile_haxe`], with what `haxe` reports also recorded in
+    /// `findings`, each a finding with its position. A failed compile is
+    /// then [`HaxeFailed`], its findings already written.
+    pub fn compile_haxe_into(&self, findings: Option<&Findings>) -> Result<PathBuf> {
         if let Some(missing) = self.haxe_class_paths.iter().find(|c| !c.is_dir()) {
             bail!(
                 "{}: haxe.class-paths names {}, which is not a directory",
@@ -349,13 +358,30 @@ impl Project {
         let plugins = self.plugin_libraries()?;
         let args = self.haxe_args(&plugins)?;
         std::fs::create_dir_all(self.target_dir())?;
-        let status = Command::new("haxe")
-            .args(&args)
-            .current_dir(&self.dir)
-            .status()
+        let mut command = Command::new("haxe");
+        command.args(&args).current_dir(&self.dir);
+        let Some(findings) = findings else {
+            let status = command
+                .status()
+                .context("running the Haxe compiler, `haxe`")?;
+            if !status.success() {
+                bail!("the Haxe compiler failed on {}", self.entry.module);
+            }
+            return Ok(self.haxe_output());
+        };
+        // What haxe says still reaches the console, and its findings the file.
+        let output = command
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::piped())
+            .output()
             .context("running the Haxe compiler, `haxe`")?;
-        if !status.success() {
-            bail!("the Haxe compiler failed on {}", self.entry.module);
+        let said = String::from_utf8_lossy(&output.stderr);
+        eprint!("{said}");
+        for finding in crate::findings::haxe_findings(&said, &self.dir) {
+            findings.record(&finding);
+        }
+        if !output.status.success() {
+            return Err(HaxeFailed(self.entry.module.clone()).into());
         }
         Ok(self.haxe_output())
     }
@@ -537,6 +563,18 @@ impl Project {
             .collect()
     }
 }
+
+/// The Haxe compiler failed, and what it reported is recorded already.
+#[derive(Debug)]
+pub struct HaxeFailed(pub String);
+
+impl std::fmt::Display for HaxeFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "the Haxe compiler failed on {}", self.0)
+    }
+}
+
+impl std::error::Error for HaxeFailed {}
 
 /// `path` with its `.` and `..` components taken out, by its text alone:
 /// nothing is resolved on disk, so paths compare as they are written.

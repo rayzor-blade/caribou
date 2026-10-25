@@ -231,6 +231,48 @@ fn bring_up(path: &Path, install: bool) -> Result<()> {
 /// Install the core's heap and scheduler into the ash_std image the
 /// program at `path` will run through: the linked one, or, for a program
 /// with HDLLs beside it, the shared `libhl` image they import.
+/// An exception the program threw and did not catch, as the error a run
+/// ended with carries it: its message and its stack, innermost first, each
+/// frame a function, the source file the program was compiled from and a
+/// line. `None` for an error that is not one.
+pub fn uncaught(error: &anyhow::Error) -> Option<Uncaught> {
+    let thrown = error
+        .chain()
+        .find_map(|e| e.downcast_ref::<ash_interp::interpreter::HLExceptionPropagation>())?;
+    Some(Uncaught {
+        message: thrown
+            .message
+            .clone()
+            .unwrap_or_else(|| thrown.to_string().lines().next().unwrap_or("").to_owned()),
+        stack: thrown
+            .stack
+            .iter()
+            .map(|frame| UncaughtFrame {
+                function: frame.symbol.to_string(),
+                // `?` is HashLink's name for a position it has no file for.
+                file: frame
+                    .file
+                    .as_deref()
+                    .filter(|f| *f != "?")
+                    .map(str::to_owned),
+                line: frame.line,
+            })
+            .collect(),
+    })
+}
+
+/// What [`uncaught`] gives.
+pub struct Uncaught {
+    pub message: String,
+    pub stack: Vec<UncaughtFrame>,
+}
+
+pub struct UncaughtFrame {
+    pub function: String,
+    pub file: Option<String>,
+    pub line: i32,
+}
+
 pub fn install_for(path: &Path) -> Result<()> {
     if native_lib::choose_std_linkage(path) {
         crate::install()?;
