@@ -6568,6 +6568,9 @@ mod tests {
         if !handback_enabled() || no_reclaim() || quarantine_freed() {
             return; // These diagnostic modes deliberately retain freed pages.
         }
+        // Every origin is set under the lock, so holding it keeps the idle
+        // collector's from landing between this test's and its sweep.
+        let _held = gc_locked_init();
         for large in [false, true] {
             let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 64);
             for _ in 0..32 {
@@ -6621,6 +6624,7 @@ mod tests {
         if !handback_enabled() || no_reclaim() || quarantine_freed() {
             return;
         }
+        let _held = gc_locked_init();
         let blocks = HANDBACK_CHUNK_BLOCKS + RESIDENT_FREE_BLOCKS + 200;
         let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * (blocks + 8));
         for _ in 0..blocks {
@@ -6918,11 +6922,16 @@ mod tests {
         // Retried: a cycle whose world stop misses `STOP_THE_WORLD_DEADLINE` is
         // abandoned, and this binary runs its tests in parallel, so another test's
         // thread can be the one that fails to park.
-        let collections_before = GC_STATS.collections.load(Ordering::Relaxed);
-        let mut collections_after = collections_before;
+        // The lock is held across `major` and the reads, so no other collection
+        // (the idle collector's, say) runs between them.
+        let (mut collections_before, mut collections_after, mut origin) = (0, 0, 0);
         for _ in 0..8 {
+            let held = gc_locked_init();
+            collections_before = GC_STATS.collections.load(Ordering::Relaxed);
             major();
             collections_after = GC_STATS.collections.load(Ordering::Relaxed);
+            origin = COLLECT_ORIGIN.load(Ordering::Relaxed);
+            drop(held);
             if collections_after > collections_before {
                 break;
             }
@@ -6934,13 +6943,8 @@ mod tests {
              collections {collections_before} -> {collections_after}"
         );
         // ...and it ran on its own account rather than riding a trigger that
-        // happened to fire: 6 is `ORIGIN_NAMES`' "explicit", and nothing else
-        // can have collected while this thread holds the lock.
-        assert_eq!(
-            COLLECT_ORIGIN.load(Ordering::Relaxed),
-            6,
-            "major should collect with the explicit origin"
-        );
+        // happened to fire: 6 is `ORIGIN_NAMES`' "explicit".
+        assert_eq!(origin, 6, "major should collect with the explicit origin");
 
         let (mut total2, mut count2, mut current2) = (f64::NAN, f64::NAN, f64::NAN);
         unsafe { stats(&mut total2, &mut count2, &mut current2) };
