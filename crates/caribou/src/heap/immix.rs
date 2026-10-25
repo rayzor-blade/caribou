@@ -6019,10 +6019,82 @@ pub unsafe fn dump_memory(filename: *mut hl::vbyte) {
             live * LINE_SIZE
         ));
     }
+    if marked {
+        census_write(&gc, &mut w);
+    }
     w("end".into());
 
     drop(roots);
     let _ = out.flush();
+}
+
+/// The marked objects by kind, and by size within each kind. Exact: the
+/// object table records where each allocation starts, its kind and its size.
+/// `raw` is scanned conservatively (`Raw`, `Finalizer`, a `Typed` behind a
+/// bare `hl_type`), `noptr` never, `traced` through its descriptor, `foreign`
+/// conservatively with a descriptor's drop. The heap must have been marked.
+fn census_write(gc: &ImmixAllocator, w: &mut dyn FnMut(String)) {
+    const KINDS: [(u8, &str); 4] = [
+        (OBJECT_KIND_RAW, "raw"),
+        (OBJECT_KIND_NOPTR, "noptr"),
+        (OBJECT_KIND_TRACED, "traced"),
+        (OBJECT_KIND_FOREIGN, "foreign"),
+    ];
+    const BUCKETS: [(usize, &str); 8] = [
+        (16, "<=16"),
+        (32, "<=32"),
+        (64, "<=64"),
+        (128, "<=128"),
+        (1024, "<=1K"),
+        (16384, "<=16K"),
+        (262144, "<=256K"),
+        (usize::MAX, ">256K"),
+    ];
+    // (count, bytes) per kind, and per kind and size bucket.
+    let mut totals = [(0u64, 0u64); 4];
+    let mut sized = [[(0u64, 0u64); 8]; 4];
+    for &block_addr in &gc.heap.used_blocks {
+        let first = block_addr / ALLOC_QUANTUM;
+        for q in first..first + BLOCK_SIZE / ALLOC_QUANTUM {
+            let byte = gc.heap.objects[q].load(Ordering::Relaxed);
+            let code = byte & OBJECT_SIZE_MASK;
+            if code == 0 || byte & OBJECT_MARK == 0 {
+                continue;
+            }
+            let size = if code == SPAN_OBJECT {
+                gc.heap.alloc_sizes[q * ALLOC_QUANTUM / LINE_SIZE] as usize * LINE_SIZE
+            } else {
+                code as usize * ALLOC_QUANTUM
+            };
+            let kind = KINDS
+                .iter()
+                .position(|(k, _)| *k == byte & OBJECT_KIND_MASK)
+                .unwrap_or(0);
+            let bucket = BUCKETS
+                .iter()
+                .position(|(max, _)| size <= *max)
+                .unwrap_or(7);
+            totals[kind].0 += 1;
+            totals[kind].1 += size as u64;
+            sized[kind][bucket].0 += 1;
+            sized[kind][bucket].1 += size as u64;
+        }
+    }
+    w("# live <kind> <count> <bytes>".into());
+    for (i, (_, name)) in KINDS.iter().enumerate() {
+        w(format!("live {name} {} {}", totals[i].0, totals[i].1));
+    }
+    w("# live-size <kind> <size> <count> <bytes>".into());
+    for (i, (_, name)) in KINDS.iter().enumerate() {
+        for (b, (_, size)) in BUCKETS.iter().enumerate() {
+            if sized[i][b].0 > 0 {
+                w(format!(
+                    "live-size {name} {size} {} {}",
+                    sized[i][b].0, sized[i][b].1
+                ));
+            }
+        }
+    }
 }
 
 // ── Fiber-stack registry ────────────────────────────────────────────────────
@@ -6567,6 +6639,36 @@ mod tests {
         set_collect_origin(8);
         gc.sweep(&[]);
         assert_eq!(gc.heap.pending_handback.len(), RESIDENT_FREE_BLOCKS);
+    }
+
+    #[test]
+    fn the_census_counts_marked_objects_by_kind_and_size() {
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 8);
+        let raw = gc.allocate(32).unwrap();
+        let noptr = gc.allocate(1000).unwrap();
+        let dead = gc.allocate(48).unwrap();
+        let at = offset(&gc, noptr);
+        gc.set_allocation_kind(at, OBJECT_KIND_NOPTR);
+        for p in [raw, noptr] {
+            gc.heap.objects[offset(&gc, p) / ALLOC_QUANTUM]
+                .fetch_or(OBJECT_MARK, Ordering::Relaxed);
+        }
+        let _ = dead;
+        let mut lines = Vec::new();
+        census_write(&gc, &mut |line| lines.push(line));
+        assert!(lines.contains(&"live raw 1 32".to_string()), "{lines:?}");
+        assert!(
+            lines.contains(&"live noptr 1 1024".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"live-size raw <=32 1 32".to_string()),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(&"live-size noptr <=1K 1 1024".to_string()),
+            "{lines:?}"
+        );
     }
 
     #[test]
