@@ -62,6 +62,7 @@ jobs:
           targets: wasm32-wasip1-threads # wire mailbox integration test
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
+      - uses: ./caribou/.github/actions/linux-packages
       - uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}
@@ -90,6 +91,7 @@ jobs:
           components: rustfmt, clippy
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
+      - uses: ./caribou/.github/actions/linux-packages
       - uses: krdlab/setup-haxe@v2
         with:
           haxe-version: ${{ env.HAXE_VERSION }}

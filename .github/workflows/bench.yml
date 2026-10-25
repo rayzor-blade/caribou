@@ -36,6 +36,7 @@ jobs:
           components: rustfmt # bindgen pretty-prints through it
       - uses: ./caribou/.github/actions/llvm21
       - uses: ./caribou/.github/actions/siblings
+      - uses: ./caribou/.github/actions/linux-packages
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: caribou

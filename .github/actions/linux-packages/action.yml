@@ -1,0 +1,11 @@
+# System libraries the plugins build against on Linux: libudev, which
+# xwindow-gamepad's gilrs finds through pkg-config. Nothing elsewhere.
+name: Linux packages
+description: Install the system libraries the plugins link on Linux.
+runs:
+  using: composite
+  steps:
+    - name: Linux packages
+      if: runner.os == 'Linux'
+      shell: bash
+      run: sudo apt-get update && sudo apt-get install -y libudev-dev
