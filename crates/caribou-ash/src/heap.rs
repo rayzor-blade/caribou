@@ -56,23 +56,14 @@ pub unsafe extern "C" fn alloc_immortal_noptr(size: usize) -> *mut u8 {
     raw(heap::gc_locked_init().allocate_immortal_noptr(size))
 }
 
-/// `None` leaves word zero to the caller, as ash's does; the core's
-/// `alloc_with_finalizer` always writes it, so that case is composed from
-/// the same two steps under the one lock hold.
+/// `None` leaves word zero to the caller, as ash's does.
 pub unsafe extern "C" fn alloc_with_finalizer(
     size: usize,
     finalize: Option<Finalizer>,
 ) -> *mut c_void {
     match finalize {
         Some(finalize) => unsafe { heap::alloc_with_finalizer(size, finalize) },
-        None => {
-            let mut gc = heap::gc_locked_init();
-            let Some(p) = gc.allocate(size) else {
-                return ptr::null_mut();
-            };
-            gc.register_finalizable(p.as_ptr());
-            p.as_ptr().cast()
-        }
+        None => heap::alloc_finalizable(size),
     }
 }
 

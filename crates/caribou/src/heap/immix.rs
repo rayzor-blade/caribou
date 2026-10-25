@@ -88,6 +88,20 @@ pub unsafe fn alloc_with_finalizer(size: usize, finalize: Finalizer) -> *mut c_v
     p as *mut c_void
 }
 
+/// Allocate a `MEM_KIND_FINALIZER` block whose word zero the caller writes: an
+/// HDLL's `hl_gc_alloc_gen`. HashLink lets that call collect, so a collection
+/// the trigger deferred runs here; without it a loop making native handles
+/// never reaches a safepoint that would.
+pub fn alloc_finalizable(size: usize) -> *mut c_void {
+    let mut gc = gc_locked_init();
+    gc.maybe_collect_at_safepoint();
+    let Some(ptr) = gc.allocate(size) else {
+        return ptr::null_mut();
+    };
+    gc.register_finalizable(ptr.as_ptr());
+    ptr.as_ptr().cast()
+}
+
 /// Call the finalizers a collection queued. The GC lock must NOT be held.
 fn run_pending_finalizers() {
     thread_local! {
@@ -244,6 +258,10 @@ const HEAP_MAX_CEILING: usize = 1024 * 1024 * 1024;
 const HEAP_MAX_SHARE: usize = 4;
 /// First collection fires after this many bytes allocated.
 const INITIAL_TRIGGER_BYTES: usize = 4 * 1024 * 1024;
+/// Trigger pressure charged per `MEM_KIND_FINALIZER` block. Such a block is
+/// usually a handle to native memory the trigger cannot see, so a run of
+/// small handles still reaches a collection and their finalizers run.
+const FINALIZER_CHARGE: usize = 4096;
 /// The least new allocation a collection waits for however small the live
 /// set, so the bound of two live sets does not collect a small program
 /// continuously.
@@ -3951,6 +3969,7 @@ impl ImmixAllocator {
         let addr = ptr as usize;
         if addr >= heap_start && addr < heap_start + self.heap.memory.len {
             self.finalizables.insert(addr - heap_start);
+            self.track_external(FINALIZER_CHARGE);
         }
     }
 
@@ -6490,6 +6509,15 @@ mod tests {
         set_collect_origin(8);
         gc.sweep(&[]);
         assert_eq!(gc.heap.pending_handback.len(), RESIDENT_FREE_BLOCKS);
+    }
+
+    #[test]
+    fn a_finalizer_block_charges_the_trigger() {
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 8);
+        let p = gc.allocate(32).unwrap();
+        let before = gc.heap.external_since_gc;
+        gc.register_finalizable(p.as_ptr());
+        assert_eq!(gc.heap.external_since_gc - before, FINALIZER_CHARGE);
     }
 
     #[test]

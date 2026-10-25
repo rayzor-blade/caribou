@@ -88,7 +88,7 @@ A collection stops the world. A mutator enters the rendezvous at a safepoint: ev
 
 **Sweeping:** The sweep drops dead traced objects, frees unmarked lines, and returns wholly free blocks. Finalizers of unreachable blocks are queued and run the next time the lock is released, never inside the collector.
 
-**Triggering:** A collection starts when the bytes allocated since the previous collection, plus the external bytes reported through `track_external`, cross an adaptive threshold. The threshold is four times the live size, held to two live sets (or 128 MB, whichever is larger), and clamped between 8 MB and a ceiling that grows with the heap. A heartbeat collects at least every 30 seconds; `CARIBOU_GC_HEARTBEAT_MS` changes the interval. The following switches adjust this behavior:
+**Triggering:** A collection starts when the bytes allocated since the previous collection, plus the external bytes reported through `track_external`, cross an adaptive threshold. Each finalizer block counts as 4 KB of external memory, since it usually holds native memory the trigger cannot see, and an HDLL's finalizer allocation runs a collection the trigger deferred. The threshold is four times the live size, held to two live sets (or 128 MB, whichever is larger), and clamped between 8 MB and a ceiling that grows with the heap. A heartbeat collects at least every 30 seconds; `CARIBOU_GC_HEARTBEAT_MS` changes the interval. The following switches adjust this behavior:
 
 * `ASH_GC_TRIGGER_MB` fixes the threshold.
 * `ASH_GC_STRESS` collects at every opportunity and disables the allocation buffer. It changes the allocation path as well as the collection frequency.

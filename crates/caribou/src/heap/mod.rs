@@ -34,6 +34,7 @@ pub use immix::{
     add_root_range,
     add_root_spans,
     add_scan_root,
+    alloc_finalizable,
     // Allocation.
     alloc_gen,
     alloc_with_finalizer,
