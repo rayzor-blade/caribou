@@ -394,6 +394,11 @@ fn load_with(
     }
 
     sys_init(path, &options.args)?;
+    // Reload gives every class spare room for the fields a reload adds; the
+    // room is reserved before the bridge or the interpreter lays one out.
+    if options.reload {
+        ash_core::reload::reserve_object_room();
+    }
 
     let bytecode = {
         let _phase = ash_core::profile::scope("decode bytecode");

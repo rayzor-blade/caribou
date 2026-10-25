@@ -86,10 +86,9 @@ cargo +nightly build -p caribou-driver
 
 ### Build Requirements & Workspace Layout
 
-* Runtimes are pinned to specific revisions in `Cargo.toml`.
-* Ash is patched to a local checkout at `../ash` and requires building `ash_std` first (`cargo build -p ash_std`) due to embedded library dependencies.
+* Runtimes and plugin libraries are fetched by the git revisions `Cargo.toml` pins. A `[patch]` table points one at a sibling checkout only while a change Caribou needs there is not yet pushed.
+* Name `-p ash_std` in a build (`cargo build --release -p caribou-driver -p ash_std`) to get `libash_std` beside `caribou`; programs that load HDLLs need it.
 * `caribou-ash` requires the `LLVM_SYS_211_PREFIX` environment variable during compilation, as Ash's build script expects this configuration even when building without LLVM linking.
-* Active Zyntax branches may be patched against local checkouts at `../zyntax`.
 * Local Haxe integration: Register the library locally via `haxelib dev caribou haxe` to enable `-lib caribou`.
 
 ### Running Programs

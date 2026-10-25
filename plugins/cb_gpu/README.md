@@ -14,9 +14,7 @@ Use the official [WebGPU specification](https://www.w3.org/TR/webgpu/) as the
 API reference for the portable `gpu` surface. `caribou-gpu` also exposes
 xgpu's native extensions where the selected backend supports them.
 
-The sibling revision is pinned in the workspace `Cargo.toml` and cloned by the
-CI sibling action. The local `[patch]` entry makes development use `../xgpu`
-at that revision.
+The xgpu revision is pinned in the workspace `Cargo.toml`.
 
 The GPU and combined window/GPU fixtures remain under `plugins/fixtures`:
 

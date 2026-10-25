@@ -20,20 +20,20 @@ libc = "0.2"
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
 # needs lands there first; while it is not pushed, a `[patch]` table points
 # the source at the checkout, and the patch goes once it is pushed.
-ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe" }
-ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe" }
-ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe", default-features = false }
-ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe", default-features = false }
-ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe", default-features = false }
-ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "b068cfc4321760c98414659a7339545f44e4fcfe" }
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "f18086887670b68594f6e9f96c142adc33a4fcd6" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "f18086887670b68594f6e9f96c142adc33a4fcd6" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "f18086887670b68594f6e9f96c142adc33a4fcd6", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "f18086887670b68594f6e9f96c142adc33a4fcd6", default-features = false }
+ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "f18086887670b68594f6e9f96c142adc33a4fcd6", default-features = false }
+ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "f18086887670b68594f6e9f96c142adc33a4fcd6" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "eca0254cfde790e781903ff2ddb8de639be0673f", default-features = false }
-zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
-zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39", default-features = false }
-zyntax_typed_ast = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
-zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39", default-features = false }
-zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
-zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
-zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "a2f8b717ab1d223d41e999b8017bd24128eb1a39" }
+zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34" }
+zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34", default-features = false }
+zyntax_typed_ast = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34" }
+zynml = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34", default-features = false }
+zyntax_python = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34" }
+zyntax_lua = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34" }
+zyntax_lua_capi = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34" }
 xgpu-backend = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "6f8823db7fd24709fa4225f849133ccc6dc0e283" }
 xgpu-bindgen = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "6f8823db7fd24709fa4225f849133ccc6dc0e283" }
 xgpu-core = { git = "https://github.com/rayzor-blade/xgpu.git", rev = "6f8823db7fd24709fa4225f849133ccc6dc0e283" }
@@ -44,29 +44,9 @@ xwindow-clipboard = { git = "https://github.com/rayzor-blade/xwindow.git", rev =
 xwindow-gamepad = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
 xwindow-appicon = { git = "https://github.com/rayzor-blade/xwindow.git", rev = "3be8f63ae997fc40b5f10c55801c18132a6050c2" }
 x_idl = { git = "https://github.com/rayzor-blade/x-idl.git", rev = "753610fd220dcfb5cce358e9418eadc48cb4562d" }
-xavi-backend = { git = "https://github.com/rayzor-blade/xavi.git", rev = "01621a57ba91a21cf525d1e76ec0a3c41ce3b541" }
-xavi-bindgen = { git = "https://github.com/rayzor-blade/xavi.git", rev = "01621a57ba91a21cf525d1e76ec0a3c41ce3b541" }
-xavi-core = { git = "https://github.com/rayzor-blade/xavi.git", rev = "01621a57ba91a21cf525d1e76ec0a3c41ce3b541" }
-
-# xavi from the sibling checkout, at the rev above: its bindgen takes x-idl
-# by a path beside the checkout, which a cargo git checkout of xavi does not
-# have. The patch goes once xavi takes x-idl by its git rev.
-[patch."https://github.com/rayzor-blade/xavi.git"]
-xavi-backend = { path = "../xavi/crates/xavi-backend" }
-xavi-bindgen = { path = "../xavi/crates/xavi-bindgen" }
-xavi-core = { path = "../xavi/crates/xavi-core" }
-
-# Zyntax from the sibling checkout: zyntax_compiler's build script reads the
-# workspace's Cargo.lock, which zyntax does not track, so it does not build
-# from a git checkout. The patch goes once it does.
-[patch."https://github.com/zyntax-project/zyntax.git"]
-zyntax_embed = { path = "../zyntax/crates/zyntax_embed" }
-zyntax_compiler = { path = "../zyntax/crates/compiler" }
-zyntax_typed_ast = { path = "../zyntax/crates/typed_ast" }
-zynml = { path = "../zyntax/crates/zynml" }
-zyntax_python = { path = "../zyntax/crates/zyntax_python" }
-zyntax_lua = { path = "../zyntax/crates/zyntax_lua" }
-zyntax_lua_capi = { path = "../zyntax/crates/zyntax_lua/capi" }
+xavi-backend = { git = "https://github.com/rayzor-blade/xavi.git", rev = "aaf35ef1e653efd81f15cfa38a9f35de909218e9" }
+xavi-bindgen = { git = "https://github.com/rayzor-blade/xavi.git", rev = "aaf35ef1e653efd81f15cfa38a9f35de909218e9" }
+xavi-core = { git = "https://github.com/rayzor-blade/xavi.git", rev = "aaf35ef1e653efd81f15cfa38a9f35de909218e9" }
 
 [profile.dev]
 opt-level = 1
