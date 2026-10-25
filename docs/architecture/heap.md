@@ -88,7 +88,7 @@ A collection stops the world. A mutator enters the rendezvous at a safepoint: ev
 
 **Sweeping:** The sweep drops dead traced objects, frees unmarked lines, and returns wholly free blocks. Finalizers of unreachable blocks are queued and run the next time the lock is released, never inside the collector.
 
-**Triggering:** A collection starts when the bytes allocated since the previous collection, plus the external bytes reported through `track_external`, cross an adaptive threshold. The threshold is twice the live size, clamped between 8 MB and a ceiling that grows with the heap. A heartbeat collects at least every 30 seconds; `CARIBOU_GC_HEARTBEAT_MS` changes the interval. The following switches adjust this behavior:
+**Triggering:** A collection starts when the bytes allocated since the previous collection, plus the external bytes reported through `track_external`, cross an adaptive threshold. The threshold is four times the live size, held to two live sets (or 128 MB, whichever is larger), and clamped between 8 MB and a ceiling that grows with the heap. A heartbeat collects at least every 30 seconds; `CARIBOU_GC_HEARTBEAT_MS` changes the interval. The following switches adjust this behavior:
 
 * `ASH_GC_TRIGGER_MB` fixes the threshold.
 * `ASH_GC_STRESS` collects at every opportunity and disables the allocation buffer. It changes the allocation path as well as the collection frequency.
@@ -96,6 +96,10 @@ A collection stops the world. A mutator enters the rendezvous at a safepoint: ev
 * The remaining `ASH_GC_*` switches are diagnostic. Each is documented in one line at the point where it is read.
 
 **Deferred Collection:** A trigger that fires inside an allocation normally collects immediately. Some mutators only have a complete root set at points of their own choosing: an interpreter that has published a scan-root table, and a guest collector that has requested deferral with `set_deferred_collection`. For those mutators the trigger records a pending collection instead, which `collect_pending` reads without taking the lock. The collection then runs at the next safepoint any mutator reaches: the interpreter's `scan_roots_done`, an allocation-buffer refill, or the guest collector's own poll. If allocation pressure exceeds four thresholds (or the ceiling, if that is larger), the collector runs inline regardless.
+
+**Idle Collection:** A background thread collects once every mutator has been idle for 300 ms. A mutator is idle when it spends all but 5% of that time in declared blocking waits, such as the scheduler's idle wait or a native call that announced itself as blocking. A UI that wakes briefly between short waits counts as idle; an animation does not. The thread collects only when there is something worth it: 8 MB allocated since the last collection, 8 MB of resident free blocks, or any of either once a heartbeat has passed. Finalizers that an idle collection queues run on a mutator, at its next lock release. `ASH_GC_IDLE=0` turns idle collection off.
+
+**Returning Memory:** During a burst of allocation, the sweep keeps freed blocks resident, so the next allocation does not fault their pages in again. It remembers those blocks across collections. When the heap is quiet (the collection is an idle one, or no collection ran for a heartbeat), it returns their pages to the OS, keeping 512 KB warm: `MADV_FREE_REUSABLE` on macOS, `MADV_DONTNEED` on other Unix systems, and `DiscardVirtualMemory` on Windows. A heartbeat collection returns at most 32 MB at a time, so it does not hold the world for the whole return; an idle collection returns everything. Reusing a block cancels its pending return. When the world is idle and malloc's use has fallen 4 MB from its peak, the idle thread also asks malloc to return its free pages. `hl.Gc.dumpMemory()` reports `blocks-pending-handback` and `blocks-reusable` separately from live blocks. `ASH_GC_HANDBACK=0` keeps every freed page resident.
 
 ## Hosted Collectors
 

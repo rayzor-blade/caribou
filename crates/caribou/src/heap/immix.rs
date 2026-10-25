@@ -32,6 +32,11 @@ use windows_sys::Win32::System::Memory::{
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
 const BLOCK_SIZE: usize = 32 * 1024; // 32 KB
+const RESIDENT_FREE_BLOCKS: usize = 16; // Keep 512 KiB warm between idle bursts.
+/// The most free blocks one heartbeat sweep hands back to the OS (32 MiB). The
+/// rest wait for the next quiet collection, so a heap that frees most of its
+/// memory does not hold the world for the whole madvise.
+const HANDBACK_CHUNK_BLOCKS: usize = 1024;
 const LINE_SIZE: usize = 128; // 128 bytes
 const ALLOC_QUANTUM: usize = 16;
 const OBJECT_MARK: u8 = 0x80;
@@ -171,7 +176,10 @@ fn gc_lock_release() {
         if releases {
             release_deferred_handles();
         }
-        let finalizers = PENDING_FINALIZER_COUNT.load(Ordering::Relaxed) != 0;
+        // Finalizers run on a mutator: the idle collector's thread leaves them
+        // queued, since a native finalizer may expect the program's own thread.
+        let finalizers =
+            PENDING_FINALIZER_COUNT.load(Ordering::Relaxed) != 0 && current_mutator_registered();
         if finalizers {
             run_pending_finalizers();
         }
@@ -236,6 +244,10 @@ const HEAP_MAX_CEILING: usize = 1024 * 1024 * 1024;
 const HEAP_MAX_SHARE: usize = 4;
 /// First collection fires after this many bytes allocated.
 const INITIAL_TRIGGER_BYTES: usize = 4 * 1024 * 1024;
+/// The least new allocation a collection waits for however small the live
+/// set, so the bound of two live sets does not collect a small program
+/// continuously.
+const HEADROOM_FLOOR: usize = 128 * 1024 * 1024;
 /// Adaptive threshold bounds: live*growth clamped to [floor, ceiling].
 const DEFAULT_TRIGGER_FLOOR: usize = 8 * 1024 * 1024;
 /// Bounds on the machine-derived ceiling (see `trigger_ceiling_bytes`).
@@ -524,6 +536,13 @@ struct MutatorRecord {
     polls_at_stop: u64,
     /// Where this thread last entered a place it could wait. See `mark_site`.
     site: usize,
+    /// Since when this thread has been idle: blocking, with only short turns
+    /// between waits. What the idle collector waits on; see `world_idle`.
+    idle_since: Option<Instant>,
+    /// How long it ran between waits since `idle_since`.
+    ran: Duration,
+    /// When it last left a blocking wait, while it is running.
+    woke_at: Option<Instant>,
     /// Address of this thread's kept stack, in its `Tlab`.
     #[cfg(target_family = "wasm")]
     kept: usize,
@@ -679,6 +698,9 @@ fn register_current_mutator(stack_top: usize, role: &'static str) {
             polls: TLAB.with(|t| &t.polls as *const AtomicU64 as usize),
             polls_at_stop: 0,
             site: TLAB.with(|t| &t.site as *const AtomicU64 as usize),
+            idle_since: None,
+            ran: Duration::ZERO,
+            woke_at: None,
             #[cfg(target_family = "wasm")]
             kept: TLAB.with(|t| t.kept.get() as usize),
         });
@@ -895,6 +917,20 @@ pub fn gc_set_blocking(blocking: bool) -> bool {
 
     if blocking {
         let record = &mut world.mutators[index];
+        if record.blocking_depth == 0 {
+            // A UI loop waits in short slices with a brief turn between
+            // them, so idleness spans waits: it ends only when the turns
+            // add up to more than `IDLE_DUTY` of the time since it began.
+            let now = Instant::now();
+            if let Some(woke) = record.woke_at.take() {
+                record.ran += now - woke;
+            }
+            let since = *record.idle_since.get_or_insert(now);
+            if record.ran.as_secs_f64() > (now - since).as_secs_f64() * IDLE_DUTY {
+                record.idle_since = Some(now);
+                record.ran = Duration::ZERO;
+            }
+        }
         record.blocking_depth = record.blocking_depth.saturating_add(1);
         record.stopped_sp = sp;
         record.saved_regs = saved_regs;
@@ -904,6 +940,7 @@ pub fn gc_set_blocking(blocking: bool) -> bool {
         if outermost {
             blocking_hook(true);
         }
+        start_idle_collector();
         return true;
     }
     if world.mutators[index].blocking_depth == 0 {
@@ -913,6 +950,7 @@ pub fn gc_set_blocking(blocking: bool) -> bool {
     if world.mutators[index].blocking_depth != 0 {
         return true;
     }
+    world.mutators[index].woke_at = Some(Instant::now());
 
     // A thread leaving its native blocking section while collection is in
     // progress joins the parked mutators before it may execute HL again.
@@ -1674,6 +1712,16 @@ fn growth_factor() -> usize {
     })
 }
 
+/// New allocation allowed before the next collection: the live set times the
+/// growth factor, within [floor, ceiling], and held to about two live sets
+/// (never below `HEADROOM_FLOOR`), so a mid-size live set does not let four
+/// times itself in garbage pile up. Small live sets keep their multiple.
+fn trigger_bytes(live: usize, growth: usize, floor: usize, ceiling: usize) -> usize {
+    let headroom = (2 * live).max(HEADROOM_FLOOR);
+    live.saturating_mul(growth)
+        .clamp(floor, ceiling.min(headroom).max(floor))
+}
+
 /// Reuse the unmarked lines inside blocks a sweep kept; `ASH_GC_RECYCLE=0`
 /// retains those blocks whole instead. Sound only while the trace marks every
 /// live object, since a reused line is overwritten where block retention
@@ -1740,7 +1788,7 @@ fn quarantine_freed() -> bool {
 /// caller just before the call, printed by the trace lines. A plain static
 /// is sound under the GC lock.
 static COLLECT_ORIGIN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-const ORIGIN_NAMES: [&str; 8] = [
+const ORIGIN_NAMES: [&str; 9] = [
     "?",
     "snapshot-done",    // scan_roots_done honoring a deferred trigger
     "tlab-safepoint",   // tlab_refill_then_alloc's maybe_collect_at_safepoint
@@ -1749,9 +1797,13 @@ const ORIGIN_NAMES: [&str; 8] = [
     "large-exhaustion", // allocate_large fallback
     "explicit",         // Gc.major / hlp_gc_major
     "poll",             // poll_safepoint honoring a deferred trigger
+    "idle",             // idle_collector, every mutator blocked
 ];
 fn set_collect_origin(o: u8) {
     COLLECT_ORIGIN.store(o, Ordering::Relaxed);
+}
+fn origin_name() -> &'static str {
+    ORIGIN_NAMES[(COLLECT_ORIGIN.load(Ordering::Relaxed) as usize).min(ORIGIN_NAMES.len() - 1)]
 }
 
 fn env_usize(name: &str) -> Option<usize> {
@@ -2100,6 +2152,45 @@ pub fn print_stats_if_enabled() {
 unsafe extern "C" {
     /// Asks all malloc zones to release free pages back to the OS.
     fn malloc_zone_pressure_relief(zone: *mut c_void, goal: usize) -> usize;
+    fn malloc_zone_statistics(zone: *mut c_void, stats: *mut MallocStatistics);
+}
+
+#[cfg(target_os = "macos")]
+#[repr(C)]
+#[derive(Default)]
+struct MallocStatistics {
+    blocks_in_use: u32,
+    size_in_use: usize,
+    max_size_in_use: usize,
+    size_allocated: usize,
+}
+
+/// Bytes malloc holds for the program, across every zone or arena.
+#[cfg(target_os = "macos")]
+fn malloc_in_use() -> usize {
+    let mut stats = MallocStatistics::default();
+    unsafe { malloc_zone_statistics(std::ptr::null_mut(), &mut stats) };
+    stats.size_in_use
+}
+
+/// `mallinfo` rather than `mallinfo2`, which needs glibc 2.33. Its counts are
+/// `int`s, so they are only compared with each other, never summed.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn malloc_in_use() -> usize {
+    #[allow(deprecated)]
+    let info = unsafe { libc::mallinfo() };
+    (info.uordblks as u32 as usize) + (info.hblkhd as u32 as usize)
+}
+
+/// Return the pages of memory malloc holds free to the OS.
+#[cfg(target_os = "macos")]
+fn release_malloc_pages() {
+    unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+}
+
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn release_malloc_pages() {
+    unsafe { libc::malloc_trim(0) };
 }
 
 /// Demand-committed heap reservation: pages become resident on first touch,
@@ -2543,8 +2634,8 @@ struct ImmixHeap {
     bytes_since_gc: usize,
     /// Off-heap bytes charged via `track_external` since the last collection.
     external_since_gc: usize,
-    /// Collect when bytes_since_gc + external_since_gc reaches this.
-    /// Adaptive: live*2 clamped to [floor, ceiling] after each collection.
+    /// Collect when bytes_since_gc + external_since_gc reaches this; set by
+    /// `trigger_bytes` after each collection.
     trigger_threshold: usize,
     /// Wall-clock heartbeat anchor.
     last_collect: Instant,
@@ -2554,6 +2645,10 @@ struct ImmixHeap {
     /// Blocks currently madvised MADV_FREE_REUSABLE; must be MADV_FREE_REUSE'd
     /// before reuse so live data can't be discarded under memory pressure.
     reusable_blocks: HashSet<usize>,
+    /// Previously used blocks a sweep freed, still resident. Kept until reuse
+    /// or a quiet collection hands them back; unlike `free_blocks`, this set
+    /// holds no untouched reservation pages.
+    pending_handback: HashSet<usize>,
     /// Which block each thread is bumping through; `sweep` never reclaims one.
     /// Keyed by thread because the recycled-span path can hand two threads spans
     /// of the same block.
@@ -3185,6 +3280,7 @@ impl ImmixAllocator {
             last_collect: Instant::now(),
             last_pressure_relief: Instant::now(),
             reusable_blocks: HashSet::new(),
+            pending_handback: HashSet::new(),
             tlab_blocks: HashMap::new(),
             safepoint_mode: false,
             collect_pending: false,
@@ -3424,6 +3520,7 @@ impl ImmixAllocator {
     /// MADV_FREE_REUSABLE — without this, the kernel may discard the pages
     /// under memory pressure AFTER we've written live data into them.
     fn reclaim_block_pages(&mut self, addr: usize) {
+        self.heap.pending_handback.remove(&addr);
         if self.heap.reusable_blocks.remove(&addr) {
             if trace_map() {
                 let base = self.heap.memory.as_ptr() as usize;
@@ -4046,7 +4143,7 @@ impl ImmixAllocator {
         }
         if trace_freed() || debug_roots() {
             let seq = GC_STATS.collections.load(Ordering::Relaxed) + 1;
-            let origin = ORIGIN_NAMES[COLLECT_ORIGIN.load(Ordering::Relaxed).min(6) as usize];
+            let origin = origin_name();
             let base = self.heap.memory.as_ptr() as usize;
             eprintln!(
                 "[gc-collect] #{seq} origin={origin} heap={base:#x}..{:#x} ranges={} pending={}",
@@ -4083,8 +4180,7 @@ impl ImmixAllocator {
         // or the collector fires at a fraction of what is live and reclaims less
         // each time. One live set of garbage keeps peak near 2x live.
         let ceiling = trigger_ceiling_bytes().max(live_bytes).max(floor);
-        self.heap.trigger_threshold =
-            (live_bytes.saturating_mul(growth_factor())).clamp(floor, ceiling);
+        self.heap.trigger_threshold = trigger_bytes(live_bytes, growth_factor(), floor, ceiling);
         if self.is_singleton() {
             let allocated = GC_STATS.bytes_allocated.load(Ordering::Relaxed);
             let external = GC_STATS.external_bytes.load(Ordering::Relaxed);
@@ -4152,7 +4248,7 @@ impl ImmixAllocator {
                 "[gc] #{} origin={} pause={:.2}ms freed={} blocks live={} blocks ({}) \
                  next-trigger={} free={} blocks",
                 n,
-                ORIGIN_NAMES[COLLECT_ORIGIN.load(Ordering::Relaxed).min(6) as usize],
+                origin_name(),
                 pause_ns as f64 / 1e6,
                 freed_blocks,
                 live_blocks,
@@ -4892,6 +4988,9 @@ impl ImmixAllocator {
                 }
                 if !quarantine_freed() {
                     self.heap.free_blocks.push(block_addr);
+                    if handback_enabled() {
+                        self.heap.pending_handback.insert(block_addr);
+                    }
                 }
                 // Clear alloc_sizes for all lines in this freed block
                 let base_line = block_index * LINES_PER_BLOCK;
@@ -4942,20 +5041,24 @@ impl ImmixAllocator {
         // Return fully free pages to the OS: MADV_FREE_REUSABLE on macOS,
         // MADV_DONTNEED elsewhere, one madvise per contiguous run. Safe because a
         // reacquired block is REUSEd and zeroed before live data is written. Only
-        // when the process has been quiet for a heartbeat: a churn workload would
-        // otherwise pay a REUSABLE+REUSE pair per block per cycle.
-        let quiet = self.heap.last_collect.elapsed() >= heartbeat_interval();
-        if quiet && !freed.is_empty() {
-            let resident_target = 16;
-            let surplus = self.heap.free_blocks.len().saturating_sub(resident_target);
-            let mut hand_back: Vec<usize> = freed
-                .iter()
-                .copied()
-                .take(surplus)
-                .filter(|a| !self.heap.reusable_blocks.contains(a))
-                .collect();
-            if !hand_back.is_empty() && handback_enabled() {
-                hand_back.sort_unstable();
+        // when the process is quiet, idle or a heartbeat since the last
+        // collection: a churn workload would otherwise pay a REUSABLE+REUSE pair
+        // per block per cycle.
+        let idle = COLLECT_ORIGIN.load(Ordering::Relaxed) == 8;
+        let quiet = idle || self.heap.last_collect.elapsed() >= heartbeat_interval();
+        if quiet && handback_enabled() {
+            // A quiet sweep may free nothing, the burst's earlier sweeps having
+            // done so; it drains every block they left resident.
+            let mut hand_back: Vec<usize> = self.heap.pending_handback.iter().copied().collect();
+            hand_back.sort_unstable();
+            hand_back.truncate(hand_back.len().saturating_sub(RESIDENT_FREE_BLOCKS));
+            // An idle collection has no pause to protect and returns them all; a
+            // heartbeat one stops at a chunk so the world is not held for the
+            // whole madvise.
+            if !idle {
+                hand_back.truncate(HANDBACK_CHUNK_BLOCKS);
+            }
+            if !hand_back.is_empty() {
                 let base = self.heap.memory.as_mut_ptr();
                 let mut run_start = hand_back[0];
                 let mut run_len = BLOCK_SIZE;
@@ -5008,6 +5111,7 @@ impl ImmixAllocator {
                     let mut addr = start;
                     while addr < start + len {
                         self.heap.reusable_blocks.insert(addr);
+                        self.heap.pending_handback.remove(&addr);
                         addr += BLOCK_SIZE;
                     }
                 }
@@ -5511,6 +5615,163 @@ pub fn major() {
     gc.collect_garbage();
 }
 
+// ── Idle collection ─────────────────────────────────────────────────────────
+//
+// Every other trigger runs on an allocation, so garbage from a burst that
+// stops short of the threshold stays until something allocates again: a UI
+// that animates and then waits for input keeps it for as long as it waits. A
+// thread in a declared blocking wait is already safe to collect around, so a
+// background thread collects once every mutator has been waiting a while and
+// there is garbage, or resident free memory, worth it.
+
+/// How long every mutator must have been idle before an idle collection.
+const IDLE_DELAY: Duration = Duration::from_millis(300);
+/// The share of that time a mutator may spend running between waits and
+/// still be idle: an idle UI waking every 100ms for a millisecond is 1%, a
+/// 120Hz animation with millisecond frames 12%.
+const IDLE_DUTY: f64 = 0.05;
+/// How often the idle collector looks.
+const IDLE_TICK: Duration = Duration::from_millis(250);
+/// Garbage worth an idle collection. Fixed rather than the trigger's floor,
+/// which `ASH_GC_TRIGGER_MB` raises to make the busy program collect less.
+const IDLE_MIN_BYTES: usize = 8 * 1024 * 1024;
+/// How far malloc's use must fall from its peak before an idle world hands
+/// the freed pages back.
+#[cfg_attr(
+    not(any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))),
+    allow(dead_code)
+)]
+const IDLE_MALLOC_RELEASE_BYTES: usize = 4 * 1024 * 1024;
+
+/// `ASH_GC_IDLE=0` turns idle collection off; safe either way.
+fn idle_collection_enabled() -> bool {
+    static V: OnceLock<bool> = OnceLock::new();
+    *V.get_or_init(|| {
+        !cfg!(target_family = "wasm")
+            && std::env::var("ASH_GC_IDLE")
+                .map(|v| v != "0")
+                .unwrap_or(true)
+    })
+}
+
+/// Start the idle collector once, the first time a mutator blocks.
+fn start_idle_collector() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    if !idle_collection_enabled() {
+        return;
+    }
+    STARTED.call_once(|| {
+        let _ = std::thread::Builder::new()
+            .name("caribou-gc-idle".into())
+            .spawn(idle_collector);
+    });
+}
+
+/// Every mutator has been idle for at least `IDLE_DELAY`, counting a turn
+/// it is in the middle of.
+fn world_idle() -> bool {
+    idle_holdouts().is_some_and(|h| h.is_empty())
+}
+
+/// The mutators keeping the world from being idle, described; `None` when
+/// there are no mutators.
+fn idle_holdouts() -> Option<Vec<String>> {
+    let world = MUTATOR_WORLD.state.lock().unwrap();
+    if world.mutators.is_empty() {
+        return None;
+    }
+    let now = Instant::now();
+    Some(
+        world
+            .mutators
+            .iter()
+            .filter_map(|m| {
+                let who = format!("{} {:#x}", m.role, m.thread);
+                let Some(since) = m.idle_since else {
+                    return Some(format!("{who}: never blocked"));
+                };
+                let mut ran = m.ran;
+                if m.blocking_depth == 0 {
+                    match m.woke_at {
+                        Some(woke) => ran += now - woke,
+                        None => return Some(format!("{who}: running")),
+                    }
+                }
+                let span = now - since;
+                let busy = ran.as_secs_f64() / span.as_secs_f64().max(1e-9);
+                (span < IDLE_DELAY || busy > IDLE_DUTY).then(|| {
+                    format!(
+                        "{who}: idle {:.0}ms, busy {:.0}%",
+                        span.as_secs_f64() * 1e3,
+                        busy * 100.0
+                    )
+                })
+            })
+            .collect(),
+    )
+}
+
+fn idle_collector() {
+    let mut reported = Instant::now();
+    #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+    let mut malloc_peak = 0usize;
+    loop {
+        std::thread::sleep(IDLE_TICK);
+        // Compile threads and native libraries free their scratch after the
+        // last collection, and an idle program does not collect again, so
+        // malloc would keep those pages. Once the world is idle and malloc's
+        // use has fallen far enough from its peak, hand them back.
+        #[cfg(any(target_os = "macos", all(target_os = "linux", target_env = "gnu")))]
+        {
+            let in_use = malloc_in_use();
+            malloc_peak = malloc_peak.max(in_use);
+            if malloc_peak - in_use >= IDLE_MALLOC_RELEASE_BYTES && world_idle() {
+                release_malloc_pages();
+                malloc_peak = malloc_in_use();
+            }
+        }
+        if !world_idle() {
+            // Under ASH_GC_STATS, say what an idle collection is waiting on
+            // while there is garbage for it, at most every two seconds.
+            if gc_stats_enabled() && reported.elapsed() >= Duration::from_secs(2) {
+                let pressure = {
+                    let gc = gc_locked_init();
+                    gc.heap.bytes_since_gc + gc.heap.external_since_gc
+                };
+                if pressure >= IDLE_MIN_BYTES
+                    && let Some(holdouts) = idle_holdouts()
+                {
+                    reported = Instant::now();
+                    eprintln!(
+                        "[gc-idle] t={:.2}s {} pending, waiting on: {}",
+                        GC_EPOCH.elapsed().as_secs_f64(),
+                        fmt_mb(pressure as u64),
+                        holdouts.join("; ")
+                    );
+                }
+            }
+            continue;
+        }
+        let mut gc = gc_locked_init();
+        let pressure = gc.heap.bytes_since_gc + gc.heap.external_since_gc;
+        let resident_free = gc
+            .heap
+            .pending_handback
+            .len()
+            .saturating_sub(RESIDENT_FREE_BLOCKS)
+            * BLOCK_SIZE;
+        let worth = pressure >= IDLE_MIN_BYTES
+            || resident_free >= IDLE_MIN_BYTES
+            || ((pressure > 0 || resident_free > 0)
+                && gc.heap.last_collect.elapsed() >= heartbeat_interval());
+        if !worth || !GC_ENABLED.load(Ordering::Relaxed) || !world_idle() {
+            continue;
+        }
+        set_collect_origin(8); // "idle" — see ORIGIN_NAMES
+        gc.collect_garbage();
+    }
+}
+
 /// Upstream `hl_gc_stats`: three counters through out-params, as doubles.
 ///
 /// * `total_allocated`: `GC_STATS.bytes_allocated`, cumulative, bytes handed
@@ -5614,6 +5875,10 @@ pub unsafe fn dump_memory(filename: *mut hl::vbyte) {
     w(format!("blocks-used {}", gc.heap.used_blocks.len()));
     w(format!("blocks-free {}", gc.heap.free_blocks.len()));
     w(format!("blocks-reusable {}", gc.heap.reusable_blocks.len()));
+    w(format!(
+        "blocks-pending-handback {}",
+        gc.heap.pending_handback.len()
+    ));
     if gc.heap.tlab_blocks.is_empty() {
         w("tlab-blocks none".into());
     } else {
@@ -6147,6 +6412,99 @@ mod tests {
                 .sum::<usize>()
         });
         assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn a_quiet_sweep_hands_back_what_busy_sweeps_freed_and_reuse_takes_it_back() {
+        if !handback_enabled() || no_reclaim() || quarantine_freed() {
+            return; // These diagnostic modes deliberately retain freed pages.
+        }
+        for large in [false, true] {
+            let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 64);
+            for _ in 0..32 {
+                let b = gc.acquire_free_block().unwrap();
+                unsafe { ptr::write_bytes(gc.heap.memory.as_mut_ptr().add(b), 0x5a, BLOCK_SIZE) };
+            }
+            let active = gc.acquire_free_block().unwrap();
+            gc.heap.tlab_blocks.insert((1234, false), active);
+            unsafe { ptr::write_bytes(gc.heap.memory.as_mut_ptr().add(active), 0xab, BLOCK_SIZE) };
+            set_collect_origin(6);
+            assert_eq!(gc.sweep(&[]), 32);
+            assert_eq!(gc.heap.pending_handback.len(), 32);
+            assert!(
+                gc.heap.reusable_blocks.is_empty(),
+                "a busy sweep must not madvise"
+            );
+            assert!(!gc.heap.pending_handback.contains(&active));
+            // Nothing newly freed: the busy sweep's blocks still go back.
+            gc.heap.last_collect = Instant::now() - heartbeat_interval();
+            assert_eq!(gc.sweep(&[]), 0);
+            assert_eq!(gc.heap.pending_handback.len(), RESIDENT_FREE_BLOCKS);
+            assert_eq!(gc.heap.reusable_blocks.len(), 32 - RESIDENT_FREE_BLOCKS);
+            assert!(!gc.heap.reusable_blocks.contains(&active));
+            unsafe { assert_eq!(*gc.heap.memory.as_ptr().add(active), 0xab) };
+            if large {
+                let p = gc.allocate_large(BLOCK_SIZE * 32).unwrap();
+                unsafe {
+                    assert_eq!(*p.as_ptr(), 0);
+                    assert_eq!(*p.as_ptr().add(BLOCK_SIZE * 32 - 1), 0);
+                    ptr::write_bytes(p.as_ptr(), 0x7c, BLOCK_SIZE * 32);
+                }
+            } else {
+                for _ in 0..32 {
+                    let b = gc.acquire_free_block().unwrap();
+                    assert!(!gc.heap.pending_handback.contains(&b));
+                    assert!(!gc.heap.reusable_blocks.contains(&b));
+                    unsafe {
+                        ptr::write_bytes(gc.heap.memory.as_mut_ptr().add(b), 0x7c, BLOCK_SIZE)
+                    };
+                }
+            }
+            assert!(gc.heap.pending_handback.is_empty());
+            assert!(gc.heap.reusable_blocks.is_empty());
+            assert_eq!(gc.heap.used_blocks.len(), 33);
+            unsafe { assert_eq!(*gc.heap.memory.as_ptr().add(active), 0xab) };
+        }
+    }
+
+    #[test]
+    fn a_heartbeat_sweep_hands_back_one_chunk_and_an_idle_one_hands_back_all() {
+        if !handback_enabled() || no_reclaim() || quarantine_freed() {
+            return;
+        }
+        let blocks = HANDBACK_CHUNK_BLOCKS + RESIDENT_FREE_BLOCKS + 200;
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * (blocks + 8));
+        for _ in 0..blocks {
+            gc.acquire_free_block().unwrap();
+        }
+        set_collect_origin(6);
+        assert_eq!(gc.sweep(&[]), blocks);
+        assert_eq!(gc.heap.pending_handback.len(), blocks);
+        gc.heap.last_collect = Instant::now() - heartbeat_interval();
+        gc.sweep(&[]);
+        assert_eq!(gc.heap.reusable_blocks.len(), HANDBACK_CHUNK_BLOCKS);
+        assert_eq!(
+            gc.heap.pending_handback.len(),
+            blocks - HANDBACK_CHUNK_BLOCKS
+        );
+        set_collect_origin(8);
+        gc.sweep(&[]);
+        assert_eq!(gc.heap.pending_handback.len(), RESIDENT_FREE_BLOCKS);
+    }
+
+    #[test]
+    fn a_mid_size_live_set_gets_about_one_more_of_headroom_not_four() {
+        const MB: usize = 1024 * 1024;
+        let (floor, ceiling) = (8 * MB, 512 * MB);
+        // 130MB live: four times it would be capped only by the ceiling.
+        assert_eq!(trigger_bytes(130 * MB, 4, floor, ceiling), 260 * MB);
+        // A small live set keeps its multiple.
+        assert_eq!(trigger_bytes(17 * MB, 4, floor, ceiling), 68 * MB);
+        // The floor holds for a tiny one, and the ceiling still binds.
+        assert_eq!(trigger_bytes(MB, 4, floor, ceiling), 8 * MB);
+        assert_eq!(trigger_bytes(300 * MB, 4, floor, ceiling), 512 * MB);
+        // A live set past the ceiling is still allowed one more of itself.
+        assert_eq!(trigger_bytes(700 * MB, 4, floor, 700 * MB), 700 * MB);
     }
 
     /// The bump allocator finds a line boundary from the absolute address and the
