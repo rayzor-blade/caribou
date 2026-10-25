@@ -3,7 +3,8 @@
 //! the functions that changed, and the next call through the registry
 //! reaches the new body. An edit that does not compile fails the reload
 //! and leaves the module as it was. A Python module reloads the same
-//! way, and a function of it that Wren imported before follows.
+//! way, a function of it that Wren imported before follows, and its
+//! body runs again, so what the body binds is the edit's.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -28,6 +29,15 @@ import "use" for held
 System.print(held.call(7, 2))
 "#;
 
+/// What the Python module's body bound.
+const BONUS: &str = r#"
+import "game:tally" for bonus
+System.print(bonus.call())
+"#;
+
+/// The Python module of the fixtures, with a global its body binds.
+const BOUND: &str = "\nBONUS = 1\n\ndef bonus() -> int:\n    return BONUS\n";
+
 #[test]
 fn a_zynml_module_reloads_under_a_haxe_program() {
     let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fixtures");
@@ -40,7 +50,7 @@ fn a_zynml_module_reloads_under_a_haxe_program() {
     // module beside the ZynML one.
     std::fs::write(roots.join("zynml.zsnap"), zynml::snapshot_bytes()).unwrap();
     let tally = roots.join("game").join("tally.py");
-    let tally_source = std::fs::read_to_string(fixtures.join("src/game/tally.py")).unwrap();
+    let tally_source = std::fs::read_to_string(fixtures.join("src/game/tally.py")).unwrap() + BOUND;
     std::fs::write(&tally, &tally_source).unwrap();
 
     let mut session = Session::open(
@@ -114,10 +124,15 @@ fn a_zynml_module_reloads_under_a_haxe_program() {
         output
     };
     assert_eq!(run(&mut session, "use", USE_TALLY), "64\n");
-    std::fs::write(&tally, tally_source.replace("hits * 10 -", "hits * 100 -")).unwrap();
+    assert_eq!(run(&mut session, "bonus", BONUS), "1\n");
+    let edited = tally_source
+        .replace("hits * 10 -", "hits * 100 -")
+        .replace("BONUS = 1", "BONUS = 7");
+    std::fs::write(&tally, edited).unwrap();
     session
         .reload("game", "tally")
         .expect("the Python module reloads");
     assert_eq!(run(&mut session, "again", HELD), "694\n");
+    assert_eq!(run(&mut session, "bonus again", BONUS), "7\n");
     let _ = std::fs::remove_dir_all(&roots);
 }

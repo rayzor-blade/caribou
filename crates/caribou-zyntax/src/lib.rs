@@ -1131,9 +1131,17 @@ fn reload(lang: LangId, name: &str, ready: &mut dyn FnMut()) -> Result<(), Strin
     if let Some((function, error)) = report.failed.first() {
         return Err(format!("`{name}`: {function}: {error}"));
     }
-    // A module that is not run has no body to run again: compiled is ready.
     ready();
     let origin = resources.origin(lang);
+    // A module whose body loading ran runs it again, after the reload is
+    // heard, as an import would: what it binds and registers is the edit's.
+    if let Some(entry) = resources.language.entry() {
+        foreign::as_caller(lang, || unsafe { &*resources.runtime }.call_raw(entry, &[]))
+            .map_err(|e| format!("`{name}`: {e}"))?;
+        if let Some(error) = origin.take_error() {
+            return Err(format!("`{name}`: {}", bridge_message(error)));
+        }
+    }
     resources.publish(lang, name, parsed.declared, origin)
 }
 
