@@ -36,7 +36,19 @@ pub fn hide(out: &Path, targets: &[&str]) {
         }
         Ok("linux") => {
             let script = out.join("ash-runtime-exports.map");
-            let local: String = EXPORTS.iter().map(|name| format!("{name}; ")).collect();
+            // lld refuses a script naming a symbol the binary does not define,
+            // unless the name is a pattern: a one-character class makes an
+            // exact name one that still matches only itself.
+            let local: String = EXPORTS
+                .iter()
+                .map(|name| match name.strip_suffix('*') {
+                    Some(_) => format!("{name}; "),
+                    None => {
+                        let (head, last) = name.split_at(name.len() - 1);
+                        format!("{head}[{last}]; ")
+                    }
+                })
+                .collect();
             std::fs::write(&script, format!("{{ global: *; local: {local}}};\n"))
                 .expect("the version script is written");
             args.push(format!("-Wl,--version-script={}", script.display()));
