@@ -3938,6 +3938,20 @@ impl ImmixAllocator {
             })
     }
 
+    /// Withdraw every object claim, outside a collection: a mark left standing
+    /// would stop the next trace at that object, so what it came to reach
+    /// since would go unmarked. Line claims stay until the sweep.
+    fn withdraw_object_marks(&self) {
+        for &block_addr in &self.heap.used_blocks {
+            let first = block_addr / ALLOC_QUANTUM;
+            for slot in &self.heap.objects[first..first + BLOCK_SIZE / ALLOC_QUANTUM] {
+                if slot.load(Ordering::Relaxed) & OBJECT_MARK != 0 {
+                    slot.fetch_and(!OBJECT_MARK, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+
     /// Withdraw the object claim on the allocation containing `ptr`. Its line
     /// claims stay until the sweep: a stale line claim only retains.
     pub fn unclaim(&self, ptr: *const u8) {
@@ -5912,8 +5926,9 @@ unsafe fn c_utf8_path(p: *const hl::vbyte) -> Option<String> {
 
 /// Upstream `hl_gc_dump_memory`: mark, then write the heap out as
 /// self-describing text under its own magic, not HashLink's `HMD1`. Nothing is
-/// swept, and the mark bits are left standing: a mark bit only ever retains a
-/// block, and the next sweep clears them all.
+/// swept. The object marks are withdrawn before the world restarts, since the
+/// next collection's trace does not follow an object it finds marked; the line
+/// marks only retain, and the next sweep clears them.
 pub unsafe fn dump_memory(filename: *mut hl::vbyte) {
     use std::io::Write;
 
@@ -6021,6 +6036,7 @@ pub unsafe fn dump_memory(filename: *mut hl::vbyte) {
     }
     if marked {
         census_write(&gc, &mut w);
+        gc.withdraw_object_marks();
     }
     w("end".into());
 
@@ -6643,6 +6659,26 @@ mod tests {
         set_collect_origin(8);
         gc.sweep(&[]);
         assert_eq!(gc.heap.pending_handback.len(), RESIDENT_FREE_BLOCKS);
+    }
+
+    #[test]
+    fn an_object_stored_after_a_dump_mark_is_still_traced() {
+        let mut gc = ImmixAllocator::with_heap_size(BLOCK_SIZE * 8);
+        let holder = gc.allocate_immortal(32).unwrap();
+        // The dump's mark.
+        gc.mark_roots(&[]);
+        assert!(object_marked(&gc, offset(&gc, holder)));
+        gc.withdraw_object_marks();
+        let stored = gc.allocate(32).unwrap();
+        unsafe {
+            holder
+                .cast::<usize>()
+                .as_ptr()
+                .write(stored.as_ptr() as usize)
+        };
+        // The next collection's mark reaches it through the holder.
+        gc.mark_roots(&[]);
+        assert!(object_marked(&gc, offset(&gc, stored)));
     }
 
     #[test]
