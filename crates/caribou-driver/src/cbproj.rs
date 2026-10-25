@@ -108,6 +108,7 @@ struct HaxeSection {
 struct Header {
     name: String,
     entry: String,
+    #[serde(default)]
     languages: Vec<String>,
     #[serde(default)]
     sources: Vec<PathBuf>,
@@ -164,6 +165,9 @@ pub struct Project {
     pub name: String,
     pub entry: Entry,
     pub languages: Vec<String>,
+    /// Whether the file lists its languages; else they are the ones its
+    /// sources have files of.
+    pub languages_declared: bool,
     /// Where the project's modules are.
     pub sources: Vec<PathBuf>,
     /// Haxelibs, by name, at a version or `*`.
@@ -238,16 +242,25 @@ impl Project {
                 header.entry
             )
         })?;
-        if !header.languages.iter().any(|l| l == lang) {
+        let languages_declared = !header.languages.is_empty();
+        if languages_declared && !header.languages.iter().any(|l| l == lang) {
             bail!(
                 "{}: the entry is {lang}, which `languages` does not list",
                 path.display()
             );
         }
-        let sources = if header.sources.is_empty() {
+        let sources: Vec<PathBuf> = if header.sources.is_empty() {
             vec![PathBuf::from(SOURCES)]
         } else {
             header.sources
+        }
+        .iter()
+        .map(|s| normal(&dir.join(s)))
+        .collect();
+        let languages = if languages_declared {
+            header.languages
+        } else {
+            present_languages(lang, &sources)
         };
         Ok(Project {
             path: path.to_path_buf(),
@@ -256,8 +269,9 @@ impl Project {
                 lang: lang.to_owned(),
                 module: module.to_owned(),
             },
-            languages: header.languages,
-            sources: sources.iter().map(|s| normal(&dir.join(s))).collect(),
+            languages,
+            languages_declared,
+            sources,
             haxelibs: file.dependencies.haxe,
             packages: file.dependencies.wren,
             python: file.dependencies.python,
@@ -456,6 +470,10 @@ impl Project {
             };
             out.push(frontend);
         }
+        // Languages found rather than listed: every frontend in the sources.
+        if !self.languages_declared {
+            out.extend(found);
+        }
         Ok(out)
     }
 
@@ -612,6 +630,49 @@ impl Project {
             .map(|library| caribou_plugin::load(library).map_err(|e| anyhow!("{e}")))
             .collect()
     }
+}
+
+/// The languages a project that lists none is written in: its entry's,
+/// then Haxe and Wren when the sources have their files, Python and Lua as
+/// their frontends find them, and each frontend file in the sources under
+/// its file's name.
+fn present_languages(entry: &str, sources: &[PathBuf]) -> Vec<String> {
+    let mut out = vec![entry.to_owned()];
+    let mut add = |lang: &str| {
+        if !out.iter().any(|l| l == lang) {
+            out.push(lang.to_owned());
+        }
+    };
+    for (lang, extension) in [("haxe", "hx"), ("wren", "wren")] {
+        if sources.iter().any(|s| has_file_with(s, extension)) {
+            add(lang);
+        }
+    }
+    for frontend in crate::project::builtins(sources) {
+        add(frontend.name());
+    }
+    for file in caribou_zyntax::Frontend::files_in(sources) {
+        if let Some(stem) = file.file_stem().and_then(|s| s.to_str()) {
+            add(stem);
+        }
+    }
+    out
+}
+
+/// Whether `dir` or a directory under it holds a file with `extension`;
+/// hidden directories are not looked in.
+fn has_file_with(dir: &Path, extension: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let path = entry.path();
+        if path.is_dir() {
+            !entry.file_name().to_string_lossy().starts_with('.') && has_file_with(&path, extension)
+        } else {
+            path.extension().is_some_and(|e| e == extension)
+        }
+    })
 }
 
 /// The Haxe compiler failed, and what it reported is recorded already.
@@ -1064,5 +1125,21 @@ tool = { path = "tool" }
         assert_eq!(names, ["game", "editor"]);
         assert!(resolved.project.is_none());
         assert!(not_a_project.contains("is a workspace"), "{not_a_project}");
+    }
+
+    #[test]
+    fn a_project_that_lists_no_languages_has_those_its_sources_hold() {
+        let (dir, file) = written(
+            "found",
+            "[project]\nname = \"found\"\nentry = \"haxe:Main\"\n",
+        );
+        std::fs::create_dir_all(dir.join("src/game")).unwrap();
+        std::fs::write(dir.join("src/Main.hx"), "class Main {}").unwrap();
+        std::fs::write(dir.join("src/game/hud.wren"), "class Hud {}").unwrap();
+        std::fs::write(dir.join("src/game/rules.py"), "def rule(): pass").unwrap();
+        let project = Project::load(&file).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(!project.languages_declared);
+        assert_eq!(project.languages, ["haxe", "wren", "python"]);
     }
 }

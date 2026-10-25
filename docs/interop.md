@@ -15,7 +15,7 @@ caribou run
 The project file, `<name>.cbproj`, declares the project (see the [README](../README.md#running-programs)):
 
 * The entry is a module of one of the languages. Caribou compiles a Haxe entry itself, with `-lib caribou`, and every Haxe module in the sources with it, since another language may import any of them. The class paths in `[haxe] class-paths` are libraries: they are compiled only as far as the program uses them. `[haxe] defines` sets `-D` flags.
-* The file lists the languages; it names no modules. Every module is found under the sources, `src/` unless `sources` says otherwise, and its path is its name: the first directory is its namespace, the rest its module (`src/game/ui/hud.wren` is `game:ui/hud`). Every namespace the program imports is a namespace too.
+* The file may list the languages. Without a list, they are the entry's and those the sources have files of: `.hx` for Haxe, `.wren` for Wren, Python's and Lua's modules, and each frontend file. The file names no modules. Every module is found under the sources, `src/` unless `sources` says otherwise, and its path is its name: the first directory is its namespace, the rest its module (`src/game/ui/hud.wren` is `game:ui/hud`). Every namespace the program imports is a namespace too.
 * Each language's dependencies are declared in its own form (`[dependencies.haxe]` haxelibs, `[dependencies.wren]` hatch packages), and so are the native plugins. A language's own manifest counts without being declared: a `hatchfile` beside the project file or at a source root. A `requirements.txt` or `*.rockspec` is found and reported, not installed, until Zyntax can take its ecosystem's packages.
 * A module from another language loads the first time the program uses it.
 
