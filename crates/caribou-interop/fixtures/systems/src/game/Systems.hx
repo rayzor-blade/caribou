@@ -23,6 +23,12 @@ class Systems {
 		failing.push(system);
 	}
 
+	/** A failing system kept as Dynamic, the way a field of no declared
+		function type holds it. **/
+	public static function registerFailingDynamic(system:Dynamic):Void {
+		failing.push(system);
+	}
+
 	/** Calls each failing system once inside a catch, as an engine keeps a
 		system's error from stopping the step, and answers what each raised,
 		comma-separated. **/

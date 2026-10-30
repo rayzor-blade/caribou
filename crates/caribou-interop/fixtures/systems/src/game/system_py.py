@@ -18,3 +18,11 @@ def fail(column, dt: float):
 
 def installFailing():
     Systems.registerFailing(fail)
+
+
+def fail_dynamic(column, dt: float):
+    raise ValueError("python dynamic failed")
+
+
+def installFailingDynamic():
+    Systems.registerFailingDynamic(fail_dynamic)

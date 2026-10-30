@@ -13,4 +13,8 @@ class SystemWren {
   static installFailing() {
     Systems.registerFailing(Fn.new {|column, dt| Fiber.abort("wren failed") })
   }
+
+  static installFailingDynamic() {
+    Systems.registerFailingDynamic(Fn.new {|column, dt| Fiber.abort("wren dynamic failed") })
+  }
 }

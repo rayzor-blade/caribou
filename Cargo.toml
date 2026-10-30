@@ -20,12 +20,12 @@ libc = "0.2"
 # ash_std's runtime table and wren_lift's RT_VERSION. A change a runtime
 # needs lands there first; while it is not pushed, a `[patch]` table points
 # the source at the checkout, and the patch goes once it is pushed.
-ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "40894c76149c286e3d1430f7c436f63a769cd0e9" }
-ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "40894c76149c286e3d1430f7c436f63a769cd0e9" }
-ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "40894c76149c286e3d1430f7c436f63a769cd0e9", default-features = false }
-ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "40894c76149c286e3d1430f7c436f63a769cd0e9", default-features = false }
-ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "40894c76149c286e3d1430f7c436f63a769cd0e9", default-features = false }
-ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "40894c76149c286e3d1430f7c436f63a769cd0e9" }
+ash_std = { git = "https://github.com/rayzor-blade/ash.git", rev = "e05d246de97e140eb0ef2c94be61a83ec585c3e5" }
+ash_native_call = { git = "https://github.com/rayzor-blade/ash.git", rev = "e05d246de97e140eb0ef2c94be61a83ec585c3e5" }
+ash_core = { git = "https://github.com/rayzor-blade/ash.git", rev = "e05d246de97e140eb0ef2c94be61a83ec585c3e5", default-features = false }
+ash_interp = { git = "https://github.com/rayzor-blade/ash.git", rev = "e05d246de97e140eb0ef2c94be61a83ec585c3e5", default-features = false }
+ash_wasm_runtime = { git = "https://github.com/rayzor-blade/ash.git", rev = "e05d246de97e140eb0ef2c94be61a83ec585c3e5", default-features = false }
+ash_page = { git = "https://github.com/rayzor-blade/ash.git", rev = "e05d246de97e140eb0ef2c94be61a83ec585c3e5" }
 wren_lift = { git = "https://github.com/wrenlift/WrenLift.git", rev = "eca0254cfde790e781903ff2ddb8de639be0673f", default-features = false }
 zyntax_embed = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34" }
 zyntax_compiler = { git = "https://github.com/zyntax-project/zyntax.git", rev = "39cdefea8afd31e55cafca260aaabbfac0b74e34", default-features = false }

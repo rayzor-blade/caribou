@@ -17,4 +17,10 @@ function M.installFailing()
   end)
 end
 
+function M.installFailingDynamic()
+  Systems.registerFailingDynamic(function(column, dt)
+    error("lua dynamic failed")
+  end)
+end
+
 return M

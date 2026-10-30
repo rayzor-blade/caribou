@@ -1,8 +1,9 @@
 //! A system another language registers with a Haxe class raises: Wren's
 //! `Fiber.abort`, Lua's `error` and Python's `raise` each reach the Haxe
 //! catch around the call, as a value carrying its message, and the engine
-//! goes on. Interpreted Haxe, where a function the engine holds is called
-//! by the interpreter.
+//! goes on, whether Haxe holds the function by its type or as Dynamic.
+//! Interpreted Haxe, where a function the engine holds is called by the
+//! interpreter.
 
 use std::path::PathBuf;
 
@@ -25,20 +26,22 @@ fn a_raising_system_reaches_the_haxe_catch() {
     )
     .expect("the program opens");
     captured(|| session.start().expect("main runs"));
-    session
-        .call("game", "system_wren", "SystemWren", "installFailing", &[])
-        .unwrap_or_else(|e| panic!("installFailing: {}", bridge::describe(e)));
-    for module in ["system_lua", "system_py"] {
-        let iface = registry::lookup_or_load("game", module)
-            .unwrap_or_else(|e| panic!("{module}: {e}"))
-            .unwrap_or_else(|| panic!("game has {module}"));
-        let install = iface
-            .functions
-            .iter()
-            .find(|f| f.name == "installFailing")
-            .unwrap_or_else(|| panic!("{module} publishes installFailing"));
-        bridge::call(install.target, &[], LANG_CORE)
-            .unwrap_or_else(|e| panic!("{module}.installFailing: {}", bridge::describe(e)));
+    for installer in ["installFailing", "installFailingDynamic"] {
+        session
+            .call("game", "system_wren", "SystemWren", installer, &[])
+            .unwrap_or_else(|e| panic!("{installer}: {}", bridge::describe(e)));
+        for module in ["system_lua", "system_py"] {
+            let iface = registry::lookup_or_load("game", module)
+                .unwrap_or_else(|e| panic!("{module}: {e}"))
+                .unwrap_or_else(|| panic!("game has {module}"));
+            let install = iface
+                .functions
+                .iter()
+                .find(|f| f.name == installer)
+                .unwrap_or_else(|| panic!("{module} publishes {installer}"));
+            bridge::call(install.target, &[], LANG_CORE)
+                .unwrap_or_else(|e| panic!("{module}.{installer}: {}", bridge::describe(e)));
+        }
     }
     let faults = session
         .call("haxe", "game.Systems", "Systems", "faults", &[])
@@ -46,7 +49,14 @@ fn a_raising_system_reaches_the_haxe_catch() {
     let faults = unsafe { caribou::error::Str::text(faults) }
         .unwrap()
         .to_owned();
-    for message in ["wren failed", "lua failed", "python failed"] {
+    for message in [
+        "wren failed",
+        "lua failed",
+        "python failed",
+        "wren dynamic failed",
+        "lua dynamic failed",
+        "python dynamic failed",
+    ] {
         assert!(faults.contains(message), "{message} in {faults:?}");
     }
 }
